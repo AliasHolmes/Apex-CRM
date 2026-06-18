@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      // High-fidelity fallback and safety guards for read-only fetch properties in sandbox iframes
+      (function() {
+        // 1. Try to redefine window.fetch to make it writable
+        try {
+          const originalFetch = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            value: originalFetch,
+            writable: true,
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.warn('window.fetch is not directly configurable, initializing proxy wrappers...');
+        }
+
+        // 2. Define a safe 'global' proxy that intercepts 'fetch' assignments
+        try {
+          const globalProxy = new Proxy(window, {
+            get(target, prop) {
+              if (prop === 'global') return globalProxy;
+              return target[prop];
+            },
+            set(target, prop, value) {
+              if (prop === 'fetch') {
+                return true; // silently ignore fetch writes to prevent Throwing in sandbox
+              }
+              target[prop] = value;
+              return true;
+            }
+          });
+          
+          Object.defineProperty(window, 'global', {
+            value: globalProxy,
+            writable: true,
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.warn('Could not initialize global proxy:', e);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

@@ -1,0 +1,6 @@
+{
+  "name": "Apex CRM Intelligence",
+  "description": "Elite B2B Sales Intelligence Engine embedded inside a LinkedIn CRM & Outreach Platform. Extracts profiles, infers missing data, and generates outreach.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

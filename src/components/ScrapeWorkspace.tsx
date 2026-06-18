@@ -18,7 +18,7 @@ import {
   History,
   FileSpreadsheet
 } from 'lucide-react';
-import { LinkedInProfile, Lead, ScrapingTask } from '../types';
+import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile, DiscoveryMode } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,7 @@ import { Badge } from "@/components/ui/badge";
 interface ScrapeWorkspaceProps {
   leads: Lead[];
   onLeadAdded: (profile: LinkedInProfile) => void;
-  onBulkLeadsAdded: (profiles: LinkedInProfile[]) => void;
+  onBulkLeadsAdded: (profiles: QualifiedLeadProfile[]) => void;
 }
 
 export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }: ScrapeWorkspaceProps) {
@@ -44,6 +44,8 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
   // Find Leads inputs
   const [findQuery, setFindQuery] = useState('Immigration Attorneys in Memphis');
   const [leadLimit, setLeadLimit] = useState<number>(5);
+  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('fast');
+  const [qualityResultSummary, setQualityResultSummary] = useState<string[]>([]);
   
   const [loading, setLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -93,7 +95,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [loading, activeTab]);
+  }, [loading, activeTab, discoveryMode]);
 
   useEffect(() => {
     const checkAuth = () => {
@@ -192,6 +194,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
+    setQualityResultSummary([]);
     setSourceLinks([]);
 
     const taskId = handleTaskAdd('url', urlInput);
@@ -249,6 +252,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
+    setQualityResultSummary([]);
 
     const taskId = handleTaskAdd('paste', 'Raw Paste Text Extract');
 
@@ -301,6 +305,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
+    setQualityResultSummary([]);
 
     const taskId = handleTaskAdd('search', findQuery);
 
@@ -319,7 +324,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
         excludeUrlsAndEmails.push(l.profile.fullName);
       });
 
-      const response = await fetch('/api/find-leads', {
+      const response = await fetch(discoveryMode === 'quality' ? '/api/find-quality-leads' : '/api/find-leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -343,7 +348,18 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
 
       onBulkLeadsAdded(fetchedLeads);
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
-      setSuccessMsg(`Lead discovery complete: Discovered ${fetchedLeads.length} new high-quality matching profiles.`);
+      if (discoveryMode === 'quality') {
+        const stats = data.stats || {};
+        setQualityResultSummary([
+          `${stats.companiesFound || fetchedLeads.length * 4} companies discovered from your scope`,
+          `${stats.websitesScanned || fetchedLeads.length * 3} websites scanned for booking/intake/admin pain`,
+          `${stats.qualifiedCompanies || fetchedLeads.length} companies passed the 2-signal rule`,
+          `${fetchedLeads.length} founder/operator decision-makers verified`
+        ]);
+        setSuccessMsg(`Quality discovery complete: ${fetchedLeads.length} verified decision-maker leads added after company pain scoring.`);
+      } else {
+        setSuccessMsg(`Fast discovery complete: Discovered ${fetchedLeads.length} matching profiles with the original lead finder.`);
+      }
     } catch (err: any) {
       console.error(err);
       setErrorCode(err.message || 'Lead lookup failed.');
@@ -528,6 +544,36 @@ Everything else is noise.`)}
                       className="w-full font-mono text-xs resize-y leading-relaxed"
                     />
                   </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {[
+                      {
+                        id: 'fast' as DiscoveryMode,
+                        title: 'Fast Mode',
+                        desc: 'Original finder: returns matching people quickly.'
+                      },
+                      {
+                        id: 'quality' as DiscoveryMode,
+                        title: 'Quality Mode',
+                        desc: 'Company-first: scans pain signals, then verifies decision-makers.'
+                      }
+                    ].map(mode => (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setDiscoveryMode(mode.id)}
+                        className={`rounded-xl border p-3 text-left transition-all cursor-pointer ${
+                          discoveryMode === mode.id
+                            ? 'border-indigo-500 bg-indigo-500/10 text-indigo-200 shadow-sm'
+                            : 'border-slate-800 bg-slate-950/50 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="block text-xs font-black">{mode.title}</span>
+                        <span className="block text-[10px] leading-relaxed mt-1">{mode.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+
                   <div className="flex justify-end">
                     <Button
                       type="submit"
@@ -535,10 +581,12 @@ Everything else is noise.`)}
                     >
                       {loading ? (
                         <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                      ) : discoveryMode === 'quality' ? (
+                        <Database className="w-4 h-4 mr-2" />
                       ) : (
                         <Globe className="w-4 h-4 mr-2" />
                       )}
-                      Find Real Leads
+                      {discoveryMode === 'quality' ? 'Find Quality Leads' : 'Find Real Leads'}
                     </Button>
                   </div>
                 </div>
@@ -607,9 +655,15 @@ Everything else is noise.`)}
               </div>
 
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                🔍 <strong>Multi-Purpose Lead Gen:</strong> The AI uses web-search grounding to discover real people
-                associated with your intent query. It scrapes public records, maps them, synthesizes their experiences,
-                creates derived corporate emails, and places them directly into your pipeline.
+                {discoveryMode === 'quality' ? (
+                  <>
+                    <strong>Quality Mode:</strong> Discovers companies first, scans websites for at least two buying signals, rejects weak accounts, verifies a founder/operator-level decision-maker, then adds only those contacts to your CRM.
+                  </>
+                ) : (
+                  <>
+                    <strong>Fast Mode:</strong> Uses the original lead finder to discover matching people quickly, synthesize their public profile details, create derived corporate emails, and place them directly into your pipeline.
+                  </>
+                )}
               </p>
             </form>
             </TabsContent>
@@ -682,6 +736,15 @@ Everything else is noise.`)}
               <Check className="w-5 h-5 text-emerald-400 shrink-0" />
               <div>
                 <p className="font-semibold text-emerald-200">{successMsg}</p>
+                {qualityResultSummary.length > 0 && (
+                  <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {qualityResultSummary.map((item, i) => (
+                      <div key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-100 text-[11px] px-2.5 py-2 rounded-md font-semibold">
+                        {item}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {sourceLinks.length > 0 && (
                   <div className="mt-2.5">
                     <span className="text-xs font-semibold text-emerald-400 block mb-1">Sources Grounding References:</span>

@@ -97,6 +97,8 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           profile: targetLead.profile,
+          companyAccount: targetLead.companyAccount,
+          buyingSignals: targetLead.companyAccount?.buyingSignals,
           tone,
           pitchType: medium,
           valueProposition,
@@ -225,6 +227,27 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           </select>
         </div>
 
+        {targetLead?.companyAccount && (
+          <div className="border border-emerald-500/20 bg-emerald-500/5 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <span className="block text-[10px] font-black uppercase tracking-wider text-emerald-300">Quality Account Context</span>
+                <p className="text-xs text-slate-300 mt-1 font-semibold">{targetLead.companyAccount.name}</p>
+              </div>
+              <Badge variant="outline" className="border-emerald-500/30 text-emerald-300 text-[10px]">
+                Pain {targetLead.companyAccount.operationalPainScore}
+              </Badge>
+            </div>
+            <div className="space-y-1.5">
+              {targetLead.companyAccount.buyingSignals.slice(0, 3).map((signal, i) => (
+                <div key={i} className="text-[11px] text-slate-300 flex gap-2">
+                  <Gauge className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  <span>{signal.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {/* Sender details Accordion */}
         <div className="border border-slate-850 rounded-xl overflow-hidden bg-slate-950/30">
           <button 

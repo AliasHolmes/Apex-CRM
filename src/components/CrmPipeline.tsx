@@ -257,6 +257,12 @@ export default function CrmPipeline({
                               <Briefcase className="w-3.5 h-3.5 shrink-0 opacity-60" />
                               <span className="truncate">{lead.profile.currentCompany || 'Independent'}</span>
                             </div>
+                            {lead.companyAccount && (
+                              <div className="mt-2 flex items-center gap-1.5 text-[10px] font-bold text-emerald-300">
+                                <Compass className="w-3.5 h-3.5" />
+                                <span>{lead.companyAccount.buyingSignals.length} company signals - Pain {lead.companyAccount.operationalPainScore}</span>
+                              </div>
+                            )}
                             {lead.profile.location && (
                               <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] mt-1">
                                 <MapPin className="w-3.5 h-3.5 shrink-0 opacity-60" />
@@ -460,6 +466,35 @@ export default function CrmPipeline({
                   </div>
                 </div>
 
+                {selectedLead.companyAccount && (
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-bold text-emerald-200 flex items-center gap-2">
+                          <Compass className="w-4 h-4 text-emerald-400" />
+                          Company Pain Qualification
+                        </h4>
+                        <p className="text-xs text-slate-400 mt-1">{selectedLead.companyAccount.painSummary}</p>
+                      </div>
+                      <Badge variant="outline" className="border-emerald-500/30 text-emerald-300 shrink-0">
+                        Pain {selectedLead.companyAccount.operationalPainScore}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {selectedLead.companyAccount.buyingSignals.map((signal, i) => (
+                        <div key={i} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3">
+                          <div className="text-[11px] font-black text-slate-200">{signal.label}</div>
+                          <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">{signal.evidence}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {selectedLead.decisionMakerVerification && (
+                      <p className="text-[11px] text-emerald-300 font-semibold">
+                        {selectedLead.decisionMakerVerification.reason}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {/* Improvement 2: AI-Powered Intro Hook Icebreaker Card */}
                 <div className="bg-gradient-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/25 rounded-2xl p-4.5 space-y-3">
                   <div className="flex items-center justify-between">

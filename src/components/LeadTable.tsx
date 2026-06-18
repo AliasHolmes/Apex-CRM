@@ -748,7 +748,7 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
           <TableBody>
             {filteredLeads.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground font-medium py-8">
+                <TableCell colSpan={8} className="text-center text-muted-foreground font-medium py-8">
                   No records stored matching your current directory queries.
                 </TableCell>
               </TableRow>
@@ -793,13 +793,23 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
                             <Linkedin className="w-3.5 h-3.5" />
                           </a>
                         )}
+                        {lead.qualificationMode === 'quality' && (
+                          <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[9px]">
+                            Quality
+                          </Badge>
+                        )}
                       </div>
                     </TableCell>
                   <TableCell className="text-muted-foreground truncate max-w-[200px]" title={lead.profile.currentTitle}>
                     {lead.profile.currentTitle || 'Professional'}
                   </TableCell>
-                  <TableCell className="text-muted-foreground truncate max-w-[150px]">
-                    {lead.profile.currentCompany || 'Independent'}
+                  <TableCell className="text-muted-foreground max-w-[190px]">
+                    <div className="truncate">{lead.profile.currentCompany || 'Independent'}</div>
+                    {lead.companyAccount && (
+                      <div className="text-[10px] text-emerald-400 font-bold mt-1 truncate">
+                        {lead.companyAccount.buyingSignals.length} signals - Pain {lead.companyAccount.operationalPainScore}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>
                     {lead.profile.contactDetails?.email ? (

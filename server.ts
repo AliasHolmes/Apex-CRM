@@ -479,6 +479,138 @@ function generateMockLeads(query: string, limit: number, excludeList: string[] =
   return leads;
 }
 
+function generateMockQualityLeads(query: string, limit: number, excludeList: string[] = []) {
+  const baseProfiles = generateMockLeads(query, Math.max(limit * 4, limit + 8), excludeList);
+  const decisionMakerTitles = ['Founder', 'Co-Founder', 'CEO', 'Owner', 'Managing Director', 'COO', 'Practice Owner', 'Agency Owner', 'Managing Partner'];
+  const ignoredTitleWords = ['assistant', 'intern', 'representative', 'sales rep', 'coordinator', 'marketing manager'];
+
+  const buildCompanySignals = (profile: any, index: number) => {
+    const companyName = profile.currentCompany || `Qualified Company ${index + 1}`;
+    const website = profile.contactDetails?.website || `https://www.${companyName.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`;
+    const industry = (profile.industry || '').toLowerCase();
+    const signals = [
+      {
+        type: 'LEAD_FLOW',
+        label: 'Booking or consultation CTA',
+        evidence: `${companyName} presents a visible book-a-call, appointment, or consultation path on the website.`,
+        sourceUrl: website,
+        confidence: 91
+      },
+      {
+        type: 'LEAD_FLOW',
+        label: 'Contact or intake form',
+        evidence: `The site routes inbound prospects through a form before a human follow-up step.`,
+        sourceUrl: `${website}/contact`,
+        confidence: 88
+      }
+    ];
+
+    if (industry.includes('dental') || industry.includes('med spa') || industry.includes('immigration')) {
+      signals.push({
+        type: 'OPERATIONAL_COMPLEXITY',
+        label: 'Multiple services offered',
+        evidence: `Service pages show several intake paths, which increases manual triage and follow-up complexity.`,
+        sourceUrl: `${website}/services`,
+        confidence: 84
+      });
+    } else {
+      signals.push({
+        type: 'OPERATIONAL_COMPLEXITY',
+        label: 'Multi-step sales workflow',
+        evidence: `The company describes discovery calls, qualification, and handoff steps before conversion.`,
+        sourceUrl: `${website}/process`,
+        confidence: 82
+      });
+    }
+
+    if (index % 2 === 0) {
+      signals.push({
+        type: 'GROWTH_SIGNAL',
+        label: 'Hiring for admin or growth support',
+        evidence: `Careers language suggests coordinator, SDR, front desk, or admin follow-up workload.`,
+        sourceUrl: `${website}/careers`,
+        confidence: 79
+      });
+    } else {
+      signals.push({
+        type: 'OPERATIONAL_COMPLEXITY',
+        label: 'Team or multi-location presence',
+        evidence: `The website shows a team/location footprint, so the account is not a solo operator.`,
+        sourceUrl: `${website}/about`,
+        confidence: 77
+      });
+    }
+
+    return signals;
+  };
+
+  const qualityLeads: any[] = [];
+  let scannedCompanies = 0;
+  let rejectedCompanies = 0;
+
+  for (let i = 0; i < baseProfiles.length && qualityLeads.length < limit; i++) {
+    const profile: any = baseProfiles[i];
+    scannedCompanies++;
+
+    const title = (profile.currentTitle || '').toLowerCase();
+    const hasIgnoredTitle = ignoredTitleWords.some(word => title.includes(word));
+    const isDecisionMaker = decisionMakerTitles.some(role => title.includes(role.toLowerCase()));
+    const signals = buildCompanySignals(profile, i);
+    const signalScore = signals.reduce((sum, signal: any) => sum + Math.round(signal.confidence / 8), 0);
+    const decisionScore = isDecisionMaker && !hasIgnoredTitle ? 18 : -20;
+    const sizeScore = profile.companySizeEst === '500+' ? -20 : 14;
+    const operationalPainScore = Math.max(35, Math.min(96, 42 + signalScore + decisionScore + sizeScore));
+    const qualifies = signals.length >= 2 && isDecisionMaker && !hasIgnoredTitle && operationalPainScore >= 70;
+
+    if (!qualifies) {
+      rejectedCompanies++;
+      continue;
+    }
+
+    const companyAccount = {
+      id: `acct-${Date.now()}-${i}`,
+      name: profile.currentCompany,
+      website: profile.contactDetails?.website,
+      industry: profile.industry,
+      location: profile.location,
+      sizeEstimate: 'small-team',
+      buyingSignals: signals,
+      disqualifiers: [],
+      operationalPainScore,
+      qualificationStatus: 'QUALIFIED',
+      painSummary: `${profile.currentCompany} passed quality mode with ${signals.length} buying signals and a verified ${profile.currentTitle}.`
+    };
+
+    qualityLeads.push({
+      ...profile,
+      id: profile.id || `quality-profile-${Date.now()}-${i}`,
+      headline: `${profile.currentTitle} at ${profile.currentCompany} | Quality verified account`,
+      summary: `${profile.summary || ''} Quality mode verified the company first: ${signals.slice(0, 2).map((s: any) => s.label).join(', ')}.`,
+      companyAccount,
+      decisionMakerVerification: {
+        titleMatched: isDecisionMaker,
+        companyMatched: true,
+        ignoredTitle: hasIgnoredTitle,
+        confidence: Math.min(97, 82 + (i % 8)),
+        reason: `${profile.currentTitle} is an operator-level title at ${profile.currentCompany}; lower-authority employee titles were excluded.`
+      },
+      qualificationMode: 'quality',
+      scoreOverride: operationalPainScore,
+      qualityReasons: signals.map((s: any) => s.label),
+      painIndicators: signals.map((s: any) => s.evidence)
+    });
+  }
+
+  return {
+    leads: qualityLeads,
+    stats: {
+      companiesFound: baseProfiles.length,
+      websitesScanned: scannedCompanies,
+      qualifiedCompanies: qualityLeads.length,
+      rejectedCompanies
+    }
+  };
+}
 function generateMockSingleProfile(urlOrName: string) {
   let cleanName = urlOrName;
   if (urlOrName.includes('linkedin.com/in/')) {
@@ -596,7 +728,9 @@ function generateMockOutboundHtml(
   senderName?: string,
   senderCompany?: string,
   sequenceStep?: string,
-  customInstruction?: string
+  customInstruction?: string,
+  companyAccount?: any,
+  buyingSignals?: any[]
 ) {
   const currentTone = tone || 'High-Value';
   const currentMedium = pitchType || 'Cold Email';
@@ -605,12 +739,17 @@ function generateMockOutboundHtml(
   const myCompany = senderCompany || 'Lead-Finder Pro';
   const offer = valueProposition || 'scaling your outbound sales pipeline and auto-enriching verified leads';
   const customPart = customInstruction ? `\n\n*Applied Custom Instruction:* "${customInstruction}"` : '';
+  const account = companyAccount || profile.companyAccount;
+  const accountSignals = buyingSignals || account?.buyingSignals || [];
+  const signalLabels = accountSignals.slice(0, 3).map((s: any) => s.label).filter(Boolean);
 
   const subject = `Opportunities with ${profile.currentCompany || 'your team'} - outreach personalized`;
   const salutation = `Hello ${profile.fullName.split(' ')[0]},`;
 
   let greetingHook = `I was researching ${profile.currentCompany || 'your work'} and wanted to connect with you because of your impressive current role as ${profile.currentTitle || 'Professional'}.`;
-  if (profile.summary) {
+  if (account && signalLabels.length > 0) {
+    greetingHook = `I was looking at ${account.name || profile.currentCompany || 'your company'} and noticed a few operational signals on the website: ${signalLabels.join(', ')}. That usually means inbound follow-up, intake routing, or booking handoffs are becoming expensive to manage manually.`;
+  } else if (profile.summary) {
     greetingHook = `I came across your profile and was really intrigued by your experience as ${profile.currentTitle || 'Professional'} at ${profile.currentCompany || 'your team'}, especially your focus on "${profile.skills ? profile.skills.slice(0, 2).join(' and ') : 'strategic development'}".`;
   }
 
@@ -852,6 +991,20 @@ app.post('/api/find-leads', async (req, res): Promise<any> => {
 });
 
 // 4. Outbound AI Campaign Studio
+app.post('/api/find-quality-leads', async (req, res): Promise<any> => {
+  try {
+    const { query, limit = 5, excludeList = [] } = req.body;
+    if (!query) {
+      return res.status(400).json({ error: 'Search criteria/query is required' });
+    }
+
+    const result = generateMockQualityLeads(query, limit, excludeList);
+    res.json({ ...result, sandboxMode: true, mode: 'quality' });
+  } catch (error: any) {
+    console.error('Error in /api/find-quality-leads:', error);
+    res.status(500).json({ error: error.message || 'Failed to locate quality-scored leads.' });
+  }
+});
 app.post('/api/generate-outbound', async (req, res): Promise<any> => {
   try {
     const {
@@ -862,7 +1015,9 @@ app.post('/api/generate-outbound', async (req, res): Promise<any> => {
       senderName,
       senderCompany,
       sequenceStep,
-      customInstruction
+      customInstruction,
+      companyAccount,
+      buyingSignals
     } = req.body;
 
     if (!profile || !profile.fullName) {
@@ -877,7 +1032,9 @@ app.post('/api/generate-outbound', async (req, res): Promise<any> => {
       senderName,
       senderCompany,
       sequenceStep,
-      customInstruction
+      customInstruction,
+      companyAccount,
+      buyingSignals
     );
     res.json({ text, sandboxMode: true });
   } catch (error: any) {

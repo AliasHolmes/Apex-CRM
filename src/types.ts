@@ -48,6 +48,46 @@ export interface LinkedInProfile {
   enrichmentGaps?: string[]; // New
 }
 
+export type DiscoveryMode = 'fast' | 'quality';
+
+export interface BuyingSignal {
+  type: 'LEAD_FLOW' | 'OPERATIONAL_COMPLEXITY' | 'GROWTH_SIGNAL' | 'DECISION_MAKER' | 'DISQUALIFIER';
+  label: string;
+  evidence: string;
+  sourceUrl?: string;
+  confidence: number;
+}
+
+export interface CompanyAccount {
+  id: string;
+  name: string;
+  website?: string;
+  industry?: string;
+  location?: string;
+  sizeEstimate?: 'solo' | 'small-team' | 'mid-market' | 'enterprise' | 'unknown';
+  buyingSignals: BuyingSignal[];
+  disqualifiers?: BuyingSignal[];
+  operationalPainScore: number;
+  qualificationStatus: 'DISCOVERED' | 'QUALIFIED' | 'REJECTED' | 'NEEDS_REVIEW';
+  painSummary?: string;
+}
+
+export interface DecisionMakerVerification {
+  titleMatched: boolean;
+  companyMatched: boolean;
+  ignoredTitle: boolean;
+  confidence: number;
+  reason: string;
+}
+
+export interface QualifiedLeadProfile extends LinkedInProfile {
+  companyAccount?: CompanyAccount;
+  decisionMakerVerification?: DecisionMakerVerification;
+  qualificationMode?: DiscoveryMode;
+  scoreOverride?: number;
+  qualityReasons?: string[];
+}
+
 export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';
 
 export interface Lead {
@@ -70,6 +110,10 @@ export interface Lead {
   tier?: 'TIER 1: PRIORITY' | 'TIER 2: ACTIVE' | 'TIER 3: WATCH' | 'TIER 4: DEPRIORITIZE';
   
   buyingSignalsDetected?: string[];
+  companyAccount?: CompanyAccount;
+  decisionMakerVerification?: DecisionMakerVerification;
+  qualificationMode?: DiscoveryMode;
+  qualityReasons?: string[];
 }
 
 export interface ScrapingTask {

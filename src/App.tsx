@@ -27,7 +27,7 @@ import {
   ChevronRight,
   Check
 } from 'lucide-react';
-import { LinkedInProfile, Lead, ContactDetails } from './types';
+import { LinkedInProfile, Lead, ContactDetails, QualifiedLeadProfile } from './types';
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
@@ -357,7 +357,7 @@ export default function App() {
   };
 
   // 4. Callback to handle bulk lead inputs
-  const handleBulkLeadsAdded = (profiles: LinkedInProfile[]) => {
+  const handleBulkLeadsAdded = (profiles: QualifiedLeadProfile[]) => {
     saveLeadsToStorage(currentLeads => {
       const existingMap = new Map();
       currentLeads.forEach(l => {
@@ -389,17 +389,27 @@ export default function App() {
       }
 
       const newLeads = uniqueProfiles.map((p, i) => {
-        const compositeScore = Math.floor(Math.random() * 35) + 60; // 60 - 95 score
-        const predictiveScore = Math.floor(compositeScore * 0.9);
+        const isQualityLead = p.qualificationMode === 'quality' && p.companyAccount;
+        const compositeScore = p.scoreOverride || p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
+        const predictiveScore = Math.min(96, Math.floor(compositeScore * (isQualityLead ? 0.96 : 0.9)));
         return {
           id: `lead-bulk-${Date.now()}-${i}`,
           profile: p,
           stage: 'SCRAPED' as Lead['stage'],
-          notes: 'Bulk discovered via AI Search Discovery parameters.',
+          notes: isQualityLead
+            ? `Quality-mode lead. ${p.companyAccount?.painSummary || 'Company qualified through website buying signals before decision-maker creation.'}`
+            : 'Bulk discovered via AI Search Discovery parameters.',
           createdAt: new Date().toISOString(),
-          tags: ['Discovered', p.industry || 'Tech'],
+          tags: isQualityLead
+            ? ['Quality Mode', 'Company Pain Verified', p.industry || 'Tech']
+            : ['Discovered', p.industry || 'Tech'],
           compositeScore,
-          predictiveScore
+          predictiveScore,
+          companyAccount: p.companyAccount,
+          decisionMakerVerification: p.decisionMakerVerification,
+          qualificationMode: p.qualificationMode || 'fast',
+          qualityReasons: p.qualityReasons,
+          buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
         };
       });
 

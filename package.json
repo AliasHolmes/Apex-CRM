@@ -9,7 +9,6 @@
         "start": "node dist/server.cjs",
         "clean": "rm -rf dist server.js",
         "lint": "tsc --noEmit",
-        "test:dedupe": "tsx --test test/leadDedupe.test.ts",
         "install:mcp": "pip install mcp-server-linkedin"
     },
     "dependencies": {
@@ -28,6 +27,7 @@
         "express": "^4.21.2",
         "lucide-react": "^0.546.0",
         "motion": "^12.23.24",
+        "openai": "^6.45.0",
         "papaparse": "^5.5.3",
         "react": "^19.0.1",
         "react-dom": "^19.0.1",

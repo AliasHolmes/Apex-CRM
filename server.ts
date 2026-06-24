@@ -260,7 +260,7 @@ class CloudCodeClient {
       const activityRequestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
       const envelope = {
         project: auth.project_id,
-        model: model || 'gemini-2.5-flash',
+        model: model || 'gpt-5.5',
         user_prompt_id: userPromptId,
         request: {
           contents: formattedContents,
@@ -308,13 +308,13 @@ function getGeminiClient(): any {
 }
 
 // -----------------------------------------------------------------------------
-// Gemini REST API Helpers (GEMINI_API_KEY — no OAuth required)
+// OpenAI Compatible REST API Helpers (OPENAI_API_KEY)
 // -----------------------------------------------------------------------------
 
-const GEMINI_MODEL = 'gemini-2.5-flash'; // Latest Gemini Flash model.
-const GEMINI_BASE = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`;
+const OPENAI_MODEL = 'gpt-5.5';
+const OPENAI_BASE = 'https://api.byesu.com/v1';
 
-/** Converts uppercase Type constants to lowercase for the Gemini REST API schema. */
+/** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
 function normalizeSchema(schema: any): any {
   if (!schema || typeof schema !== 'object') return schema;
   const out: any = {};
@@ -382,86 +382,94 @@ async function tavilySearch(query: string): Promise<{ text: string; sources: { t
 }
 
 /**
- * Calls Gemini for pure text generation (no tools/grounding).
+ * Calls OpenAI compatible API for pure text generation.
  */
-async function geminiText(prompt: string, systemInstruction?: string): Promise<{ text: string }> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment.');
+async function openAIText(prompt: string, systemInstruction?: string): Promise<{ text: string }> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not set in environment.');
 
-  const body: any = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.1 }
-  };
+  const messages = [];
   if (systemInstruction) {
-    body.system_instruction = { parts: [{ text: systemInstruction }] };
+    messages.push({ role: 'system', content: systemInstruction });
   }
+  messages.push({ role: 'user', content: prompt });
 
-  const res = await fetch(`${GEMINI_BASE}:generateContent?key=${apiKey}`, {
+  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    headers: { 
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages,
+      temperature: 0.1
+    })
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini text generation error ${res.status}: ${err}`);
+    throw new Error(`OpenAI text generation error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
-  const candidate = data.candidates?.[0];
-  const text = candidate?.content?.parts?.map((p: any) => p.text).join('') || '';
+  const text = data.choices?.[0]?.message?.content || '';
 
   return { text };
 }
 
 /**
- * Calls Gemini with a strict JSON response schema (no grounding).
+ * Calls OpenAI compatible API with a request for a strict JSON response.
  * Used as step 2 to convert raw searched text into clean structured data.
  */
-async function geminiStructured<T>(prompt: string, schema: any, systemInstruction?: string): Promise<T> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment.');
+async function openAIStructured<T>(prompt: string, schema: any, systemInstruction?: string): Promise<T> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not set in environment.');
 
-  const body: any = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      response_mime_type: 'application/json',
-      response_schema: normalizeSchema(schema),
-      temperature: 0.1
-    }
-  };
-  if (systemInstruction) {
-    body.system_instruction = { parts: [{ text: systemInstruction }] };
-  }
+  let sysPrompt = systemInstruction || '';
+  sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. The JSON must exactly match this schema:\n${JSON.stringify(normalizeSchema(schema), null, 2)}`;
 
-  const res = await fetch(`${GEMINI_BASE}:generateContent?key=${apiKey}`, {
+  const messages = [
+    { role: 'system', content: sysPrompt },
+    { role: 'user', content: prompt }
+  ];
+
+  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    headers: { 
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages,
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    })
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini structured call error ${res.status}: ${err}`);
+    throw new Error(`OpenAI structured call error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
+  const text = data.choices?.[0]?.message?.content || '';
 
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new Error(`Failed to parse Gemini JSON response: ${text.slice(0, 300)}`);
+    throw new Error(`Failed to parse OpenAI JSON response: ${text.slice(0, 300)}`);
   }
 }
 
-/** Returns true when a real Gemini API key is available. */
-function hasGeminiKey(): boolean {
-  return !!process.env.GEMINI_API_KEY;
+/** Returns true when a real OpenAI API key is available. */
+function hasOpenAIKey(): boolean {
+  return !!process.env.OPENAI_API_KEY;
 }
 
 // -----------------------------------------------------------------------------
-// Type Schemas for Gemini Structure Responses
+// Type Schemas for OpenAI Structure Responses
 // -----------------------------------------------------------------------------
 
 const singleProfileSchema = {
@@ -603,7 +611,7 @@ const leadsArraySchema = {
 };
 
 // -----------------------------------------------------------------------------
-// Interactive Sandbox Generators (Fallback when GEMINI_API_KEY is not defined)
+// Interactive Sandbox Generators (Fallback when OPENAI_API_KEY is not defined)
 // -----------------------------------------------------------------------------
 
 function generateMockLeads(query: string, limit: number, excludeList: string[] = []) {
@@ -1047,7 +1055,7 @@ app.put('/api/leads', (req, res): any => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    hasKey: !!process.env.GEMINI_API_KEY,
+    hasKey: !!process.env.OPENAI_API_KEY,
     hasTavilyKey: !!process.env.TAVILY_API_KEY,
     hasOAuth: !!loadAuth(),
     hasGoogleClient: !!CLIENT_ID,
@@ -1099,7 +1107,7 @@ app.get('/api/auth/google/callback', async (req, res): Promise<any> => {
       'User-Agent': 'google-api-nodejs-client/9.15.1 (gzip)',
       'X-Goog-Api-Client': 'gl-node/24.0.0'
     };
-    const md = { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "GEMINI" };
+    const md = { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "OPENAI" };
     
     const loadRes = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
       method: 'POST', headers, body: JSON.stringify({ metadata: md })
@@ -1151,8 +1159,8 @@ app.post('/api/scrape-url', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'urlOrName is required' });
     }
 
-    if (!hasGeminiKey()) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable real scraping.' });
+    if (!hasOpenAIKey()) {
+      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable real scraping.' });
     }
 
     // Step 1: Tavily search for public LinkedIn-indexed evidence
@@ -1173,7 +1181,7 @@ For the fitScore, intentScore, and timingScore: score 1-10 based on how much sig
 Raw research data:
 ${rawText}`;
 
-    const profile = await geminiStructured<any>(structurePrompt, singleProfileSchema, APEX_SYSTEM_PROMPT);
+    const profile = await openAIStructured<any>(structurePrompt, singleProfileSchema, APEX_SYSTEM_PROMPT);
 
     if (!profile || !profile.fullName) {
       throw new Error('Could not extract a valid profile from the search results.');
@@ -1199,8 +1207,8 @@ app.post('/api/scrape-pasted', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Please paste a larger LinkedIn profile text block (minimum 20 characters).' });
     }
 
-    if (!hasGeminiKey()) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable AI extraction.' });
+    if (!hasOpenAIKey()) {
+      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable AI extraction.' });
     }
 
     // Single structured call — no grounding needed, text is already provided
@@ -1215,7 +1223,7 @@ For fitScore / intentScore / timingScore: score 1-10 based on signals in the tex
 Pasted text:
 ${pastedText}`;
 
-    const profile = await geminiStructured<any>(prompt, singleProfileSchema, APEX_SYSTEM_PROMPT);
+    const profile = await openAIStructured<any>(prompt, singleProfileSchema, APEX_SYSTEM_PROMPT);
 
     if (!profile || !profile.fullName) {
       throw new Error('Could not extract a valid profile. Make sure the pasted text includes at least a name and job title.');
@@ -1236,8 +1244,8 @@ app.post('/api/find-leads', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Search criteria/query is required' });
     }
 
-    if (!hasGeminiKey()) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.' });
+    if (!hasOpenAIKey()) {
+      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.' });
     }
 
     // Step 1: Tavily Search - find real professionals from public LinkedIn-indexed snippets
@@ -1264,7 +1272,7 @@ Target exactly ${limit} profiles if enough data is available.
 Raw research:
 ${rawText}`;
 
-    const leads = await geminiStructured<any[]>(structurePrompt, leadsArraySchema, APEX_SYSTEM_PROMPT);
+    const leads = await openAIStructured<any[]>(structurePrompt, leadsArraySchema, APEX_SYSTEM_PROMPT);
 
     if (!Array.isArray(leads) || leads.length === 0) {
       throw new Error('Could not extract any profiles from search results. Try more specific criteria.');
@@ -1307,8 +1315,8 @@ app.post('/api/generate-outbound', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Profile data is required for personalization.' });
     }
 
-    if (!hasGeminiKey()) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable AI outreach generation.' });
+    if (!hasOpenAIKey()) {
+      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable AI outreach generation.' });
     }
 
     console.log(`[generate-outbound] Generating outreach for: ${profile.fullName}`);
@@ -1349,7 +1357,7 @@ Follow the Golden Rules strictly:
 
 Format the output as clean HTML with proper line breaks and styling for display in a rich text editor.`;
 
-    const { text: rawText } = await geminiText(prompt, APEX_SYSTEM_PROMPT);
+    const { text: rawText } = await openAIText(prompt, APEX_SYSTEM_PROMPT);
 
     if (!rawText) {
       throw new Error('Failed to generate outreach copy.');
@@ -1373,11 +1381,11 @@ app.post('/api/chat', async (req, res): Promise<any> => {
     const { query, leads = [] } = req.body;
     if (!query) return res.status(400).json({ error: 'Query is required' });
 
-    if (!hasGeminiKey()) {
-      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable the AI Copilot.' });
+    if (!hasOpenAIKey()) {
+      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable the AI Copilot.' });
     }
 
-    // Build a rich context summary of the CRM for Gemini
+    // Build a rich context summary of the CRM for LLM
     const leadsContext = leads.length === 0
       ? 'The CRM pipeline is currently empty.'
       : leads.slice(0, 20).map((l: any, i: number) =>
@@ -1392,7 +1400,7 @@ ${leadsContext}
 
 Answer the user's question about their CRM pipeline, leads, outreach strategy, or any sales-related query. Be direct, concise, and actionable. Format responses in markdown.`;
 
-    const { text: reply } = await geminiText(query, systemPrompt);
+    const { text: reply } = await openAIText(query, systemPrompt);
 
     res.json({ text: reply || 'I could not generate a response. Please try again.' });
   } catch (error: any) {

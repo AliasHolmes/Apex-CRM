@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/badge/Vite-6.2-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.1-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind" />
     <img src="https://img.shields.io/badge/SQLite-Local_First-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
-    <img src="https://img.shields.io/badge/AI-Gemini_2.5-FFD54F?logo=google&logoColor=black" alt="Gemini" />
+    <img src="https://img.shields.io/badge/AI-OpenAI_Compatible-FFD54F?logo=openai&logoColor=black" alt="OpenAI" />
   </p>
 </div>
 
@@ -19,7 +19,7 @@
 
 **Apex CRM** is a cutting-edge, local-first Customer Relationship Management tool designed for modern sales teams. It seamlessly integrates AI-driven prospecting, intelligent lead enrichment, and automated outreach drafting into a single, lightning-fast workspace.
 
-By combining the power of **Google's Gemini AI** for content generation, **Tavily** for real-time web scraping, and a **Local SQLite** backend for immediate data persistence, Apex CRM eliminates the friction between finding a lead and closing a deal.
+By combining the power of an **OpenAI-compatible LLM** for content generation, **Tavily** for real-time web scraping, and a **Local SQLite** backend for immediate data persistence, Apex CRM eliminates the friction between finding a lead and closing a deal.
 
 ---
 
@@ -30,7 +30,7 @@ graph TD
     Client[🖥️ React Frontend] -->|REST API| Server[⚙️ Express Server Node v24]
     Server -->|Sync Persistence| DB[(🗄️ Local SQLite)]
     Server -->|Auth| OAuth[🔐 Google OAuth]
-    Client -->|AI Prospecting| AI[🧠 Gemini API]
+    Client -->|AI Prospecting| AI[🧠 OpenAI API]
     Client -->|Lead Discovery| Search[🔍 Tavily API]
 
     classDef tech fill:#1e1e2e,stroke:#89b4fa,stroke-width:2px,color:#cdd6f4;
@@ -41,7 +41,7 @@ graph TD
 - **Frontend**: React 19, TailwindCSS, Framer Motion (UI Animations), Lucide React (Icons)
 - **Backend**: Express.js, TypeScript, Node.js v24
 - **Database**: `node:sqlite` (Built-in Local-first DB, WAL mode)
-- **Integrations**: Gemini API (AI), Tavily (Search), Google OAuth (Authentication)
+- **Integrations**: OpenAI-compatible API (AI), Tavily (Search), Google OAuth (Authentication)
 
 ---
 
@@ -61,7 +61,7 @@ graph TD
 
 ### Prerequisites
 - **Node.js** (v24+ recommended for native SQLite support)
-- API Keys for **Gemini AI** and **Tavily** (optional but recommended)
+- API Keys for an **OpenAI-compatible LLM** and **Tavily** (optional but recommended)
 
 ### Installation
 
@@ -73,7 +73,7 @@ graph TD
 2. **Configure your Environment:**
    Copy the `.env.example` file to `.env` and fill in your credentials.
    ```env
-   GEMINI_API_KEY="your_gemini_api_key"
+   OPENAI_API_KEY="your_openai_api_key"
    TAVILY_API_KEY="your_tavily_api_key"
    GOOGLE_CLIENT_ID="your_google_oauth_id"
    GOOGLE_CLIENT_SECRET="your_google_oauth_secret"

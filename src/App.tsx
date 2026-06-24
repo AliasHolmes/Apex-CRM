@@ -354,7 +354,7 @@ export default function App() {
         id: `lead-${Date.now()}`,
         profile,
         stage: 'SCRAPED',
-        notes: 'Profile automatically harvested and structured by Gemini Search Scraper.',
+        notes: 'Profile automatically harvested and structured by AI Search Scraper.',
         createdAt: new Date().toISOString(),
         tags: ['Scraped Lead', profile.industry || 'Tech'],
         compositeScore,

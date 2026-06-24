@@ -793,11 +793,6 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
                             <Linkedin className="w-3.5 h-3.5" />
                           </a>
                         )}
-                        {lead.qualificationMode === 'quality' && (
-                          <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 text-[9px]">
-                            Quality
-                          </Badge>
-                        )}
                       </div>
                     </TableCell>
                   <TableCell className="text-muted-foreground truncate max-w-[200px]" title={lead.profile.currentTitle}>

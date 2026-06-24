@@ -48,7 +48,6 @@ export interface LinkedInProfile {
   enrichmentGaps?: string[]; // New
 }
 
-export type DiscoveryMode = 'fast' | 'quality';
 
 export interface BuyingSignal {
   type: 'LEAD_FLOW' | 'OPERATIONAL_COMPLEXITY' | 'GROWTH_SIGNAL' | 'DECISION_MAKER' | 'DISQUALIFIER';
@@ -83,9 +82,9 @@ export interface DecisionMakerVerification {
 export interface QualifiedLeadProfile extends LinkedInProfile {
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
-  qualificationMode?: DiscoveryMode;
+  sourceProvider?: 'tavily' | 'linkedin-mcp' | 'manual' | 'import';
   scoreOverride?: number;
-  qualityReasons?: string[];
+  evidenceReasons?: string[];
 }
 
 export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';
@@ -112,8 +111,8 @@ export interface Lead {
   buyingSignalsDetected?: string[];
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
-  qualificationMode?: DiscoveryMode;
-  qualityReasons?: string[];
+  sourceProvider?: 'tavily' | 'linkedin-mcp' | 'manual' | 'import';
+  evidenceReasons?: string[];
 }
 
 export interface ScrapingTask {

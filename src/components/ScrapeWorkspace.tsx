@@ -18,7 +18,7 @@ import {
   History,
   FileSpreadsheet
 } from 'lucide-react';
-import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile, DiscoveryMode } from '../types';
+import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -44,9 +44,6 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
   // Find Leads inputs
   const [findQuery, setFindQuery] = useState('Immigration Attorneys in Memphis');
   const [leadLimit, setLeadLimit] = useState<number>(5);
-  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('fast');
-  const [qualityResultSummary, setQualityResultSummary] = useState<string[]>([]);
-  const [qualityRejectedExamples, setQualityRejectedExamples] = useState<any[]>([]);
   
   const [loading, setLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -96,7 +93,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [loading, activeTab, discoveryMode]);
+  }, [loading, activeTab]);
 
   useEffect(() => {
     const checkAuth = () => {
@@ -195,8 +192,6 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
-    setQualityResultSummary([]);
-    setQualityRejectedExamples([]);
     setSourceLinks([]);
 
     const taskId = handleTaskAdd('url', urlInput);
@@ -254,8 +249,6 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
-    setQualityResultSummary([]);
-    setQualityRejectedExamples([]);
 
     const taskId = handleTaskAdd('paste', 'Raw Paste Text Extract');
 
@@ -308,8 +301,6 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
-    setQualityResultSummary([]);
-    setQualityRejectedExamples([]);
 
     const taskId = handleTaskAdd('search', findQuery);
 
@@ -328,7 +319,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
         excludeUrlsAndEmails.push(l.profile.fullName);
       });
 
-      const response = await fetch(discoveryMode === 'quality' ? '/api/find-quality-leads' : '/api/find-leads', {
+      const response = await fetch('/api/find-leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -352,20 +343,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
 
       onBulkLeadsAdded(fetchedLeads);
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
-      if (discoveryMode === 'quality') {
-        const stats = data.stats || {};
-        setQualityResultSummary([
-          `${stats.companiesFound || fetchedLeads.length * 4} companies discovered from your scope`,
-          `${stats.websitesScanned || fetchedLeads.length * 3} websites scanned for booking/intake/admin pain`,
-          `${stats.qualifiedCompanies || fetchedLeads.length} companies passed the 2-signal rule`,
-          `${stats.rejectedCompanies || 0} weak companies rejected`,
-          `${fetchedLeads.length} founder/operator decision-makers verified`
-        ]);
-        setQualityRejectedExamples(data.rejectedCompanies || []);
-        setSuccessMsg(`Quality discovery complete: ${fetchedLeads.length} verified decision-maker leads added after company pain scoring.`);
-      } else {
-        setSuccessMsg(`Fast discovery complete: Discovered ${fetchedLeads.length} matching profiles with the original lead finder.`);
-      }
+      setSuccessMsg(`Discovery complete: ${fetchedLeads.length} LinkedIn-indexed profiles added to your CRM.`);
     } catch (err: any) {
       console.error(err);
       setErrorCode(err.message || 'Lead lookup failed.');
@@ -426,8 +404,8 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
                 </div>
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
                 💡 <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
-                Instead, our system connects via <strong>Google Search Grounding</strong> to extract details from public indexes 
-                and references for the target profile or name, then consolidates the facts into a highly structured CRM record instantly.
+                Instead, Apex searches public LinkedIn-indexed results through <strong>Tavily</strong>, then extracts available facts 
+                and references for the target profile or name before consolidating them into a structured CRM record.
               </p>
             </form>
             </TabsContent>
@@ -550,34 +528,8 @@ Everything else is noise.`)}
                       className="w-full font-mono text-xs resize-y leading-relaxed"
                     />
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {[
-                      {
-                        id: 'fast' as DiscoveryMode,
-                        title: 'Fast Mode',
-                        desc: 'Original finder: returns matching people quickly.'
-                      },
-                      {
-                        id: 'quality' as DiscoveryMode,
-                        title: 'Quality Mode',
-                        desc: 'Company-first: scans pain signals, then verifies decision-makers.'
-                      }
-                    ].map(mode => (
-                      <button
-                        key={mode.id}
-                        type="button"
-                        disabled={loading}
-                        onClick={() => setDiscoveryMode(mode.id)}
-                        className={`rounded-xl border p-3 text-left transition-all cursor-pointer ${
-                          discoveryMode === mode.id
-                            ? 'border-indigo-500 bg-indigo-500/10 text-indigo-200 shadow-sm'
-                            : 'border-slate-800 bg-slate-950/50 text-slate-400 hover:text-slate-200 hover:border-slate-700'
-                        }`}
-                      >
-                        <span className="block text-xs font-black">{mode.title}</span>
-                        <span className="block text-[10px] leading-relaxed mt-1">{mode.desc}</span>
-                      </button>
-                    ))}
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-[11px] text-indigo-200 leading-relaxed">
+                    Tavily scouts public LinkedIn-indexed results first. LinkedIn MCP enrichment will plug into this same discovery path as the verification layer.
                   </div>
 
                   <div className="flex justify-end">
@@ -587,12 +539,10 @@ Everything else is noise.`)}
                     >
                       {loading ? (
                         <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                      ) : discoveryMode === 'quality' ? (
-                        <Database className="w-4 h-4 mr-2" />
                       ) : (
                         <Globe className="w-4 h-4 mr-2" />
                       )}
-                      {discoveryMode === 'quality' ? 'Find Quality Leads' : 'Find Real Leads'}
+                      Find LinkedIn Leads
                     </Button>
                   </div>
                 </div>
@@ -661,15 +611,7 @@ Everything else is noise.`)}
               </div>
 
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                {discoveryMode === 'quality' ? (
-                  <>
-                    <strong>Quality Mode:</strong> Discovers companies first, scans websites for at least two buying signals, rejects weak accounts, verifies a founder/operator-level decision-maker, then adds only those contacts to your CRM.
-                  </>
-                ) : (
-                  <>
-                    <strong>Fast Mode:</strong> Uses the original lead finder to discover matching people quickly, synthesize their public profile details, create derived corporate emails, and place them directly into your pipeline.
-                  </>
-                )}
+                <strong>LinkedIn Discovery:</strong> Tavily searches public LinkedIn-indexed snippets, Apex extracts structured candidate records, and the next LinkedIn MCP layer can verify/enrich selected profiles through your logged-in session.
               </p>
             </form>
             </TabsContent>
@@ -742,27 +684,6 @@ Everything else is noise.`)}
               <Check className="w-5 h-5 text-emerald-400 shrink-0" />
               <div>
                 <p className="font-semibold text-emerald-200">{successMsg}</p>
-                {qualityResultSummary.length > 0 && (
-                  <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {qualityResultSummary.map((item, i) => (
-                      <div key={i} className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-100 text-[11px] px-2.5 py-2 rounded-md font-semibold">
-                        {item}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {qualityRejectedExamples.length > 0 && (
-                  <div className="mt-3 border border-amber-500/20 bg-amber-500/5 rounded-xl p-3">
-                    <span className="text-xs font-bold text-amber-300 block mb-2">Rejected examples</span>
-                    <div className="space-y-2">
-                      {qualityRejectedExamples.slice(0, 3).map((item, i) => (
-                        <div key={i} className="text-[11px] text-amber-100/90">
-                          <strong>{item.companyName}</strong>: {item.reason} - {item.evidence}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
                 {sourceLinks.length > 0 && (
                   <div className="mt-2.5">
                     <span className="text-xs font-semibold text-emerald-400 block mb-1">Sources Grounding References:</span>

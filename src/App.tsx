@@ -360,30 +360,29 @@ export default function App() {
       }
 
       const newLeads = uniqueProfiles.map((p, i) => {
-        const isQualityLead = p.qualificationMode === 'quality' && p.companyAccount;
+        const hasAccountContext = !!p.companyAccount;
         const compositeScore = p.scoreOverride || p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
-        const predictiveScore = Math.min(96, Math.floor(compositeScore * (isQualityLead ? 0.96 : 0.9)));
+        const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
         return {
           id: `lead-bulk-${Date.now()}-${i}`,
           profile: p,
           stage: 'SCRAPED' as Lead['stage'],
-          notes: isQualityLead
-            ? `Quality-mode lead. ${p.companyAccount?.painSummary || 'Company qualified through website buying signals before decision-maker creation.'}`
-            : 'Bulk discovered via AI Search Discovery parameters.',
+          notes: hasAccountContext
+            ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Ready for LinkedIn MCP verification and enrichment.'}`
+            : 'Discovered via Tavily LinkedIn-indexed search.',
           createdAt: new Date().toISOString(),
-          tags: isQualityLead
-            ? ['Quality Mode', 'Company Pain Verified', p.industry || 'Tech']
-            : ['Discovered', p.industry || 'Tech'],
+          tags: hasAccountContext
+            ? ['LinkedIn Indexed', 'Account Context', p.industry || 'Tech']
+            : ['LinkedIn Indexed', p.industry || 'Tech'],
           compositeScore,
           predictiveScore,
           companyAccount: p.companyAccount,
           decisionMakerVerification: p.decisionMakerVerification,
-          qualificationMode: p.qualificationMode || 'fast',
-          qualityReasons: p.qualityReasons,
+          sourceProvider: p.sourceProvider || 'tavily',
+          evidenceReasons: p.evidenceReasons,
           buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
         };
       });
-
       return [...newLeads, ...currentLeads];
     });
   };

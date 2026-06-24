@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
+import { DatabaseSync } from 'node:sqlite';
 const Type = {
   STRING: 'STRING',
   NUMBER: 'NUMBER',
@@ -27,11 +28,117 @@ const PORT = 3000;
 app.use(express.json({ limit: '10mb' }));
 
 const AUTH_FILE = path.join(process.cwd(), '.apex_auth.json');
+const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
+const LEADS_DB_PATH = process.env.APEX_DB_PATH
+  ? path.resolve(process.env.APEX_DB_PATH)
+  : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : 'http://localhost:3000/api/auth/google/callback';
 let codeVerifierCache = '';
+let leadsDb: DatabaseSync | null = null;
 
+function getLeadsDb() {
+  if (!leadsDb) {
+    fs.mkdirSync(path.dirname(LEADS_DB_PATH), { recursive: true });
+    leadsDb = new DatabaseSync(LEADS_DB_PATH);
+    leadsDb.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA foreign_keys = ON;
+
+      CREATE TABLE IF NOT EXISTS leads (
+        id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        created_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS app_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  return leadsDb;
+}
+
+function normalizeIncomingLeads(input: unknown) {
+  if (!Array.isArray(input)) {
+    return null;
+  }
+
+  return input
+    .filter((lead): lead is Record<string, any> => !!lead && typeof lead === 'object')
+    .map((lead) => ({
+      ...lead,
+      id: typeof lead.id === 'string' && lead.id.trim() ? lead.id : crypto.randomUUID(),
+      createdAt: typeof lead.createdAt === 'string' && lead.createdAt ? lead.createdAt : new Date().toISOString()
+    }));
+}
+
+function readStoredLeads() {
+  const rows = getLeadsDb()
+    .prepare('SELECT payload FROM leads ORDER BY datetime(COALESCE(created_at, updated_at)) DESC')
+    .all() as { payload: string }[];
+
+  return rows
+    .map((row) => {
+      try {
+        return JSON.parse(row.payload);
+      } catch (error) {
+        console.warn('Skipping unreadable lead record from SQLite:', error);
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function hasLeadStoreBeenInitialized() {
+  const row = getLeadsDb()
+    .prepare("SELECT value FROM app_meta WHERE key = 'leads_initialized'")
+    .get() as { value: string } | undefined;
+
+  return row?.value === 'true';
+}
+function replaceStoredLeads(leads: Record<string, any>[]) {
+  const db = getLeadsDb();
+  const now = new Date().toISOString();
+  const insertLead = db.prepare(`
+    INSERT INTO leads (id, payload, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('DELETE FROM leads').run();
+
+    for (const lead of leads) {
+      insertLead.run(
+        lead.id,
+        JSON.stringify(lead),
+        typeof lead.createdAt === 'string' ? lead.createdAt : now,
+        now
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO app_meta (key, value, updated_at)
+      VALUES ('leads_initialized', 'true', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(now);
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('SQLite rollback failed:', rollbackError);
+    }
+    throw error;
+  }
+}
 export function loadAuth() {
   if (fs.existsSync(AUTH_FILE)) {
     try { return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf-8')); } catch { }
@@ -857,6 +964,29 @@ ${customPart}`;
 // API Endpoints
 // -----------------------------------------------------------------------------
 
+app.get('/api/leads', (req, res): any => {
+  try {
+    res.json({ leads: readStoredLeads(), initialized: hasLeadStoreBeenInitialized() });
+  } catch (error: any) {
+    console.error('Failed to read leads from SQLite:', error);
+    res.status(500).json({ error: error.message || 'Failed to read leads' });
+  }
+});
+
+app.put('/api/leads', (req, res): any => {
+  try {
+    const leads = normalizeIncomingLeads(req.body?.leads);
+    if (!leads) {
+      return res.status(400).json({ error: 'Expected a leads array.' });
+    }
+
+    replaceStoredLeads(leads);
+    res.json({ success: true, count: leads.length });
+  } catch (error: any) {
+    console.error('Failed to persist leads to SQLite:', error);
+    res.status(500).json({ error: error.message || 'Failed to persist leads' });
+  }
+});
 // Active Health check
 app.get('/api/health', (req, res) => {
   res.json({

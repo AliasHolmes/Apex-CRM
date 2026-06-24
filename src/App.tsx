@@ -42,7 +42,6 @@ import LeadTable from './components/LeadTable';
 import OutreachStudio from './components/OutreachStudio';
 import CrmOverview from './components/CrmOverview';
 
-import { getLeadsIDB, setLeadsIDB } from './utils/idb';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from './utils/leadDedupe';
 
 // Define the high-fidelity pre-seed leads
@@ -209,6 +208,37 @@ const seedLeads: Lead[] = [
     tier: 'TIER 3: WATCH'
   }
 ];
+const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
+
+type StoredLeadsResponse = {
+  leads: Lead[];
+  initialized: boolean;
+};
+
+async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
+  const response = await fetch('/api/leads');
+  if (!response.ok) {
+    throw new Error(`Failed to load leads: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return {
+    leads: Array.isArray(data.leads) ? data.leads : [],
+    initialized: Boolean(data.initialized)
+  };
+}
+
+async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
+  const response = await fetch('/api/leads', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ leads })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to save leads: ${response.status}`);
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'workspace' | 'pipeline' | 'inventory' | 'outreach'>('overview');
@@ -244,7 +274,7 @@ export default function App() {
   const [manualIndustry, setManualIndustry] = useState('Tech');
   const [manualSummary, setManualSummary] = useState('');
 
-  // 1. Load initial CRM leads dataset from IndexedDB or fall back to seed data
+  // 1. Load initial CRM leads dataset from local SQLite, migrating legacy browser storage once.
   useEffect(() => {
     const sanitizeLeads = (loadedLeads: any[]) => {
       return loadedLeads.map(l => ({
@@ -253,58 +283,51 @@ export default function App() {
       }));
     };
 
-    getLeadsIDB()
-      .then(stored => {
-        if (stored) {
-          setLeads(sanitizeLeads(stored));
-        } else {
-          try {
-            const legacyStored = localStorage.getItem('linkedin_scraper_crm_leads');
-            if (legacyStored) {
-              const parsed = sanitizeLeads(JSON.parse(legacyStored));
-              setLeads(parsed);
-              setLeadsIDB(parsed).catch(console.error);
-              setIsHydrated(true);
-              return;
-            }
-          } catch(e) {}
-          
-          setLeads(seedLeads);
-          setLeadsIDB(seedLeads).catch(console.error);
+    const loadLegacyBrowserLeads = () => {
+      try {
+        const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
+        if (!legacyStored) return null;
+
+        const parsed = JSON.parse(legacyStored);
+        return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
+      } catch (error) {
+        console.warn('Legacy browser lead migration failed:', error);
+        return null;
+      }
+    };
+
+    const hydrateLeads = async () => {
+      try {
+        const stored = await loadLeadsFromSqliteBackend();
+        if (stored.initialized) {
+          setLeads(sanitizeLeads(stored.leads));
+          return;
         }
+
+        const initialLeads = loadLegacyBrowserLeads() || sanitizeLeads(seedLeads);
+        setLeads(initialLeads);
+        persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
+      } catch (error) {
+        console.error('SQLite lead load failed:', error);
+        setLeads(loadLegacyBrowserLeads() || sanitizeLeads(seedLeads));
+      } finally {
         setIsHydrated(true);
-      })
-      .catch(e => {
-        console.error('IndexedDB load failed:', e);
-        setLeads(seedLeads);
-        setIsHydrated(true);
-      });
+      }
+    };
+
+    hydrateLeads();
   }, []);
 
-  // 2. Persist active leads array whenever state updates
+  // 2. Persist active leads array to the local SQLite backend whenever state updates.
   useEffect(() => {
-    // Only attempt to persist after the component mounts properly.
     if (!isHydrated) return;
 
-    const timer = setTimeout(async () => {
-      // Always sync to LocalStorage first as a guaranteed fallback in case IDB hangs or crashes
-      try {
-        localStorage.setItem('linkedin_scraper_crm_leads', JSON.stringify(leads));
-      } catch(lsError) {
-        console.error('LocalStorage sync failed', lsError);
-      }
-      
-      try {
-        // Don't strongly await it to prevent blocking thread if IDB system hangs
-        setLeadsIDB(leads).catch(e => console.warn('IDB failed', e));
-      } catch(e) {
-        console.warn('IDB failed exception', e);
-      }
-    }, 100); 
-    
+    const timer = setTimeout(() => {
+      persistLeadsToSqliteBackend(leads).catch(error => console.warn('SQLite persist failed:', error));
+    }, 100);
+
     return () => clearTimeout(timer);
   }, [leads, isHydrated]);
-
   const saveLeadsToStorage = (updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
     setLeads(prev => {
       return typeof updater === 'function' ? updater(prev) : updater;

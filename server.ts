@@ -43,9 +43,21 @@ let mcpLinkedinClient: Client | null = null;
 
 async function initMcpClients() {
   try {
+    const isWin = process.platform === 'win32';
+    const profilePath = path.join(process.cwd(), '.apex-data', 'linkedin-profile');
+    
+    // Try to find mcp-server-linkedin executable. If it's not in the system PATH, 
+    // fallback to the common pipx/uv installation path used by Antigravity.
+    let mcpCommand = isWin ? 'mcp-server-linkedin.exe' : 'mcp-server-linkedin';
+    const fallbackPath = path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'bin', mcpCommand);
+    
+    if (fs.existsSync(fallbackPath)) {
+      mcpCommand = fallbackPath;
+    }
+
     const transport = new StdioClientTransport({
-      command: 'node',
-      args: ['C:\\Users\\pc\\.gemini\\antigravity\\bin\\linkedin-mcp-proxy.js']
+      command: mcpCommand,
+      args: ['--user-data-dir', profilePath]
     });
 
     const client = new Client(
@@ -55,9 +67,10 @@ async function initMcpClients() {
 
     await client.connect(transport);
     mcpLinkedinClient = client;
-    console.log('[MCP] Connected to LinkedIn MCP server.');
+    console.log('[MCP] Connected to standalone LinkedIn MCP server.');
+    console.log(`[MCP] Using local session profile: ${profilePath}`);
   } catch (err) {
-    console.error('[MCP] Failed to connect to LinkedIn MCP server:', err);
+    console.error('[MCP] Failed to connect to LinkedIn MCP server. Make sure it is installed (npm run install:mcp):', err);
   }
 }
 

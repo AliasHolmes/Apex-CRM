@@ -67,7 +67,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
       const logPool = [
         `🧩 INTENT ANALYSIS: Found complex spec criteria. Extracted Job Titles & industries.`,
         `🎯 COMBINATIONS INDEXED: Checking overlap across specified priority niches (HVAC, Dental, etc.).`,
-        `🚀 FORMULATING GROUNDING TARGETS: Compiling 3-4 specialized Google search query permutations.`,
+        `🚀 FORMULATING SEARCH TARGETS: Compiling 3-4 specialized Tavily query permutations.`,
         `🌐 RUNNING BATCH 1: Querying public indices for targeted parameters...`,
         `📊 DATA RETRIEVED: Found initial candidates. Extracting public LinkedIn summaries and bios.`,
         `⚖️ NICHE ANALYZER: Evaluating representation metrics. Checking for index bias...`,
@@ -340,7 +340,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Google Grounded server returned error ${response.status}`);
+        throw new Error(errData.error || `Tavily search server returned error ${response.status}`);
       }
 
       const data = await response.json();

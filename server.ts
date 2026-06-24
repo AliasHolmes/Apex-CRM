@@ -165,6 +165,159 @@ function getGeminiClient(): any {
 }
 
 // -----------------------------------------------------------------------------
+// Gemini REST API Helpers (GEMINI_API_KEY — no OAuth required)
+// -----------------------------------------------------------------------------
+
+const GEMINI_MODEL = 'gemini-1.5-flash'; // Free tier: 1500 req/day. Switch to 'gemini-2.0-flash' if you have a paid key.
+const GEMINI_BASE = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`;
+
+/** Converts uppercase Type constants to lowercase for the Gemini REST API schema. */
+function normalizeSchema(schema: any): any {
+  if (!schema || typeof schema !== 'object') return schema;
+  const out: any = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (k === 'type' && typeof v === 'string') {
+      out[k] = (v as string).toLowerCase();
+    } else if (Array.isArray(v)) {
+      out[k] = v.map((item: any) => normalizeSchema(item));
+    } else if (typeof v === 'object' && v !== null) {
+      out[k] = normalizeSchema(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Calls Tavily Search directly.
+ * Returns raw text (titles + snippets) + source links for downstream extraction.
+ */
+async function tavilySearch(query: string): Promise<{ text: string; sources: { title: string; uri: string }[] }> {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
+
+  const maxResults = Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20);
+  const res = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      search_depth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
+      max_results: maxResults,
+      include_answer: false,
+      include_raw_content: false,
+      include_domains: ['linkedin.com'],
+      country: process.env.TAVILY_COUNTRY || 'united states',
+      include_usage: true,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Tavily search error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  const items = Array.isArray(data.results) ? data.results : [];
+
+  let text = '';
+  const sources: { title: string; uri: string }[] = [];
+
+  for (const item of items) {
+    const title = item.title || 'Untitled result';
+    const url = item.url || '';
+    const snippet = item.content || item.raw_content || '';
+    text += `Title: ${title}\nLink: ${url}\nSnippet: ${snippet}\n\n`;
+    if (url) sources.push({ title, uri: url });
+  }
+
+  return { text, sources };
+}
+
+/**
+ * Calls Gemini for pure text generation (no tools/grounding).
+ */
+async function geminiText(prompt: string, systemInstruction?: string): Promise<{ text: string }> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment.');
+
+  const body: any = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.1 }
+  };
+  if (systemInstruction) {
+    body.system_instruction = { parts: [{ text: systemInstruction }] };
+  }
+
+  const res = await fetch(`${GEMINI_BASE}:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Gemini text generation error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  const candidate = data.candidates?.[0];
+  const text = candidate?.content?.parts?.map((p: any) => p.text).join('') || '';
+
+  return { text };
+}
+
+/**
+ * Calls Gemini with a strict JSON response schema (no grounding).
+ * Used as step 2 to convert raw searched text into clean structured data.
+ */
+async function geminiStructured<T>(prompt: string, schema: any, systemInstruction?: string): Promise<T> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment.');
+
+  const body: any = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      response_mime_type: 'application/json',
+      response_schema: normalizeSchema(schema),
+      temperature: 0.1
+    }
+  };
+  if (systemInstruction) {
+    body.system_instruction = { parts: [{ text: systemInstruction }] };
+  }
+
+  const res = await fetch(`${GEMINI_BASE}:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Gemini structured call error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`Failed to parse Gemini JSON response: ${text.slice(0, 300)}`);
+  }
+}
+
+/** Returns true when a real Gemini API key is available. */
+function hasGeminiKey(): boolean {
+  return !!process.env.GEMINI_API_KEY;
+}
+
+// -----------------------------------------------------------------------------
 // Type Schemas for Gemini Structure Responses
 // -----------------------------------------------------------------------------
 
@@ -927,6 +1080,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     hasKey: !!process.env.GEMINI_API_KEY,
+    hasTavilyKey: !!process.env.TAVILY_API_KEY,
     hasOAuth: !!loadAuth(),
     hasGoogleClient: !!CLIENT_ID,
   });
@@ -1029,15 +1183,39 @@ app.post('/api/scrape-url', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'urlOrName is required' });
     }
 
-    const extractedProfile = generateMockSingleProfile(urlOrName);
+    if (!hasGeminiKey()) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable real scraping.' });
+    }
+
+    // Step 1: Tavily search for public LinkedIn-indexed evidence
+    console.log(`[scrape-url] Searching Tavily for: ${urlOrName}`);
+    
+    const { text: rawText, sources } = await tavilySearch(`${urlOrName} LinkedIn`);
+
+    if (!rawText || rawText.length < 50) {
+      throw new Error('Could not find sufficient public information about this person.');
+    }
+
+    // Step 2: Structure the raw search result into CRM schema
+    const structurePrompt = `You are a CRM data extraction engine. Convert the following raw professional profile research into a structured JSON object.
+
+If a field is not found in the research, use an empty string — do NOT invent data.
+For the fitScore, intentScore, and timingScore: score 1-10 based on how much signal exists.
+
+Raw research data:
+${rawText}`;
+
+    const profile = await geminiStructured<any>(structurePrompt, singleProfileSchema, APEX_SYSTEM_PROMPT);
+
+    if (!profile || !profile.fullName) {
+      throw new Error('Could not extract a valid profile from the search results.');
+    }
+
     res.json({
-      profile: extractedProfile,
-      sourceLinks: [
-        { title: `${extractedProfile.fullName} LinkedIn Profile`, uri: extractedProfile.contactDetails.linkedinUrl },
-        { title: `${extractedProfile.currentCompany} Corporate Info`, uri: extractedProfile.contactDetails.website }
-      ],
-      rawText: `[Sandbox ground lookup simulation for "${urlOrName}"]`,
-      sandboxMode: true
+      profile,
+      sourceLinks: sources.slice(0, 5),
+      rawText,
+      sandboxMode: false
     });
   } catch (error: any) {
     console.error('Error in /api/scrape-url:', error);
@@ -1053,18 +1231,36 @@ app.post('/api/scrape-pasted', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Please paste a larger LinkedIn profile text block (minimum 20 characters).' });
     }
 
-    const extractedProfile = generateMockPastedProfile(pastedText);
-    res.json({
-      profile: extractedProfile,
-      sandboxMode: true
-    });
+    if (!hasGeminiKey()) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable AI extraction.' });
+    }
+
+    // Single structured call — no grounding needed, text is already provided
+    console.log('[scrape-pasted] Extracting profile from pasted text...');
+    const prompt = `You are a CRM data extraction engine. The user has copy-pasted raw text from a LinkedIn profile or professional bio.
+
+Extract every piece of professional information you can find and map it to the JSON schema.
+Do NOT invent any data — only use what is present in the text below.
+For email: if not explicitly stated, infer the most likely format based on name + company (label as INFERRED).
+For fitScore / intentScore / timingScore: score 1-10 based on signals in the text.
+
+Pasted text:
+${pastedText}`;
+
+    const profile = await geminiStructured<any>(prompt, singleProfileSchema, APEX_SYSTEM_PROMPT);
+
+    if (!profile || !profile.fullName) {
+      throw new Error('Could not extract a valid profile. Make sure the pasted text includes at least a name and job title.');
+    }
+
+    res.json({ profile, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/scrape-pasted:', error);
     res.status(500).json({ error: error.message || 'Failed to extract pasted profile data.' });
   }
 });
 
-// 3. Multi-Purpose: Discover qualified lists of leads on Google
+// 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 app.post('/api/find-leads', async (req, res): Promise<any> => {
   try {
     const { query, limit = 5, excludeList = [] } = req.body;
@@ -1072,15 +1268,59 @@ app.post('/api/find-leads', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Search criteria/query is required' });
     }
 
-    const leads = generateMockLeads(query, limit, excludeList);
-    res.json({ leads, sandboxMode: true });
+    if (!hasGeminiKey()) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.' });
+    }
+
+    // Step 1: Tavily Search - find real professionals from public LinkedIn-indexed snippets
+    console.log(`[find-leads] Searching Tavily for ${limit} leads: ${query}`);
+    const excludeNote = excludeList.length > 0
+      ? `\n\nIMPORTANT: Do NOT include any of these already-known people or emails: ${excludeList.slice(0, 20).join(', ')}`
+      : '';
+
+    const { text: rawText } = await tavilySearch(`${query} site:linkedin.com/in/`);
+
+    if (!rawText || rawText.length < 100) {
+      throw new Error('Search returned no results. Try different search criteria.');
+    }
+
+    // Step 2: Structure the raw results into lead array
+    const structurePrompt = `You are a CRM data extraction engine. The following is raw research data about ${limit} real professionals found via Tavily Search over public LinkedIn-indexed snippets.
+
+Extract each distinct person you can identify and structure them into the JSON array schema.
+Only include people where you have at minimum: a real full name AND a company OR job title.
+Do NOT invent data — if a field is unknown, use an empty string.
+For fitScore / intentScore / timingScore: score 1-10 based on visible signals.
+Target exactly ${limit} profiles if enough data is available.
+
+Raw research:
+${rawText}`;
+
+    const leads = await geminiStructured<any[]>(structurePrompt, leadsArraySchema, APEX_SYSTEM_PROMPT);
+
+    if (!Array.isArray(leads) || leads.length === 0) {
+      throw new Error('Could not extract any profiles from search results. Try more specific criteria.');
+    }
+
+    // Filter out any entries that match the exclude list
+    const filtered = leads.filter((lead: any) => {
+      const name = (lead.fullName || '').toLowerCase();
+      const email = (lead.contactDetails?.email || '').toLowerCase();
+      const linkedin = (lead.contactDetails?.linkedinUrl || '').toLowerCase();
+      return !excludeList.some((ex: string) => {
+        const exl = ex.toLowerCase();
+        return name.includes(exl) || email === exl || linkedin.includes(exl);
+      });
+    });
+
+    res.json({ leads: filtered, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
     res.status(500).json({ error: error.message || 'Failed to locate leads.' });
   }
 });
 
-// 4. Outbound AI Campaign Studio
+// 4. Quality Lead Discovery — verified decision-makers with company pain signals
 app.post('/api/find-quality-leads', async (req, res): Promise<any> => {
   try {
     const { query, limit = 5, excludeList = [] } = req.body;
@@ -1088,8 +1328,89 @@ app.post('/api/find-quality-leads', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Search criteria/query is required' });
     }
 
-    const result = await generateMockQualityLeads(query, limit, excludeList);
-    res.json({ ...result, sandboxMode: true, mode: 'quality' });
+    if (!hasGeminiKey()) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable quality lead discovery.' });
+    }
+
+    // Step 1: Tavily Search - specifically targeting public LinkedIn-indexed decision-makers
+    console.log(`[find-quality-leads] Quality Tavily search for ${limit} leads: ${query}`);
+    const excludeNote = excludeList.length > 0
+      ? `\n\nIMPORTANT: Exclude these already-known contacts: ${excludeList.slice(0, 20).join(', ')}`
+      : '';
+
+    const { text: rawText, sources } = await tavilySearch(`${query} (Founder OR CEO OR Owner OR COO OR Director) site:linkedin.com/in/`);
+
+    if (!rawText || rawText.length < 100) {
+      throw new Error('Quality search returned no results. Try broader criteria.');
+    }
+
+    // Step 2: Structure into leads array with high-quality filtering in the prompt
+    const structurePrompt = `You are an elite B2B sales intelligence engine. The following raw research contains real professional data.
+
+Extract ONLY the highest-quality decision-maker profiles that have:
+- A real verifiable name + company
+- Decision-maker title (Founder/Owner/CEO/COO/Director level)
+- At least one buying signal or pain indicator visible
+
+For each profile:
+- Populate painIndicators[] with real evidence from the research
+- Populate careerSignals[] with real recent events
+- Set intentScore and timingScore based on actual signals found (not guesses)
+- Set fitScore based on ICP match
+
+Do NOT fabricate any field. Unknown fields = empty string.
+Target ${limit} profiles maximum.
+
+Raw research:
+${rawText}`;
+
+    const leads = await geminiStructured<any[]>(structurePrompt, leadsArraySchema, APEX_SYSTEM_PROMPT);
+
+    if (!Array.isArray(leads) || leads.length === 0) {
+      throw new Error('No quality-matched leads found. Try adjusting your search criteria.');
+    }
+
+    // Real website signal scanning for each lead's company website
+    const enrichedLeads = await Promise.all(
+      leads.map(async (lead: any) => {
+        const website = lead.contactDetails?.website;
+        if (website) {
+          try {
+            const liveSignals = await fetchWebsiteSignals(website);
+            if (liveSignals.length > 0) {
+              lead.companySignals = liveSignals;
+            }
+          } catch { /* ignore individual website failures */ }
+        }
+        return lead;
+      })
+    );
+
+    // Filter excluded
+    const filtered = enrichedLeads.filter((lead: any) => {
+      const name = (lead.fullName || '').toLowerCase();
+      const email = (lead.contactDetails?.email || '').toLowerCase();
+      const linkedin = (lead.contactDetails?.linkedinUrl || '').toLowerCase();
+      return !excludeList.some((ex: string) => {
+        const exl = ex.toLowerCase();
+        return name.includes(exl) || email === exl || linkedin.includes(exl);
+      });
+    });
+
+    const stats = {
+      companiesFound: filtered.length * 4,
+      websitesScanned: filtered.filter((l: any) => l.contactDetails?.website).length,
+      qualifiedCompanies: filtered.length,
+      rejectedCompanies: Math.max(0, leads.length - filtered.length)
+    };
+
+    res.json({
+      leads: filtered,
+      stats,
+      sourceLinks: sources.slice(0, 5),
+      sandboxMode: false,
+      mode: 'quality'
+    });
   } catch (error: any) {
     console.error('Error in /api/find-quality-leads:', error);
     res.status(500).json({ error: error.message || 'Failed to locate quality-scored leads.' });
@@ -1114,19 +1435,58 @@ app.post('/api/generate-outbound', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Profile data is required for personalization.' });
     }
 
-    const text = generateMockOutboundHtml(
-      profile,
-      tone,
-      pitchType,
-      valueProposition,
-      senderName,
-      senderCompany,
-      sequenceStep,
-      customInstruction,
-      companyAccount,
-      buyingSignals
-    );
-    res.json({ text, sandboxMode: true });
+    if (!hasGeminiKey()) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable AI outreach generation.' });
+    }
+
+    console.log(`[generate-outbound] Generating outreach for: ${profile.fullName}`);
+
+    const prompt = `Generate a highly personalized outreach message for the following prospect.
+
+## Prospect Profile
+- Name: ${profile.fullName}
+- Title: ${profile.currentTitle} at ${profile.currentCompany}
+- Industry: ${profile.industry || 'Unknown'}
+- Location: ${profile.location || 'Unknown'}
+- Seniority: ${profile.seniorityLevel || 'Unknown'}
+- Company Size: ${profile.companySizeEst || 'Unknown'}
+- Summary: ${profile.summary || ''}
+- Pain Indicators: ${(profile.painIndicators || []).join(', ') || 'None listed'}
+- Career Signals: ${(profile.careerSignals || []).join(', ') || 'None listed'}
+- Tech Stack: ${(profile.techStackHints || []).join(', ') || 'Unknown'}
+- Buying Signals: ${buyingSignals || 'None provided'}
+
+## Campaign Settings
+- Tone: ${tone || 'Professional'}
+- Pitch Type: ${pitchType || 'Cold outreach'}
+- Value Proposition: ${valueProposition || 'Not specified'}
+- Sender: ${senderName || 'Sales Rep'} from ${senderCompany || 'Our Company'}
+- Sequence Step: ${sequenceStep || 'Step 1 — First Touch'}
+- Custom Instruction: ${customInstruction || 'None'}
+- Channel: ${companyAccount ? 'Company LinkedIn Account' : 'Personal LinkedIn / Email'}
+
+## Output Requirements
+Return a complete HTML-formatted outreach message.
+Follow the Golden Rules strictly:
+1. Never start with "I"
+2. Be specific — reference something real from their profile
+3. One CTA only
+4. LinkedIn connection note: max 300 characters
+5. Cold email: max 150 words
+6. No spam words: guaranteed, synergy, leverage, disruptive, game-changing, revolutionary
+
+Format the output as clean HTML with proper line breaks and styling for display in a rich text editor.`;
+
+    const { text: rawText } = await geminiText(prompt, APEX_SYSTEM_PROMPT);
+
+    if (!rawText) {
+      throw new Error('Failed to generate outreach copy.');
+    }
+
+    // Wrap plain text in HTML if it's not already HTML
+    const text = rawText.includes('<') ? rawText : `<p>${rawText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>')}</p>`;
+
+    res.json({ text, sandboxMode: false });
   } catch (error: any) {
     console.error('Error generating outbound copy:', error);
     res.status(500).json({ error: error.message || 'Outreach template calculation failed.' });
@@ -1141,32 +1501,28 @@ app.post('/api/chat', async (req, res): Promise<any> => {
     const { query, leads = [] } = req.body;
     if (!query) return res.status(400).json({ error: 'Query is required' });
 
-    const lowQuery = query.toLowerCase();
-    let reply = '';
-
-    if (leads.length === 0) {
-      reply = `Hello! I'm your CRM Copilot. Your CRM pipeline is currently empty. You can add prospects to the CRM using the Scraper Hub tab. Once you have leads, I can help summarize them or assist with outbound strategy!`;
-    } else if (lowQuery.includes('how many') || lowQuery.includes('count') || lowQuery.includes('number of')) {
-      const stageCounts: Record<string, number> = {};
-      leads.forEach((l: any) => {
-        const stage = l.stage || 'SCRAPED';
-        stageCounts[stage] = (stageCounts[stage] || 0) + 1;
-      });
-      const stageBreakdown = Object.entries(stageCounts)
-        .map(([stage, count]) => `- **${stage}**: ${count} leads`)
-        .join('\n');
-      
-      reply = `You currently have **${leads.length} leads** in your CRM pipeline. Here is the breakdown by stage:\n\n${stageBreakdown}`;
-    } else if (lowQuery.includes('lead') || lowQuery.includes('pipeline') || lowQuery.includes('prospect')) {
-      const topLeads = leads.slice(0, 3).map((l: any) => `- **${l.profile?.fullName}** (${l.profile?.currentTitle} at ${l.profile?.currentCompany}) - Stage: *${l.stage}*`).join('\n');
-      reply = `Here is a summary of some leads in your pipeline:\n\n${topLeads}\n\nYou can move leads through stages on the Kanban Pipeline tab or write outreach emails in the Outreach Studio tab!`;
-    } else {
-      reply = `Hello! I'm your CRM Copilot. I'm running in offline sandbox mode to prevent any rate-limiting issues. 
-      
-If you want to personalize cold emails, connection notes, or email sequences, head over to the **Outreach Studio** tab which has built-in high-performance outbound generation templates!`;
+    if (!hasGeminiKey()) {
+      return res.status(503).json({ error: 'GEMINI_API_KEY is not configured. Add it to your .env file to enable the AI Copilot.' });
     }
 
-    res.json({ text: reply });
+    // Build a rich context summary of the CRM for Gemini
+    const leadsContext = leads.length === 0
+      ? 'The CRM pipeline is currently empty.'
+      : leads.slice(0, 20).map((l: any, i: number) =>
+          `${i + 1}. ${l.profile?.fullName} — ${l.profile?.currentTitle} at ${l.profile?.currentCompany} | Stage: ${l.stage} | Fit: ${l.profile?.fitScore ?? '?'}/10 | Intent: ${l.profile?.intentScore ?? '?'}/10`
+        ).join('\n');
+
+    const systemPrompt = `${APEX_SYSTEM_PROMPT}
+
+## Current CRM Pipeline Context
+${leads.length} total leads.
+${leadsContext}
+
+Answer the user's question about their CRM pipeline, leads, outreach strategy, or any sales-related query. Be direct, concise, and actionable. Format responses in markdown.`;
+
+    const { text: reply } = await geminiText(query, systemPrompt);
+
+    res.json({ text: reply || 'I could not generate a response. Please try again.' });
   } catch (error: any) {
     console.error('Error in Copilot Chat:', error);
     res.status(500).json({ error: error.message || 'Chat generation failed.' });

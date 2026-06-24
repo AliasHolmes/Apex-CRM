@@ -167,7 +167,7 @@ export default function CrmOverview({ leads }: CrmOverviewProps) {
                 <Briefcase className="w-4.5 h-4.5 text-primary" />
                 Top Industry Segment targets
               </h4>
-              <p className="text-xs text-muted-foreground mb-5">Leading industry fields from Google Search indexes.</p>
+              <p className="text-xs text-muted-foreground mb-5">Leading industry fields from Tavily-backed LinkedIn search.</p>
             </div>
 
             <div className="space-y-4">

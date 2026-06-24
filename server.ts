@@ -57,8 +57,7 @@ async function initMcpClients() {
 
     const transport = new StdioClientTransport({
       command: mcpCommand,
-      args: ['--user-data-dir', profilePath],
-      env: { ...process.env, PYTHONWARNINGS: 'ignore' }
+      args: ['--user-data-dir', profilePath]
     });
 
     const client = new Client(

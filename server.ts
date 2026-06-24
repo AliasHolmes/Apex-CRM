@@ -57,7 +57,8 @@ async function initMcpClients() {
 
     const transport = new StdioClientTransport({
       command: mcpCommand,
-      args: ['--user-data-dir', profilePath]
+      args: ['--user-data-dir', profilePath],
+      env: { ...process.env, PYTHONWARNINGS: 'ignore' }
     });
 
     const client = new Client(
@@ -1254,7 +1255,7 @@ app.post('/api/find-leads', async (req, res): Promise<any> => {
       ? `\n\nIMPORTANT: Do NOT include any of these already-known people or emails: ${excludeList.slice(0, 20).join(', ')}`
       : '';
 
-    const { text: rawText } = await tavilySearch(`${query} site:linkedin.com/in/`);
+    const { text: rawText } = await tavilySearch(`${query}`);
 
     if (!rawText || rawText.length < 100) {
       throw new Error('Search returned no results. Try different search criteria.');

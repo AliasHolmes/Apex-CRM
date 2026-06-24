@@ -13,6 +13,7 @@
     },
     "dependencies": {
         "@google/genai": "^2.4.0",
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@radix-ui/react-dialog": "^1.1.16",
         "@radix-ui/react-label": "^2.1.9",
         "@radix-ui/react-slot": "^1.2.5",

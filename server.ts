@@ -9,6 +9,8 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { DatabaseSync } from 'node:sqlite';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 const Type = {
   STRING: 'STRING',
   NUMBER: 'NUMBER',
@@ -37,6 +39,27 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : 'http://localhost:3000/api/auth/google/callback';
 let codeVerifierCache = '';
 let leadsDb: DatabaseSync | null = null;
+let mcpLinkedinClient: Client | null = null;
+
+async function initMcpClients() {
+  try {
+    const transport = new StdioClientTransport({
+      command: 'node',
+      args: ['C:\\Users\\pc\\.gemini\\antigravity\\bin\\linkedin-mcp-proxy.js']
+    });
+
+    const client = new Client(
+      { name: 'apex-crm-backend', version: '1.0.0' },
+      { capabilities: {} }
+    );
+
+    await client.connect(transport);
+    mcpLinkedinClient = client;
+    console.log('[MCP] Connected to LinkedIn MCP server.');
+  } catch (err) {
+    console.error('[MCP] Failed to connect to LinkedIn MCP server:', err);
+  }
+}
 
 function getLeadsDb() {
   if (!leadsDb) {
@@ -964,6 +987,26 @@ ${customPart}`;
 // API Endpoints
 // -----------------------------------------------------------------------------
 
+app.post('/api/mcp/linkedin', async (req, res): Promise<any> => {
+  if (!mcpLinkedinClient) {
+    return res.status(503).json({ error: 'LinkedIn MCP client is not initialized.' });
+  }
+  try {
+    const { toolName, args } = req.body;
+    if (!toolName) {
+      return res.status(400).json({ error: 'toolName is required.' });
+    }
+    const result = await mcpLinkedinClient.callTool({
+      name: toolName,
+      arguments: args || {}
+    });
+    res.json(result);
+  } catch (error: any) {
+    console.error(`[MCP] Tool call failed:`, error);
+    res.status(500).json({ error: error.message || 'Failed to call MCP tool.' });
+  }
+});
+
 app.get('/api/leads', (req, res): any => {
   try {
     res.json({ leads: readStoredLeads(), initialized: hasLeadStoreBeenInitialized() });
@@ -1350,6 +1393,7 @@ Answer the user's question about their CRM pipeline, leads, outreach strategy, o
 // -----------------------------------------------------------------------------
 
 async function startServer() {
+  await initMcpClients();
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

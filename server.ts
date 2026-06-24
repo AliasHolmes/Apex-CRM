@@ -27,7 +27,7 @@ const PORT = 3000;
 app.use(express.json({ limit: '10mb' }));
 
 const AUTH_FILE = path.join(process.cwd(), '.apex_auth.json');
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : 'http://localhost:3000/api/auth/google/callback';
 let codeVerifierCache = '';
@@ -479,12 +479,70 @@ function generateMockLeads(query: string, limit: number, excludeList: string[] =
   return leads;
 }
 
-function generateMockQualityLeads(query: string, limit: number, excludeList: string[] = []) {
+function stripHtmlForSignals(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 25000);
+}
+
+function detectWebsiteSignalsFromText(text: string, website: string) {
+  const low = text.toLowerCase();
+  const signals: any[] = [];
+  const addSignal = (type: string, label: string, evidence: string, confidence: number, sourcePath = '') => {
+    if (!signals.some(signal => signal.label === label)) {
+      signals.push({ type, label, evidence, sourceUrl: `${website}${sourcePath}`, confidence });
+    }
+  };
+
+  if (/book (a |an )?(call|consultation|appointment)|schedule (a |an )?(call|consultation|appointment)|book now|request appointment/.test(low)) {
+    addSignal('LEAD_FLOW', 'Booking or consultation CTA', 'Website copy includes booking, appointment, consultation, or scheduling language.', 92);
+  }
+  if (/contact us|request info|intake|free consultation|form|submit/.test(low)) {
+    addSignal('LEAD_FLOW', 'Contact or intake form', 'Website copy routes prospects through a contact, request, or intake step.', 87, '/contact');
+  }
+  if (/services|solutions|practice areas|treatments|specialties/.test(low)) {
+    addSignal('OPERATIONAL_COMPLEXITY', 'Multiple services offered', 'Service navigation suggests multiple intake paths and qualification branches.', 82, '/services');
+  }
+  if (/locations|our team|meet the team|providers|agents|staff/.test(low)) {
+    addSignal('OPERATIONAL_COMPLEXITY', 'Team or multi-location presence', 'Team, provider, location, or staff language indicates the company is not a solo operation.', 79, '/about');
+  }
+  if (/careers|we are hiring|join our team|patient coordinator|front desk|admin|sdr|sales development/.test(low)) {
+    addSignal('GROWTH_SIGNAL', 'Hiring for admin or growth support', 'Careers/admin/front-desk/SDR language suggests manual follow-up or coordination pain.', 84, '/careers');
+  }
+
+  return signals;
+}
+
+async function fetchWebsiteSignals(website: string) {
+  if (!website || !/^https?:\/\//i.test(website)) return [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1200);
+  try {
+    const res = await fetch(website, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'ApexCRMQualityScanner/1.0' }
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    return detectWebsiteSignalsFromText(stripHtmlForSignals(html), website);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function generateMockQualityLeads(query: string, limit: number, excludeList: string[] = []) {
   const baseProfiles = generateMockLeads(query, Math.max(limit * 4, limit + 8), excludeList);
   const decisionMakerTitles = ['Founder', 'Co-Founder', 'CEO', 'Owner', 'Managing Director', 'COO', 'Practice Owner', 'Agency Owner', 'Managing Partner'];
   const ignoredTitleWords = ['assistant', 'intern', 'representative', 'sales rep', 'coordinator', 'marketing manager'];
+  const shouldProbeLiveSites = /https?:\/\//i.test(query) || /website|site|domain/i.test(query);
 
-  const buildCompanySignals = (profile: any, index: number) => {
+  const buildFallbackCompanySignals = (profile: any, index: number) => {
     const companyName = profile.currentCompany || `Qualified Company ${index + 1}`;
     const website = profile.contactDetails?.website || `https://www.${companyName.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`;
     const industry = (profile.industry || '').toLowerCase();
@@ -499,7 +557,7 @@ function generateMockQualityLeads(query: string, limit: number, excludeList: str
       {
         type: 'LEAD_FLOW',
         label: 'Contact or intake form',
-        evidence: `The site routes inbound prospects through a form before a human follow-up step.`,
+        evidence: 'The site routes inbound prospects through a form before a human follow-up step.',
         sourceUrl: `${website}/contact`,
         confidence: 88
       }
@@ -509,7 +567,7 @@ function generateMockQualityLeads(query: string, limit: number, excludeList: str
       signals.push({
         type: 'OPERATIONAL_COMPLEXITY',
         label: 'Multiple services offered',
-        evidence: `Service pages show several intake paths, which increases manual triage and follow-up complexity.`,
+        evidence: 'Service pages show several intake paths, which increases manual triage and follow-up complexity.',
         sourceUrl: `${website}/services`,
         confidence: 84
       });
@@ -517,36 +575,37 @@ function generateMockQualityLeads(query: string, limit: number, excludeList: str
       signals.push({
         type: 'OPERATIONAL_COMPLEXITY',
         label: 'Multi-step sales workflow',
-        evidence: `The company describes discovery calls, qualification, and handoff steps before conversion.`,
+        evidence: 'The company describes discovery calls, qualification, and handoff steps before conversion.',
         sourceUrl: `${website}/process`,
         confidence: 82
       });
     }
 
-    if (index % 2 === 0) {
-      signals.push({
-        type: 'GROWTH_SIGNAL',
-        label: 'Hiring for admin or growth support',
-        evidence: `Careers language suggests coordinator, SDR, front desk, or admin follow-up workload.`,
-        sourceUrl: `${website}/careers`,
-        confidence: 79
-      });
-    } else {
-      signals.push({
-        type: 'OPERATIONAL_COMPLEXITY',
-        label: 'Team or multi-location presence',
-        evidence: `The website shows a team/location footprint, so the account is not a solo operator.`,
-        sourceUrl: `${website}/about`,
-        confidence: 77
-      });
-    }
+    signals.push(index % 2 === 0
+      ? {
+          type: 'GROWTH_SIGNAL',
+          label: 'Hiring for admin or growth support',
+          evidence: 'Careers language suggests coordinator, SDR, front desk, or admin follow-up workload.',
+          sourceUrl: `${website}/careers`,
+          confidence: 79
+        }
+      : {
+          type: 'OPERATIONAL_COMPLEXITY',
+          label: 'Team or multi-location presence',
+          evidence: 'The website shows a team/location footprint, so the account is not a solo operator.',
+          sourceUrl: `${website}/about`,
+          confidence: 77
+        }
+    );
 
     return signals;
   };
 
   const qualityLeads: any[] = [];
+  const rejectedExamples: any[] = [];
   let scannedCompanies = 0;
   let rejectedCompanies = 0;
+  let liveSignalsUsed = 0;
 
   for (let i = 0; i < baseProfiles.length && qualityLeads.length < limit; i++) {
     const profile: any = baseProfiles[i];
@@ -555,15 +614,40 @@ function generateMockQualityLeads(query: string, limit: number, excludeList: str
     const title = (profile.currentTitle || '').toLowerCase();
     const hasIgnoredTitle = ignoredTitleWords.some(word => title.includes(word));
     const isDecisionMaker = decisionMakerTitles.some(role => title.includes(role.toLowerCase()));
-    const signals = buildCompanySignals(profile, i);
+    const liveSignals = shouldProbeLiveSites ? await fetchWebsiteSignals(profile.contactDetails?.website || '') : [];
+    const fallbackSignals = buildFallbackCompanySignals(profile, i);
+    const signals = liveSignals.length >= 2 ? liveSignals : fallbackSignals;
+    if (liveSignals.length >= 2) liveSignalsUsed++;
+
+    const disqualifiers: any[] = [];
+    if (!isDecisionMaker) {
+      disqualifiers.push({ type: 'DISQUALIFIER', label: 'No founder/operator title', evidence: `${profile.currentTitle || 'Unknown title'} is not an owner-level decision-maker.`, confidence: 86 });
+    }
+    if (hasIgnoredTitle) {
+      disqualifiers.push({ type: 'DISQUALIFIER', label: 'Ignored employee title', evidence: `${profile.currentTitle} is excluded by the quality-mode targeting rules.`, confidence: 91 });
+    }
+    if (profile.companySizeEst === '500+') {
+      disqualifiers.push({ type: 'DISQUALIFIER', label: 'Likely enterprise account', evidence: 'Company size estimate is too large for this workflow.', confidence: 78 });
+    }
+
     const signalScore = signals.reduce((sum, signal: any) => sum + Math.round(signal.confidence / 8), 0);
     const decisionScore = isDecisionMaker && !hasIgnoredTitle ? 18 : -20;
     const sizeScore = profile.companySizeEst === '500+' ? -20 : 14;
-    const operationalPainScore = Math.max(35, Math.min(96, 42 + signalScore + decisionScore + sizeScore));
+    const operationalPainScore = Math.max(35, Math.min(96, 42 + signalScore + decisionScore + sizeScore - (disqualifiers.length * 10)));
     const qualifies = signals.length >= 2 && isDecisionMaker && !hasIgnoredTitle && operationalPainScore >= 70;
 
     if (!qualifies) {
       rejectedCompanies++;
+      if (rejectedExamples.length < 6) {
+        rejectedExamples.push({
+          companyName: profile.currentCompany,
+          title: profile.currentTitle,
+          reason: disqualifiers[0]?.label || 'Insufficient buying signals',
+          evidence: disqualifiers[0]?.evidence || `Only ${signals.length} useful buying signal(s) found.`,
+          signalCount: signals.length,
+          score: operationalPainScore
+        });
+      }
       continue;
     }
 
@@ -575,7 +659,7 @@ function generateMockQualityLeads(query: string, limit: number, excludeList: str
       location: profile.location,
       sizeEstimate: 'small-team',
       buyingSignals: signals,
-      disqualifiers: [],
+      disqualifiers,
       operationalPainScore,
       qualificationStatus: 'QUALIFIED',
       painSummary: `${profile.currentCompany} passed quality mode with ${signals.length} buying signals and a verified ${profile.currentTitle}.`
@@ -603,11 +687,13 @@ function generateMockQualityLeads(query: string, limit: number, excludeList: str
 
   return {
     leads: qualityLeads,
+    rejectedCompanies: rejectedExamples,
     stats: {
       companiesFound: baseProfiles.length,
       websitesScanned: scannedCompanies,
       qualifiedCompanies: qualityLeads.length,
-      rejectedCompanies
+      rejectedCompanies,
+      liveSignalsUsed
     }
   };
 }
@@ -840,12 +926,16 @@ ${customPart}`;
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    hasKey: false,
-    hasOAuth: false,
+    hasKey: !!process.env.GEMINI_API_KEY,
+    hasOAuth: !!loadAuth(),
+    hasGoogleClient: !!CLIENT_ID,
   });
 });
 
 app.get('/api/auth/google/url', (req, res) => {
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    return res.status(500).json({ error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the environment.' });
+  }
   codeVerifierCache = crypto.randomBytes(32).toString('base64url');
   const codeChallenge = crypto.createHash('sha256').update(codeVerifierCache).digest('base64url');
   const url = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchParams({
@@ -998,7 +1088,7 @@ app.post('/api/find-quality-leads', async (req, res): Promise<any> => {
       return res.status(400).json({ error: 'Search criteria/query is required' });
     }
 
-    const result = generateMockQualityLeads(query, limit, excludeList);
+    const result = await generateMockQualityLeads(query, limit, excludeList);
     res.json({ ...result, sandboxMode: true, mode: 'quality' });
   } catch (error: any) {
     console.error('Error in /api/find-quality-leads:', error);

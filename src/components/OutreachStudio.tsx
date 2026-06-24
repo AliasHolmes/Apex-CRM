@@ -40,6 +40,21 @@ interface OutreachStudioProps {
   leads: Lead[];
 }
 
+interface SavedOutreachDraft {
+  id: string;
+  leadId: string;
+  leadName: string;
+  companyName?: string;
+  tone: string;
+  medium: string;
+  sequenceStep: string;
+  wordCount: number;
+  createdAt: string;
+  text: string;
+}
+
+const OUTREACH_DRAFTS_KEY = 'apex_crm_outreach_drafts';
+
 export default function OutreachStudio({ selectedLeadForOutreach, leads }: OutreachStudioProps) {
   const [currentLeadId, setCurrentLeadId] = useState<string>('');
   const [tone, setTone] = useState<string>('High-Value');
@@ -58,6 +73,37 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   const [sequenceStep, setSequenceStep] = useState<string>('Step 1: First Touch');
   const [customInstruction, setCustomInstruction] = useState<string>('');
   const [showSenderConfig, setShowSenderConfig] = useState<boolean>(false);
+  const [savedDrafts, setSavedDrafts] = useState<SavedOutreachDraft[]>([]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(OUTREACH_DRAFTS_KEY);
+      if (saved) setSavedDrafts(JSON.parse(saved));
+    } catch (error) {
+      console.warn('Failed to load outreach drafts', error);
+    }
+  }, []);
+
+  const rememberDraft = (draftText: string, lead: Lead) => {
+    if (!draftText.trim()) return;
+    const nextDraft: SavedOutreachDraft = {
+      id: `draft-${Date.now()}`,
+      leadId: lead.id,
+      leadName: lead.profile.fullName,
+      companyName: lead.profile.currentCompany,
+      tone,
+      medium,
+      sequenceStep,
+      wordCount: draftText.trim().split(/\s+/).filter(Boolean).length,
+      createdAt: new Date().toISOString(),
+      text: draftText
+    };
+    setSavedDrafts(prev => {
+      const next = [nextDraft, ...prev].slice(0, 12);
+      localStorage.setItem(OUTREACH_DRAFTS_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
 
   const stepsList = [
     { id: 'Step 1: First Touch', label: 'Step 1: Initial Pitch', icon: Sparkles },
@@ -115,7 +161,9 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
       }
 
       const data = await response.json();
-      setOutreachCopy(data.text || '');
+      const generatedText = data.text || '';
+      setOutreachCopy(generatedText);
+      rememberDraft(generatedText, targetLead);
     } catch (err: any) {
       console.error(err);
       setErrorCode(err.message || 'Error generating campaign pitch.');
@@ -392,6 +440,28 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           )}
           Generate High-Converting Pitch
         </Button>
+
+        {savedDrafts.length > 0 && (
+          <div className="border border-slate-850 rounded-xl bg-slate-950/35 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Recent Draft Memory</span>
+              <Badge variant="outline" className="text-[9px]">{savedDrafts.length}</Badge>
+            </div>
+            <div className="space-y-2 max-h-52 overflow-y-auto custom-scrollbar pr-1">
+              {savedDrafts.slice(0, 5).map(draft => (
+                <button
+                  key={draft.id}
+                  type="button"
+                  onClick={() => setOutreachCopy(draft.text)}
+                  className="w-full text-left rounded-lg border border-slate-850 bg-slate-950 hover:bg-slate-900 p-3 transition-all cursor-pointer"
+                >
+                  <span className="block text-xs font-bold text-slate-200 truncate">{draft.leadName} - {draft.companyName || 'Independent'}</span>
+                  <span className="block text-[10px] text-slate-500 mt-1">{draft.sequenceStep} / {draft.medium} / {draft.wordCount} words</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Editor / Output Panel */}

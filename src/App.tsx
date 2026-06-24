@@ -43,6 +43,7 @@ import OutreachStudio from './components/OutreachStudio';
 import CrmOverview from './components/CrmOverview';
 
 import { getLeadsIDB, setLeadsIDB } from './utils/idb';
+import { buildProfileDedupeKeys, hasDuplicateProfile } from './utils/leadDedupe';
 
 // Define the high-fidelity pre-seed leads
 const seedLeads: Lead[] = [
@@ -313,24 +314,9 @@ export default function App() {
   // 3. Callback to add single scraped profile
   const handleLeadAdded = (profile: LinkedInProfile) => {
     saveLeadsToStorage(currentLeads => {
-      // Check duplicates fallback
-      const isDup = currentLeads.some(lead => {
-        const e1 = lead.profile.contactDetails?.email?.toLowerCase();
-        const e2 = profile.contactDetails?.email?.toLowerCase();
-        const l1 = lead.profile.contactDetails?.linkedinUrl?.toLowerCase();
-        const l2 = profile.contactDetails?.linkedinUrl?.toLowerCase();
-        const n1 = (lead.profile.fullName || '').toLowerCase();
-        const n2 = (profile.fullName || '').toLowerCase();
-        
-        const comp1 = (lead.profile.currentCompany || '').toLowerCase();
-        const comp2 = (profile.currentCompany || '').toLowerCase();
-        
-        return (
-          (e1 && e2 && e1 === e2) || 
-          (l1 && l2 && l1 === l2) || 
-          (n1 === n2 && comp1 === comp2)
-        );
-      });
+      const existingKeys = new Set<string>();
+      currentLeads.forEach(lead => buildProfileDedupeKeys(lead.profile).forEach(key => existingKeys.add(key)));
+      const isDup = hasDuplicateProfile(profile, existingKeys);
 
       if (isDup) {
         console.warn("Skipped writing duplicate lead to CRM:", profile.fullName);
@@ -359,27 +345,12 @@ export default function App() {
   // 4. Callback to handle bulk lead inputs
   const handleBulkLeadsAdded = (profiles: QualifiedLeadProfile[]) => {
     saveLeadsToStorage(currentLeads => {
-      const existingMap = new Map();
-      currentLeads.forEach(l => {
-        if (l.profile.contactDetails?.email) {
-          existingMap.set(l.profile.contactDetails.email.toLowerCase(), true);
-        }
-        if (l.profile.contactDetails?.linkedinUrl) {
-          existingMap.set(l.profile.contactDetails.linkedinUrl.toLowerCase(), true);
-        }
-        const existingCompany = (l.profile.currentCompany || '').toLowerCase();
-        existingMap.set(`${(l.profile.fullName || '').toLowerCase()}::${existingCompany}`, true);
-      });
+      const existingKeys = new Set<string>();
+      currentLeads.forEach(l => buildProfileDedupeKeys(l.profile).forEach(key => existingKeys.add(key)));
 
       const uniqueProfiles = profiles.filter(p => {
-        const email = p.contactDetails?.email?.toLowerCase();
-        const url = p.contactDetails?.linkedinUrl?.toLowerCase();
-        const profileCompany = (p.currentCompany || '').toLowerCase();
-        const nameKey = `${(p.fullName || '').toLowerCase()}::${profileCompany}`;
-        
-        if (email && existingMap.has(email)) return false;
-        if (url && existingMap.has(url)) return false;
-        if (existingMap.has(nameKey)) return false;
+        if (hasDuplicateProfile(p, existingKeys)) return false;
+        buildProfileDedupeKeys(p).forEach(key => existingKeys.add(key));
         return true;
       });
 

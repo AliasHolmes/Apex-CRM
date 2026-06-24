@@ -46,6 +46,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
   const [leadLimit, setLeadLimit] = useState<number>(5);
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('fast');
   const [qualityResultSummary, setQualityResultSummary] = useState<string[]>([]);
+  const [qualityRejectedExamples, setQualityRejectedExamples] = useState<any[]>([]);
   
   const [loading, setLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -195,6 +196,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setErrorCode(null);
     setSuccessMsg(null);
     setQualityResultSummary([]);
+    setQualityRejectedExamples([]);
     setSourceLinks([]);
 
     const taskId = handleTaskAdd('url', urlInput);
@@ -253,6 +255,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setErrorCode(null);
     setSuccessMsg(null);
     setQualityResultSummary([]);
+    setQualityRejectedExamples([]);
 
     const taskId = handleTaskAdd('paste', 'Raw Paste Text Extract');
 
@@ -306,6 +309,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     setErrorCode(null);
     setSuccessMsg(null);
     setQualityResultSummary([]);
+    setQualityRejectedExamples([]);
 
     const taskId = handleTaskAdd('search', findQuery);
 
@@ -354,8 +358,10 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
           `${stats.companiesFound || fetchedLeads.length * 4} companies discovered from your scope`,
           `${stats.websitesScanned || fetchedLeads.length * 3} websites scanned for booking/intake/admin pain`,
           `${stats.qualifiedCompanies || fetchedLeads.length} companies passed the 2-signal rule`,
+          `${stats.rejectedCompanies || 0} weak companies rejected`,
           `${fetchedLeads.length} founder/operator decision-makers verified`
         ]);
+        setQualityRejectedExamples(data.rejectedCompanies || []);
         setSuccessMsg(`Quality discovery complete: ${fetchedLeads.length} verified decision-maker leads added after company pain scoring.`);
       } else {
         setSuccessMsg(`Fast discovery complete: Discovered ${fetchedLeads.length} matching profiles with the original lead finder.`);
@@ -743,6 +749,18 @@ Everything else is noise.`)}
                         {item}
                       </div>
                     ))}
+                  </div>
+                )}
+                {qualityRejectedExamples.length > 0 && (
+                  <div className="mt-3 border border-amber-500/20 bg-amber-500/5 rounded-xl p-3">
+                    <span className="text-xs font-bold text-amber-300 block mb-2">Rejected examples</span>
+                    <div className="space-y-2">
+                      {qualityRejectedExamples.slice(0, 3).map((item, i) => (
+                        <div key={i} className="text-[11px] text-amber-100/90">
+                          <strong>{item.companyName}</strong>: {item.reason} - {item.evidence}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {sourceLinks.length > 0 && (

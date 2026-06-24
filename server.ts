@@ -275,7 +275,7 @@ function getGeminiClient(): any {
 // Gemini REST API Helpers (GEMINI_API_KEY — no OAuth required)
 // -----------------------------------------------------------------------------
 
-const GEMINI_MODEL = 'gemini-1.5-flash'; // Free tier: 1500 req/day. Switch to 'gemini-2.0-flash' if you have a paid key.
+const GEMINI_MODEL = 'gemini-2.0-flash'; // Free tier: 1500 req/day.
 const GEMINI_BASE = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`;
 
 /** Converts uppercase Type constants to lowercase for the Gemini REST API schema. */

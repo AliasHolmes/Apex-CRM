@@ -1,0 +1,440 @@
+﻿import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { Lead, LinkedInProfile, QualifiedLeadProfile } from '../types';
+import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
+
+// Define the high-fidelity pre-seed leads
+const seedLeads: Lead[] = [
+  {
+    id: 'seed-siskind',
+    profile: {
+      id: 'gregory-siskind',
+      fullName: 'Gregory Siskind',
+      headline: 'Award-winning Immigration Attorney, Legal AI Pioneer & Co-founder of Siskind Susser PC',
+      currentCompany: 'Siskind Susser PC / Visalaw AI',
+      currentTitle: 'Founding Partner & Chief Legal AI Innovator',
+      seniorityLevel: 'Founder',
+      companySizeEst: '51-200',
+      location: 'Memphis, TN',
+      industry: 'Legal Services',
+      summary: 'Gregory Siskind is a nationally recognized immigration lawyer, co-author of several major treatises, and a leading legal technology innovator. He co-founded Siskind Susser PC in 1994 (Tennessee\'s first legal web page) and is the vanguard of Visalaw AI, building generative AI legal tools.',
+      contactDetails: {
+        email: 'gsiskind@visalaw.com',
+        phone: '+1 (901) 682-6455',
+        linkedinUrl: 'https://www.linkedin.com/in/siskind/',
+        website: 'https://www.visalaw.com'
+      },
+      experiences: [
+        {
+          title: 'Founding Partner & Attorney',
+          company: 'Siskind Susser PC',
+          duration: '1994 - Present',
+          location: 'Memphis, TN',
+          description: 'Managing one of the largest immigration law firms in the USA. Pioneer internet legal marketing and digital workflows for visa processing and corporate compliance.'
+        },
+        {
+          title: 'Co-founder & Chief Product Officer',
+          company: 'Visalaw AI',
+          duration: '2022 - Present',
+          location: 'Memphis, TN',
+          description: 'Overseeing product strategy for GenAI-powered search grounding engines, compliance validators, and chat-based legal research assistants for immigration specialists.'
+        }
+      ],
+      education: [
+        {
+          school: 'Vanderbilt University Law School',
+          degree: 'Juris Doctor (JD)',
+          duration: '1987 - 1990'
+        },
+        {
+          school: 'The College of William & Mary',
+          degree: 'Bachelor of Arts',
+          fieldOfStudy: 'Political Science',
+          duration: '1983 - 1987'
+        }
+      ],
+      skills: ['Immigration Law', 'Legal Technology', 'Product Architecture', 'GenAI', 'Digital Marketing']
+    },
+    stage: 'ENRICHED',
+    notes: 'Primary targeted lead directly matching requested lookup details. High interest sector, expert in legal LLM tooling.',
+    createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
+    tags: ['Key Target', 'Legal AI Pioneer', 'Premium Account'],
+    fitScore: 9,
+    intentScore: 8,
+    timingScore: 7,
+    compositeScore: 8.2,
+    tier: 'TIER 1: PRIORITY'
+  },
+  {
+    id: 'seed-aris',
+    profile: {
+      id: 'aris-thompson',
+      fullName: 'Aris Thompson',
+      headline: 'Founder & CEO of Lexic AI â€¢ Generative Legal Intelligence Workspace',
+      currentCompany: 'Lexic AI',
+      currentTitle: 'Founder & CEO',
+      seniorityLevel: 'Founder',
+      companySizeEst: '11-50',
+      location: 'San Francisco, CA',
+      industry: 'Software Engineering',
+      summary: 'Aris is a software engineer and serial entrepreneur building advanced document-reasoning graphs for commercial litigation and law operations. Ex-Stripe staff architect.',
+      contactDetails: {
+        email: 'aris@lexic.ai',
+        linkedinUrl: 'https://www.linkedin.com/in/aris-thompson-mock/',
+        website: 'https://lexic.ai'
+      },
+      experiences: [
+        {
+          title: 'Founder & CEO',
+          company: 'Lexic AI',
+          duration: '2023 - Present',
+          location: 'San Francisco, CA',
+          description: 'Architecting vectors database structures and search grounding middleware to help enterprise litigators mine 100M+ corporate emails safely.'
+        },
+        {
+          title: 'Staff Software Engineer',
+          company: 'Stripe',
+          duration: '2019 - 2023',
+          location: 'San Francisco, CA',
+          description: 'Led core billing systems optimization. Built scalable ledger structures processing upwards of 2B daily transactional logs.'
+        }
+      ],
+      education: [
+        {
+          school: 'Stanford University',
+          degree: 'B.S.',
+          fieldOfStudy: 'Computer Science',
+          duration: '2015 - 2019'
+        }
+      ],
+      skills: ['Distributed Systems', 'PostgreSQL', 'LegalTech', 'Vector Databases', 'Startups']
+    },
+    stage: 'MEETING BOOKED',
+    notes: 'Intro schedule set for next Wednesday at 2 PM PST. They are looking to leverage our direct CSV integration models.',
+    createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
+    tags: ['Founder', 'Warm Intro', 'SF Based'],
+    fitScore: 8,
+    intentScore: 9,
+    timingScore: 8,
+    compositeScore: 8.4,
+    tier: 'TIER 1: PRIORITY'
+  },
+  {
+    id: 'seed-julia',
+    profile: {
+      id: 'julia-chen',
+      fullName: 'Julia Chen',
+      headline: 'VP of Recruit & Human Talents at CloudTech Global',
+      currentCompany: 'CloudTech Global',
+      currentTitle: 'VP of Human Talents',
+      seniorityLevel: 'VP',
+      companySizeEst: '500+',
+      location: 'Austin, TX',
+      industry: 'Human Resources',
+      summary: 'Experienced executive recruiter leading talent strategy across North America and APAC markets. Focused on tech hiring scaling vectors.',
+      contactDetails: {
+        email: 'jchen@cloudtech-global.com',
+        phone: '+1 (512) 555-8832',
+        linkedinUrl: 'https://www.linkedin.com/in/julia-chen-mock/'
+      },
+      experiences: [
+        {
+          title: 'VP of Human Talents',
+          company: 'CloudTech Global',
+          duration: '2021 - Present',
+          location: 'Austin, TX',
+          description: 'Scaling engineering and go-to-market teams. Built a global recruitment structure hiring 500+ professionals annually.'
+        }
+      ],
+      education: [
+        {
+          school: 'University of Texas at Austin',
+          degree: 'B.B.A.',
+          fieldOfStudy: 'Business & Management',
+          duration: '2008 - 2012'
+        }
+      ],
+      skills: ['Executive Search', 'Org Design', 'Scaling HR', 'Sourcing Platforms']
+    },
+    stage: 'SEQUENCE ACTIVE',
+    notes: 'Outreach campaign initiated using our Conversational Tone email pitch sequence on June 4th. Awaiting feedback loop.',
+    createdAt: new Date(Date.now() - 3600000 * 72).toISOString(),
+    tags: ['Recruiting Executive', 'Outbound Pipe'],
+    fitScore: 7,
+    intentScore: 5,
+    timingScore: 4,
+    compositeScore: 5.6,
+    tier: 'TIER 3: WATCH'
+  }
+];
+const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
+
+type StoredLeadsResponse = {
+  leads: Lead[];
+  initialized: boolean;
+};
+
+async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
+  const response = await fetch('/api/leads');
+  if (!response.ok) {
+    throw new Error(`Failed to load leads: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return {
+    leads: Array.isArray(data.leads) ? data.leads : [],
+    initialized: Boolean(data.initialized)
+  };
+}
+
+async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
+  const response = await fetch('/api/leads', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ leads })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to save leads: ${response.status}`);
+  }
+}
+
+
+interface LeadContextType {
+  leads: Lead[];
+  isHydrated: boolean;
+  saveLeadsToStorage: (updater: Lead[] | ((prev: Lead[]) => Lead[])) => void;
+  handleLeadAdded: (profile: LinkedInProfile) => void;
+  handleBulkLeadsAdded: (profiles: QualifiedLeadProfile[]) => void;
+  handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
+  handleUpdateLeadNotes: (leadId: string, notes: string) => void;
+  handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
+  handleUpdateLeadTags: (leadId: string, tags: string[]) => void;
+  handleDeleteLead: (leadId: string) => void;
+  handleDeleteLeads: (leadIds: string[]) => void;
+  handleUpdateLeadsStage: (leadIds: string[], stage: Lead['stage']) => void;
+}
+
+const LeadContext = createContext<LeadContextType | undefined>(undefined);
+
+export function LeadProvider({ children }: { children: ReactNode }) {
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    const sanitizeLeads = (loadedLeads: any[]) => {
+      return loadedLeads.map(l => ({
+        ...l,
+        id: l.id || crypto.randomUUID()
+      }));
+    };
+
+    const loadLegacyBrowserLeads = () => {
+      try {
+        const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
+        if (!legacyStored) return null;
+
+        const parsed = JSON.parse(legacyStored);
+        return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
+      } catch (error) {
+        console.warn('Legacy browser lead migration failed:', error);
+        return null;
+      }
+    };
+
+    const hydrateLeads = async () => {
+      try {
+        const stored = await loadLeadsFromSqliteBackend();
+        if (stored.initialized) {
+          setLeads(sanitizeLeads(stored.leads));
+          return;
+        }
+
+        const initialLeads = loadLegacyBrowserLeads() || sanitizeLeads(seedLeads);
+        setLeads(initialLeads);
+        persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
+      } catch (error) {
+        console.error('SQLite lead load failed:', error);
+        setLeads(loadLegacyBrowserLeads() || sanitizeLeads(seedLeads));
+      } finally {
+        setIsHydrated(true);
+      }
+    };
+
+    hydrateLeads();
+  }, []);
+
+  // 2. Persist active leads array to the local SQLite backend whenever state updates.
+  useEffect(() => {
+    if (!isHydrated) return;
+
+    const timer = setTimeout(() => {
+      persistLeadsToSqliteBackend(leads).catch(error => console.warn('SQLite persist failed:', error));
+    }, 100);
+
+    return () => clearTimeout(timer);
+  }, [leads, isHydrated]);
+  const saveLeadsToStorage = (updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
+    setLeads(prev => {
+      return typeof updater === 'function' ? updater(prev) : updater;
+    });
+  };
+
+  // 3. Callback to add single scraped profile
+  const handleLeadAdded = (profile: LinkedInProfile) => {
+    saveLeadsToStorage(currentLeads => {
+      const existingKeys = new Set<string>();
+      currentLeads.forEach(lead => buildProfileDedupeKeys(lead.profile).forEach(key => existingKeys.add(key)));
+      const isDup = hasDuplicateProfile(profile, existingKeys);
+
+      if (isDup) {
+        console.warn("Skipped writing duplicate lead to CRM:", profile.fullName);
+        return currentLeads;
+      }
+
+      // Generate a qualification Lead score based on title/profile length
+      const compositeScore = Math.floor(Math.random() * 30) + 65; // realistic 65 - 95 score
+      const predictiveScore = Math.floor(compositeScore * 0.9); // baseline likelihood
+
+      const newLead: Lead = {
+        id: `lead-${Date.now()}`,
+        profile,
+        stage: 'SCRAPED',
+        notes: 'Profile automatically harvested and structured by AI Search Scraper.',
+        createdAt: new Date().toISOString(),
+        tags: ['Scraped Lead', profile.industry || 'Tech'],
+        compositeScore,
+        predictiveScore
+      };
+
+      return [newLead, ...currentLeads];
+    });
+  };
+
+  // 4. Callback to handle bulk lead inputs
+  const handleBulkLeadsAdded = (profiles: QualifiedLeadProfile[]) => {
+    saveLeadsToStorage(currentLeads => {
+      const existingKeys = new Set<string>();
+      currentLeads.forEach(l => buildProfileDedupeKeys(l.profile).forEach(key => existingKeys.add(key)));
+
+      const uniqueProfiles = profiles.filter(p => {
+        if (hasDuplicateProfile(p, existingKeys)) return false;
+        buildProfileDedupeKeys(p).forEach(key => existingKeys.add(key));
+        return true;
+      });
+
+      if (uniqueProfiles.length === 0) {
+        console.warn("All bulk profiles were duplicates, skipping CRM integration.");
+        return currentLeads;
+      }
+
+      const newLeads = uniqueProfiles.map((p, i) => {
+        const hasAccountContext = !!p.companyAccount;
+        const compositeScore = p.scoreOverride || p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
+        const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
+        return {
+          id: `lead-bulk-${Date.now()}-${i}`,
+          profile: p,
+          stage: 'SCRAPED' as Lead['stage'],
+          notes: hasAccountContext
+            ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Ready for LinkedIn MCP verification and enrichment.'}`
+            : 'Discovered via Tavily LinkedIn-indexed search.',
+          createdAt: new Date().toISOString(),
+          tags: hasAccountContext
+            ? ['LinkedIn Indexed', 'Account Context', p.industry || 'Tech']
+            : ['LinkedIn Indexed', p.industry || 'Tech'],
+          compositeScore,
+          predictiveScore,
+          companyAccount: p.companyAccount,
+          decisionMakerVerification: p.decisionMakerVerification,
+          sourceProvider: p.sourceProvider || 'tavily',
+          evidenceReasons: p.evidenceReasons,
+          buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
+        };
+      });
+      return [...newLeads, ...currentLeads];
+    });
+  };
+
+  // 5. Update pipeline stage for CRM Lead
+  const handleUpdateLeadStage = (leadId: string, stage: Lead['stage']) => {
+    saveLeadsToStorage(currentLeads => 
+      currentLeads.map(l => l.id === leadId ? { ...l, stage } : l)
+    );
+  };
+
+  // 6. Update internal notes for a lead
+  const handleUpdateLeadNotes = (leadId: string, notes: string) => {
+    saveLeadsToStorage(currentLeads => 
+      currentLeads.map(l => l.id === leadId ? { ...l, notes } : l)
+    );
+  };
+
+  const handleUpdateLeadProfile = (leadId: string, profileUpdates: Partial<LinkedInProfile>) => {
+    saveLeadsToStorage(currentLeads => 
+      currentLeads.map(l => l.id === leadId ? { ...l, profile: { ...l.profile, ...profileUpdates }, notes: 'Profile dynamically enriched and verified by background AI pipeline.', lastEnrichedAt: new Date().toISOString() } : l)
+    );
+  };
+
+  // 7. Update custom tags for a lead
+  const handleUpdateLeadTags = (leadId: string, tags: string[]) => {
+    saveLeadsToStorage(currentLeads => 
+      currentLeads.map(l => l.id === leadId ? { ...l, tags } : l)
+    );
+  };
+
+  // 8. Delete lead or leads permanently
+  const handleDeleteLead = (leadId: string) => {
+    try {
+      console.log(`[App] Deleting lead ID: ${leadId}`);
+      saveLeadsToStorage(currentLeads => {
+        const nextLeads = currentLeads.filter(l => l.id !== leadId);
+        console.log(`[App] Delete lead - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
+        return nextLeads;
+      });
+    } catch (e) {
+      console.error(`[App] Error during lead deletion:`, e);
+    }
+  };
+
+  const handleDeleteLeads = (leadIds: string[]) => {
+    try {
+      console.log(`[App] Deleting bulk leads count: ${leadIds.length}`);
+      const idSet = new Set(leadIds);
+      saveLeadsToStorage(currentLeads => {
+        const nextLeads = currentLeads.filter(l => !idSet.has(l.id));
+        console.log(`[App] Bulk delete leads - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
+        return nextLeads;
+      });
+    } catch (e) {
+      console.error(`[App] Error during bulk lead deletion:`, e);
+    }
+  };
+
+  const handleUpdateLeadsStage = (leadIds: string[], stage: Lead['stage']) => {
+    const idSet = new Set(leadIds);
+    saveLeadsToStorage(currentLeads => 
+      currentLeads.map(l => idSet.has(l.id) ? { ...l, stage } : l)
+    );
+  };
+
+
+
+  return (
+    <LeadContext.Provider value={{
+      leads, isHydrated, saveLeadsToStorage,
+      handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage,
+      handleUpdateLeadNotes, handleUpdateLeadProfile, handleUpdateLeadTags,
+      handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage
+    }}>
+      {children}
+    </LeadContext.Provider>
+  );
+}
+
+export function useLeads() {
+  const context = useContext(LeadContext);
+  if (context === undefined) {
+    throw new Error('useLeads must be used within a LeadProvider');
+  }
+  return context;
+}

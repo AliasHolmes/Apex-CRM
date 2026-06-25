@@ -1,9 +1,11 @@
-/**
+﻿/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
 import React, { useState, useEffect } from 'react';
+import { useToast } from '../context/ToastContext';
+import { useLeads } from '../context/LeadContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Globe, 
@@ -27,11 +29,13 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 interface ScrapeWorkspaceProps {
   leads: Lead[];
-  onLeadAdded: (profile: LinkedInProfile) => void;
-  onBulkLeadsAdded: (profiles: QualifiedLeadProfile[]) => void;
+  handleLeadAdded: (profile: LinkedInProfile) => void;
+  handleBulkLeadsAdded: (profiles: QualifiedLeadProfile[]) => void;
 }
 
-export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }: ScrapeWorkspaceProps) {
+export default function ScrapeWorkspace() {
+  const { leads, handleLeadAdded, handleBulkLeadsAdded } = useLeads();
+  const { triggerToast } = useToast();
   const [activeTab, setActiveTab] = useState<'url' | 'paste' | 'find'>('url');
   
   // API status detection
@@ -70,22 +74,22 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
     if (loading && activeTab === 'find') {
       const initTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setTerminalLogs([
-        `[${initTime}] 🔍 SYSTEM INIT: Parsing spec parameters & intent triggers...`
+        `[${initTime}] ðŸ” SYSTEM INIT: Parsing spec parameters & intent triggers...`
       ]);
 
       const logPool = [
-        `🧩 INTENT ANALYSIS: Found complex spec criteria. Extracted Job Titles & industries.`,
-        `🎯 COMBINATIONS INDEXED: Checking overlap across specified priority niches (HVAC, Dental, etc.).`,
-        `🚀 FORMULATING SEARCH TARGETS: Compiling 3-4 specialized Tavily query permutations.`,
-        `🌐 RUNNING BATCH 1: Querying public indices for targeted parameters...`,
-        `📊 DATA RETRIEVED: Found initial candidates. Extracting public LinkedIn summaries and bios.`,
-        `⚖️ NICHE ANALYZER: Evaluating representation metrics. Checking for index bias...`,
-        `⚠️ DISPARITY RECOGNIZED: Marketing Agency leads dominate. Other niches (Home Services, Clinic Practice) under-saturated.`,
-        `🧠 ADAPTIVE CONTROL: Triggering self-correction pivot! Forcing niche balance.`,
-        `📡 RUNNING CORRECTIVE SEARCH: site:linkedin.com/in "Practice Owner" ("Dental" | "Med Spa")!`,
-        `🔬 AUTO-CORRECTIVE INTEGRATION: Yielded 4 new local clinic owners. Verifying 5-75 employee rule.`,
-        `🛠️ REBALANCING COMPLETE: Merging queries. Synthesizing standard corporate emails (first.last@domain.com).`,
-        `✅ SUCCESS: Perfect multi-niche distribution synthesized. Registering in main CRM database...`
+        `ðŸ§© INTENT ANALYSIS: Found complex spec criteria. Extracted Job Titles & industries.`,
+        `ðŸŽ¯ COMBINATIONS INDEXED: Checking overlap across specified priority niches (HVAC, Dental, etc.).`,
+        `ðŸš€ FORMULATING SEARCH TARGETS: Compiling 3-4 specialized Tavily query permutations.`,
+        `ðŸŒ RUNNING BATCH 1: Querying public indices for targeted parameters...`,
+        `ðŸ“Š DATA RETRIEVED: Found initial candidates. Extracting public LinkedIn summaries and bios.`,
+        `âš–ï¸ NICHE ANALYZER: Evaluating representation metrics. Checking for index bias...`,
+        `âš ï¸ DISPARITY RECOGNIZED: Marketing Agency leads dominate. Other niches (Home Services, Clinic Practice) under-saturated.`,
+        `ðŸ§  ADAPTIVE CONTROL: Triggering self-correction pivot! Forcing niche balance.`,
+        `ðŸ“¡ RUNNING CORRECTIVE SEARCH: site:linkedin.com/in "Practice Owner" ("Dental" | "Med Spa")!`,
+        `ðŸ”¬ AUTO-CORRECTIVE INTEGRATION: Yielded 4 new local clinic owners. Verifying 5-75 employee rule.`,
+        `ðŸ› ï¸ REBALANCING COMPLETE: Merging queries. Synthesizing standard corporate emails (first.last@domain.com).`,
+        `âœ… SUCCESS: Perfect multi-niche distribution synthesized. Registering in main CRM database...`
       ];
 
       let currentIndex = 0;
@@ -236,7 +240,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
         throw new Error(`Profile for ${name} already exists in your CRM directory.`);
       }
 
-      onLeadAdded(data.profile);
+      handleLeadAdded(data.profile);
       updateTaskStatus(taskId, 'completed', 1);
       setSuccessMsg(`Successfully scraped and structured: ${data.profile.fullName}`);
       if (data.sourceLinks && data.sourceLinks.length > 0) {
@@ -293,7 +297,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
         throw new Error(`Profile for ${name} already exists in your CRM directory. Skipped saving duplicate.`);
       }
 
-      onLeadAdded(data.profile);
+      handleLeadAdded(data.profile);
       updateTaskStatus(taskId, 'completed', 1);
       setSuccessMsg(`Extracted profile for ${data.profile.fullName} and saved to CRM.`);
       setPastedText('');
@@ -353,7 +357,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
         throw new Error('Search did not yield any new public leads. Try different criteria or industries.');
       }
 
-      onBulkLeadsAdded(fetchedLeads);
+      handleBulkLeadsAdded(fetchedLeads);
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
       setSuccessMsg(`Discovery complete: ${fetchedLeads.length} LinkedIn-indexed profiles added to your CRM.`);
     } catch (err: any) {
@@ -415,7 +419,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
                   </div>
                 </div>
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                💡 <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
+                ðŸ’¡ <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
                 Instead, Apex searches public LinkedIn-indexed results through <strong>Tavily</strong>, then extracts available facts 
                 and references for the target profile or name before consolidating them into a structured CRM record.
               </p>
@@ -476,7 +480,7 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
                   </label>
                   <button
                     type="button"
-                    onClick={() => setFindQuery(`✅ Job Titles (run all of these)
+                    onClick={() => setFindQuery(`âœ… Job Titles (run all of these)
 Founder
 Co-Founder
 CEO
@@ -490,7 +494,7 @@ Sales Director
 Head of Growth
 Broker Owner
 
-✅ Industry Terms (pair one with each title above)
+âœ… Industry Terms (pair one with each title above)
 Marketing Agency
 Lead Generation Agency
 Appointment Setting Agency
@@ -508,10 +512,10 @@ Recruiting Agency
 Law Firm
 Coaching
 
-✅ Scraper Filter Settings
-FilterValueEmployees5–75SeniorityOwner · C-Suite · Director · PartnerCompany TypePrivately HeldActivityPosted in last 30 daysGeographyUS · UK · Canada · Australia · UAE
+âœ… Scraper Filter Settings
+FilterValueEmployees5â€“75SeniorityOwner Â· C-Suite Â· Director Â· PartnerCompany TypePrivately HeldActivityPosted in last 30 daysGeographyUS Â· UK Â· Canada Â· Australia Â· UAE
 
-🎯 Priority Combos (run these first)
+ðŸŽ¯ Priority Combos (run these first)
 Founder + Marketing Agency
 Owner + Roofing / HVAC / Solar
 Founder + Real Estate Team
@@ -520,8 +524,8 @@ Founder + Immigration Consultancy
 Agency Owner + Appointment Setting
 COO + Recruiting Agency
 
-💡 One Rule
-Title + Industry + 5–75 employees + active poster = your entire filter.
+ðŸ’¡ One Rule
+Title + Industry + 5â€“75 employees + active poster = your entire filter.
 Everything else is noise.`)}
                     className="text-[10px] font-black text-indigo-400 hover:text-indigo-300 flex items-center gap-1 bg-indigo-500/10 border border-indigo-500/20 px-2 py-1 rounded transition-all cursor-pointer"
                   >
@@ -661,9 +665,9 @@ Everything else is noise.`)}
               {terminalLogs.length > 0 ? (
                 terminalLogs.map((log, i) => {
                   let colorClass = "text-slate-350";
-                  if (log.includes("✅")) colorClass = "text-emerald-450 font-bold";
-                  if (log.includes("⚠️") || log.includes("🧠") || log.includes("📡")) colorClass = "text-amber-400 font-bold";
-                  if (log.includes("🔍") || log.includes("🧩") || log.includes("🚀") || log.includes("🎯")) colorClass = "text-indigo-400 font-bold";
+                  if (log.includes("âœ…")) colorClass = "text-emerald-450 font-bold";
+                  if (log.includes("âš ï¸") || log.includes("ðŸ§ ") || log.includes("ðŸ“¡")) colorClass = "text-amber-400 font-bold";
+                  if (log.includes("ðŸ”") || log.includes("ðŸ§©") || log.includes("ðŸš€") || log.includes("ðŸŽ¯")) colorClass = "text-indigo-400 font-bold";
                   return (
                     <motion.div 
                       key={i} 

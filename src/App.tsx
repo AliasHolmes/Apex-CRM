@@ -1,9 +1,11 @@
-/**
+﻿/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
 import React, { useState, useEffect } from 'react';
+import { LeadProvider, useLeads } from './context/LeadContext';
+import { ToastProvider, useToast } from './context/ToastContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Sparkles, 
@@ -111,7 +113,7 @@ const seedLeads: Lead[] = [
     profile: {
       id: 'aris-thompson',
       fullName: 'Aris Thompson',
-      headline: 'Founder & CEO of Lexic AI • Generative Legal Intelligence Workspace',
+      headline: 'Founder & CEO of Lexic AI â€¢ Generative Legal Intelligence Workspace',
       currentCompany: 'Lexic AI',
       currentTitle: 'Founder & CEO',
       seniorityLevel: 'Founder',
@@ -240,10 +242,11 @@ async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
   }
 }
 
-export default function App() {
+function Dashboard() {
+  const { leads, isHydrated, saveLeadsToStorage, handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage, handleUpdateLeadNotes, handleUpdateLeadProfile, handleUpdateLeadTags, handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage } = useLeads();
+  const { triggerToast } = useToast();
   const [activeTab, setActiveTab] = useState<'overview' | 'workspace' | 'pipeline' | 'inventory' | 'outreach'>('overview');
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [isHydrated, setIsHydrated] = useState(false);
+  
   const [selectedLeadForOutreach, setSelectedLeadForOutreach] = useState<Lead | null>(null);
   const [authStatus, setAuthStatus] = useState<{hasOAuth: boolean}>({ hasOAuth: false });
 
@@ -273,204 +276,6 @@ export default function App() {
   const [manualUrl, setManualUrl] = useState('');
   const [manualIndustry, setManualIndustry] = useState('Tech');
   const [manualSummary, setManualSummary] = useState('');
-
-  // 1. Load initial CRM leads dataset from local SQLite, migrating legacy browser storage once.
-  useEffect(() => {
-    const sanitizeLeads = (loadedLeads: any[]) => {
-      return loadedLeads.map(l => ({
-        ...l,
-        id: l.id || crypto.randomUUID()
-      }));
-    };
-
-    const loadLegacyBrowserLeads = () => {
-      try {
-        const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
-        if (!legacyStored) return null;
-
-        const parsed = JSON.parse(legacyStored);
-        return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
-      } catch (error) {
-        console.warn('Legacy browser lead migration failed:', error);
-        return null;
-      }
-    };
-
-    const hydrateLeads = async () => {
-      try {
-        const stored = await loadLeadsFromSqliteBackend();
-        if (stored.initialized) {
-          setLeads(sanitizeLeads(stored.leads));
-          return;
-        }
-
-        const initialLeads = loadLegacyBrowserLeads() || sanitizeLeads(seedLeads);
-        setLeads(initialLeads);
-        persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
-      } catch (error) {
-        console.error('SQLite lead load failed:', error);
-        setLeads(loadLegacyBrowserLeads() || sanitizeLeads(seedLeads));
-      } finally {
-        setIsHydrated(true);
-      }
-    };
-
-    hydrateLeads();
-  }, []);
-
-  // 2. Persist active leads array to the local SQLite backend whenever state updates.
-  useEffect(() => {
-    if (!isHydrated) return;
-
-    const timer = setTimeout(() => {
-      persistLeadsToSqliteBackend(leads).catch(error => console.warn('SQLite persist failed:', error));
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [leads, isHydrated]);
-  const saveLeadsToStorage = (updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
-    setLeads(prev => {
-      return typeof updater === 'function' ? updater(prev) : updater;
-    });
-  };
-
-  // 3. Callback to add single scraped profile
-  const handleLeadAdded = (profile: LinkedInProfile) => {
-    saveLeadsToStorage(currentLeads => {
-      const existingKeys = new Set<string>();
-      currentLeads.forEach(lead => buildProfileDedupeKeys(lead.profile).forEach(key => existingKeys.add(key)));
-      const isDup = hasDuplicateProfile(profile, existingKeys);
-
-      if (isDup) {
-        console.warn("Skipped writing duplicate lead to CRM:", profile.fullName);
-        return currentLeads;
-      }
-
-      // Generate a qualification Lead score based on title/profile length
-      const compositeScore = Math.floor(Math.random() * 30) + 65; // realistic 65 - 95 score
-      const predictiveScore = Math.floor(compositeScore * 0.9); // baseline likelihood
-
-      const newLead: Lead = {
-        id: `lead-${Date.now()}`,
-        profile,
-        stage: 'SCRAPED',
-        notes: 'Profile automatically harvested and structured by AI Search Scraper.',
-        createdAt: new Date().toISOString(),
-        tags: ['Scraped Lead', profile.industry || 'Tech'],
-        compositeScore,
-        predictiveScore
-      };
-
-      return [newLead, ...currentLeads];
-    });
-  };
-
-  // 4. Callback to handle bulk lead inputs
-  const handleBulkLeadsAdded = (profiles: QualifiedLeadProfile[]) => {
-    saveLeadsToStorage(currentLeads => {
-      const existingKeys = new Set<string>();
-      currentLeads.forEach(l => buildProfileDedupeKeys(l.profile).forEach(key => existingKeys.add(key)));
-
-      const uniqueProfiles = profiles.filter(p => {
-        if (hasDuplicateProfile(p, existingKeys)) return false;
-        buildProfileDedupeKeys(p).forEach(key => existingKeys.add(key));
-        return true;
-      });
-
-      if (uniqueProfiles.length === 0) {
-        console.warn("All bulk profiles were duplicates, skipping CRM integration.");
-        return currentLeads;
-      }
-
-      const newLeads = uniqueProfiles.map((p, i) => {
-        const hasAccountContext = !!p.companyAccount;
-        const compositeScore = p.scoreOverride || p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
-        const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
-        return {
-          id: `lead-bulk-${Date.now()}-${i}`,
-          profile: p,
-          stage: 'SCRAPED' as Lead['stage'],
-          notes: hasAccountContext
-            ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Ready for LinkedIn MCP verification and enrichment.'}`
-            : 'Discovered via Tavily LinkedIn-indexed search.',
-          createdAt: new Date().toISOString(),
-          tags: hasAccountContext
-            ? ['LinkedIn Indexed', 'Account Context', p.industry || 'Tech']
-            : ['LinkedIn Indexed', p.industry || 'Tech'],
-          compositeScore,
-          predictiveScore,
-          companyAccount: p.companyAccount,
-          decisionMakerVerification: p.decisionMakerVerification,
-          sourceProvider: p.sourceProvider || 'tavily',
-          evidenceReasons: p.evidenceReasons,
-          buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
-        };
-      });
-      return [...newLeads, ...currentLeads];
-    });
-  };
-
-  // 5. Update pipeline stage for CRM Lead
-  const handleUpdateLeadStage = (leadId: string, stage: Lead['stage']) => {
-    saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, stage } : l)
-    );
-  };
-
-  // 6. Update internal notes for a lead
-  const handleUpdateLeadNotes = (leadId: string, notes: string) => {
-    saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, notes } : l)
-    );
-  };
-
-  const handleUpdateLeadProfile = (leadId: string, profileUpdates: Partial<LinkedInProfile>) => {
-    saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, profile: { ...l.profile, ...profileUpdates }, notes: 'Profile dynamically enriched and verified by background AI pipeline.', lastEnrichedAt: new Date().toISOString() } : l)
-    );
-  };
-
-  // 7. Update custom tags for a lead
-  const handleUpdateLeadTags = (leadId: string, tags: string[]) => {
-    saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, tags } : l)
-    );
-  };
-
-  // 8. Delete lead or leads permanently
-  const handleDeleteLead = (leadId: string) => {
-    try {
-      console.log(`[App] Deleting lead ID: ${leadId}`);
-      saveLeadsToStorage(currentLeads => {
-        const nextLeads = currentLeads.filter(l => l.id !== leadId);
-        console.log(`[App] Delete lead - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
-        return nextLeads;
-      });
-    } catch (e) {
-      console.error(`[App] Error during lead deletion:`, e);
-    }
-  };
-
-  const handleDeleteLeads = (leadIds: string[]) => {
-    try {
-      console.log(`[App] Deleting bulk leads count: ${leadIds.length}`);
-      const idSet = new Set(leadIds);
-      saveLeadsToStorage(currentLeads => {
-        const nextLeads = currentLeads.filter(l => !idSet.has(l.id));
-        console.log(`[App] Bulk delete leads - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
-        return nextLeads;
-      });
-    } catch (e) {
-      console.error(`[App] Error during bulk lead deletion:`, e);
-    }
-  };
-
-  const handleUpdateLeadsStage = (leadIds: string[], stage: Lead['stage']) => {
-    const idSet = new Set(leadIds);
-    saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => idSet.has(l.id) ? { ...l, stage } : l)
-    );
-  };
 
   // 9. Manual Creation Dispatch
   const handleManualLeadSubmit = (e: React.FormEvent) => {
@@ -668,11 +473,7 @@ export default function App() {
                   <h2 className="text-xl font-extrabold text-white tracking-tight">Lead Extraction Terminal</h2>
                   <p className="text-xs text-slate-400 mt-1">Acquire prospective detail schemas using direct URL mapping, raw text clipboard extraction, or general criteria discoverers.</p>
                 </div>
-                <ScrapeWorkspace 
-                  leads={leads}
-                  onLeadAdded={handleLeadAdded} 
-                  onBulkLeadsAdded={handleBulkLeadsAdded} 
-                />
+                <ScrapeWorkspace />
               </motion.div>
             )}
 
@@ -709,16 +510,7 @@ export default function App() {
                 exit={{ opacity: 0, y: -15, scale: 0.98 }}
                 transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
               >
-                <LeadTable 
-                  leads={leads}
-                  onUpdateLeadStage={handleUpdateLeadStage}
-                  onUpdateLeadsStage={handleUpdateLeadsStage}
-                  onDeleteLead={handleDeleteLead}
-                  onDeleteLeads={handleDeleteLeads}
-                  onAddManualLead={() => setShowManualModal(true)}
-                  onBulkLeadsAdded={handleBulkLeadsAdded}
-                  onUpdateLeadProfile={handleUpdateLeadProfile}
-                />
+                <LeadTable onAddManualLead={() => setShowManualModal(true)} />
               </motion.div>
             )}
 
@@ -856,11 +648,21 @@ export default function App() {
       {/* Styled Footer */}
       <footer className="bg-slate-900/40 border-t border-indigo-500/10 text-slate-500 text-[10px] text-center py-4">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
-          <span>LinkedIn Scraper & Lead Discovery Platform • Built on Cloud Containers</span>
-          <span className="font-semibold text-slate-400">Structured CRM Integration Suite • Active</span>
+          <span>LinkedIn Scraper & Lead Discovery Platform â€¢ Built on Cloud Containers</span>
+          <span className="font-semibold text-slate-400">Structured CRM Integration Suite â€¢ Active</span>
         </div>
       </footer>
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <LeadProvider>
+        <Dashboard />
+      </LeadProvider>
+    </ToastProvider>
   );
 }

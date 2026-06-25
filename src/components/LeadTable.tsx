@@ -4,6 +4,8 @@
  */
 
 import React, { useState, useRef } from 'react';
+import { useToast } from '../context/ToastContext';
+import { useLeads } from '../context/LeadContext';
 import Papa from 'papaparse';
 import { 
   FileDown, 
@@ -32,22 +34,23 @@ import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@
 
 interface LeadTableProps {
   leads: Lead[];
-  onUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
-  onUpdateLeadsStage?: (leadIds: string[], stage: Lead['stage']) => void;
-  onDeleteLead: (leadId: string) => void;
-  onDeleteLeads?: (leadIds: string[]) => void;
+  handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
+  handleUpdateLeadsStage?: (leadIds: string[], stage: Lead['stage']) => void;
+  handleDeleteLead: (leadId: string) => void;
+  handleDeleteLeads?: (leadIds: string[]) => void;
   onAddManualLead: () => void;
-  onBulkLeadsAdded?: (profiles: LinkedInProfile[]) => void;
-  onUpdateLeadProfile?: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
+  handleBulkLeadsAdded?: (profiles: LinkedInProfile[]) => void;
+  handleUpdateLeadProfile?: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
 }
 
-export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage, onDeleteLead, onDeleteLeads, onAddManualLead, onBulkLeadsAdded, onUpdateLeadProfile }: LeadTableProps) {
+export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => void }) {
+  const { leads, handleUpdateLeadStage, handleUpdateLeadsStage, handleDeleteLead, handleDeleteLeads, handleUpdateLeadProfile, handleBulkLeadsAdded } = useLeads();
+  const { triggerToast } = useToast();
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('All');
   
   // High-fidelity custom toast message state
-  const [toast, setToast] = useState<string | null>(null);
   const [showConfirmBulkDelete, setShowConfirmBulkDelete] = useState(false);
   const [showConfirmPurgeDuplicates, setShowConfirmPurgeDuplicates] = useState(false);
   const [duplicateIdsToDelete, setDuplicateIdsToDelete] = useState<string[]>([]);
@@ -80,7 +83,7 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
       await new Promise(r => setTimeout(r, 800));
       if (isCancelled) return;
 
-      if (onUpdateLeadProfile) {
+      if (handleUpdateLeadProfile) {
         const p = item.profile;
         const updates: Partial<LinkedInProfile> = {};
         
@@ -100,7 +103,7 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
         }
 
         // Even if no specific fields were missing, we still want to mark it as enriched.
-        onUpdateLeadProfile(item.id, updates);
+        handleUpdateLeadProfile(item.id, updates);
         triggerToast(`Successfully verified & enriched record for ${p.fullName}.`);
       }
 
@@ -112,12 +115,8 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
     return () => {
       isCancelled = true;
     };
-  }, [enrichmentQueue, onUpdateLeadProfile]);
+  }, [enrichmentQueue, handleUpdateLeadProfile]);
 
-  const triggerToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 3000);
-  };
 
   const handleTriggerPurgeDuplicates = () => {
     const toDelete: string[] = [];
@@ -157,10 +156,10 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
 
   const handleExecutePurgeDuplicates = () => {
     if (duplicateIdsToDelete.length === 0) return;
-    if (onDeleteLeads) {
-      onDeleteLeads(duplicateIdsToDelete);
+    if (handleDeleteLeads) {
+      handleDeleteLeads(duplicateIdsToDelete);
     } else {
-      duplicateIdsToDelete.forEach(id => onDeleteLead(id));
+      duplicateIdsToDelete.forEach(id => handleDeleteLead(id));
     }
     triggerToast(`Successfully purged ${duplicateIdsToDelete.length} duplicate leads.`);
     setDuplicateIdsToDelete([]);
@@ -275,10 +274,10 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
   // Bulk operators
   const handleBulkStageChange = (stage: Lead['stage']) => {
     if (selectedLeadIds.length === 0) return;
-    if (onUpdateLeadsStage) {
-      onUpdateLeadsStage(selectedLeadIds, stage);
+    if (handleUpdateLeadsStage) {
+      handleUpdateLeadsStage(selectedLeadIds, stage);
     } else {
-      selectedLeadIds.forEach(id => onUpdateLeadStage(id, stage));
+      selectedLeadIds.forEach(id => handleUpdateLeadStage(id, stage));
     }
     triggerToast(`Updated ${selectedLeadIds.length} lead stages to ${stage.toUpperCase()}!`);
     setSelectedLeadIds([]);
@@ -304,10 +303,10 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
 
   const handleBulkDeleteAction = () => {
     if (selectedLeadIds.length === 0) return;
-    if (onDeleteLeads) {
-      onDeleteLeads(selectedLeadIds);
+    if (handleDeleteLeads) {
+      handleDeleteLeads(selectedLeadIds);
     } else {
-      selectedLeadIds.forEach(id => onDeleteLead(id));
+      selectedLeadIds.forEach(id => handleDeleteLead(id));
     }
     triggerToast(`Successfully purged ${selectedLeadIds.length} leads.`);
     setSelectedLeadIds([]);
@@ -459,8 +458,8 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
             };
           });
 
-          if (onBulkLeadsAdded) {
-            onBulkLeadsAdded(newProfiles);
+          if (handleBulkLeadsAdded) {
+            handleBulkLeadsAdded(newProfiles);
             triggerToast(`Successfully ingested and enriched ${newProfiles.length} rows.`);
           }
         } catch (err) {
@@ -497,13 +496,7 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
   return (
     <Card className="shadow-2xl relative">
       <CardContent className="p-6 space-y-6">
-      {/* Absolute high-fidelity floating inline notification toast */}
-      {toast && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-indigo-900/90 text-indigo-100 border border-indigo-500/30 px-4 py-2.5 rounded-full text-xs font-bold shadow-xl flex items-center gap-2.5 backdrop-blur-md z-30 transition-all">
-          <Sparkles className="w-4 h-4 text-indigo-400 animate-spin" />
-          <span>{toast}</span>
-        </div>
-      )}
+
 
       {/* Modern, stylish inline relative verification modal for deletions */}
       {showConfirmBulkDelete && (
@@ -833,7 +826,7 @@ export default function LeadTable({ leads, onUpdateLeadStage, onUpdateLeadsStage
                       variant="ghost"
                       size="icon"
                       onClick={() => {
-                        onDeleteLead(lead.id);
+                        handleDeleteLead(lead.id);
                         setSelectedLeadIds(prev => prev.filter(id => id !== lead.id));
                       }}
                       className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"

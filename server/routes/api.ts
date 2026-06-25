@@ -4,7 +4,7 @@ import fs from 'fs';
 import { getMcpClient } from '../services/mcp.js';
 import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog } from '../db.js';
 import { loadAuth, saveAuth } from '../auth.js';
-import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText } from '../services/llm.js';
+import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
 
 const router = Router();
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -308,7 +308,7 @@ RULES:
 ${excludeNote}
 `;
 
-    const { queries } = await openAIStructured<{ queries: string[] }>(strategistPrompt, searchQueriesSchema, APEX_SYSTEM_PROMPT);
+    const { queries } = await openAIStructured<{ queries: string[] }>(strategistPrompt, searchQueriesSchema, STRATEGIST_SYSTEM_PROMPT);
 
     if (!queries || queries.length === 0) {
       throw new Error('Failed to generate search queries. Try simplifying your prompt.');
@@ -456,28 +456,23 @@ ${excludeNote}
 
     logEvent(`Chunked profiles into ${rawChunks.length} dynamic batches based on string length.`);
 
-    const batchedPrompts = rawChunks.map(chunk => `You are a CRM data extraction engine. The following is raw research data about real professionals found via targeted LinkedIn searches.
-
-Extract each distinct person you can identify and structure them into the JSON array schema.
-Only include people where you have at minimum: a real full name AND a company OR job title.
-Do NOT invent data â€” if a field is unknown, use an empty string.
-For fitScore / intentScore / timingScore: score 1-10 based on visible signals.
+    const batchedPrompts = rawChunks.map(chunk => `Extract each distinct person from the following raw LinkedIn search data. Include only people with at minimum a full name AND a company or job title. Do not invent data — use empty strings for unknown fields.
 
 Raw research:
 ${chunk}`);
 
-    console.log(`[find-leads] Firing ${batchedPrompts.length} parallel extraction tasks...`);
-    const extractionPromises = batchedPrompts.map(prompt => 
-      openAIStructured<any[]>(prompt, leadsArraySchema, APEX_SYSTEM_PROMPT).catch(e => {
-        console.warn('[find-leads] Extraction chunk failed:', e.message);
-        return []; // If one chunk fails, don't crash the whole search
-      })
-    );
-
-    const chunkedResults = await Promise.all(extractionPromises);
+    console.log(`[find-leads] Extracting ${batchedPrompts.length} chunks sequentially...`);
     let leads: any[] = [];
-    for (const res of chunkedResults) {
-      if (Array.isArray(res)) leads.push(...res);
+    for (let i = 0; i < batchedPrompts.length; i++) {
+      try {
+        const chunkResult = await openAIStructured<any[]>(batchedPrompts[i], bulkLeadsArraySchema, EXTRACTION_SYSTEM_PROMPT);
+        if (Array.isArray(chunkResult)) {
+          leads.push(...chunkResult);
+          logEvent(`Chunk ${i + 1}/${batchedPrompts.length}: extracted ${chunkResult.length} leads (running total: ${leads.length})`);
+        }
+      } catch (e: any) {
+        logEvent(`WARN: Chunk ${i + 1}/${batchedPrompts.length} failed — ${e.message}. Continuing with remaining chunks.`);
+      }
     }
 
     if (leads.length === 0) {

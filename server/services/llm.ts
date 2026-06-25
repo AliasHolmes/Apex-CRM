@@ -1,4 +1,4 @@
-﻿import crypto from 'crypto';
+import crypto from 'crypto';
 import { loadAuth, saveAuth } from '../auth.js';
 
 export const Type = {
@@ -100,6 +100,47 @@ export function getGeminiClient(): any {
 const OPENAI_MODEL = 'gpt-5.5';
 const OPENAI_BASE = 'https://api.byesu.com/v1';
 
+/**
+ * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
+ * Prevents indefinite hangs when the LLM proxy is slow or overloaded.
+ * Default: 45s timeout, 2 retries (waits 2s then 4s between attempts).
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  timeoutMs = 45000,
+  maxRetries = 2
+): Promise<Response> {
+  let lastError: Error = new Error('Unknown fetch error');
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      // Retry on 5xx (proxy overload/gateway errors) but not 4xx (bad requests)
+      if (res.status >= 500 && attempt < maxRetries) {
+        const waitMs = Math.pow(2, attempt) * 2000; // 2s, then 4s
+        console.warn(`[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+      return res;
+    } catch (err: any) {
+      clearTimeout(timer);
+      lastError = err?.name === 'AbortError'
+        ? new Error(`LLM request timed out after ${timeoutMs / 1000}s`)
+        : (err instanceof Error ? err : new Error(String(err)));
+      if (attempt < maxRetries) {
+        const waitMs = Math.pow(2, attempt) * 2000;
+        console.warn(`[llm] Fetch error on attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}. Retrying in ${waitMs}ms...`);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
 function normalizeSchema(schema: any): any {
   if (!schema || typeof schema !== 'object') return schema;
@@ -178,7 +219,7 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
   }
   messages.push({ role: 'user', content: prompt });
 
-  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+  const res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
     headers: { 
       'Content-Type': 'application/json',
@@ -218,7 +259,7 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
     { role: 'user', content: prompt }
   ];
 
-  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+  const res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
     headers: { 
       'Content-Type': 'application/json',
@@ -404,4 +445,56 @@ export const searchQueriesSchema = {
     }
   },
   required: ["queries"]
+};
+
+// -----------------------------------------------------------------------------
+// Lean per-task system prompts — scoped to what each call actually needs.
+// Sending the full APEX_SYSTEM_PROMPT (~530 tokens) to every call wastes tokens
+// on irrelevant rules (e.g. outreach golden rules during query generation).
+// -----------------------------------------------------------------------------
+
+/** Minimal prompt for Step 1 — query generation only. */
+export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce precise, targeted search query strings that surface LinkedIn profiles matching the user's lead criteria. Output only valid JSON.`;
+
+/** Focused prompt for Step 3 — bulk extraction only. No outreach or scoring formula needed. */
+export const EXTRACTION_SYSTEM_PROMPT = `You are a CRM data extraction engine. Extract structured lead records from raw search result text and return valid JSON matching the schema exactly.
+Rules: Never invent data. Use empty strings for missing fields. Score fitScore/intentScore/timingScore 1-10 based only on signals visible in the provided text.`;
+
+// -----------------------------------------------------------------------------
+// Trimmed schema for bulk extraction.
+// Drops high-token optional fields (careerSignals, experiences, education,
+// techStackHints, painIndicators) that are better enriched individually on
+// committed leads. Cuts schema token cost from ~800 to ~300 tokens (~40% saving).
+// -----------------------------------------------------------------------------
+
+export const bulkSingleProfileSchema = {
+  type: Type.OBJECT,
+  properties: {
+    fullName: { type: Type.STRING, description: "Person's full name" },
+    headline: { type: Type.STRING, description: "Professional headline" },
+    currentCompany: { type: Type.STRING, description: "Current employer" },
+    currentTitle: { type: Type.STRING, description: "Current role/title" },
+    seniorityLevel: { type: Type.STRING, description: "C-Suite / VP / Director / Manager / IC / Founder" },
+    companySizeEst: { type: Type.STRING, description: "1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN" },
+    location: { type: Type.STRING, description: "City, State or Country" },
+    industry: { type: Type.STRING, description: "Industry category (e.g. Software, Finance, Healthcare)" },
+    summary: { type: Type.STRING, description: "2-sentence professional summary" },
+    contactDetails: {
+      type: Type.OBJECT,
+      properties: {
+        email: { type: Type.STRING, description: "Email if found, or INFERRED pattern" },
+        linkedinUrl: { type: Type.STRING, description: "Full LinkedIn profile URL" },
+        website: { type: Type.STRING, description: "Company or personal website" },
+      },
+    },
+    fitScore: { type: Type.NUMBER, description: "ICP match 1-10" },
+    intentScore: { type: Type.NUMBER, description: "Buying signals 1-10" },
+    timingScore: { type: Type.NUMBER, description: "Recent role change or trigger 1-10" },
+  },
+  required: ["fullName"],
+};
+
+export const bulkLeadsArraySchema = {
+  type: Type.ARRAY,
+  items: bulkSingleProfileSchema,
 };

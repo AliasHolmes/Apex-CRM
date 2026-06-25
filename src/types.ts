@@ -131,6 +131,7 @@ export interface SearchLog {
   generatedQueries: string[];
   status: 'success' | 'error';
   errorMessage?: string;
-  rawResultsCount?: number;
-  leadsFound?: number;
+  rawResultsCount: number;
+  leadsFound: number;
+  detailedLogs?: string;
 }

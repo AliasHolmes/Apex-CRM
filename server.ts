@@ -103,9 +103,16 @@ function getLeadsDb() {
         status TEXT NOT NULL,
         error_message TEXT,
         raw_results_count INTEGER,
-        leads_found INTEGER
+        leads_found INTEGER,
+        detailed_logs TEXT
       );
     `);
+
+    try {
+      db.exec('ALTER TABLE search_logs ADD COLUMN detailed_logs TEXT;');
+    } catch (e) {
+      // Ignore if column already exists
+    }
   }
 
   return leadsDb;
@@ -364,7 +371,6 @@ async function tavilySearch(query: string): Promise<{ text: string; sources: { t
       max_results: maxResults,
       include_answer: false,
       include_raw_content: false,
-      country: process.env.TAVILY_COUNTRY || 'united states',
       include_usage: true,
     }),
   });
@@ -1265,8 +1271,8 @@ function insertSearchLog(log: any) {
   try {
     const db = getLeadsDb();
     const insertStmt = db.prepare(`
-      INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     insertStmt.run(
       log.id,
@@ -1276,7 +1282,8 @@ function insertSearchLog(log: any) {
       log.status,
       log.errorMessage || '',
       log.rawResultsCount || 0,
-      log.leadsFound || 0
+      log.leadsFound || 0,
+      log.detailedLogs || ''
     );
 
     // Keep only last 20 (first in, last out mode)
@@ -1308,7 +1315,8 @@ app.get('/api/search-logs', (req, res): any => {
       status: r.status,
       errorMessage: r.error_message,
       rawResultsCount: r.raw_results_count,
-      leadsFound: r.leads_found
+      leadsFound: r.leads_found,
+      detailedLogs: r.detailed_logs
     }));
     res.json(logs);
   } catch (error: any) {
@@ -1320,6 +1328,9 @@ app.get('/api/search-logs', (req, res): any => {
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 app.post('/api/find-leads', async (req, res): Promise<any> => {
   const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  const sessionLogs: string[] = [];
+  const logEvent = (msg: string) => { const line = `[${new Date().toISOString()}] ${msg}`; console.log(line); sessionLogs.push(line); };
+  logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
   let generatedQueries: string[] = [];
   let rawResultsCount = 0;
   let leadsFound = 0;
@@ -1347,8 +1358,8 @@ app.post('/api/find-leads', async (req, res): Promise<any> => {
 Your task is to generate exactly 3 highly targeted search queries to find these specific profiles. 
 RULES:
 1. Tavily Search does NOT support complex Google Dorks or boolean operators (AND, OR, parentheses). Do NOT use them.
-2. Every single query MUST start with "site:linkedin.com/in/ " to ensure we only find human LinkedIn profiles.
-3. Follow the site operator with simple, natural language keywords (e.g. "site:linkedin.com/in/ Founder Marketing Agency New York").
+2. Generate simple, natural language keyword strings (e.g. "Founder Marketing Agency New York").
+3. DO NOT use the word "linkedin" or the "site:" operator. Just provide the raw keywords.
 4. Keep the 3 queries distinct from each other to cast a wide but highly relevant net.
 ${excludeNote}
 `;
@@ -1359,20 +1370,25 @@ ${excludeNote}
       throw new Error('Failed to generate search queries. Try simplifying your prompt.');
     }
 
-    generatedQueries = queries;
-    console.log(`[find-leads] Executing parallel searches for queries:`, queries);
+    // Programmatically prepend the site operator to prevent LLM formatting errors
+    generatedQueries = queries.map(q => {
+      const cleanQ = q.replace(/site:linkedin\.com\/in\//gi, '').replace(/linkedin/gi, '').trim();
+      return `site:linkedin.com/in/ ${cleanQ}`;
+    });
+
+    console.log(`[find-leads] Executing parallel searches for queries:`, generatedQueries);
 
     // Step 2: Execute Parallel Searches and Deduplicate
-    const searchPromises = queries.map(q => tavilySearch(q).catch(e => {
-      console.warn(`Search failed for query "${q}":`, e.message);
+    const searchPromises = generatedQueries.map(q => tavilySearch(q).catch(e => {
+      logEvent(`WARN: Search failed for query "${q}": ` + (e.message));
       return { text: '', sources: [], items: [] };
     }));
     
     const searchResults = await Promise.all(searchPromises);
 
-    // Deduplicate by URL
+    // Step 2.5: Deduplication & Deep Enrichment via LinkedIn MCP
     const uniqueUrls = new Set<string>();
-    const snippets: string[] = [];
+    const rawItems: any[] = [];
 
     for (const result of searchResults) {
       if (result.items && Array.isArray(result.items)) {
@@ -1380,19 +1396,66 @@ ${excludeNote}
           const url = item.url || '';
           if (url && !uniqueUrls.has(url)) {
             uniqueUrls.add(url);
-            const title = item.title || 'Untitled result';
-            const snippet = item.content || item.raw_content || '';
-            snippets.push(`Title: ${title}\nLink: ${url}\nSnippet: ${snippet}\n\n`);
+            rawItems.push(item);
           }
         }
       }
     }
 
-    rawResultsCount = snippets.length;
+    rawResultsCount = rawItems.length;
 
     if (rawResultsCount === 0) {
       throw new Error('All searches returned no results. Try different search criteria.');
     }
+
+    console.log(`[find-leads] Found ${rawResultsCount} unique raw results.`);
+
+    const maxEnrichments = Math.max(limit * 2, 10);
+    let enrichmentCount = 0;
+
+    // Process deep enrichment in parallel to drastically increase speed
+    const enrichmentPromises = rawItems.map(async (item, index) => {
+      const url = item.url || '';
+      const title = item.title || 'Untitled result';
+      const snippet = item.content || item.raw_content || '';
+      
+      let enrichedData = '';
+      
+      // Only enrich the first N results to prevent triggering anti-bot protections, but do it in parallel
+      if (mcpLinkedinClient && url.includes('linkedin.com/in/') && index < maxEnrichments) {
+        try {
+          const match = url.match(/linkedin\.com\/in\/([^\/?]+)/i);
+          if (match && match[1]) {
+            const username = match[1];
+            console.log(`[find-leads] Deep enriching profile via MCP in parallel: ${username}`);
+            const result = await mcpLinkedinClient.callTool({
+              name: 'get_person_profile',
+              arguments: {
+                linkedin_username: username,
+                sections: "experience,education,posts"
+              }
+            }) as any;
+            
+            if (result && result.content && result.content.length > 0) {
+              enrichedData = result.content[0].text || '';
+              enrichmentCount++;
+            }
+          }
+        } catch (error: any) {
+          console.warn(`[find-leads] MCP deep enrichment failed for ${url}:`, error.message);
+        }
+      }
+      
+      if (enrichedData) {
+        return `Title: ${title}\nLink: ${url}\n[NATIVE MCP PROFILE DATA]\n${enrichedData}\n\n`;
+      } else {
+        return `Title: ${title}\nLink: ${url}\n[TAVILY SNIPPET]\n${snippet}\n\n`;
+      }
+    });
+
+    const snippets = await Promise.all(enrichmentPromises);
+
+    console.log(`[find-leads] Deep enriched ${enrichmentCount} profiles via LinkedIn MCP.`);
 
     console.log(`[find-leads] Found ${rawResultsCount} unique raw results to extract leads from.`);
 
@@ -1458,6 +1521,8 @@ ${chunk}`;
 
     leadsFound = filtered.length;
 
+    const detailedLogsText = sessionLogs.join('\n');
+    require('fs').appendFileSync('adaptive_mining_terminal.log', detailedLogsText + '\n\n');
     insertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),
@@ -1466,13 +1531,16 @@ ${chunk}`;
       status: 'success',
       errorMessage: '',
       rawResultsCount,
-      leadsFound
+      leadsFound,
+      detailedLogs: detailedLogsText
     });
 
     res.json({ leads: filtered, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
     
+    const detailedLogsText = sessionLogs.join('\n');
+    require('fs').appendFileSync('adaptive_mining_terminal.log', detailedLogsText + '\n\n');
     insertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),

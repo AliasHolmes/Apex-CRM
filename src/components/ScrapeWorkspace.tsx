@@ -860,6 +860,14 @@ Everything else is noise.`)}
                           </>
                         )}
                       </div>
+                      {log.detailedLogs && (
+                        <div className="mt-4 pt-3 border-t border-slate-800/50">
+                          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Adaptive Terminal Output</p>
+                          <pre className="text-[10px] sm:text-xs text-slate-400 font-mono bg-slate-950 p-3 rounded overflow-x-auto border border-slate-800 max-h-64 custom-scrollbar whitespace-pre-wrap">
+                            {log.detailedLogs}
+                          </pre>
+                        </div>
+                      )}
                     </div>
                   ))
                 )}

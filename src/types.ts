@@ -123,3 +123,14 @@ export interface ScrapingTask {
   resultCount?: number;
   createdAt: string;
 }
+
+export interface SearchLog {
+  id: string;
+  timestamp: string;
+  prompt: string;
+  generatedQueries: string[];
+  status: 'success' | 'error';
+  errorMessage?: string;
+  rawResultsCount?: number;
+  leadsFound?: number;
+}

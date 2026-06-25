@@ -94,6 +94,17 @@ function getLeadsDb() {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS search_logs (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        generated_queries TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error_message TEXT,
+        raw_results_count INTEGER,
+        leads_found INTEGER
+      );
     `);
   }
 
@@ -336,7 +347,7 @@ function normalizeSchema(schema: any): any {
  * Calls Tavily Search directly.
  * Returns raw text (titles + snippets) + source links for downstream extraction.
  */
-async function tavilySearch(query: string): Promise<{ text: string; sources: { title: string; uri: string }[] }> {
+async function tavilySearch(query: string): Promise<{ text: string; sources: { title: string; uri: string }[], items: any[] }> {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
 
@@ -353,7 +364,6 @@ async function tavilySearch(query: string): Promise<{ text: string; sources: { t
       max_results: maxResults,
       include_answer: false,
       include_raw_content: false,
-      include_domains: ['linkedin.com'],
       country: process.env.TAVILY_COUNTRY || 'united states',
       include_usage: true,
     }),
@@ -378,7 +388,7 @@ async function tavilySearch(query: string): Promise<{ text: string; sources: { t
     if (url) sources.push({ title, uri: url });
   }
 
-  return { text, sources };
+  return { text, sources, items };
 }
 
 /**
@@ -608,6 +618,18 @@ Refuse to generate outreach copy that:
 const leadsArraySchema = {
   type: Type.ARRAY,
   items: singleProfileSchema,
+};
+
+const searchQueriesSchema = {
+  type: Type.OBJECT,
+  properties: {
+    queries: {
+      type: Type.ARRAY,
+      description: "Array of highly targeted boolean search queries.",
+      items: { type: Type.STRING }
+    }
+  },
+  required: ["queries"]
 };
 
 // -----------------------------------------------------------------------------
@@ -1236,46 +1258,191 @@ ${pastedText}`;
   }
 });
 
+// -----------------------------------------------------------------------------
+// Search Logging Utility
+// -----------------------------------------------------------------------------
+function insertSearchLog(log: any) {
+  try {
+    const db = getLeadsDb();
+    const insertStmt = db.prepare(`
+      INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertStmt.run(
+      log.id,
+      log.timestamp,
+      log.prompt,
+      JSON.stringify(log.generatedQueries || []),
+      log.status,
+      log.errorMessage || '',
+      log.rawResultsCount || 0,
+      log.leadsFound || 0
+    );
+
+    // Keep only last 20 (first in, last out mode)
+    const cullStmt = db.prepare(`
+      DELETE FROM search_logs 
+      WHERE id NOT IN (
+        SELECT id FROM search_logs 
+        ORDER BY timestamp DESC 
+        LIMIT 20
+      )
+    `);
+    cullStmt.run();
+  } catch (err) {
+    console.error('Failed to write search log to DB:', err);
+  }
+}
+
+app.get('/api/search-logs', (req, res): any => {
+  try {
+    const db = getLeadsDb();
+    const stmt = db.prepare('SELECT * FROM search_logs ORDER BY timestamp DESC');
+    const rows = stmt.all() as any[];
+    
+    const logs = rows.map(r => ({
+      id: r.id,
+      timestamp: r.timestamp,
+      prompt: r.prompt,
+      generatedQueries: JSON.parse(r.generated_queries || '[]'),
+      status: r.status,
+      errorMessage: r.error_message,
+      rawResultsCount: r.raw_results_count,
+      leadsFound: r.leads_found
+    }));
+    res.json(logs);
+  } catch (error: any) {
+    console.error('Failed to read search logs:', error);
+    res.status(500).json({ error: 'Failed to retrieve search logs.' });
+  }
+});
+
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 app.post('/api/find-leads', async (req, res): Promise<any> => {
+  const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  let generatedQueries: string[] = [];
+  let rawResultsCount = 0;
+  let leadsFound = 0;
+  const promptQuery = req.body.query || '';
+
   try {
     const { query, limit = 5, excludeList = [] } = req.body;
     if (!query) {
-      return res.status(400).json({ error: 'Search criteria/query is required' });
+      throw new Error('Search criteria/query is required');
     }
 
     if (!hasOpenAIKey()) {
-      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.' });
+      throw new Error('OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.');
     }
 
-    // Step 1: Tavily Search - find real professionals from public LinkedIn-indexed snippets
-    console.log(`[find-leads] Searching Tavily for ${limit} leads: ${query}`);
+    // Step 1: The Search Strategist - Generate optimized boolean search queries
+    console.log(`[find-leads] Generating search queries for: ${query}`);
     const excludeNote = excludeList.length > 0
-      ? `\n\nIMPORTANT: Do NOT include any of these already-known people or emails: ${excludeList.slice(0, 20).join(', ')}`
+      ? `\n\nIMPORTANT: Do NOT include any of these already-known people or emails in your search keywords: ${excludeList.slice(0, 20).join(', ')}`
       : '';
 
-    const { text: rawText } = await tavilySearch(`${query}`);
+    const strategistPrompt = `You are an expert search strategist. The user is looking for leads matching the following description:
+"${query}"
 
-    if (!rawText || rawText.length < 100) {
-      throw new Error('Search returned no results. Try different search criteria.');
+Your task is to generate exactly 3 highly targeted search queries to find these specific profiles. 
+RULES:
+1. Tavily Search does NOT support complex Google Dorks or boolean operators (AND, OR, parentheses). Do NOT use them.
+2. Every single query MUST start with "site:linkedin.com/in/ " to ensure we only find human LinkedIn profiles.
+3. Follow the site operator with simple, natural language keywords (e.g. "site:linkedin.com/in/ Founder Marketing Agency New York").
+4. Keep the 3 queries distinct from each other to cast a wide but highly relevant net.
+${excludeNote}
+`;
+
+    const { queries } = await openAIStructured<{ queries: string[] }>(strategistPrompt, searchQueriesSchema, APEX_SYSTEM_PROMPT);
+
+    if (!queries || queries.length === 0) {
+      throw new Error('Failed to generate search queries. Try simplifying your prompt.');
     }
 
-    // Step 2: Structure the raw results into lead array
-    const structurePrompt = `You are a CRM data extraction engine. The following is raw research data about ${limit} real professionals found via Tavily Search over public LinkedIn-indexed snippets.
+    generatedQueries = queries;
+    console.log(`[find-leads] Executing parallel searches for queries:`, queries);
+
+    // Step 2: Execute Parallel Searches and Deduplicate
+    const searchPromises = queries.map(q => tavilySearch(q).catch(e => {
+      console.warn(`Search failed for query "${q}":`, e.message);
+      return { text: '', sources: [], items: [] };
+    }));
+    
+    const searchResults = await Promise.all(searchPromises);
+
+    // Deduplicate by URL
+    const uniqueUrls = new Set<string>();
+    const snippets: string[] = [];
+
+    for (const result of searchResults) {
+      if (result.items && Array.isArray(result.items)) {
+        for (const item of result.items) {
+          const url = item.url || '';
+          if (url && !uniqueUrls.has(url)) {
+            uniqueUrls.add(url);
+            const title = item.title || 'Untitled result';
+            const snippet = item.content || item.raw_content || '';
+            snippets.push(`Title: ${title}\nLink: ${url}\nSnippet: ${snippet}\n\n`);
+          }
+        }
+      }
+    }
+
+    rawResultsCount = snippets.length;
+
+    if (rawResultsCount === 0) {
+      throw new Error('All searches returned no results. Try different search criteria.');
+    }
+
+    console.log(`[find-leads] Found ${rawResultsCount} unique raw results to extract leads from.`);
+
+    // Step 3: Structure the raw results in parallel batches to prevent proxy 524 timeouts
+    // Generating large JSON arrays from massive text prompts takes > 100s, triggering Cloudflare timeouts.
+    // By chunking the text into batches of 5, the LLM processes each in ~15s concurrently.
+    const CHUNK_SIZE = 5;
+    const batchedPrompts: string[] = [];
+    for (let i = 0; i < snippets.length; i += CHUNK_SIZE) {
+      const chunk = snippets.slice(i, i + CHUNK_SIZE).join('');
+      const structurePrompt = `You are a CRM data extraction engine. The following is raw research data about real professionals found via targeted LinkedIn searches.
 
 Extract each distinct person you can identify and structure them into the JSON array schema.
 Only include people where you have at minimum: a real full name AND a company OR job title.
 Do NOT invent data — if a field is unknown, use an empty string.
 For fitScore / intentScore / timingScore: score 1-10 based on visible signals.
-Target exactly ${limit} profiles if enough data is available.
 
 Raw research:
-${rawText}`;
+${chunk}`;
+      batchedPrompts.push(structurePrompt);
+    }
 
-    const leads = await openAIStructured<any[]>(structurePrompt, leadsArraySchema, APEX_SYSTEM_PROMPT);
+    console.log(`[find-leads] Firing ${batchedPrompts.length} parallel extraction tasks...`);
+    const extractionPromises = batchedPrompts.map(prompt => 
+      openAIStructured<any[]>(prompt, leadsArraySchema, APEX_SYSTEM_PROMPT).catch(e => {
+        console.warn('[find-leads] Extraction chunk failed:', e.message);
+        return []; // If one chunk fails, don't crash the whole search
+      })
+    );
 
-    if (!Array.isArray(leads) || leads.length === 0) {
+    const chunkedResults = await Promise.all(extractionPromises);
+    let leads: any[] = [];
+    for (const res of chunkedResults) {
+      if (Array.isArray(res)) leads.push(...res);
+    }
+
+    if (leads.length === 0) {
       throw new Error('Could not extract any profiles from search results. Try more specific criteria.');
+    }
+
+    // Sort all extracted leads globally by score so we keep the absolute best ones
+    leads.sort((a, b) => {
+      const scoreA = a.predictiveScore || a.compositeScore || a.fitScore || 0;
+      const scoreB = b.predictiveScore || b.compositeScore || b.fitScore || 0;
+      return scoreB - scoreA;
+    });
+
+    // Trim down to the exact requested limit
+    if (leads.length > limit) {
+      leads = leads.slice(0, limit);
     }
 
     // Filter out any entries that match the exclude list
@@ -1289,9 +1456,34 @@ ${rawText}`;
       });
     });
 
+    leadsFound = filtered.length;
+
+    insertSearchLog({
+      id: sessionId,
+      timestamp: new Date().toISOString(),
+      prompt: promptQuery,
+      generatedQueries,
+      status: 'success',
+      errorMessage: '',
+      rawResultsCount,
+      leadsFound
+    });
+
     res.json({ leads: filtered, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
+    
+    insertSearchLog({
+      id: sessionId,
+      timestamp: new Date().toISOString(),
+      prompt: promptQuery,
+      generatedQueries,
+      status: 'error',
+      errorMessage: error.message || 'Failed to locate leads.',
+      rawResultsCount,
+      leadsFound: 0
+    });
+
     res.status(500).json({ error: error.message || 'Failed to locate leads.' });
   }
 });

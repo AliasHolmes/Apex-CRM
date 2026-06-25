@@ -18,7 +18,7 @@ import {
   History,
   FileSpreadsheet
 } from 'lucide-react';
-import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile } from '../types';
+import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile, SearchLog } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -52,6 +52,18 @@ export default function ScrapeWorkspace({ leads, onLeadAdded, onBulkLeadsAdded }
 
   // Diagnostic Terminal States for Adaptive Scraping & Nudge Logs
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  
+  const [showLogs, setShowLogs] = useState(false);
+  const [searchLogs, setSearchLogs] = useState<SearchLog[]>([]);
+
+  useEffect(() => {
+    if (showLogs) {
+      fetch('/api/search-logs')
+        .then(r => r.json())
+        .then(data => setSearchLogs(data))
+        .catch(console.error);
+    }
+  }, [showLogs]);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -790,8 +802,72 @@ Everything else is noise.`)}
             </div>
           </div>
         </div>
+
+        <div className="mt-4 flex justify-end">
+          <Button variant="outline" size="sm" onClick={() => setShowLogs(true)} className="gap-2 text-slate-300">
+            <History className="w-4 h-4" /> View Search Session Logs
+          </Button>
+        </div>
         </CardContent>
       </Card>
+
+      <AnimatePresence>
+        {showLogs && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col shadow-2xl"
+            >
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
+                <h3 className="font-bold text-lg text-slate-200 flex items-center gap-2">
+                  <History className="w-5 h-5 text-indigo-400" /> Agentic Search Session Logs
+                </h3>
+                <Button variant="ghost" size="sm" onClick={() => setShowLogs(false)}>Close</Button>
+              </div>
+              <div className="p-4 overflow-y-auto flex-1 space-y-4 custom-scrollbar">
+                {searchLogs.length === 0 ? (
+                  <p className="text-slate-500 text-center py-8">No search logs found.</p>
+                ) : (
+                  searchLogs.map(log => (
+                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</div>
+                        <Badge variant="outline" className={log.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : 'text-rose-400 border-rose-500/30'}>
+                          {log.status.toUpperCase()}
+                        </Badge>
+                      </div>
+                      <div className="mb-3">
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Original Prompt</p>
+                        <p className="text-sm text-slate-200 italic">"{log.prompt}"</p>
+                      </div>
+                      <div className="mb-3">
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">LLM Generated Queries</p>
+                        <ul className="list-disc pl-5 space-y-1">
+                          {log.generatedQueries.map((q, i) => (
+                            <li key={i} className="text-xs text-indigo-300 font-mono">{q}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="flex gap-4 mt-3 pt-3 border-t border-slate-800">
+                        {log.status === 'error' ? (
+                          <div className="text-xs text-rose-400"><span className="font-semibold text-rose-500">Error:</span> {log.errorMessage}</div>
+                        ) : (
+                          <>
+                            <div className="text-xs text-slate-400"><span className="text-slate-300 font-semibold">{log.rawResultsCount}</span> raw results found</div>
+                            <div className="text-xs text-slate-400"><span className="text-emerald-400 font-semibold">{log.leadsFound}</span> leads extracted</div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

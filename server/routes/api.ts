@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
-import { getMcpClient } from '../services/mcp.js';
+
 import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog } from '../db.js';
 import { loadAuth, saveAuth } from '../auth.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
@@ -12,25 +12,6 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = process.env.APP_URL ? (process.env.APP_URL + '/api/auth/google/callback') : 'http://localhost:3000/api/auth/google/callback';
 let codeVerifierCache = '';
 
-router.post('/mcp/linkedin', async (req, res): Promise<any> => {
-  if (!getMcpClient()) {
-    return res.status(503).json({ error: 'LinkedIn MCP client is not initialized.' });
-  }
-  try {
-    const { toolName, args } = req.body;
-    if (!toolName) {
-      return res.status(400).json({ error: 'toolName is required.' });
-    }
-    const result = await getMcpClient().callTool({
-      name: toolName,
-      arguments: args || {}
-    }, undefined, { timeout: 120000 });
-    res.json(result);
-  } catch (error: any) {
-    console.error(`[MCP] Tool call failed:`, error);
-    res.status(500).json({ error: error.message || 'Failed to call MCP tool.' });
-  }
-});
 
 router.get('/leads', (req, res): any => {
   try {
@@ -330,7 +311,7 @@ ${excludeNote}
     
     const searchResults = await Promise.all(searchPromises);
 
-    // Step 2.5: Deduplication & Deep Enrichment via LinkedIn MCP
+    // Step 2.5: Deduplication
     const uniqueUsernames = new Set<string>();
     const rawItems: any[] = [];
 
@@ -359,78 +340,18 @@ ${excludeNote}
 
     console.log(`[find-leads] Found ${rawResultsCount} unique raw results.`);
 
-    const maxEnrichments = Math.max(limit * 2, 10);
-    let enrichmentCount = 0;
-
-    let mcpHung = false;
-    let consecutiveMcpFailures = 0;
-
-    // Process deep enrichment sequentially to drastically reduce timeout errors
+    // Build snippets directly from Tavily search results
     const snippets: string[] = [];
     for (let index = 0; index < rawItems.length; index++) {
       const item = rawItems[index];
       const url = item.url || '';
       const title = item.title || 'Untitled result';
       const snippet = item.content || item.raw_content || '';
-      
-      let enrichedData = '';
-      
-      // Only enrich the first N results to prevent triggering anti-bot protections
-      if (!mcpHung && getMcpClient() && url.includes('linkedin.com/in/') && index < maxEnrichments) {
-        try {
-          const match = url.match(/linkedin\.com\/in\/([^\/?]+)/i);
-          if (match && match[1]) {
-            const username = match[1];
-
-            logEvent(`Deep enriching profile via MCP sequentially: ${username}`);
-            
-            // Promise.race to enforce a strict timeout since the Python MCP server can hang
-            const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Local timeout: MCP server took too long loading LinkedIn profile')), 45000)
-            );
-            
-            const result = await Promise.race([
-              getMcpClient().callTool({
-                name: 'get_person_profile',
-                arguments: {
-                  linkedin_username: username
-                }
-              }, undefined, { timeout: 120000 }),
-              timeoutPromise
-            ]) as any;
-            
-            if (result && result.content && result.content.length > 0) {
-              enrichedData = result.content[0].text || '';
-              enrichmentCount++;
-              consecutiveMcpFailures = 0; // reset on success
-            }
-            
-            // Jitter after each request to avoid rate limits
-            const jitterMs = 1500 + Math.floor(Math.random() * 1000);
-            logEvent(`Delaying next MCP fetch by ${jitterMs}ms (Anti-Bot Jitter)`);
-            await new Promise(r => setTimeout(r, jitterMs));
-          }
-        } catch (error: any) {
-          console.warn(`[find-leads] MCP deep enrichment failed for ${url}:`, error.message);
-          consecutiveMcpFailures++;
-          if (consecutiveMcpFailures >= 2) {
-            console.warn(`[find-leads] MCP failed 2 times in a row. Likely blocked by an auth wall or captcha. Bypassing MCP to save time.`);
-            logEvent(`MCP server seems blocked by Auth wall. Disabling MCP for the rest of this batch.`);
-            mcpHung = true;
-          }
-        }
-      }
-      
-      if (enrichedData) {
-        snippets.push(`Title: ${title}\nLink: ${url}\n[NATIVE MCP PROFILE DATA]\n${enrichedData}\n\n`);
-      } else {
-        snippets.push(`Title: ${title}\nLink: ${url}\n[TAVILY SNIPPET]\n${snippet}\n\n`);
-      }
+      snippets.push(`Title: ${title}\nLink: ${url}\n[TAVILY SNIPPET]\n${snippet}\n\n`);
     }
 
-    console.log(`[find-leads] Deep enriched ${enrichmentCount} profiles via LinkedIn MCP.`);
-
     console.log(`[find-leads] Found ${rawResultsCount} unique raw results to extract leads from.`);
+
 
     // Step 3: Structure the raw results in dynamic token-aware parallel batches
     // Generating large JSON arrays from massive text prompts takes > 100s, triggering Cloudflare timeouts.

@@ -1,4 +1,4 @@
-﻿import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Lead, LinkedInProfile, QualifiedLeadProfile } from '../types';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 
@@ -336,7 +336,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           profile: p,
           stage: 'SCRAPED' as Lead['stage'],
           notes: hasAccountContext
-            ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Ready for LinkedIn MCP verification and enrichment.'}`
+            ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Review profile and advance to outreach.'}`
             : 'Discovered via Tavily LinkedIn-indexed search.',
           createdAt: new Date().toISOString(),
           tags: hasAccountContext

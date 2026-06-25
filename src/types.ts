@@ -82,7 +82,7 @@ export interface DecisionMakerVerification {
 export interface QualifiedLeadProfile extends LinkedInProfile {
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
-  sourceProvider?: 'tavily' | 'linkedin-mcp' | 'manual' | 'import';
+  sourceProvider?: 'tavily' | 'manual' | 'import';
   scoreOverride?: number;
   evidenceReasons?: string[];
 }
@@ -111,7 +111,7 @@ export interface Lead {
   buyingSignalsDetected?: string[];
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
-  sourceProvider?: 'tavily' | 'linkedin-mcp' | 'manual' | 'import';
+  sourceProvider?: 'tavily' | 'manual' | 'import';
   evidenceReasons?: string[];
 }
 

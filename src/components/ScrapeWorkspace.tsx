@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -545,7 +545,7 @@ Everything else is noise.`)}
                     />
                   </div>
                   <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-[11px] text-indigo-200 leading-relaxed">
-                    Tavily scouts public LinkedIn-indexed results first. LinkedIn MCP enrichment will plug into this same discovery path as the verification layer.
+                    Tavily scouts public LinkedIn-indexed results and extracts structured candidate records automatically.
                   </div>
 
                   <div className="flex justify-end">
@@ -627,7 +627,7 @@ Everything else is noise.`)}
               </div>
 
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                <strong>LinkedIn Discovery:</strong> Tavily searches public LinkedIn-indexed snippets, Apex extracts structured candidate records, and the next LinkedIn MCP layer can verify/enrich selected profiles through your logged-in session.
+                <strong>LinkedIn Discovery:</strong> Tavily searches public LinkedIn-indexed snippets and Apex extracts structured candidate records directly — no additional login or browser session required.
               </p>
             </form>
             </TabsContent>

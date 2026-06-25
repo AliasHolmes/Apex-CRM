@@ -8,7 +8,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import apiRouter from './server/routes/api.js';
-import { initMcpClients } from './server/services/mcp.js';
+
 
 // Load environment variables
 dotenv.config();
@@ -26,7 +26,6 @@ app.use('/api', apiRouter);
 // -----------------------------------------------------------------------------
 
 async function startServer() {
-  await initMcpClients();
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

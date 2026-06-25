@@ -21,7 +21,12 @@ export async function initMcpClients() {
 
     const transport = new StdioClientTransport({
       command: mcpCommand,
-      args: ['--user-data-dir', profilePath]
+      args: ['--user-data-dir', profilePath],
+      env: {
+        ...process.env,
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8',
+      }
     });
 
     const client = new Client(
@@ -29,7 +34,7 @@ export async function initMcpClients() {
       { capabilities: {} }
     );
 
-    await client.connect(transport);
+    await client.connect(transport, { timeout: 90000 });
     mcpLinkedinClient = client;
     console.log('[MCP] Connected to standalone LinkedIn MCP server.');
     console.log(`[MCP] Using local session profile: ${profilePath}`);

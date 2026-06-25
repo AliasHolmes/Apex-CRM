@@ -24,7 +24,7 @@ router.post('/mcp/linkedin', async (req, res): Promise<any> => {
     const result = await getMcpClient().callTool({
       name: toolName,
       arguments: args || {}
-    });
+    }, undefined, { timeout: 120000 });
     res.json(result);
   } catch (error: any) {
     console.error(`[MCP] Tool call failed:`, error);
@@ -384,19 +384,18 @@ ${excludeNote}
 
             logEvent(`Deep enriching profile via MCP sequentially: ${username}`);
             
-            // Promise.race to enforce a strict 15-second timeout since python MCP server might hang
+            // Promise.race to enforce a strict timeout since the Python MCP server can hang
             const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Local timeout: MCP server took too long (likely stuck on login wall)')), 15000)
+              setTimeout(() => reject(new Error('Local timeout: MCP server took too long loading LinkedIn profile')), 45000)
             );
             
             const result = await Promise.race([
               getMcpClient().callTool({
                 name: 'get_person_profile',
                 arguments: {
-                  linkedin_username: username,
-                  sections: "experience,education,posts"
+                  linkedin_username: username
                 }
-              }),
+              }, undefined, { timeout: 120000 }),
               timeoutPromise
             ]) as any;
             

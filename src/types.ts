@@ -155,7 +155,7 @@ export interface SearchLog {
   timestamp: string;
   prompt: string;
   generatedQueries: string[];
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'running';
   errorMessage?: string;
   rawResultsCount: number;
   leadsFound: number;

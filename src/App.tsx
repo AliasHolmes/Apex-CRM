@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -113,7 +113,7 @@ const seedLeads: Lead[] = [
     profile: {
       id: 'aris-thompson',
       fullName: 'Aris Thompson',
-      headline: 'Founder & CEO of Lexic AI â€¢ Generative Legal Intelligence Workspace',
+      headline: 'Founder & CEO of Lexic AI - Generative Legal Intelligence Workspace',
       currentCompany: 'Lexic AI',
       currentTitle: 'Founder & CEO',
       seniorityLevel: 'Founder',
@@ -448,7 +448,14 @@ function Dashboard() {
         
         {/* Dynamic Navigation Content Layout */}
         <div className="space-y-6">
-          <AnimatePresence mode="wait">
+                    <div className={activeTab === 'workspace' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'workspace'}>
+            <div className="mb-6">
+              <h2 className="text-xl font-extrabold text-white tracking-tight">Lead Extraction Terminal</h2>
+              <p className="text-xs text-slate-400 mt-1">Acquire prospective detail schemas using direct URL mapping, raw text clipboard extraction, or general criteria discoverers.</p>
+            </div>
+            <ScrapeWorkspace />
+          </div>
+<AnimatePresence mode="wait">
             {activeTab === 'overview' && (
               <motion.div
                 key="tab-overview"
@@ -460,23 +467,6 @@ function Dashboard() {
                 <CrmOverview leads={leads} />
               </motion.div>
             )}
-
-            {activeTab === 'workspace' && (
-              <motion.div
-                key="tab-workspace"
-                initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -15, scale: 0.98 }}
-                transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-              >
-                <div className="mb-6">
-                  <h2 className="text-xl font-extrabold text-white tracking-tight">Lead Extraction Terminal</h2>
-                  <p className="text-xs text-slate-400 mt-1">Acquire prospective detail schemas using direct URL mapping, raw text clipboard extraction, or general criteria discoverers.</p>
-                </div>
-                <ScrapeWorkspace />
-              </motion.div>
-            )}
-
             {activeTab === 'pipeline' && (
               <motion.div
                 key="tab-pipeline"
@@ -648,8 +638,8 @@ function Dashboard() {
       {/* Styled Footer */}
       <footer className="bg-slate-900/40 border-t border-indigo-500/10 text-slate-500 text-[10px] text-center py-4">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
-          <span>LinkedIn Scraper & Lead Discovery Platform â€¢ Built on Cloud Containers</span>
-          <span className="font-semibold text-slate-400">Structured CRM Integration Suite â€¢ Active</span>
+          <span>LinkedIn Scraper & Lead Discovery Platform - Built on Cloud Containers</span>
+          <span className="font-semibold text-slate-400">Structured CRM Integration Suite - Active</span>
         </div>
       </footer>
 

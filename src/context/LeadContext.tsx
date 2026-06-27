@@ -69,7 +69,7 @@ const seedLeads: Lead[] = [
     profile: {
       id: 'aris-thompson',
       fullName: 'Aris Thompson',
-      headline: 'Founder & CEO of Lexic AI â€¢ Generative Legal Intelligence Workspace',
+      headline: 'Founder & CEO of Lexic AI - Generative Legal Intelligence Workspace',
       currentCompany: 'Lexic AI',
       currentTitle: 'Founder & CEO',
       seniorityLevel: 'Founder',

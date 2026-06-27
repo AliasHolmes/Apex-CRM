@@ -167,7 +167,7 @@ router.post('/scrape-url', async (req, res): Promise<any> => {
     // Step 2: Structure the raw search result into CRM schema
     const structurePrompt = `You are a CRM data extraction engine. Convert the following raw professional profile research into a structured JSON object.
 
-If a field is not found in the research, use an empty string â€” do NOT invent data.
+If a field is not found in the research, use an empty string - do NOT invent data.
 For the fitScore, intentScore, and timingScore: score 1-10 based on how much signal exists.
 
 Raw research data:
@@ -203,12 +203,12 @@ router.post('/scrape-pasted', async (req, res): Promise<any> => {
       return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable AI extraction.' });
     }
 
-    // Single structured call â€” no grounding needed, text is already provided
+    // Single structured call - no grounding needed, text is already provided
     console.log('[scrape-pasted] Extracting profile from pasted text...');
     const prompt = `You are a CRM data extraction engine. The user has copy-pasted raw text from a LinkedIn profile or professional bio.
 
 Extract every piece of professional information you can find and map it to the JSON schema.
-Do NOT invent any data â€” only use what is present in the text below.
+Do NOT invent any data - only use what is present in the text below.
 For email: if not explicitly stated, infer the most likely format based on name + company (label as INFERRED).
 For fitScore / intentScore / timingScore: score 1-10 based on signals in the text.
 
@@ -269,6 +269,17 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   let leadsFound = 0;
   const promptQuery = req.body.query || '';
   const startedAt = Date.now();
+  insertSearchLog({
+    id: sessionId,
+    timestamp: new Date().toISOString(),
+    prompt: promptQuery,
+    generatedQueries: [],
+    status: 'running',
+    errorMessage: '',
+    rawResultsCount: 0,
+    leadsFound: 0,
+    detailedLogs: sessionLogs.join('\n')
+  });
 
   const brightDataStats: ProviderRunStats = {
     configured: isBrightDataConfigured(),
@@ -830,7 +841,7 @@ router.post('/generate-outbound', async (req, res): Promise<any> => {
 - Pitch Type: ${pitchType || 'Cold outreach'}
 - Value Proposition: ${valueProposition || 'Not specified'}
 - Sender: ${senderName || 'Sales Rep'} from ${senderCompany || 'Our Company'}
-- Sequence Step: ${sequenceStep || 'Step 1 â€” First Touch'}
+- Sequence Step: ${sequenceStep || 'Step 1 - First Touch'}
 - Custom Instruction: ${customInstruction || 'None'}
 - Channel: ${companyAccount ? 'Company LinkedIn Account' : 'Personal LinkedIn / Email'}
 
@@ -838,7 +849,7 @@ router.post('/generate-outbound', async (req, res): Promise<any> => {
 Return a complete HTML-formatted outreach message.
 Follow the Golden Rules strictly:
 1. Never start with "I"
-2. Be specific â€” reference something real from their profile
+2. Be specific - reference something real from their profile
 3. One CTA only
 4. LinkedIn connection note: max 300 characters
 5. Cold email: max 150 words
@@ -878,7 +889,7 @@ router.post('/chat', async (req, res): Promise<any> => {
     const leadsContext = leads.length === 0
       ? 'The CRM pipeline is currently empty.'
       : leads.slice(0, 20).map((l: any, i: number) =>
-          `${i + 1}. ${l.profile?.fullName} â€” ${l.profile?.currentTitle} at ${l.profile?.currentCompany} | Stage: ${l.stage} | Fit: ${l.profile?.fitScore ?? '?'}/10 | Intent: ${l.profile?.intentScore ?? '?'}/10`
+          `${i + 1}. ${l.profile?.fullName} - ${l.profile?.currentTitle} at ${l.profile?.currentCompany} | Stage: ${l.stage} | Fit: ${l.profile?.fitScore ?? '?'}/10 | Intent: ${l.profile?.intentScore ?? '?'}/10`
         ).join('\n');
 
     const systemPrompt = `${APEX_SYSTEM_PROMPT}

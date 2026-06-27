@@ -733,6 +733,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <TableHead>Primary Title</TableHead>
               <TableHead>Employer / Company Name</TableHead>
               <TableHead>Corporate Outreach Email</TableHead>
+              <TableHead>Added</TableHead>
               <TableHead className="text-center">Predictive Score</TableHead>
               <TableHead className="text-center">Pipeline status</TableHead>
               <TableHead className="text-right">Delete</TableHead>
@@ -741,13 +742,17 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           <TableBody>
             {filteredLeads.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground font-medium py-8">
+                <TableCell colSpan={9} className="text-center text-muted-foreground font-medium py-8">
                   No records stored matching your current directory queries.
                 </TableCell>
               </TableRow>
             ) : (
               filteredLeads.map((lead) => {
                 const isDuplicate = duplicateIds.has(lead.id);
+                const addedAt = lead.createdAt ? new Date(lead.createdAt) : null;
+                const hasValidAddedAt = !!addedAt && !Number.isNaN(addedAt.getTime());
+                const addedDate = hasValidAddedAt ? addedAt.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
+                const addedTime = hasValidAddedAt ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
                 return (
                   <TableRow 
@@ -808,6 +813,10 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                     ) : (
                       <span className="text-muted-foreground italic">No emails available</span>
                     )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground whitespace-nowrap">
+                    <div className="text-xs font-medium text-slate-300">{addedDate}</div>
+                    {addedTime && <div className="text-[10px] text-slate-500 mt-0.5">{addedTime}</div>}
                   </TableCell>
                   <TableCell className="text-center">
                     {lead.predictiveScore ? (

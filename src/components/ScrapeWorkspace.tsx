@@ -70,26 +70,21 @@ export default function ScrapeWorkspace() {
   }, [showLogs]);
 
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    let timer: ReturnType<typeof setInterval> | undefined;
     if (loading && activeTab === 'find') {
       const initTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setTerminalLogs([
-        `[${initTime}] ðŸ” SYSTEM INIT: Parsing spec parameters & intent triggers...`
+        `[${initTime}] SYSTEM INIT: Preparing lead discovery request...`
       ]);
 
       const logPool = [
-        `ðŸ§© INTENT ANALYSIS: Found complex spec criteria. Extracted Job Titles & industries.`,
-        `ðŸŽ¯ COMBINATIONS INDEXED: Checking overlap across specified priority niches (HVAC, Dental, etc.).`,
-        `ðŸš€ FORMULATING SEARCH TARGETS: Compiling 3-4 specialized Tavily query permutations.`,
-        `ðŸŒ RUNNING BATCH 1: Querying public indices for targeted parameters...`,
-        `ðŸ“Š DATA RETRIEVED: Found initial candidates. Extracting public LinkedIn summaries and bios.`,
-        `âš–ï¸ NICHE ANALYZER: Evaluating representation metrics. Checking for index bias...`,
-        `âš ï¸ DISPARITY RECOGNIZED: Marketing Agency leads dominate. Other niches (Home Services, Clinic Practice) under-saturated.`,
-        `ðŸ§  ADAPTIVE CONTROL: Triggering self-correction pivot! Forcing niche balance.`,
-        `ðŸ“¡ RUNNING CORRECTIVE SEARCH: site:linkedin.com/in "Practice Owner" ("Dental" | "Med Spa")!`,
-        `ðŸ”¬ AUTO-CORRECTIVE INTEGRATION: Yielded 4 new local clinic owners. Verifying 5-75 employee rule.`,
-        `ðŸ› ï¸ REBALANCING COMPLETE: Merging queries. Synthesizing standard corporate emails (first.last@domain.com).`,
-        `âœ… SUCCESS: Perfect multi-niche distribution synthesized. Registering in main CRM database...`
+        'REQUEST SENT: Backend /api/find-leads session started.',
+        'QUERY PLANNING: Search strategist is preparing Tavily queries.',
+        'DISCOVERY: Tavily is fetching public LinkedIn-indexed candidates.',
+        'EVIDENCE: Candidate snippets and optional enrichment cache are being evaluated.',
+        'EXTRACTION: LLM is converting evidence into structured CRM leads.',
+        'FILTERING: Duplicates, weak records, and low-score candidates are being rejected.',
+        'WAITING: Final results and search-session stats will appear when the backend responds.'
       ];
 
       let currentIndex = 0;
@@ -98,10 +93,11 @@ export default function ScrapeWorkspace() {
         if (currentIndex < logPool.length) {
           setTerminalLogs(prev => [...prev, `[${timeStr}] ${logPool[currentIndex]}`]);
           currentIndex++;
-        } else {
-          clearInterval(timer);
+        } else if (currentIndex === logPool.length) {
+          setTerminalLogs(prev => [...prev, `[${timeStr}] WAITING: Lead discovery is still running. Check Search Session Logs for persisted backend details.`]);
+          currentIndex++;
         }
-      }, 900);
+      }, 1200);
     } else {
       setTerminalLogs([]);
     }
@@ -319,6 +315,8 @@ export default function ScrapeWorkspace() {
     setSuccessMsg(null);
 
     const taskId = handleTaskAdd('search', findQuery);
+    const requestController = new AbortController();
+    const requestTimeout = window.setTimeout(() => requestController.abort(), 130000);
 
     try {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'processing' } : t));
@@ -343,6 +341,7 @@ export default function ScrapeWorkspace() {
           limit: leadLimit,
           excludeList: excludeUrlsAndEmails
         }),
+        signal: requestController.signal,
       });
 
       if (!response.ok) {
@@ -369,9 +368,13 @@ export default function ScrapeWorkspace() {
       }
     } catch (err: any) {
       console.error(err);
-      setErrorCode(err.message || 'Lead lookup failed.');
+      const message = err?.name === 'AbortError'
+        ? 'Lead discovery timed out after 130 seconds. The backend session may still finish; open Search Session Logs to inspect persisted details.'
+        : (err.message || 'Lead lookup failed.');
+      setErrorCode(message);
       updateTaskStatus(taskId, 'failed', 0);
     } finally {
+      window.clearTimeout(requestTimeout);
       setLoading(false);
     }
   };
@@ -487,7 +490,7 @@ export default function ScrapeWorkspace() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => setFindQuery(`âœ… Job Titles (run all of these)
+                    onClick={() => setFindQuery(`Job Titles (run all of these)
 Founder
 Co-Founder
 CEO
@@ -501,7 +504,7 @@ Sales Director
 Head of Growth
 Broker Owner
 
-âœ… Industry Terms (pair one with each title above)
+Industry Terms (pair one with each title above)
 Marketing Agency
 Lead Generation Agency
 Appointment Setting Agency
@@ -519,10 +522,14 @@ Recruiting Agency
 Law Firm
 Coaching
 
-âœ… Scraper Filter Settings
-FilterValueEmployees5â€“75SeniorityOwner Â· C-Suite Â· Director Â· PartnerCompany TypePrivately HeldActivityPosted in last 30 daysGeographyUS Â· UK Â· Canada Â· Australia Â· UAE
+Scraper Filter Settings
+Employees: 5-75
+Seniority: Owner, C-Suite, Director, Partner
+Company Type: Privately Held
+Activity: Posted in last 30 days
+Geography: US, UK, Canada, Australia, UAE
 
-ðŸŽ¯ Priority Combos (run these first)
+Priority Combos (run these first)
 Founder + Marketing Agency
 Owner + Roofing / HVAC / Solar
 Founder + Real Estate Team
@@ -531,8 +538,8 @@ Founder + Immigration Consultancy
 Agency Owner + Appointment Setting
 COO + Recruiting Agency
 
-ðŸ’¡ One Rule
-Title + Industry + 5â€“75 employees + active poster = your entire filter.
+One Rule
+Title + Industry + 5-75 employees + active poster = your entire filter.
 Everything else is noise.`)}
                     className="text-[10px] font-black text-indigo-400 hover:text-indigo-300 flex items-center gap-1 bg-indigo-500/10 border border-indigo-500/20 px-2 py-1 rounded transition-all cursor-pointer"
                   >
@@ -672,9 +679,8 @@ Everything else is noise.`)}
               {terminalLogs.length > 0 ? (
                 terminalLogs.map((log, i) => {
                   let colorClass = "text-slate-350";
-                  if (log.includes("âœ…")) colorClass = "text-emerald-450 font-bold";
-                  if (log.includes("âš ï¸") || log.includes("ðŸ§ ") || log.includes("ðŸ“¡")) colorClass = "text-amber-400 font-bold";
-                  if (log.includes("ðŸ”") || log.includes("ðŸ§©") || log.includes("ðŸš€") || log.includes("ðŸŽ¯")) colorClass = "text-indigo-400 font-bold";
+                  if (log.includes("WAITING") || log.includes("FILTERING")) colorClass = "text-amber-400 font-bold";
+                  if (log.includes("REQUEST") || log.includes("QUERY") || log.includes("DISCOVERY") || log.includes("EVIDENCE") || log.includes("EXTRACTION")) colorClass = "text-indigo-400 font-bold";
                   return (
                     <motion.div 
                       key={i} 
@@ -842,10 +848,10 @@ Everything else is noise.`)}
                   <p className="text-slate-500 text-center py-8">No search logs found.</p>
                 ) : (
                   searchLogs.map(log => (
-                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
+                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-emerald-500/20 bg-emerald-500/5' : log.status === 'running' ? 'border-amber-500/20 bg-amber-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
                       <div className="flex items-start justify-between mb-2">
                         <div className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</div>
-                        <Badge variant="outline" className={log.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : 'text-rose-400 border-rose-500/30'}>
+                        <Badge variant="outline" className={log.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : log.status === 'running' ? 'text-amber-400 border-amber-500/30' : 'text-rose-400 border-rose-500/30'}>
                           {log.status.toUpperCase()}
                         </Badge>
                       </div>
@@ -864,6 +870,8 @@ Everything else is noise.`)}
                       <div className="flex gap-4 mt-3 pt-3 border-t border-slate-800">
                         {log.status === 'error' ? (
                           <div className="text-xs text-rose-400"><span className="font-semibold text-rose-500">Error:</span> {log.errorMessage}</div>
+                        ) : log.status === 'running' ? (
+                          <div className="text-xs text-amber-300"><span className="font-semibold text-amber-400">Running:</span> backend search session started; refresh logs for progress or completion.</div>
                         ) : (
                           <>
                             <div className="text-xs text-slate-400"><span className="text-slate-300 font-semibold">{log.rawResultsCount}</span> raw results found</div>

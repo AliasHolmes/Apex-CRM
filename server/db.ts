@@ -331,6 +331,15 @@ export function insertSearchLog(log: any) {
     const insertStmt = db.prepare(`
       INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        timestamp = excluded.timestamp,
+        prompt = excluded.prompt,
+        generated_queries = excluded.generated_queries,
+        status = excluded.status,
+        error_message = excluded.error_message,
+        raw_results_count = excluded.raw_results_count,
+        leads_found = excluded.leads_found,
+        detailed_logs = excluded.detailed_logs
     `);
     insertStmt.run(
       log.id,

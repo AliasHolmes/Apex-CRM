@@ -316,7 +316,6 @@ export default function ScrapeWorkspace() {
 
     const taskId = handleTaskAdd('search', findQuery);
     const requestController = new AbortController();
-    const requestTimeout = window.setTimeout(() => requestController.abort(), 130000);
 
     try {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'processing' } : t));
@@ -369,12 +368,11 @@ export default function ScrapeWorkspace() {
     } catch (err: any) {
       console.error(err);
       const message = err?.name === 'AbortError'
-        ? 'Lead discovery timed out after 130 seconds. The backend session may still finish; open Search Session Logs to inspect persisted details.'
+        ? 'Lead discovery was cancelled.'
         : (err.message || 'Lead lookup failed.');
       setErrorCode(message);
       updateTaskStatus(taskId, 'failed', 0);
     } finally {
-      window.clearTimeout(requestTimeout);
       setLoading(false);
     }
   };

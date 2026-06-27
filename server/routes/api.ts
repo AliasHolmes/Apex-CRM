@@ -416,7 +416,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       Math.max(Number(process.env.BRIGHTDATA_ENRICHMENT_CAP || 0) || Math.max(targetLimit * 3, 20), 1),
       500
     );
-    const safetyTimeoutMs = Math.min(Math.max(Number(process.env.LEAD_SEARCH_TIMEOUT_MS || 110000), 30000), 180000);
+    const safetyTimeoutMs = Number(process.env.LEAD_SEARCH_TIMEOUT_MS || 0) || 0;
 
     if (!query) {
       throw new Error('Search criteria/query is required');
@@ -468,7 +468,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     }
 
     for (let round = 1; round <= maxRounds && acceptedLeads.length < targetLimit; round++) {
-      if (Date.now() - startedAt > safetyTimeoutMs) {
+      if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
         stats.stopReason = 'timeout';
         break;
       }

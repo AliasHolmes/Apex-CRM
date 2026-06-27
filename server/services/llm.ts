@@ -168,6 +168,7 @@ export async function tavilySearch(query: string): Promise<{ text: string; sourc
   if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
 
   const maxResults = Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20);
+  const includeRawContent = process.env.TAVILY_INCLUDE_RAW_CONTENT !== 'false';
   const res = await fetch('https://api.tavily.com/search', {
     method: 'POST',
     headers: {
@@ -179,7 +180,7 @@ export async function tavilySearch(query: string): Promise<{ text: string; sourc
       search_depth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
       max_results: maxResults,
       include_answer: false,
-      include_raw_content: false,
+      include_raw_content: includeRawContent,
       include_usage: true,
     }),
   });
@@ -440,8 +441,18 @@ export const searchQueriesSchema = {
   properties: {
     queries: {
       type: Type.ARRAY,
-      description: "Array of highly targeted boolean search queries.",
-      items: { type: Type.STRING }
+      description: "Array of targeted query plan objects. Legacy string entries are tolerated by server normalization.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          query: { type: Type.STRING, description: "Plain search phrase. Do not include LinkedIn or site:." },
+          family: { type: Type.STRING, description: "persona_title | industry_vertical | pain_signal | growth_signal | tooling_signal | local_market | company_type" },
+          intent: { type: Type.STRING, description: "find_decision_makers | find_buying_signal | expand_surface_area | recover_from_low_yield | reduce_duplicates" },
+          expectedSignal: { type: Type.STRING, description: "Short reason this query should surface relevant prospects" },
+          priority: { type: Type.NUMBER, description: "Lower numbers run first" },
+        },
+        required: ["query"],
+      }
     }
   },
   required: ["queries"]
@@ -454,7 +465,7 @@ export const searchQueriesSchema = {
 // -----------------------------------------------------------------------------
 
 /** Minimal prompt for Step 1 — query generation only. */
-export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce precise, targeted search query strings that surface LinkedIn profiles matching the user's lead criteria. Output only valid JSON.`;
+export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce precise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Output only valid JSON.`;
 
 /** Focused prompt for Step 3 — bulk extraction only. No outreach or scoring formula needed. */
 export const EXTRACTION_SYSTEM_PROMPT = `You are a CRM data extraction engine. Extract structured lead records from raw search result text and return valid JSON matching the schema exactly.
@@ -490,6 +501,10 @@ export const bulkSingleProfileSchema = {
     fitScore: { type: Type.NUMBER, description: "ICP match 1-10" },
     intentScore: { type: Type.NUMBER, description: "Buying signals 1-10" },
     timingScore: { type: Type.NUMBER, description: "Recent role change or trigger 1-10" },
+    sourceProvider: { type: Type.STRING, description: "tavily or brightdata, copied from SOURCE_PROVIDER when present" },
+    evidenceReasons: { type: Type.ARRAY, items: { type: Type.STRING }, description: "1-3 short evidence-backed reasons this prospect matches the user query" },
+    evidence: { type: Type.OBJECT, description: "Server-populated evidence object. Leave empty if not present in evidence." },
+    scoreBreakdown: { type: Type.OBJECT, description: "Server-populated score object. Leave empty if not present in evidence." },
   },
   required: ["fullName"],
 };

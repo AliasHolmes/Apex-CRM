@@ -13,6 +13,28 @@ export const LEADS_DB_PATH = process.env.APEX_DB_PATH
 
 let leadsDb: DatabaseSync | null = null;
 
+export type EnrichmentCacheQuality = 'good' | 'partial' | 'bad';
+
+export type EnrichmentCacheEntry = {
+  id?: string;
+  normalizedUrl?: string;
+  linkedinUsername?: string;
+  personName?: string;
+  companyName?: string;
+  evidenceBlock: string;
+  scrapeQuality: EnrichmentCacheQuality;
+  sourceProvider: 'brightdata' | 'tavily';
+  createdAt?: string;
+  expiresAt?: string;
+};
+
+export type EnrichmentCacheLookup = {
+  normalizedUrl?: string;
+  linkedinUsername?: string;
+  personName?: string;
+  companyName?: string;
+};
+
 export function getLeadsDb() {
   if (!leadsDb) {
     fs.mkdirSync(path.dirname(LEADS_DB_PATH), { recursive: true });
@@ -39,6 +61,50 @@ export function getLeadsDb() {
         enriched_data TEXT NOT NULL,
         timestamp TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS enrichment_cache (
+        id TEXT PRIMARY KEY,
+        normalized_url TEXT,
+        linkedin_username TEXT,
+        person_name TEXT,
+        company_name TEXT,
+        evidence_block TEXT NOT NULL,
+        scrape_quality TEXT NOT NULL,
+        source_provider TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_enrichment_cache_url ON enrichment_cache(normalized_url);
+      CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
+      CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
+      CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
+
+      INSERT OR IGNORE INTO enrichment_cache (
+        id,
+        normalized_url,
+        linkedin_username,
+        person_name,
+        company_name,
+        evidence_block,
+        scrape_quality,
+        source_provider,
+        created_at,
+        expires_at
+      )
+      SELECT
+        'legacy-mcp-' || username,
+        NULL,
+        lower(username),
+        NULL,
+        NULL,
+        enriched_data,
+        'partial',
+        'brightdata',
+        timestamp,
+        datetime(timestamp, '+7 days')
+      FROM mcp_profile_cache
+      WHERE username IS NOT NULL AND enriched_data IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS search_logs (
         id TEXT PRIMARY KEY,
@@ -140,6 +206,125 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   }
 }
 
+const normalizeCacheValue = (value?: string) => (value || '').trim().toLowerCase();
+
+const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    normalizedUrl: row.normalized_url || undefined,
+    linkedinUsername: row.linkedin_username || undefined,
+    personName: row.person_name || undefined,
+    companyName: row.company_name || undefined,
+    evidenceBlock: row.evidence_block,
+    scrapeQuality: row.scrape_quality,
+    sourceProvider: row.source_provider,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at
+  };
+};
+
+export function pruneExpiredEnrichmentCache(now = new Date()) {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const result = db.prepare('DELETE FROM enrichment_cache WHERE datetime(expires_at) <= datetime(?)').run(cutoff);
+  return Number(result.changes || 0);
+}
+
+export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date()) {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
+  const linkedinUsername = normalizeCacheValue(lookup.linkedinUsername);
+  const personName = normalizeCacheValue(lookup.personName);
+  const companyName = normalizeCacheValue(lookup.companyName);
+
+  if (normalizedUrl || linkedinUsername) {
+    const row = db.prepare(`
+      SELECT * FROM enrichment_cache
+      WHERE datetime(expires_at) > datetime(?)
+        AND scrape_quality IN ('good', 'partial')
+        AND (
+          (? != '' AND normalized_url = ?)
+          OR (? != '' AND linkedin_username = ?)
+        )
+      ORDER BY datetime(created_at) DESC
+      LIMIT 1
+    `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
+    const match = toCacheRow(row);
+    if (match) return match;
+  }
+
+  if (personName && companyName) {
+    const row = db.prepare(`
+      SELECT * FROM enrichment_cache
+      WHERE datetime(expires_at) > datetime(?)
+        AND scrape_quality IN ('good', 'partial')
+        AND person_name = ?
+        AND company_name = ?
+      ORDER BY datetime(created_at) DESC
+      LIMIT 1
+    `).get(cutoff, personName, companyName);
+    return toCacheRow(row);
+  }
+
+  return null;
+}
+
+export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays = 7, now = new Date()) {
+  if (!entry.evidenceBlock || entry.scrapeQuality === 'bad') return null;
+
+  const db = getLeadsDb();
+  const createdAt = entry.createdAt || now.toISOString();
+  const expiresAt = entry.expiresAt || new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  const normalizedUrl = normalizeCacheValue(entry.normalizedUrl);
+  const linkedinUsername = normalizeCacheValue(entry.linkedinUsername);
+  const personName = normalizeCacheValue(entry.personName);
+  const companyName = normalizeCacheValue(entry.companyName);
+  const id = entry.id || crypto.createHash('sha256')
+    .update([normalizedUrl, linkedinUsername, personName, companyName].filter(Boolean).join('|') || crypto.randomUUID())
+    .digest('hex');
+
+  db.prepare(`
+    INSERT INTO enrichment_cache (
+      id,
+      normalized_url,
+      linkedin_username,
+      person_name,
+      company_name,
+      evidence_block,
+      scrape_quality,
+      source_provider,
+      created_at,
+      expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      normalized_url = excluded.normalized_url,
+      linkedin_username = excluded.linkedin_username,
+      person_name = excluded.person_name,
+      company_name = excluded.company_name,
+      evidence_block = excluded.evidence_block,
+      scrape_quality = excluded.scrape_quality,
+      source_provider = excluded.source_provider,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at
+  `).run(
+    id,
+    normalizedUrl || null,
+    linkedinUsername || null,
+    personName || null,
+    companyName || null,
+    entry.evidenceBlock,
+    entry.scrapeQuality,
+    entry.sourceProvider,
+    createdAt,
+    expiresAt
+  );
+
+  pruneExpiredEnrichmentCache(now);
+  return { ...entry, id, createdAt, expiresAt };
+}
+
 export function insertSearchLog(log: any) {
   try {
     const db = getLeadsDb();
@@ -161,10 +346,10 @@ export function insertSearchLog(log: any) {
 
     // Keep only last 20
     const cullStmt = db.prepare(`
-      DELETE FROM search_logs 
+      DELETE FROM search_logs
       WHERE id NOT IN (
-        SELECT id FROM search_logs 
-        ORDER BY timestamp DESC 
+        SELECT id FROM search_logs
+        ORDER BY timestamp DESC
         LIMIT 20
       )
     `);

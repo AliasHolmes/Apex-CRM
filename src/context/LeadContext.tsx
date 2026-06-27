@@ -329,7 +329,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
       const newLeads = uniqueProfiles.map((p, i) => {
         const hasAccountContext = !!p.companyAccount;
-        const compositeScore = p.scoreOverride || p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
+        const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+        const compositeScore = backendFinalScore > 0
+          ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
+          : p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
         const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
         return {
           id: `lead-bulk-${Date.now()}-${i}`,
@@ -342,12 +345,17 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           tags: hasAccountContext
             ? ['LinkedIn Indexed', 'Account Context', p.industry || 'Tech']
             : ['LinkedIn Indexed', p.industry || 'Tech'],
+          fitScore: p.scoreBreakdown?.fitScore,
+          intentScore: p.scoreBreakdown?.intentScore,
+          timingScore: p.scoreBreakdown?.timingScore,
           compositeScore,
           predictiveScore,
           companyAccount: p.companyAccount,
           decisionMakerVerification: p.decisionMakerVerification,
           sourceProvider: p.sourceProvider || 'tavily',
           evidenceReasons: p.evidenceReasons,
+          evidence: p.evidence,
+          scoreBreakdown: p.scoreBreakdown,
           buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
         };
       });

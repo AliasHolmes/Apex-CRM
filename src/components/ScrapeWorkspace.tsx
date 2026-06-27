@@ -359,7 +359,14 @@ export default function ScrapeWorkspace() {
 
       handleBulkLeadsAdded(fetchedLeads);
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
-      setSuccessMsg(`Discovery complete: ${fetchedLeads.length} LinkedIn-indexed profiles added to your CRM.`);
+      const stats = data.stats;
+      if (stats?.stopReason === 'target_reached') {
+        setSuccessMsg(`Target reached: ${fetchedLeads.length}/${leadLimit} qualified prospects added. Bright Data enriched ${stats.enriched || 0}; cache hits ${stats.cacheHits || 0}.`);
+      } else if (stats) {
+        setSuccessMsg(`Discovery finished with ${fetchedLeads.length}/${leadLimit} qualified prospects. Stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}. Bright Data enriched ${stats.enriched || 0}; cache hits ${stats.cacheHits || 0}.`);
+      } else {
+        setSuccessMsg(`Discovery complete: ${fetchedLeads.length} LinkedIn-indexed profiles added to your CRM.`);
+      }
     } catch (err: any) {
       console.error(err);
       setErrorCode(err.message || 'Lead lookup failed.');
@@ -545,7 +552,7 @@ Everything else is noise.`)}
                     />
                   </div>
                   <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-[11px] text-indigo-200 leading-relaxed">
-                    Tavily scouts public LinkedIn-indexed results and extracts structured candidate records automatically.
+                    Tavily scouts public LinkedIn-indexed results, Bright Data enriches fresh profile links when configured, and Apex keeps mining toward your selected target.
                   </div>
 
                   <div className="flex justify-end">
@@ -627,7 +634,7 @@ Everything else is noise.`)}
               </div>
 
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                <strong>LinkedIn Discovery:</strong> Tavily searches public LinkedIn-indexed snippets and Apex extracts structured candidate records directly — no additional login or browser session required.
+                <strong>LinkedIn Discovery:</strong> Tavily finds candidates, Bright Data enriches uncached profile links when available, and Apex filters noisy evidence before adding qualified prospects.
               </p>
             </form>
             </TabsContent>

@@ -2,9 +2,15 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 
-import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog } from '../db.js';
+import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry } from '../db.js';
 import { loadAuth, saveAuth } from '../auth.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
+import { getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown } from '../services/brightdata.js';
+import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
+import { computeScoreBreakdown, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
+import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
+import { buildFallbackQueryPlan, buildStrategistPrompt, normalizeQueryPlanItems, toLinkedInSearchQuery, type ProviderRunStats, type QueryRunStats, type SearchQueryPlanItem } from '../leadSearch/strategist.js';
+import { incrementRejection, mapBrightDataRejection, type RejectionReason } from '../leadSearch/rejections.js';
 
 const router = Router();
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -44,6 +50,7 @@ router.get('/health', (req, res) => {
     hasTavilyKey: !!process.env.TAVILY_API_KEY,
     hasOAuth: !!loadAuth(),
     hasGoogleClient: !!CLIENT_ID,
+    brightData: getBrightDataStatus(),
   });
 });
 
@@ -256,13 +263,150 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   const sessionLogs: string[] = [];
   const logEvent = (msg: string) => { const line = `[${new Date().toISOString()}] ${msg}`; console.log(line); sessionLogs.push(line); };
   logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
+
   let generatedQueries: string[] = [];
   let rawResultsCount = 0;
   let leadsFound = 0;
   const promptQuery = req.body.query || '';
+  const startedAt = Date.now();
+
+  const brightDataStats: ProviderRunStats = {
+    configured: isBrightDataConfigured(),
+    attempted: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+    cacheHits: 0,
+    rejectionReasons: {}
+  };
+
+  const stats = {
+    requested: Math.min(Math.max(Number(req.body.limit || 5), 1), 200),
+    returned: 0,
+    rawCandidates: 0,
+    cacheHits: 0,
+    cacheWrites: 0,
+    enriched: 0,
+    brightDataFailures: 0,
+    rounds: 0,
+    stopReason: 'not_started',
+    rejectionReasons: {} as Record<string, number>,
+    queryRuns: [] as QueryRunStats[],
+    brightData: brightDataStats
+  };
+
+  type EvidenceMeta = {
+    evidenceBlock: string;
+    evidenceQuality: EvidenceQuality;
+    sourceProvider: LeadSourceProvider;
+    sourceUrl: string;
+    sourceQuery: string;
+    sourceRound: number;
+    queryRun?: QueryRunStats;
+  };
+
+  const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
+    incrementRejection(stats.rejectionReasons, reason);
+    if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
+  };
+
+  const normalizeDedupeValue = (value?: string) => (value || '')
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/$/, '')
+    .trim();
+
+  const profileKeys = (profile: any) => {
+    const keys = new Set<string>();
+    const email = normalizeDedupeValue(profile?.contactDetails?.email);
+    const linkedin = extractLinkedInUsername(profile?.contactDetails?.linkedinUrl);
+    const name = normalizeDedupeValue(profile?.fullName);
+    const company = normalizeDedupeValue(profile?.currentCompany);
+    if (email) keys.add(`email:${email}`);
+    if (linkedin) keys.add(`linkedin:${linkedin}`);
+    if (name && company) keys.add(`name_company:${name}::${company}`);
+    return keys;
+  };
+
+  const hasDuplicateKeys = (profile: any, existingKeys: Set<string>) => {
+    for (const key of profileKeys(profile)) {
+      if (existingKeys.has(key)) return true;
+    }
+    return false;
+  };
+
+  const addProfileKeys = (profile: any, existingKeys: Set<string>) => {
+    profileKeys(profile).forEach(key => existingKeys.add(key));
+  };
+
+  const fallbackEvidenceForLead = (lead: any): EvidenceMeta => {
+    const sourceUrl = lead.contactDetails?.linkedinUrl || '';
+    const evidenceBlock = [
+      sourceUrl ? `LINK: ${sourceUrl}` : '',
+      lead.headline ? `HEADLINE: ${lead.headline}` : '',
+      lead.summary ? `SUMMARY: ${lead.summary}` : '',
+      Array.isArray(lead.evidenceReasons) ? lead.evidenceReasons.join('\n') : ''
+    ].filter(Boolean).join('\n');
+    return {
+      evidenceBlock,
+      evidenceQuality: 'weak',
+      sourceProvider: lead.sourceProvider === 'brightdata' ? 'brightdata' : 'tavily',
+      sourceUrl,
+      sourceQuery: promptQuery,
+      sourceRound: stats.rounds || 1
+    };
+  };
+
+  const effectiveScore = (lead: any) => {
+    const score = Number(lead.scoreBreakdown?.finalScore || 0);
+    if (score > 0) return score;
+    const fit = Number(lead.fitScore || 0);
+    const composite = Number(lead.compositeScore || 0);
+    const predictive = Number(lead.predictiveScore || 0);
+    if (fit > 0) return fit;
+    if (composite > 10) return composite / 10;
+    if (composite > 0) return composite;
+    if (predictive > 10) return predictive / 10;
+    return predictive;
+  };
+
+  const leadRejectionReason = (lead: any, minScore: number): RejectionReason | null => {
+    const hasIdentity = Boolean((lead?.fullName || '').trim());
+    if (!hasIdentity) return 'missing_identity';
+    const hasRoleContext = Boolean((lead?.currentTitle || '').trim() || (lead?.currentCompany || '').trim() || (lead?.headline || '').trim());
+    if (!hasRoleContext) return 'missing_role_context';
+    if (effectiveScore(lead) < minScore) return 'score_below_minimum';
+    return null;
+  };
+
+  const chunkEvidenceBlocks = (blocks: string[], maxLength = 3200) => {
+    const chunks: string[] = [];
+    let current = '';
+    for (const block of blocks) {
+      if (current.length + block.length > maxLength && current.length > 0) {
+        chunks.push(current);
+        current = block;
+      } else {
+        current += block;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  };
 
   try {
-    const { query, limit = 5, excludeList = [] } = req.body;
+    const { query, excludeList = [] } = req.body;
+    const targetLimit = stats.requested;
+    const maxRounds = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 4), 1), 8);
+    const minScore = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MIN_SCORE || 6), 1), 10);
+    const ttlDays = Math.min(Math.max(Number(process.env.BRIGHTDATA_CACHE_TTL_DAYS || 7), 1), 30);
+    const enrichmentCap = Math.min(
+      Math.max(Number(process.env.BRIGHTDATA_ENRICHMENT_CAP || 0) || Math.max(targetLimit * 3, 20), 1),
+      500
+    );
+    const safetyTimeoutMs = Math.min(Math.max(Number(process.env.LEAD_SEARCH_TIMEOUT_MS || 110000), 30000), 180000);
+
     if (!query) {
       throw new Error('Search criteria/query is required');
     }
@@ -271,160 +415,342 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       throw new Error('OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.');
     }
 
-    // Step 1: The Search Strategist - Generate optimized boolean search queries
-    console.log(`[find-leads] Generating search queries for: ${query}`);
-    const excludeNote = excludeList.length > 0
-      ? `\n\nIMPORTANT: Do NOT include any of these already-known people or emails in your search keywords: ${excludeList.slice(0, 20).join(', ')}`
-      : '';
+    const expiredRows = pruneExpiredEnrichmentCache();
+    if (expiredRows > 0) logEvent(`Pruned ${expiredRows} expired enrichment cache rows.`);
 
-    const strategistPrompt = `You are an expert search strategist. The user is looking for leads matching the following description:
-"${query}"
-
-Your task is to generate exactly 3 highly targeted search queries to find these specific profiles. 
-RULES:
-1. Tavily Search does NOT support complex Google Dorks or boolean operators (AND, OR, parentheses). Do NOT use them.
-2. Generate simple, natural language keyword strings (e.g. "Founder Marketing Agency New York").
-3. DO NOT use the word "linkedin" or the "site:" operator. Just provide the raw keywords.
-4. Keep the 3 queries distinct from each other to cast a wide but highly relevant net.
-${excludeNote}
-`;
-
-    const { queries } = await openAIStructured<{ queries: string[] }>(strategistPrompt, searchQueriesSchema, STRATEGIST_SYSTEM_PROMPT);
-
-    if (!queries || queries.length === 0) {
-      throw new Error('Failed to generate search queries. Try simplifying your prompt.');
+    const existingKeys = new Set<string>();
+    const excludedValues = new Set<string>();
+    for (const lead of readStoredLeads() as any[]) {
+      addProfileKeys(lead.profile || lead, existingKeys);
+    }
+    for (const exclusion of excludeList) {
+      const normalized = normalizeDedupeValue(exclusion);
+      if (!normalized) continue;
+      excludedValues.add(normalized);
+      existingKeys.add(`email:${normalized}`);
+      if (normalized.includes('linkedin.com/in/')) existingKeys.add(`linkedin:${extractLinkedInUsername(normalized)}`);
+      existingKeys.add(`name:${normalized}`);
     }
 
-    // Programmatically prepend the site operator to prevent LLM formatting errors
-    generatedQueries = queries.map(q => {
-      const cleanQ = q.replace(/site:linkedin\.com\/in\//gi, '').replace(/linkedin/gi, '').trim();
-      return `site:linkedin.com/in/ ${cleanQ}`;
-    });
+    const matchesExcludeList = (lead: any) => {
+      if (excludedValues.size === 0) return false;
+      const name = normalizeDedupeValue(lead?.fullName);
+      const email = normalizeDedupeValue(lead?.contactDetails?.email);
+      const linkedin = normalizeDedupeValue(lead?.contactDetails?.linkedinUrl);
+      for (const exclusion of excludedValues) {
+        if (email && email === exclusion) return true;
+        if (linkedin && linkedin.includes(exclusion)) return true;
+        if (name && name.includes(exclusion)) return true;
+      }
+      return false;
+    };
+    const acceptedLeads: any[] = [];
+    const seenCandidateKeys = new Set<string>();
+    const seenQueryTexts = new Set<string>();
+    const evidenceByUrl = new Map<string, EvidenceMeta>();
+    const brightDataReady = isBrightDataConfigured();
+    let brightDataCircuitOpen = !brightDataReady;
+    let previousRoundSummary: Record<string, any> = {};
 
-    console.log(`[find-leads] Executing parallel searches for queries:`, generatedQueries);
+    if (!brightDataReady) {
+      logEvent('Bright Data token not configured. Continuing Tavily-only.');
+    }
 
-    // Step 2: Execute Parallel Searches and Deduplicate
-    const searchPromises = generatedQueries.map(q => tavilySearch(q).catch(e => {
-      logEvent(`WARN: Search failed for query "${q}": ` + (e.message));
-      return { text: '', sources: [], items: [] };
-    }));
-    
-    const searchResults = await Promise.all(searchPromises);
+    for (let round = 1; round <= maxRounds && acceptedLeads.length < targetLimit; round++) {
+      if (Date.now() - startedAt > safetyTimeoutMs) {
+        stats.stopReason = 'timeout';
+        break;
+      }
 
-    // Step 2.5: Deduplication
-    const uniqueUsernames = new Set<string>();
-    const rawItems: any[] = [];
+      stats.rounds = round;
+      const remaining = targetLimit - acceptedLeads.length;
+      const strategistPrompt = buildStrategistPrompt({
+        query,
+        round,
+        maxRounds,
+        remaining,
+        previousQueries: generatedQueries,
+        previousRoundSummary
+      });
 
-    for (const result of searchResults) {
-      if (result.items && Array.isArray(result.items)) {
-        for (const item of result.items) {
+      let planItems: SearchQueryPlanItem[] = [];
+      try {
+        const queryResult = await openAIStructured<any>(strategistPrompt, searchQueriesSchema, STRATEGIST_SYSTEM_PROMPT);
+        planItems = normalizeQueryPlanItems(queryResult);
+      } catch (e: any) {
+        logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
+      }
+
+      if (planItems.length === 0) {
+        planItems = buildFallbackQueryPlan(query);
+        logEvent(`Round ${round}: using ${planItems.length} deterministic fallback queries.`);
+      }
+
+      const roundPlans = planItems
+        .sort((a, b) => (a.priority || 99) - (b.priority || 99))
+        .map(item => ({ item, executableQuery: toLinkedInSearchQuery(item) }))
+        .filter(plan => {
+          const key = plan.executableQuery.toLowerCase();
+          if (seenQueryTexts.has(key)) return false;
+          seenQueryTexts.add(key);
+          return true;
+        });
+
+      if (roundPlans.length === 0) {
+        logEvent(`Round ${round}: strategist produced no new queries.`);
+        stats.stopReason = 'exhausted';
+        break;
+      }
+
+      generatedQueries.push(...roundPlans.map(plan => plan.executableQuery));
+      logEvent(`Round ${round}: executing ${roundPlans.length} Tavily queries.`);
+
+      const queryRuns = roundPlans.map(plan => {
+        const run: QueryRunStats = {
+          round,
+          query: plan.executableQuery,
+          family: plan.item.family,
+          intent: plan.item.intent,
+          rawCandidates: 0,
+          uniqueCandidates: 0,
+          evidenceBlocks: 0,
+          extractedLeads: 0,
+          acceptedLeads: 0,
+          rejectionReasons: {}
+        };
+        stats.queryRuns.push(run);
+        return run;
+      });
+
+      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery).catch(e => {
+        logEvent(`WARN: Search failed for query "${plan.executableQuery}": ${e.message}`);
+        return { text: '', sources: [], items: [], _failedQueryIndex: index };
+      })));
+
+      const roundItems: any[] = [];
+      for (let resultIndex = 0; resultIndex < searchResults.length; resultIndex++) {
+        const result = searchResults[resultIndex];
+        const queryRun = queryRuns[resultIndex];
+        const plan = roundPlans[resultIndex];
+        const items = Array.isArray(result.items) ? result.items : [];
+        queryRun.rawCandidates = items.length;
+        for (const item of items) {
           const url = item.url || '';
-          if (url) {
-            const match = url.match(/linkedin\.com\/in\/([^\/?]+)/i);
-            const username = match && match[1] ? match[1].toLowerCase() : url;
-            if (!uniqueUsernames.has(username)) {
-              uniqueUsernames.add(username);
-              item._extractedUsername = match && match[1] ? match[1] : null;
-              rawItems.push(item);
+          const username = extractLinkedInUsername(url);
+          const normalizedUrl = normalizeLinkedInUrl(url);
+          const candidateKey = username || normalizedUrl || normalizeDedupeValue(`${item.title || ''} ${item.content || ''}`);
+          if (!candidateKey || seenCandidateKeys.has(candidateKey)) {
+            noteRejection('duplicate_candidate', queryRun);
+            continue;
+          }
+          seenCandidateKeys.add(candidateKey);
+          item._normalizedUrl = normalizedUrl;
+          item._linkedinUsername = username;
+          item._sourceQuery = plan.executableQuery;
+          item._sourceRound = round;
+          item._queryFamily = plan.item.family;
+          item._queryIntent = plan.item.intent;
+          item._expectedSignal = plan.item.expectedSignal;
+          item._queryRun = queryRun;
+          queryRun.uniqueCandidates++;
+          roundItems.push(item);
+        }
+      }
+
+      rawResultsCount = seenCandidateKeys.size;
+      stats.rawCandidates = rawResultsCount;
+
+      if (roundItems.length === 0) {
+        logEvent(`Round ${round}: no new unique candidates.`);
+        stats.stopReason = 'exhausted';
+        break;
+      }
+
+      roundItems.sort((a, b) => {
+        const scoreItem = (item: any) => `${item.title || ''} ${item.content || ''} ${item.raw_content || ''}`.length + (extractLinkedInUsername(item.url) ? 250 : 0);
+        return scoreItem(b) - scoreItem(a);
+      });
+
+      const candidateBudget = Math.min(roundItems.length, Math.max(targetLimit * 4, 4));
+      const candidateItems = roundItems.slice(0, candidateBudget);
+      logEvent(`Round ${round}: using top ${candidateItems.length}/${roundItems.length} candidates for extraction budget.`);
+
+      const evidenceBlocks: string[] = [];
+
+      for (const item of candidateItems) {
+        if (acceptedLeads.length >= targetLimit) break;
+        const url = item.url || '';
+        const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
+        const username = item._linkedinUsername || extractLinkedInUsername(url);
+        const title = item.title || 'Untitled result';
+        const snippet = item.content || item.raw_content || '';
+        const queryRun = item._queryRun as QueryRunStats | undefined;
+
+        const cacheHit = getEnrichmentCacheEntry({ normalizedUrl, linkedinUsername: username });
+        let sourceProvider: LeadSourceProvider = 'tavily';
+        let evidenceQuality: EvidenceQuality = inferTavilyEvidenceQuality(item);
+        let evidenceBlock = '';
+
+        if (cacheHit) {
+          stats.cacheHits++;
+          brightDataStats.cacheHits++;
+          sourceProvider = 'cache';
+          evidenceQuality = cacheHit.scrapeQuality === 'good' ? 'good' : 'partial';
+          evidenceBlock = cacheHit.evidenceBlock;
+          logEvent(`Cache hit: ${username || normalizedUrl}`);
+        } else if (!brightDataCircuitOpen && stats.enriched < enrichmentCap && username) {
+          brightDataStats.attempted++;
+          try {
+            const markdown = await scrapeAsMarkdown(url);
+            if (markdown) {
+              const parsed = parseLinkedInEvidence(markdown, { title, url, snippet });
+              if (parsed.quality === 'good' || parsed.quality === 'partial') {
+                sourceProvider = 'brightdata';
+                evidenceQuality = parsed.quality;
+                evidenceBlock = parsed.evidenceBlock;
+                stats.enriched++;
+                brightDataStats.succeeded++;
+                upsertEnrichmentCacheEntry({
+                  normalizedUrl,
+                  linkedinUsername: username,
+                  personName: parsed.personName,
+                  companyName: parsed.companyName,
+                  evidenceBlock,
+                  scrapeQuality: parsed.quality,
+                  sourceProvider: 'brightdata'
+                }, ttlDays);
+                stats.cacheWrites++;
+              } else {
+                const mappedReason = mapBrightDataRejection(parsed.rejectionReason);
+                incrementRejection(brightDataStats.rejectionReasons, mappedReason);
+                noteRejection(mappedReason, queryRun);
+                logEvent(`Bright Data scrape rejected for ${username}: ${parsed.rejectionReason || 'low quality'}`);
+              }
+            }
+          } catch (e: any) {
+            stats.brightDataFailures++;
+            brightDataStats.failed++;
+            incrementRejection(brightDataStats.rejectionReasons, 'brightdata_failed');
+            noteRejection('brightdata_failed', queryRun);
+            logEvent(`WARN: Bright Data failed for ${username}: ${e.message}`);
+            if (stats.brightDataFailures >= 1) {
+              brightDataCircuitOpen = true;
+              logEvent('Bright Data circuit opened after first failure. Continuing Tavily-only.');
             }
           }
+        } else {
+          brightDataStats.skipped++;
+        }
+
+        if (!evidenceBlock) {
+          evidenceBlock = buildTavilyEvidence(item);
+          sourceProvider = 'tavily';
+          evidenceQuality = inferTavilyEvidenceQuality(item);
+        }
+
+        const evidenceMeta: EvidenceMeta = {
+          evidenceBlock,
+          evidenceQuality,
+          sourceProvider,
+          sourceUrl: url,
+          sourceQuery: item._sourceQuery || '',
+          sourceRound: item._sourceRound || round,
+          queryRun
+        };
+        evidenceByUrl.set(normalizedUrl, evidenceMeta);
+        if (queryRun) queryRun.evidenceBlocks++;
+        evidenceBlocks.push(`--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`);
+      }
+
+      if (evidenceBlocks.length === 0) {
+        logEvent(`Round ${round}: no usable evidence blocks.`);
+        continue;
+      }
+
+      const chunks = chunkEvidenceBlocks(evidenceBlocks);
+      logEvent(`Round ${round}: extracting ${chunks.length} evidence batches.`);
+
+      for (let i = 0; i < chunks.length && acceptedLeads.length < targetLimit; i++) {
+        try {
+          const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Return at most ${targetLimit - acceptedLeads.length} best prospects from this batch.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunks[i]}`;
+
+          const extracted = await openAIStructured<any[]>(prompt, bulkLeadsArraySchema, EXTRACTION_SYSTEM_PROMPT);
+          const extractedLeads = Array.isArray(extracted) ? extracted : [];
+          logEvent(`Round ${round}, chunk ${i + 1}/${chunks.length}: extracted ${extractedLeads.length} profiles.`);
+          if (extractedLeads.length === 0) {
+            noteRejection('llm_extraction_empty');
+          }
+
+          for (const lead of extractedLeads) {
+            if (acceptedLeads.length >= targetLimit) break;
+            const normalizedLeadUrl = normalizeLinkedInUrl(lead.contactDetails?.linkedinUrl);
+            const evidenceMeta = evidenceByUrl.get(normalizedLeadUrl) || fallbackEvidenceForLead(lead);
+            const queryRun = evidenceMeta.queryRun;
+            if (queryRun) queryRun.extractedLeads++;
+
+            lead.sourceProvider = lead.sourceProvider || evidenceMeta.sourceProvider;
+            lead.evidenceReasons = Array.isArray(lead.evidenceReasons) && lead.evidenceReasons.length
+              ? lead.evidenceReasons
+              : [`Qualified from ${lead.sourceProvider} evidence for: ${query}`];
+            lead.evidence = createLeadEvidence({
+              sourceUrl: evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl || '',
+              sourceProvider: evidenceMeta.sourceProvider,
+              sourceQuery: evidenceMeta.sourceQuery,
+              sourceRound: evidenceMeta.sourceRound,
+              evidenceQuality: evidenceMeta.evidenceQuality,
+              evidenceBlock: evidenceMeta.evidenceBlock,
+              whyThisLead: lead.evidenceReasons[0]
+            });
+            lead.scoreBreakdown = computeScoreBreakdown(lead, evidenceMeta.evidenceQuality, evidenceMeta.sourceProvider);
+            lead.scoreOverride = lead.scoreBreakdown.finalScore;
+
+            const rejectionReason = leadRejectionReason(lead, minScore);
+            if (rejectionReason) {
+              noteRejection(rejectionReason, queryRun);
+              continue;
+            }
+            if (matchesExcludeList(lead) || hasDuplicateKeys(lead, existingKeys)) {
+              noteRejection('duplicate_existing_lead', queryRun);
+              continue;
+            }
+
+            addProfileKeys(lead, existingKeys);
+            if (queryRun) queryRun.acceptedLeads++;
+            acceptedLeads.push(lead);
+          }
+        } catch (e: any) {
+          logEvent(`WARN: Extraction chunk ${i + 1}/${chunks.length} failed: ${e.message}`);
         }
       }
+
+      const roundRuns = stats.queryRuns.filter(run => run.round === round);
+      previousRoundSummary = {
+        rawCandidates: roundRuns.reduce((sum, run) => sum + run.rawCandidates, 0),
+        uniqueCandidates: roundRuns.reduce((sum, run) => sum + run.uniqueCandidates, 0),
+        extractedLeads: roundRuns.reduce((sum, run) => sum + run.extractedLeads, 0),
+        acceptedLeads: roundRuns.reduce((sum, run) => sum + run.acceptedLeads, 0),
+        rejectionReasons: stats.rejectionReasons
+      };
     }
 
-    rawResultsCount = rawItems.length;
-
-    if (rawResultsCount === 0) {
-      throw new Error('All searches returned no results. Try different search criteria.');
+    if (acceptedLeads.length === 0) {
+      throw new Error('Could not extract any new qualified profiles from search results. Try more specific criteria.');
     }
 
-    console.log(`[find-leads] Found ${rawResultsCount} unique raw results.`);
+    acceptedLeads.sort((a, b) => effectiveScore(b) - effectiveScore(a));
+    const finalLeads = acceptedLeads.slice(0, targetLimit);
+    leadsFound = finalLeads.length;
+    stats.returned = leadsFound;
 
-    // Build snippets directly from Tavily search results
-    const snippets: string[] = [];
-    for (let index = 0; index < rawItems.length; index++) {
-      const item = rawItems[index];
-      const url = item.url || '';
-      const title = item.title || 'Untitled result';
-      const snippet = item.content || item.raw_content || '';
-      snippets.push(`Title: ${title}\nLink: ${url}\n[TAVILY SNIPPET]\n${snippet}\n\n`);
+    if (leadsFound >= targetLimit) {
+      stats.stopReason = 'target_reached';
+    } else if (stats.stopReason === 'not_started') {
+      stats.stopReason = stats.rounds >= maxRounds ? 'max_rounds' : 'exhausted';
     }
 
-    console.log(`[find-leads] Found ${rawResultsCount} unique raw results to extract leads from.`);
+    logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
 
-
-    // Step 3: Structure the raw results in dynamic token-aware parallel batches
-    // Generating large JSON arrays from massive text prompts takes > 100s, triggering Cloudflare timeouts.
-    // By chunking dynamically by character count, we avoid OOM and timeout errors gracefully.
-    // Reduced to 6000 to prevent Cloudflare 524 timeouts.
-    const MAX_CHUNK_LENGTH = 6000;
-    const rawChunks: string[] = [];
-    let currentChunk = '';
-    
-    for (let i = 0; i < snippets.length; i++) {
-      const snippet = snippets[i];
-      if (currentChunk.length + snippet.length > MAX_CHUNK_LENGTH && currentChunk.length > 0) {
-        rawChunks.push(currentChunk);
-        currentChunk = snippet;
-      } else {
-        currentChunk += snippet;
-      }
-    }
-    if (currentChunk.length > 0) {
-      rawChunks.push(currentChunk);
-    }
-
-    logEvent(`Chunked profiles into ${rawChunks.length} dynamic batches based on string length.`);
-
-    const batchedPrompts = rawChunks.map(chunk => `Extract each distinct person from the following raw LinkedIn search data. Include only people with at minimum a full name AND a company or job title. Do not invent data — use empty strings for unknown fields.
-
-Raw research:
-${chunk}`);
-
-    console.log(`[find-leads] Extracting ${batchedPrompts.length} chunks sequentially...`);
-    let leads: any[] = [];
-    for (let i = 0; i < batchedPrompts.length; i++) {
-      try {
-        const chunkResult = await openAIStructured<any[]>(batchedPrompts[i], bulkLeadsArraySchema, EXTRACTION_SYSTEM_PROMPT);
-        if (Array.isArray(chunkResult)) {
-          leads.push(...chunkResult);
-          logEvent(`Chunk ${i + 1}/${batchedPrompts.length}: extracted ${chunkResult.length} leads (running total: ${leads.length})`);
-        }
-      } catch (e: any) {
-        logEvent(`WARN: Chunk ${i + 1}/${batchedPrompts.length} failed — ${e.message}. Continuing with remaining chunks.`);
-      }
-    }
-
-    if (leads.length === 0) {
-      throw new Error('Could not extract any profiles from search results. Try more specific criteria.');
-    }
-
-    // Sort all extracted leads globally by score so we keep the absolute best ones
-    leads.sort((a, b) => {
-      const scoreA = a.predictiveScore || a.compositeScore || a.fitScore || 0;
-      const scoreB = b.predictiveScore || b.compositeScore || b.fitScore || 0;
-      return scoreB - scoreA;
-    });
-
-    // Trim down to the exact requested limit
-    if (leads.length > limit) {
-      leads = leads.slice(0, limit);
-    }
-
-    // Filter out any entries that match the exclude list
-    const filtered = leads.filter((lead: any) => {
-      const name = (lead.fullName || '').toLowerCase();
-      const email = (lead.contactDetails?.email || '').toLowerCase();
-      const linkedin = (lead.contactDetails?.linkedinUrl || '').toLowerCase();
-      return !excludeList.some((ex: string) => {
-        const exl = ex.toLowerCase();
-        return name.includes(exl) || email === exl || linkedin.includes(exl);
-      });
-    });
-
-    leadsFound = filtered.length;
-
-    const detailedLogsText = sessionLogs.join('\n');
+    const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
     fs.appendFileSync('adaptive_mining_terminal.log', detailedLogsText + '\n\n');
     insertSearchLog({
       id: sessionId,
@@ -438,11 +764,11 @@ ${chunk}`);
       detailedLogs: detailedLogsText
     });
 
-    res.json({ leads: filtered, sandboxMode: false });
+    res.json({ leads: finalLeads, stats, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
-    
-    const detailedLogsText = sessionLogs.join('\n');
+
+    const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
     fs.appendFileSync('adaptive_mining_terminal.log', detailedLogsText + '\n\n');
     insertSearchLog({
       id: sessionId,
@@ -456,10 +782,9 @@ ${chunk}`);
       detailedLogs: detailedLogsText
     });
 
-    res.status(500).json({ error: error.message || 'Failed to locate leads.' });
+    res.status(500).json({ error: error.message || 'Failed to locate leads.', stats });
   }
 });
-
 router.post('/generate-outbound', async (req, res): Promise<any> => {
   try {
     const {

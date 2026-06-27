@@ -8,10 +8,13 @@
         "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
         "start": "node dist/server.cjs",
         "clean": "rm -rf dist server.js",
-        "lint": "tsc --noEmit"
+        "lint": "tsc --noEmit",
+        "test:enrichment": "tsx --test test/enrichmentCache.test.ts test/linkedinEvidence.test.ts",
+        "test:lead-search": "tsx --test test/leadSearchHelpers.test.ts"
     },
     "dependencies": {
         "@google/genai": "^2.4.0",
+        "@modelcontextprotocol/sdk": "^1.29.0",
         "@radix-ui/react-dialog": "^1.1.16",
         "@radix-ui/react-label": "^2.1.9",
         "@radix-ui/react-slot": "^1.2.5",

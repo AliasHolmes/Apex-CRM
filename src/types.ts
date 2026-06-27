@@ -79,12 +79,36 @@ export interface DecisionMakerVerification {
   reason: string;
 }
 
+export type EvidenceQuality = 'weak' | 'partial' | 'good';
+export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
+
+export interface LeadEvidence {
+  sourceUrl: string;
+  sourceProvider: LeadSourceProvider;
+  sourceQuery: string;
+  sourceRound: number;
+  evidenceQuality: EvidenceQuality;
+  snippets: string[];
+  whyThisLead?: string;
+}
+
+export interface ScoreBreakdown {
+  fitScore: number;
+  intentScore: number;
+  timingScore: number;
+  evidenceQualityScore: number;
+  sourceConfidenceScore: number;
+  finalScore: number;
+}
+
 export interface QualifiedLeadProfile extends LinkedInProfile {
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
-  sourceProvider?: 'tavily' | 'manual' | 'import';
+  sourceProvider?: LeadSourceProvider;
   scoreOverride?: number;
   evidenceReasons?: string[];
+  evidence?: LeadEvidence;
+  scoreBreakdown?: ScoreBreakdown;
 }
 
 export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';
@@ -111,8 +135,10 @@ export interface Lead {
   buyingSignalsDetected?: string[];
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
-  sourceProvider?: 'tavily' | 'manual' | 'import';
+  sourceProvider?: LeadSourceProvider;
   evidenceReasons?: string[];
+  evidence?: LeadEvidence;
+  scoreBreakdown?: ScoreBreakdown;
 }
 
 export interface ScrapingTask {
@@ -134,4 +160,6 @@ export interface SearchLog {
   rawResultsCount: number;
   leadsFound: number;
   detailedLogs?: string;
+  rejectionReasons?: Record<string, number>;
+  queryRuns?: unknown[];
 }

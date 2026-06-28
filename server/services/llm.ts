@@ -307,25 +307,40 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
     body: JSON.stringify(body)
   });
 
-  if (!res.ok && jsonMode === 'auto' && (res.status === 400 || res.status === 422)) {
-    console.warn(`[llm] Structured output call failed with ${res.status}. Retrying without response_format due to LLM_JSON_MODE=auto...`);
-    delete body.response_format;
-    res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify(body)
-    });
-  }
-
   if (!res.ok) {
     let err = await res.text();
-    if (err.length > 500) {
-      err = err.slice(0, 500) + '... [truncated]';
+    const isJsonValidationError = 
+      res.status === 400 || 
+      res.status === 422 || 
+      err.includes('json_validate_failed') || 
+      err.includes('Failed to validate JSON') || 
+      err.includes('json_validate');
+
+    if (jsonMode === 'auto' && isJsonValidationError) {
+      console.warn(`[llm] Structured output call failed (JSON validation error). Retrying without response_format due to LLM_JSON_MODE=auto...`);
+      delete body.response_format;
+      res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        let retryErr = await res.text();
+        if (retryErr.length > 500) {
+          retryErr = retryErr.slice(0, 500) + '... [truncated]';
+        }
+        throw new Error(`OpenAI structured call error ${res.status}: ${retryErr}`);
+      }
+    } else {
+      if (err.length > 500) {
+        err = err.slice(0, 500) + '... [truncated]';
+      }
+      throw new Error(`OpenAI structured call error ${res.status}: ${err}`);
     }
-    throw new Error(`OpenAI structured call error ${res.status}: ${err}`);
   }
 
   const data = await res.json();

@@ -619,7 +619,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       });
 
       // 1. Tavily Search
-      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery, ['linkedin.com']).then(res => {
+      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery, ['linkedin.com/in']).then(res => {
         debugLogs.push({
           timestamp: new Date().toISOString(),
           type: 'tavily_search',

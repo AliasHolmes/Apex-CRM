@@ -8,3 +8,8 @@ coverage/
 !.env.example
 .apex_auth.json*
 .apex-data/
+.venv-litellm/
+.python/
+litellm-proxy.pid
+litellm-proxy.pid
+apex-dev.pid

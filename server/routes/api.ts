@@ -56,6 +56,36 @@ router.get('/health', (req, res) => {
   });
 });
 
+router.get('/llm-health', async (req, res) => {
+  const gatewayMode = process.env.LLM_GATEWAY_MODE || 'direct';
+  const baseUrl = gatewayMode === 'litellm' 
+    ? (process.env.LITELLM_BASE_URL || 'http://localhost:4000/v1')
+    : (process.env.OPENAI_BASE || 'https://api.byesu.com/v1');
+  const model = gatewayMode === 'litellm'
+    ? (process.env.LITELLM_MODEL || 'apex-primary')
+    : (process.env.OPENAI_MODEL || 'gpt-5.5');
+
+  try {
+    const response = await openAIText("Reply with exactly ok");
+    const isOk = response.text.trim().toLowerCase().includes('ok');
+    res.json({
+      mode: gatewayMode,
+      baseUrl,
+      model,
+      ok: isOk,
+      ...(isOk ? {} : { error: `Unexpected response: ${response.text}` })
+    });
+  } catch (error: any) {
+    res.json({
+      mode: gatewayMode,
+      baseUrl,
+      model,
+      ok: false,
+      error: error.message || String(error)
+    });
+  }
+});
+
 router.get('/auth/google/url', (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET) {
     return res.status(500).json({ error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the environment.' });

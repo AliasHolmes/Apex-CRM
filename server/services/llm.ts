@@ -97,20 +97,39 @@ export function getGeminiClient(): any {
 // OpenAI Compatible REST API Helpers (OPENAI_API_KEY)
 // -----------------------------------------------------------------------------
 
-const OPENAI_MODEL = 'gpt-5.5';
-const OPENAI_BASE = 'https://api.byesu.com/v1';
+const gatewayMode = process.env.LLM_GATEWAY_MODE || 'direct';
+
+const defaultBase = gatewayMode === 'litellm'
+  ? (process.env.LITELLM_BASE_URL || 'http://localhost:4000/v1')
+  : (process.env.OPENAI_BASE || 'https://api.byesu.com/v1');
+
+const defaultModel = gatewayMode === 'litellm'
+  ? (process.env.LITELLM_MODEL || 'apex-primary')
+  : (process.env.OPENAI_MODEL || 'gpt-5.5');
+
+const OPENAI_BASE = defaultBase;
+const OPENAI_MODEL = defaultModel;
+
+export function getAPIKey(): string {
+  const gatewayMode = process.env.LLM_GATEWAY_MODE || 'direct';
+  if (gatewayMode === 'litellm') {
+    return process.env.LITELLM_MASTER_KEY || '';
+  }
+  return process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || '';
+}
 
 /**
  * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
  * Prevents indefinite hangs when the LLM proxy is slow or overloaded.
- * Default: 45s timeout, 2 retries (waits 2s then 4s between attempts).
+ * Default: 45s timeout, 1 retry (waits 2s then 4s between attempts).
  */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
-  timeoutMs = 45000,
-  maxRetries = 2
+  timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 45000),
+  maxRetries = Number(process.env.LLM_MAX_RETRIES || 1)
 ): Promise<Response> {
+  const retry429 = process.env.LLM_RETRY_429 === 'true';
   let lastError: Error = new Error('Unknown fetch error');
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
@@ -118,8 +137,12 @@ async function fetchWithRetry(
     try {
       const res = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timer);
-      // Retry on 5xx (proxy overload/gateway errors) but not 4xx (bad requests)
-      if (res.status >= 500 && attempt < maxRetries) {
+      
+      const isRetryableStatus = 
+        (res.status >= 500 && res.status <= 599) || 
+        (res.status === 429 && retry429);
+
+      if (isRetryableStatus && attempt < maxRetries) {
         const waitMs = Math.pow(2, attempt) * 2000; // 2s, then 4s
         console.warn(`[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`);
         await new Promise(r => setTimeout(r, waitMs));
@@ -211,8 +234,8 @@ export async function tavilySearch(query: string): Promise<{ text: string; sourc
  * Calls OpenAI compatible API for pure text generation.
  */
 export async function openAIText(prompt: string, systemInstruction?: string): Promise<{ text: string }> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not set in environment.');
+  const apiKey = getAPIKey();
+  if (!apiKey) throw new Error('No OpenAI compatible API key available.');
 
   const messages = [];
   if (systemInstruction) {
@@ -234,7 +257,10 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
   });
 
   if (!res.ok) {
-    const err = await res.text();
+    let err = await res.text();
+    if (err.length > 500) {
+      err = err.slice(0, 500) + '... [truncated]';
+    }
     throw new Error(`OpenAI text generation error ${res.status}: ${err}`);
   }
 
@@ -249,8 +275,8 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
  * Used as step 2 to convert raw searched text into clean structured data.
  */
 export async function openAIStructured<T>(prompt: string, schema: any, systemInstruction?: string): Promise<T> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY is not set in environment.');
+  const apiKey = getAPIKey();
+  if (!apiKey) throw new Error('No OpenAI compatible API key available.');
 
   let sysPrompt = systemInstruction || '';
   sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. The JSON must exactly match this schema:\n${JSON.stringify(normalizeSchema(schema), null, 2)}`;
@@ -260,22 +286,45 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
     { role: 'user', content: prompt }
   ];
 
-  const res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
+  const jsonMode = process.env.LLM_JSON_MODE || 'auto';
+  const useJsonMode = jsonMode === 'on' || jsonMode === 'auto';
+
+  const body: any = {
+    model: OPENAI_MODEL,
+    messages,
+    temperature: 0.1,
+  };
+  if (useJsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+
+  let res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
     headers: { 
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages,
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    })
+    body: JSON.stringify(body)
   });
 
+  if (!res.ok && jsonMode === 'auto' && (res.status === 400 || res.status === 422)) {
+    console.warn(`[llm] Structured output call failed with ${res.status}. Retrying without response_format due to LLM_JSON_MODE=auto...`);
+    delete body.response_format;
+    res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body)
+    });
+  }
+
   if (!res.ok) {
-    const err = await res.text();
+    let err = await res.text();
+    if (err.length > 500) {
+      err = err.slice(0, 500) + '... [truncated]';
+    }
     throw new Error(`OpenAI structured call error ${res.status}: ${err}`);
   }
 
@@ -291,7 +340,7 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
 
 /** Returns true when a real OpenAI API key is available. */
 export function hasOpenAIKey(): boolean {
-  return !!process.env.OPENAI_API_KEY;
+  return !!getAPIKey();
 }
 
 // -----------------------------------------------------------------------------

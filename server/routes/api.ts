@@ -363,12 +363,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
   };
 
-  const normalizeDedupeValue = (value?: string) => (value || '')
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .replace(/\/$/, '')
-    .trim();
+  const getProfileDomain = (profile: any) => {
+    const website = profile?.contactDetails?.website;
+    if (website) return normalizeDedupeValue(website).split('/')[0];
+    const email = profile?.contactDetails?.email;
+    if (email && email.includes('@')) return email.toLowerCase().split('@')[1];
+    return '';
+  };
 
   const profileKeys = (profile: any) => {
     const keys = new Set<string>();
@@ -376,9 +377,11 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     const linkedin = extractLinkedInUsername(profile?.contactDetails?.linkedinUrl);
     const name = normalizeDedupeValue(profile?.fullName);
     const company = normalizeDedupeValue(profile?.currentCompany);
+    const domain = getProfileDomain(profile);
     if (email) keys.add(`email:${email}`);
     if (linkedin) keys.add(`linkedin:${linkedin}`);
     if (name && company) keys.add(`name_company:${name}::${company}`);
+    if (name && domain) keys.add(`name_domain:${name}::${domain}`);
     return keys;
   };
 
@@ -1148,16 +1151,29 @@ router.post('/chat', async (req, res): Promise<any> => {
     }
 
     // Build a rich context summary of the CRM for LLM
+    const stageCounts: Record<string, number> = {};
+    leads.forEach((l: any) => {
+      stageCounts[l.stage] = (stageCounts[l.stage] || 0) + 1;
+    });
+    const stageSummary = Object.entries(stageCounts)
+      .map(([stage, count]) => `- ${stage}: ${count}`)
+      .join('\n');
+
     const leadsContext = leads.length === 0
       ? 'The CRM pipeline is currently empty.'
-      : leads.slice(0, 20).map((l: any, i: number) =>
+      : leads.slice(0, 100).map((l: any, i: number) =>
           `${i + 1}. ${l.profile?.fullName} - ${l.profile?.currentTitle} at ${l.profile?.currentCompany} | Stage: ${l.stage} | Fit: ${l.profile?.fitScore ?? '?'}/10 | Intent: ${l.profile?.intentScore ?? '?'}/10`
         ).join('\n');
 
     const systemPrompt = `${APEX_SYSTEM_PROMPT}
 
 ## Current CRM Pipeline Context
-${leads.length} total leads.
+Total Leads: ${leads.length}
+
+### Pipeline Stage Breakdown:
+${stageSummary}
+
+### Active Leads List (Showing top 100):
 ${leadsContext}
 
 Answer the user's question about their CRM pipeline, leads, outreach strategy, or any sales-related query. Be direct, concise, and actionable. Format responses in markdown.`;

@@ -66,7 +66,7 @@ async function connectLocalClient(apiToken: string) {
       API_TOKEN: apiToken,
       BRIGHTDATA_API_TOKEN: apiToken
     } as Record<string, string>,
-    stderr: 'pipe',
+    stderr: 'inherit',
     cwd: process.cwd()
   });
 

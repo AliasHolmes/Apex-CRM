@@ -15,6 +15,7 @@ import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
 
 const router = Router();
+export const activeSessions = new Map<string, string[]>();
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = process.env.APP_URL ? (process.env.APP_URL + '/api/auth/google/callback') : 'http://localhost:3000/api/auth/google/callback';
@@ -289,12 +290,23 @@ router.get('/search-logs', (req, res): any => {
   }
 });
 
+router.get('/search-logs/:id/live', (req, res) => {
+  const logs = activeSessions.get(req.params.id) || [];
+  res.json({ logs });
+});
+
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 router.post('/find-leads', async (req, res): Promise<any> => {
-  const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+  const sessionId = req.body.sessionId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
   const sessionLogs: string[] = [];
-  const logEvent = (msg: string) => { const line = `[${new Date().toISOString()}] ${msg}`; console.log(line); sessionLogs.push(line); };
+  const debugLogs: any[] = [];
+  const logEvent = (msg: string) => {
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    console.log(line);
+    sessionLogs.push(line);
+    activeSessions.set(sessionId, sessionLogs);
+  };
   logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
 
   let generatedQueries: string[] = [];
@@ -311,7 +323,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     errorMessage: '',
     rawResultsCount: 0,
     leadsFound: 0,
-    detailedLogs: sessionLogs.join('\n')
+    detailedLogs: sessionLogs.join('\n'),
+    debugLogs: JSON.stringify(debugLogs)
   });
 
   const brightDataStats = {
@@ -543,9 +556,25 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       let planItems: SearchQueryPlanItem[] = [];
       try {
         const queryResult = await openAIStructured<any>(strategistPrompt, searchQueriesSchema, STRATEGIST_SYSTEM_PROMPT);
+        debugLogs.push({
+          timestamp: new Date().toISOString(),
+          type: 'llm_request',
+          label: `strategist_round_${round}`,
+          model: process.env.OPENAI_MODEL || 'gpt-5.5',
+          prompt: strategistPrompt,
+          systemInstruction: STRATEGIST_SYSTEM_PROMPT,
+          response: queryResult
+        });
         planItems = normalizeQueryPlanItems(queryResult);
       } catch (e: any) {
         logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
+        debugLogs.push({
+          timestamp: new Date().toISOString(),
+          type: 'llm_error',
+          label: `strategist_round_${round}`,
+          prompt: strategistPrompt,
+          error: e.message
+        });
       }
 
       if (planItems.length === 0) {
@@ -590,8 +619,23 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       });
 
       // 1. Tavily Search
-      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery).catch(e => {
+      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery).then(res => {
+        debugLogs.push({
+          timestamp: new Date().toISOString(),
+          type: 'tavily_search',
+          query: plan.executableQuery,
+          resultsCount: res.items?.length || 0,
+          results: res.items?.map((item: any) => ({ title: item.title, url: item.url, snippet: item.content || item.raw_content }))
+        });
+        return res;
+      }).catch(e => {
         logEvent(`WARN: Tavily Search failed for query "${plan.executableQuery}": ${e.message}`);
+        debugLogs.push({
+          timestamp: new Date().toISOString(),
+          type: 'tavily_error',
+          query: plan.executableQuery,
+          error: e.message
+        });
         return { text: '', sources: [], items: [], _failedQueryIndex: index };
       })));
 
@@ -718,11 +762,19 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
       let provisionalLeads: any[] = [];
       for (let i = 0; i < chunks.length && provisionalLeads.length < targetLimit * 2; i++) {
+        const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunks[i]}`;
         try {
-          const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunks[i]}`;
-
           const extracted = await openAIStructured<any[]>(prompt, bulkLeadsArraySchema, EXTRACTION_SYSTEM_PROMPT);
           const extractedLeads = Array.isArray(extracted) ? extracted : [];
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'llm_request',
+            label: `extraction_round_${round}_chunk_${i + 1}`,
+            model: process.env.OPENAI_MODEL || 'gpt-5.5',
+            prompt,
+            systemInstruction: EXTRACTION_SYSTEM_PROMPT,
+            response: extractedLeads
+          });
           logEvent(`Round ${round}, chunk ${i + 1}/${chunks.length}: extracted ${extractedLeads.length} profiles.`);
           if (extractedLeads.length === 0) {
             noteRejection('llm_extraction_empty');
@@ -730,6 +782,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           provisionalLeads.push(...extractedLeads);
         } catch (e: any) {
           logEvent(`WARN: Extraction chunk ${i + 1}/${chunks.length} failed: ${e.message}`);
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'llm_error',
+            label: `extraction_round_${round}_chunk_${i + 1}`,
+            prompt,
+            error: e.message
+          });
         }
       }
 
@@ -829,10 +888,25 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             brightDataStats.profileScrapesAttempted++;
             try {
               const markdown = await scrapeAsMarkdown(url);
+              debugLogs.push({
+                timestamp: new Date().toISOString(),
+                type: 'brightdata_scrape',
+                url,
+                response: markdown ? { length: markdown.length, preview: markdown.slice(0, 300) } : null
+              });
               if (markdown) {
                 const title = lead.currentTitle || lead.headline || 'Untitled';
                 const snippet = evidenceMeta.evidenceBlock;
                 const parsed = parseLinkedInEvidence(markdown, { title, url, snippet });
+                
+                debugLogs.push({
+                  timestamp: new Date().toISOString(),
+                  type: 'brightdata_parse',
+                  url,
+                  quality: parsed.quality,
+                  rejectionReason: parsed.rejectionReason,
+                  evidenceBlock: parsed.evidenceBlock
+                });
                 
                 if (parsed.quality === 'good' || parsed.quality === 'partial') {
                   evidenceMeta.sourceProvider = 'brightdata';
@@ -870,6 +944,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
               stats.brightDataFailures++;
               brightDataStats.failed++;
               incrementRejection(brightDataStats.rejectionReasons, 'brightdata_failed');
+              debugLogs.push({
+                timestamp: new Date().toISOString(),
+                type: 'brightdata_error',
+                url,
+                error: e.message
+              });
               upsertNegativeEnrichmentCacheEntry({
                 normalizedUrl,
                 linkedinUsername: username,
@@ -1026,7 +1106,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
 
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
-    // fs.appendFileSync('adaptive_mining_terminal.log', detailedLogsText + '\n\n');
     insertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),
@@ -1036,15 +1115,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       errorMessage: '',
       rawResultsCount,
       leadsFound,
-      detailedLogs: detailedLogsText
+      detailedLogs: detailedLogsText,
+      debugLogs: JSON.stringify(debugLogs)
     });
 
+    activeSessions.delete(sessionId);
     res.json({ leads: finalLeads, stats, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
 
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
-    // fs.appendFileSync('adaptive_mining_terminal.log', detailedLogsText + '\n\n');
     insertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),
@@ -1054,9 +1134,11 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       errorMessage: error.message || 'Failed to locate leads.',
       rawResultsCount,
       leadsFound: 0,
-      detailedLogs: detailedLogsText
+      detailedLogs: detailedLogsText,
+      debugLogs: JSON.stringify(debugLogs)
     });
 
+    activeSessions.delete(sessionId);
     res.status(500).json({ error: error.message || 'Failed to locate leads.', stats });
   }
 });

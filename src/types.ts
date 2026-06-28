@@ -160,6 +160,7 @@ export interface SearchLog {
   rawResultsCount: number;
   leadsFound: number;
   detailedLogs?: string;
+  debugLogs?: string;
   rejectionReasons?: Record<string, number>;
   queryRuns?: unknown[];
 }

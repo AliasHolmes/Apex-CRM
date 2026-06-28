@@ -27,6 +27,65 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+
+const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
+
+  if (!debugLogsStr) return null;
+  
+  let events: any[] = [];
+  try {
+    events = JSON.parse(debugLogsStr);
+  } catch {
+    return <div className="text-xs text-rose-400 mt-2">Failed to parse debug logs.</div>;
+  }
+
+  if (events.length === 0) return null;
+
+  return (
+    <div className="mt-3 pt-3 border-t border-slate-800/50">
+      <Button 
+        variant="ghost" 
+        size="sm" 
+        onClick={() => setExpanded(!expanded)} 
+        className="text-xs text-indigo-400 hover:text-indigo-300 p-0 h-auto gap-1"
+      >
+        {expanded ? 'Hide' : 'Show'} Debug Payloads ({events.length} events)
+      </Button>
+      
+      {expanded && (
+        <div className="mt-2 space-y-2 max-h-96 overflow-y-auto custom-scrollbar p-2 bg-slate-950/50 rounded border border-slate-800/80">
+          {events.map((ev, idx) => (
+            <div key={idx} className="text-xs border-b border-slate-900 last:border-0 pb-2 mb-2 last:pb-0 last:mb-0">
+              <div className="flex items-center justify-between text-slate-500 font-mono text-[10px]">
+                <span>{ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : ''}</span>
+                <span className="uppercase font-semibold text-indigo-400/80">{ev.type}</span>
+              </div>
+              <div className="font-semibold text-slate-300 mt-0.5">{ev.label || ev.query || ev.url}</div>
+              
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => setExpandedEvent(expandedEvent === idx ? null : idx)}
+                className="text-[10px] text-slate-400 hover:text-slate-200 p-0 h-auto mt-1"
+              >
+                {expandedEvent === idx ? 'Collapse details' : 'Expand details'}
+              </Button>
+              
+              {expandedEvent === idx && (
+                <pre className="text-[10px] text-slate-300 font-mono bg-slate-950 p-2 rounded mt-1 overflow-x-auto whitespace-pre-wrap max-h-64 border border-slate-800">
+                  {JSON.stringify(ev, null, 2)}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface ScrapeWorkspaceProps {
   leads: Lead[];
   handleLeadAdded: (profile: LinkedInProfile) => void;
@@ -69,43 +128,7 @@ export default function ScrapeWorkspace() {
     }
   }, [showLogs]);
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | undefined;
-    if (loading && activeTab === 'find') {
-      const initTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      setTerminalLogs([
-        `[${initTime}] SYSTEM INIT: Preparing lead discovery request...`
-      ]);
-
-      const logPool = [
-        'REQUEST SENT: Backend /api/find-leads session started.',
-        'QUERY PLANNING: Search strategist is preparing Tavily queries.',
-        'DISCOVERY: Tavily is fetching public LinkedIn-indexed candidates.',
-        'EVIDENCE: Candidate snippets and optional enrichment cache are being evaluated.',
-        'EXTRACTION: LLM is converting evidence into structured CRM leads.',
-        'FILTERING: Duplicates, weak records, and low-score candidates are being rejected.',
-        'WAITING: Final results and search-session stats will appear when the backend responds.'
-      ];
-
-      let currentIndex = 0;
-      timer = setInterval(() => {
-        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        if (currentIndex < logPool.length) {
-          setTerminalLogs(prev => [...prev, `[${timeStr}] ${logPool[currentIndex]}`]);
-          currentIndex++;
-        } else if (currentIndex === logPool.length) {
-          setTerminalLogs(prev => [...prev, `[${timeStr}] WAITING: Lead discovery is still running. Check Search Session Logs for persisted backend details.`]);
-          currentIndex++;
-        }
-      }, 1200);
-    } else {
-      setTerminalLogs([]);
-    }
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [loading, activeTab]);
+  // Live logs are handled directly via active status polling during search execution
 
   useEffect(() => {
     const checkAuth = () => {
@@ -316,9 +339,12 @@ export default function ScrapeWorkspace() {
 
     const taskId = handleTaskAdd('search', findQuery);
     const requestController = new AbortController();
+    const sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
+    let pollInterval: ReturnType<typeof setInterval> | undefined;
 
     try {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'processing' } : t));
+      setTerminalLogs([`[${new Date().toLocaleTimeString()}] Preparing lead discovery request...`]);
 
       // Build exclusions list of already scraped identifiers to pass to backend search
       const excludeUrlsAndEmails: string[] = [];
@@ -332,13 +358,29 @@ export default function ScrapeWorkspace() {
         excludeUrlsAndEmails.push(l.profile.fullName);
       });
 
+      // Start live status polling
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/search-logs/${sessionId}/live`);
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.logs) && data.logs.length > 0) {
+              setTerminalLogs(data.logs);
+            }
+          }
+        } catch (e) {
+          console.error('Error polling live logs:', e);
+        }
+      }, 1000);
+
       const response = await fetch('/api/find-leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           query: findQuery, 
           limit: leadLimit,
-          excludeList: excludeUrlsAndEmails
+          excludeList: excludeUrlsAndEmails,
+          sessionId
         }),
         signal: requestController.signal,
       });
@@ -373,6 +415,7 @@ export default function ScrapeWorkspace() {
       setErrorCode(message);
       updateTaskStatus(taskId, 'failed', 0);
     } finally {
+      if (pollInterval) clearInterval(pollInterval);
       setLoading(false);
     }
   };
@@ -885,6 +928,7 @@ Everything else is noise.`)}
                           </pre>
                         </div>
                       )}
+                      <DebugLogsViewer debugLogsStr={log.debugLogs} />
                     </div>
                   ))
                 )}

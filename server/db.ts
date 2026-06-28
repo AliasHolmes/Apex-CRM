@@ -116,12 +116,19 @@ export function getLeadsDb() {
         error_message TEXT,
         raw_results_count INTEGER,
         leads_found INTEGER,
-        detailed_logs TEXT
+        detailed_logs TEXT,
+        debug_logs TEXT
       );
     `);
 
     try {
       leadsDb.exec('ALTER TABLE search_logs ADD COLUMN detailed_logs TEXT;');
+    } catch (e) {
+      // Ignore if column already exists
+    }
+
+    try {
+      leadsDb.exec('ALTER TABLE search_logs ADD COLUMN debug_logs TEXT;');
     } catch (e) {
       // Ignore if column already exists
     }
@@ -364,8 +371,8 @@ export function insertSearchLog(log: any) {
   try {
     const db = getLeadsDb();
     const insertStmt = db.prepare(`
-      INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs, debug_logs)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         timestamp = excluded.timestamp,
         prompt = excluded.prompt,
@@ -374,7 +381,8 @@ export function insertSearchLog(log: any) {
         error_message = excluded.error_message,
         raw_results_count = excluded.raw_results_count,
         leads_found = excluded.leads_found,
-        detailed_logs = excluded.detailed_logs
+        detailed_logs = excluded.detailed_logs,
+        debug_logs = excluded.debug_logs
     `);
     insertStmt.run(
       log.id,
@@ -385,7 +393,8 @@ export function insertSearchLog(log: any) {
       log.errorMessage || '',
       log.rawResultsCount || 0,
       log.leadsFound || 0,
-      log.detailedLogs || ''
+      log.detailedLogs || '',
+      log.debugLogs || ''
     );
 
     // Keep only last 20

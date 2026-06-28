@@ -376,6 +376,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
   };
 
+  const normalizeDedupeValue = (value?: string) => (value || '')
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/$/, '')
+    .trim();
+
   const getProfileDomain = (profile: any) => {
     const website = profile?.contactDetails?.website;
     if (website) return normalizeDedupeValue(website).split('/')[0];

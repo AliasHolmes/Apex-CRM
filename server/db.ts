@@ -41,6 +41,7 @@ export function getLeadsDb() {
     leadsDb = new DatabaseSync(LEADS_DB_PATH);
     leadsDb.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 10000;
       PRAGMA foreign_keys = ON;
 
       CREATE TABLE IF NOT EXISTS leads (

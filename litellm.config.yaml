@@ -20,7 +20,7 @@ model_list:
 
 litellm_settings:
   drop_params: true
-  request_timeout: 45
+  request_timeout: 120
   num_retries: 1
   fallbacks:
     - apex-primary: [apex-openrouter-fallback, apex-groq-fallback]

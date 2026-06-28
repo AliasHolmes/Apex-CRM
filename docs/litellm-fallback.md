@@ -24,6 +24,7 @@ Choose the command matching your shell/OS:
 $env:LITELLM_MASTER_KEY="sk-local-litellm"
 $env:BYESU_API_KEY="your_byesu_key"
 $env:OPENROUTER_API_KEY="your_openrouter_key"
+$env:GROQ_API_KEY="your_groq_key"
 litellm --config litellm.config.yaml --port 4000
 ```
 
@@ -32,6 +33,7 @@ litellm --config litellm.config.yaml --port 4000
 set LITELLM_MASTER_KEY=sk-local-litellm
 set BYESU_API_KEY=your_byesu_key
 set OPENROUTER_API_KEY=your_openrouter_key
+set GROQ_API_KEY=your_groq_key
 litellm --config litellm.config.yaml --port 4000
 ```
 
@@ -40,6 +42,7 @@ litellm --config litellm.config.yaml --port 4000
 export LITELLM_MASTER_KEY=sk-local-litellm
 export BYESU_API_KEY=your_byesu_key
 export OPENROUTER_API_KEY=your_openrouter_key
+export GROQ_API_KEY=your_groq_key
 litellm --config litellm.config.yaml --port 4000
 ```
 

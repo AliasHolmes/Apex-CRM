@@ -12,12 +12,18 @@ model_list:
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 20
 
+  - model_name: apex-groq-fallback
+    litellm_params:
+      model: groq/qwen/qwen3.6-27b
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 20
+
 litellm_settings:
   drop_params: true
   request_timeout: 45
   num_retries: 1
   fallbacks:
-    - apex-primary: [apex-openrouter-fallback]
+    - apex-primary: [apex-openrouter-fallback, apex-groq-fallback]
   allowed_fails: 1
   cooldown_time: 60
 

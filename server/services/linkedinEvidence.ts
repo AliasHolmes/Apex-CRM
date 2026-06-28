@@ -158,7 +158,10 @@ export function parseLinkedInEvidence(markdown: string, fallback?: { title?: str
   const lowered = compactSource.toLowerCase();
 
   if (BAD_MARKERS.some(marker => lowered.includes(marker))) {
-    return { quality: 'bad', evidenceBlock: '', rejectionReason: 'blocked_or_login_wall' };
+    const hasProfileContent = lowered.includes('experience') || lowered.includes('education') || lowered.includes('about') || lowered.includes('summary');
+    if (!hasProfileContent) {
+      return { quality: 'bad', evidenceBlock: '', rejectionReason: 'blocked_or_login_wall' };
+    }
   }
 
   if (!compactSource || compactSource.length < 80) {

@@ -48,6 +48,8 @@ async function connectHostedClient(apiToken: string) {
   transport.onerror = (error) => {
     disabledReason = error.message;
     console.warn('[brightdata] hosted transport error:', error.message);
+    brightDataClient = null;
+    brightDataInitPromise = null;
   };
   await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data hosted MCP connect');
   activeTransport = 'hosted';
@@ -71,6 +73,8 @@ async function connectLocalClient(apiToken: string) {
   transport.onerror = (error) => {
     disabledReason = error.message;
     console.warn('[brightdata] local transport error:', error.message);
+    brightDataClient = null;
+    brightDataInitPromise = null;
   };
 
   await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data local MCP connect');

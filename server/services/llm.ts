@@ -252,7 +252,8 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages,
-      temperature: 0.1
+      temperature: 0.1,
+      max_tokens: 4000
     })
   });
 
@@ -329,6 +330,7 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
     model: OPENAI_MODEL,
     messages,
     temperature: 0.1,
+    max_tokens: 4000,
   };
   if (useJsonMode) {
     body.response_format = { type: "json_object" };

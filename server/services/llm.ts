@@ -239,9 +239,9 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
 
   const messages = [];
   if (systemInstruction) {
-    messages.push({ role: 'system', content: systemInstruction });
+    messages.push({ role: 'system', content: systemInstruction.toWellFormed() });
   }
-  messages.push({ role: 'user', content: prompt });
+  messages.push({ role: 'user', content: prompt.toWellFormed() });
 
   const res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -282,8 +282,8 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
   sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. The JSON must exactly match this schema:\n${JSON.stringify(normalizeSchema(schema), null, 2)}`;
 
   const messages = [
-    { role: 'system', content: sysPrompt },
-    { role: 'user', content: prompt }
+    { role: 'system', content: sysPrompt.toWellFormed() },
+    { role: 'user', content: prompt.toWellFormed() }
   ];
 
   const jsonMode = process.env.LLM_JSON_MODE || 'auto';

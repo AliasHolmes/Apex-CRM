@@ -48,7 +48,7 @@ router.put('/leads', (req, res): any => {
 router.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    hasKey: !!process.env.OPENAI_API_KEY,
+    hasKey: hasOpenAIKey(),
     hasTavilyKey: !!process.env.TAVILY_API_KEY,
     hasOAuth: !!loadAuth(),
     hasGoogleClient: !!CLIENT_ID,

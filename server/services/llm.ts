@@ -270,6 +270,42 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
   return { text };
 }
 
+function cleanJSONString(str: string): string {
+  let cleaned = str.trim();
+  // Remove markdown code block wrappers
+  if (cleaned.startsWith('```')) {
+    const lines = cleaned.split('\n');
+    if (lines[0].startsWith('```')) {
+      lines.shift();
+    }
+    if (lines[lines.length - 1] === '```') {
+      lines.pop();
+    }
+    cleaned = lines.join('\n').trim();
+  }
+  // Extract content between first [ or { and last ] or }
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let startIdx = -1;
+  if (firstBrace !== -1 && firstBracket !== -1) {
+    startIdx = Math.min(firstBrace, firstBracket);
+  } else if (firstBrace !== -1) {
+    startIdx = firstBrace;
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+  }
+
+  if (startIdx !== -1) {
+    const lastBrace = cleaned.lastIndexOf('}');
+    const lastBracket = cleaned.lastIndexOf(']');
+    const endIdx = Math.max(lastBrace, lastBracket);
+    if (endIdx !== -1 && endIdx > startIdx) {
+      cleaned = cleaned.slice(startIdx, endIdx + 1);
+    }
+  }
+  return cleaned;
+}
+
 /**
  * Calls OpenAI compatible API with a request for a strict JSON response.
  * Used as step 2 to convert raw searched text into clean structured data.
@@ -347,7 +383,7 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
   const text = data.choices?.[0]?.message?.content || '';
 
   try {
-    return JSON.parse(text) as T;
+    return JSON.parse(cleanJSONString(text)) as T;
   } catch {
     throw new Error(`Failed to parse OpenAI JSON response: ${text.slice(0, 300)}`);
   }

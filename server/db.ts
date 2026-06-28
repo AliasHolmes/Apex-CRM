@@ -272,7 +272,7 @@ export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new
 }
 
 export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays = 7, now = new Date()) {
-  if (!entry.evidenceBlock || entry.scrapeQuality === 'bad') return null;
+  if (!entry.evidenceBlock) return null;
 
   const db = getLeadsDb();
   const createdAt = entry.createdAt || now.toISOString();
@@ -323,6 +323,40 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
 
   pruneExpiredEnrichmentCache(now);
   return { ...entry, id, createdAt, expiresAt };
+}
+
+export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date()) {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
+  const linkedinUsername = normalizeCacheValue(lookup.linkedinUsername);
+
+  if (normalizedUrl || linkedinUsername) {
+    const row = db.prepare(`
+      SELECT * FROM enrichment_cache
+      WHERE datetime(expires_at) > datetime(?)
+        AND scrape_quality = 'bad'
+        AND source_provider = 'brightdata'
+        AND (
+          (? != '' AND normalized_url = ?)
+          OR (? != '' AND linkedin_username = ?)
+        )
+      ORDER BY datetime(created_at) DESC
+      LIMIT 1
+    `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
+    const match = toCacheRow(row);
+    if (match) return match;
+  }
+
+  return null;
+}
+
+export function upsertNegativeEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlHours = 24, now = new Date()) {
+  return upsertEnrichmentCacheEntry({
+    ...entry,
+    scrapeQuality: 'bad',
+    sourceProvider: 'brightdata'
+  }, ttlHours / 24, now);
 }
 
 export function insertSearchLog(log: any) {

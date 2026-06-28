@@ -8,7 +8,8 @@ export type RejectionReason =
   | 'brightdata_login_wall'
   | 'brightdata_low_quality'
   | 'brightdata_failed'
-  | 'llm_extraction_empty';
+  | 'llm_extraction_empty'
+  | 'not_decision_maker';
 
 export type RejectionCounts = Record<string, number>;
 

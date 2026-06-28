@@ -161,3 +161,81 @@ export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs())
   const markdown = textFromToolResult(result);
   return markdown || null;
 }
+
+export type BrightDataSearchResult = {
+  title: string;
+  url: string;
+  content: string;
+  sourceProvider: 'brightdata_search';
+};
+
+let searchToolAvailable: boolean | null = null;
+
+export async function brightDataSearch(query: string, options?: {
+  country?: string;
+  page?: number;
+  timeoutMs?: number;
+}): Promise<BrightDataSearchResult[]> {
+  const client = await getBrightDataClient();
+  if (!client) {
+    return [];
+  }
+
+  // Check tool availability once
+  if (searchToolAvailable === null) {
+    try {
+      const tools = await client.listTools();
+      searchToolAvailable = tools.tools.some(t => t.name === 'search_engine');
+    } catch (e) {
+      searchToolAvailable = false;
+    }
+  }
+
+  if (!searchToolAvailable) {
+    disabledReason = 'search_engine tool unavailable in Bright Data MCP';
+    return [];
+  }
+
+  const timeoutMs = options?.timeoutMs || baseTimeoutMs();
+  
+  try {
+    const result = await withHardTimeout(client.callTool(
+      { 
+        name: 'search_engine', 
+        arguments: { 
+          query, 
+          country: options?.country || 'us', 
+          page: options?.page || 1 
+        } 
+      },
+      undefined,
+      { timeout: timeoutMs }
+    ), timeoutMs, 'Bright Data search_engine');
+
+    if ((result as any)?.isError) {
+      console.warn('[brightdata] search_engine error:', textFromToolResult(result));
+      return [];
+    }
+
+    const textResult = textFromToolResult(result);
+    if (!textResult) return [];
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(textResult);
+    } catch (e) {
+      return [];
+    }
+
+    const items = Array.isArray(parsed) ? parsed : (parsed.organic || parsed.results || []);
+    return items.map((item: any) => ({
+      title: item.title || '',
+      url: item.link || item.url || '',
+      content: item.snippet || item.description || '',
+      sourceProvider: 'brightdata_search' as const
+    })).filter((item: BrightDataSearchResult) => item.url && item.title);
+  } catch (error) {
+    console.warn('[brightdata] search_engine exception:', error instanceof Error ? error.message : String(error));
+    return [];
+  }
+}

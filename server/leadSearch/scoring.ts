@@ -31,20 +31,43 @@ export const sourceConfidenceScore = (provider: LeadSourceProvider) => {
 export function computeScoreBreakdown(
   lead: Record<string, any>,
   quality: EvidenceQuality,
-  provider: LeadSourceProvider
+  provider: LeadSourceProvider,
+  decisionMakerVerification?: {
+    confidence: number;
+    ignoredTitle: boolean;
+  }
 ): ScoreBreakdown {
   const fitScore = scoreOrDefault(lead.fitScore, 5);
   const intentScore = scoreOrDefault(lead.intentScore, 5);
   const timingScore = scoreOrDefault(lead.timingScore, 5);
   const eqScore = evidenceQualityScore(quality);
   const scScore = sourceConfidenceScore(provider);
-  const finalScore = Number((
+  
+  let baseScore = (
     fitScore * 0.35 +
     intentScore * 0.30 +
     timingScore * 0.15 +
     eqScore * 0.15 +
     scScore * 0.05
-  ).toFixed(1));
+  );
+
+  let decisionMakerBonus = 0;
+  let ignoredTitlePenalty = 0;
+
+  if (decisionMakerVerification) {
+    if (decisionMakerVerification.confidence >= 8) {
+      decisionMakerBonus = 0.7;
+    } else if (decisionMakerVerification.confidence >= 6) {
+      decisionMakerBonus = 0.3;
+    }
+
+    if (decisionMakerVerification.ignoredTitle) {
+      ignoredTitlePenalty = 1.5;
+    }
+  }
+
+  let finalScore = baseScore + decisionMakerBonus - ignoredTitlePenalty;
+  finalScore = Math.min(Math.max(finalScore, 1), 10); // clamp 1-10
 
   return {
     fitScore,
@@ -52,6 +75,6 @@ export function computeScoreBreakdown(
     timingScore,
     evidenceQualityScore: eqScore,
     sourceConfidenceScore: scScore,
-    finalScore,
+    finalScore: Number(finalScore.toFixed(1)),
   };
 }

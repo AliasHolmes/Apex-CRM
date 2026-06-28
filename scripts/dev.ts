@@ -11,7 +11,7 @@ const litellmPath = isWindows
 console.log('[dev-entry] Starting LiteLLM proxy...');
 const litellmProcess = spawn(litellmPath, ['--config', 'litellm.config.yaml', '--port', '4000'], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
 });
 
 console.log('[dev-entry] Starting Apex CRM dev server...');

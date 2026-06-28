@@ -130,12 +130,22 @@ async function fetchWithRetry(
   maxRetries = Number(process.env.LLM_MAX_RETRIES || 1)
 ): Promise<Response> {
   const retry429 = process.env.LLM_RETRY_429 === 'true';
+  
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ...(options.headers as Record<string, string> || {})
+  };
+  const requestOptions = {
+    ...options,
+    headers
+  };
+
   let lastError: Error = new Error('Unknown fetch error');
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, { ...options, signal: controller.signal });
+      const res = await fetch(url, { ...requestOptions, signal: controller.signal });
       clearTimeout(timer);
       
       const isRetryableStatus = 

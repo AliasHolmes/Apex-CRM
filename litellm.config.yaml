@@ -8,7 +8,7 @@ model_list:
 
   - model_name: apex-openrouter-fallback
     litellm_params:
-      model: openrouter/google/gemma-4-31b-it:free
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 20
 

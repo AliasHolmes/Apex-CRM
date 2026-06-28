@@ -619,7 +619,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       });
 
       // 1. Tavily Search
-      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery).then(res => {
+      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery, ['linkedin.com']).then(res => {
         debugLogs.push({
           timestamp: new Date().toISOString(),
           type: 'tavily_search',
@@ -690,6 +690,17 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         const url = item.url || item.link || '';
         const username = extractLinkedInUsername(url);
         const normalizedUrl = normalizeLinkedInUrl(url);
+        
+        // Skip immediately if the candidate already exists in our CRM!
+        if (username && existingKeys.has(`linkedin:${username}`)) {
+          noteRejection('duplicate_existing_lead', queryRun);
+          continue;
+        }
+        if (normalizedUrl && existingKeys.has(`linkedin:${normalizedUrl}`)) {
+          noteRejection('duplicate_existing_lead', queryRun);
+          continue;
+        }
+
         const candidateKey = username || normalizedUrl || normalizeDedupeValue(`${item.title || ''} ${item.content || item.snippet || ''}`);
         
         if (!candidateKey || seenCandidateKeys.has(candidateKey)) {

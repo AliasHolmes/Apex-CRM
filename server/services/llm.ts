@@ -196,7 +196,10 @@ function normalizeSchema(schema: any): any {
  * Calls Tavily Search directly.
  * Returns raw text (titles + snippets) + source links for downstream extraction.
  */
-export async function tavilySearch(query: string): Promise<{ text: string; sources: { title: string; uri: string }[], items: any[] }> {
+export async function tavilySearch(
+  query: string,
+  includeDomains?: string[]
+): Promise<{ text: string; sources: { title: string; uri: string }[], items: any[] }> {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
 
@@ -215,6 +218,7 @@ export async function tavilySearch(query: string): Promise<{ text: string; sourc
       include_answer: false,
       include_raw_content: includeRawContent,
       include_usage: true,
+      ...(includeDomains ? { include_domains: includeDomains } : {})
     }),
   });
 

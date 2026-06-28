@@ -84,7 +84,7 @@ export function buildFallbackQueryPlan(query: string): SearchQueryPlanItem[] {
   return fallbacks.filter(item => item.query.trim().length > 0);
 }
 export function toLinkedInSearchQuery(item: SearchQueryPlanItem) {
-  return `site:linkedin.com/in/ ${sanitizeQueryText(item.query)}`;
+  return sanitizeQueryText(item.query);
 }
 
 export function buildStrategistPrompt(params: {

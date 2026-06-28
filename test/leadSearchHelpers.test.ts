@@ -37,7 +37,7 @@ describe('lead search helpers', () => {
       'dental practice growth manager Austin',
     ]);
     assert.equal(normalized[1].family, 'growth_signal');
-    assert.equal(toLinkedInSearchQuery(normalized[0]), 'site:linkedin.com/in/ dental clinic owner Austin');
+    assert.equal(toLinkedInSearchQuery(normalized[0]), 'dental clinic owner Austin');
   });
 
   it('builds deterministic fallback query plans', () => {

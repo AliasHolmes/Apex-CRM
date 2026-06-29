@@ -1,6 +1,3 @@
-import crypto from 'crypto';
-import { loadAuth, saveAuth } from '../auth.js';
-
 export const Type = {
   STRING: 'STRING',
   NUMBER: 'NUMBER',
@@ -9,89 +6,6 @@ export const Type = {
   ARRAY: 'ARRAY',
   OBJECT: 'OBJECT',
 };
-
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-class CloudCodeClient {
-  models = {
-    generateContent: async ({ model, contents, config }: any) => {
-      let auth = loadAuth();
-      if (!auth) throw new Error("Not authenticated");
-      if (Date.now() > auth.expires_ms) {
-        const resp = await fetch('https://oauth2.googleapis.com/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: auth.refresh_token,
-            client_id: CLIENT_ID,
-            client_secret: CLIENT_SECRET
-          })
-        });
-        const data = await resp.json();
-        if (data.access_token) {
-          auth.access_token = data.access_token;
-          if (data.refresh_token) auth.refresh_token = data.refresh_token;
-          auth.expires_ms = Date.now() + ((data.expires_in || 3599) * 1000);
-          saveAuth(auth);
-        } else {
-          throw new Error("Token refresh failed.");
-        }
-      }
-      let formattedContents = contents;
-      if (typeof contents === 'string') {
-        formattedContents = [{ role: 'user', parts: [{ text: contents }] }];
-      }
-      const userPromptId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
-      const activityRequestId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
-      const envelope = {
-        project: auth.project_id,
-        model: model || 'gpt-5.5',
-        user_prompt_id: userPromptId,
-        request: {
-          contents: formattedContents,
-          systemInstruction: config?.systemInstruction ? { role: 'system', parts: [{ text: config.systemInstruction }] } : undefined,
-          tools: config?.tools,
-          generationConfig: {
-            responseMimeType: config?.responseMimeType,
-            responseSchema: config?.responseSchema
-          }
-        }
-      };
-      const res = await fetch('https://cloudcode-pa.googleapis.com/v1internal:generateContent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.access_token}`,
-          'User-Agent': 'google-api-nodejs-client/9.15.1 (gzip)',
-          'X-Goog-Api-Client': 'gl-node/24.0.0',
-          'x-activity-request-id': activityRequestId
-        },
-        body: JSON.stringify(envelope)
-      });
-      if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`CloudCode-PA Error: ${res.status} ${err}`);
-      }
-      const data = await res.json();
-      const innerResp = data.response || data;
-      const candidates = innerResp.candidates || [];
-      const text = candidates[0]?.content?.parts?.map((p: any) => p.text).join('') || '';
-      return { text, candidates };
-    }
-  };
-}
-
-let aiClient: any = null;
-export function getGeminiClient(): any {
-  if (loadAuth()) {
-    if (!aiClient) {
-      aiClient = new CloudCodeClient();
-    }
-    return aiClient;
-  }
-  throw new Error('Not authenticated. Please connect your Google account to use the Copilot.');
-}
 
 // -----------------------------------------------------------------------------
 // OpenAI Compatible REST API Helpers (OPENAI_API_KEY)

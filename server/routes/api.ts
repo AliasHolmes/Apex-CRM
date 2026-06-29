@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 
 import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../db.js';
-import { loadAuth, saveAuth } from '../auth.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
 import { getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -16,11 +15,6 @@ import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyInt
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const REDIRECT_URI = process.env.APP_URL ? (process.env.APP_URL + '/api/auth/google/callback') : 'http://localhost:3000/api/auth/google/callback';
-let codeVerifierCache = '';
-
 
 router.get('/leads', (req, res): any => {
   try {
@@ -51,8 +45,8 @@ router.get('/health', (req, res) => {
     status: 'ok',
     hasKey: hasOpenAIKey(),
     hasTavilyKey: !!process.env.TAVILY_API_KEY,
-    hasOAuth: !!loadAuth(),
-    hasGoogleClient: !!CLIENT_ID,
+    hasOAuth: false,
+    hasGoogleClient: false,
     brightData: getBrightDataStatus(),
   });
 });
@@ -87,94 +81,7 @@ router.get('/llm-health', async (req, res) => {
   }
 });
 
-router.get('/auth/google/url', (req, res) => {
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    return res.status(500).json({ error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the environment.' });
-  }
-  codeVerifierCache = crypto.randomBytes(32).toString('base64url');
-  const codeChallenge = crypto.createHash('sha256').update(codeVerifierCache).digest('base64url');
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchParams({
-    client_id: CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: 'code',
-    scope: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
-    access_type: 'offline',
-    prompt: 'consent'
-  });
-  res.json({ url });
-});
-
-router.get('/auth/google/callback', async (req, res): Promise<any> => {
-  const code = req.query.code as string;
-  if (!code) return res.status(400).send('No code');
-  try {
-    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: REDIRECT_URI,
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        code_verifier: codeVerifierCache
-      })
-    });
-    const tokens = await tokenRes.json();
-    if (!tokens.access_token) return res.status(400).send('Failed to get token: ' + JSON.stringify(tokens));
-    
-    // Discover Code Assist Project
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${tokens.access_token}`,
-      'User-Agent': 'google-api-nodejs-client/9.15.1 (gzip)',
-      'X-Goog-Api-Client': 'gl-node/24.0.0'
-    };
-    const md = { ideType: "IDE_UNSPECIFIED", platform: "PLATFORM_UNSPECIFIED", pluginType: "OPENAI" };
-    
-    const loadRes = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
-      method: 'POST', headers, body: JSON.stringify({ metadata: md })
-    });
-    const loadData = await loadRes.json();
-    let projectId = loadData.cloudaicompanionProject;
-    let tierId = loadData.currentTier?.id;
-
-    // Detect if standard-tier is allowed (Pro subscription)
-    let targetTier = 'free-tier';
-    const allowedTiers = loadData.allowedTiers || [];
-    const hasStandardTier = allowedTiers.some((t: any) => t && t.id === 'standard-tier');
-    if (hasStandardTier) {
-      targetTier = 'standard-tier';
-    }
-
-    if (tierId !== targetTier) {
-      const onboardRes = await fetch('https://cloudcode-pa.googleapis.com/v1internal:onboardUser', {
-         method: 'POST',
-         headers,
-         body: JSON.stringify({
-           tierId: targetTier,
-           cloudaicompanionProject: projectId || undefined,
-           metadata: md
-         })
-      });
-      const onboardData = await onboardRes.json();
-      projectId = onboardData.response?.cloudaicompanionProject || projectId;
-    }
-
-    saveAuth({
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      expires_ms: Date.now() + ((tokens.expires_in || 3599) * 1000),
-      project_id: projectId || ''
-    });
-
-    res.send('<script>window.close();</script><p style="font-family:sans-serif;text-align:center;margin-top:20vh;color:#1a7f37;font-size:24px;">Successfully authenticated. You can close this window.</p>');
-  } catch (err: any) {
-    res.status(500).send(err.message);
-  }
-});
+// Google OAuth is deprecated in favor of standalone primary LLM
 
 // 1. Scrape Public URL / Name lookup via Search Grounding
 router.post('/scrape-url', async (req, res): Promise<any> => {

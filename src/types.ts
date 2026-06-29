@@ -3,8 +3,38 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found';
+
+export interface EmailDiscoveryEvidence {
+  type: 'brightdata_batch' | 'brightdata_search' | 'tavily_extract' | 'tavily_search' | 'direct_fetch' | 'pattern' | 'dns' | 'cache';
+  url?: string;
+  email?: string;
+  evidence: string;
+}
+
+export interface EmailFallbackChannels {
+  contactPage?: string;
+  genericEmail?: string;
+  website?: string;
+  linkedinUrl?: string;
+}
+
+export interface EmailDiscoveryResult {
+  bestEmail?: string;
+  status: EmailDiscoveryStatus;
+  confidence: number;
+  companyDomain?: string;
+  mxValid?: boolean;
+  sources: EmailDiscoveryEvidence[];
+  fallbackChannels: EmailFallbackChannels;
+}
+
 export interface ContactDetails {
-  email?: string; // Appended with [CONFIRMED] or [INFERRED-HIGH], etc.
+  email?: string; // Publicly found or clearly labeled inferred outreach address.
+  emailStatus?: EmailDiscoveryStatus;
+  emailConfidence?: number;
+  emailSources?: EmailDiscoveryEvidence[];
+  fallbackChannels?: EmailFallbackChannels;
   phone?: string;
   linkedinUrl?: string;
   twitter?: string;
@@ -109,6 +139,7 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   evidenceReasons?: string[];
   evidence?: LeadEvidence;
   scoreBreakdown?: ScoreBreakdown;
+  emailDiscovery?: EmailDiscoveryResult;
 }
 
 export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';

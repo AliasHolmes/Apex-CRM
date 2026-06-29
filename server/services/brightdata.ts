@@ -166,6 +166,81 @@ export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs())
   return markdown || null;
 }
 
+export type BrightDataBatchResult = {
+  url: string;
+  content: string;
+  sourceProvider: 'brightdata_batch';
+};
+
+let scrapeBatchToolAvailable: boolean | null = null;
+
+export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTimeoutMs()): Promise<BrightDataBatchResult[]> {
+  const client = await getBrightDataClient();
+  if (!client) return [];
+
+  if (scrapeBatchToolAvailable === null) {
+    try {
+      const tools = await client.listTools();
+      scrapeBatchToolAvailable = tools.tools.some(t => t.name === 'scrape_batch');
+    } catch {
+      scrapeBatchToolAvailable = false;
+    }
+  }
+
+  if (!scrapeBatchToolAvailable) {
+    disabledReason = 'scrape_batch tool unavailable in Bright Data MCP';
+    return [];
+  }
+
+  const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 10);
+  if (cleanUrls.length === 0) return [];
+
+  try {
+    const result = await withHardTimeout(client.callTool(
+      { name: 'scrape_batch', arguments: { urls: cleanUrls } },
+      undefined,
+      { timeout: timeoutMs }
+    ), timeoutMs, 'Bright Data scrape_batch');
+
+    if ((result as any)?.isError) {
+      console.warn('[brightdata] scrape_batch error:', textFromToolResult(result));
+      return [];
+    }
+
+    const structured = (result as any)?.structuredContent;
+    const candidates = Array.isArray(structured?.results)
+      ? structured.results
+      : Array.isArray(structured)
+        ? structured
+        : null;
+
+    if (candidates) {
+      return candidates.map((item: any) => ({
+        url: item.url || item.source_url || '',
+        content: item.markdown || item.content || item.text || '',
+        sourceProvider: 'brightdata_batch' as const
+      })).filter((item: BrightDataBatchResult) => item.url && item.content);
+    }
+
+    const textResult = textFromToolResult(result);
+    if (!textResult) return [];
+    try {
+      const parsed = JSON.parse(textResult);
+      const items = Array.isArray(parsed) ? parsed : (parsed.results || []);
+      return items.map((item: any) => ({
+        url: item.url || item.source_url || '',
+        content: item.markdown || item.content || item.text || '',
+        sourceProvider: 'brightdata_batch' as const
+      })).filter((item: BrightDataBatchResult) => item.url && item.content);
+    } catch {
+      return cleanUrls.map(url => ({ url, content: textResult, sourceProvider: 'brightdata_batch' as const }));
+    }
+  } catch (error) {
+    console.warn('[brightdata] scrape_batch failed:', error instanceof Error ? error.message : error);
+    return [];
+  }
+}
+
 export type BrightDataSearchResult = {
   title: string;
   url: string;

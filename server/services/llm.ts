@@ -158,6 +158,60 @@ export async function tavilySearch(
   return { text, sources, items };
 }
 
+export type TavilyExtractResult = {
+  url: string;
+  rawContent: string;
+  images?: string[];
+};
+
+export async function tavilyExtract(
+  urls: string[],
+  query: string,
+  options?: {
+    extractDepth?: 'basic' | 'advanced';
+    chunksPerSource?: number;
+    timeout?: number;
+  }
+): Promise<TavilyExtractResult[]> {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
+
+  const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 20);
+  if (cleanUrls.length === 0) return [];
+
+  const res = await fetch('https://api.tavily.com/extract', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      urls: cleanUrls,
+      query,
+      extract_depth: options?.extractDepth || 'basic',
+      chunks_per_source: Math.min(Math.max(Number(options?.chunksPerSource || 5), 1), 5),
+      format: 'markdown',
+      include_images: false,
+      include_favicon: false,
+      include_usage: true,
+      timeout: Math.min(Math.max(Number(options?.timeout || 30), 1), 120)
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Tavily extract error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  const results = Array.isArray(data.results) ? data.results : [];
+  return results.map((item: any) => ({
+    url: item.url || '',
+    rawContent: item.raw_content || item.content || '',
+    images: Array.isArray(item.images) ? item.images : []
+  })).filter((item: TavilyExtractResult) => item.url && item.rawContent);
+}
+
 /**
  * Calls OpenAI compatible API for pure text generation.
  */

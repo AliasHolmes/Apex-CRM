@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../db.js';
+import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache } from '../db.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
 import { getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -11,6 +11,7 @@ import { buildFallbackQueryPlan, buildStrategistPrompt, normalizeQueryPlanItems,
 import { incrementRejection, mapBrightDataRejection, type RejectionReason } from '../leadSearch/rejections.js';
 import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
+import { applyEmailDiscoveryToLead, discoverProspectEmail } from '../leadSearch/emailDiscovery.js';
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
@@ -47,6 +48,11 @@ router.get('/health', (req, res) => {
     hasOAuth: false,
     hasGoogleClient: false,
     brightData: getBrightDataStatus(),
+    emailDiscovery: {
+      mode: process.env.EMAIL_DISCOVERY_MODE || 'accepted_only',
+      maxPerSearch: Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || 10),
+      cacheTtlDays: Number(process.env.EMAIL_DISCOVERY_CACHE_TTL_DAYS || 14)
+    },
   });
 });
 
@@ -264,7 +270,19 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     queryRuns: [] as QueryRunStats[],
     brightData: brightDataStats,
     sourceProvider: 'tavily' as 'tavily' | 'brightdata_search' | 'mixed',
-    brightDataSearchResults: 0
+    brightDataSearchResults: 0,
+    emailDiscovery: {
+      mode: String(req.body.emailDiscovery || process.env.EMAIL_DISCOVERY_MODE || 'accepted_only'),
+      attempted: 0,
+      found: 0,
+      confirmedPublic: 0,
+      companyPublic: 0,
+      patternLikely: 0,
+      domainOnly: 0,
+      notFound: 0,
+      failed: 0,
+      cachePruned: 0
+    }
   };
 
   type EvidenceMeta = {
@@ -393,6 +411,9 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     const expiredRows = pruneExpiredEnrichmentCache();
     if (expiredRows > 0) logEvent(`Pruned ${expiredRows} expired enrichment cache rows.`);
+    const expiredEmailRows = pruneExpiredEmailDiscoveryCache();
+    stats.emailDiscovery.cachePruned = expiredEmailRows;
+    if (expiredEmailRows > 0) logEvent(`Pruned ${expiredEmailRows} expired email discovery cache rows.`);
 
     const existingKeys = new Set<string>();
     const excludedValues = new Set<string>();
@@ -1021,6 +1042,53 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     leadsFound = finalLeads.length;
     stats.returned = leadsFound;
 
+    const emailDiscoveryMode = String(req.body.emailDiscovery || process.env.EMAIL_DISCOVERY_MODE || 'accepted_only').toLowerCase();
+    stats.emailDiscovery.mode = emailDiscoveryMode;
+    if (emailDiscoveryMode !== 'off') {
+      const maxEmailDiscovery = Math.min(
+        finalLeads.length,
+        Math.max(Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || targetLimit), 0)
+      );
+      const leadsForEmailDiscovery = finalLeads.slice(0, maxEmailDiscovery).filter((lead: any) => {
+        if (emailDiscoveryMode === 'missing_only') return !lead.profile?.contactDetails?.email;
+        return true;
+      });
+      stats.emailDiscovery.attempted = leadsForEmailDiscovery.length;
+      if (leadsForEmailDiscovery.length > 0) {
+        logEvent(`Email discovery: processing ${leadsForEmailDiscovery.length} accepted leads using free-first providers.`);
+      }
+
+      const emailTasks = leadsForEmailDiscovery.map((lead: any) => async () => {
+        try {
+          const result = await discoverProspectEmail({
+            fullName: lead.profile?.fullName,
+            currentCompany: lead.profile?.currentCompany,
+            companyWebsite: lead.profile?.contactDetails?.website || lead.companyAccount?.website,
+            linkedinUrl: lead.profile?.contactDetails?.linkedinUrl,
+            title: lead.profile?.currentTitle,
+            location: lead.profile?.location
+          });
+          Object.assign(lead, applyEmailDiscoveryToLead(lead, result));
+          if (result.bestEmail) stats.emailDiscovery.found++;
+          if (result.status === 'confirmed_public') stats.emailDiscovery.confirmedPublic++;
+          else if (result.status === 'company_public') stats.emailDiscovery.companyPublic++;
+          else if (result.status === 'pattern_likely') stats.emailDiscovery.patternLikely++;
+          else if (result.status === 'domain_only') stats.emailDiscovery.domainOnly++;
+          else stats.emailDiscovery.notFound++;
+        } catch (e: any) {
+          stats.emailDiscovery.failed++;
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'email_discovery_error',
+            lead: lead.profile?.fullName,
+            error: e.message || String(e)
+          });
+        }
+      });
+
+      await asyncQueue(emailTasks, Math.min(profileConcurrency, 3));
+    }
+
     if (leadsFound >= targetLimit) {
       stats.stopReason = 'target_reached';
     } else if (stats.stopReason === 'not_started') {
@@ -1064,6 +1132,61 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     activeSessions.delete(sessionId);
     res.status(500).json({ error: error.message || 'Failed to locate leads.', stats });
+  }
+});
+
+router.post('/email-discovery', async (req, res): Promise<any> => {
+  try {
+    const profile = req.body?.profile || req.body?.lead?.profile || req.body;
+    if (!profile?.fullName && !profile?.currentCompany && !profile?.contactDetails?.website) {
+      return res.status(400).json({ error: 'Provide a profile, lead, company, or website for email discovery.' });
+    }
+
+    const result = await discoverProspectEmail({
+      fullName: profile.fullName,
+      currentCompany: profile.currentCompany,
+      companyWebsite: profile.contactDetails?.website || req.body?.companyWebsite,
+      linkedinUrl: profile.contactDetails?.linkedinUrl,
+      title: profile.currentTitle,
+      location: profile.location
+    });
+
+    res.json({ emailDiscovery: result, profile: applyEmailDiscoveryToLead(profile, result), sandboxMode: false });
+  } catch (error: any) {
+    console.error('Error in /api/email-discovery:', error);
+    res.status(500).json({ error: error.message || 'Email discovery failed.' });
+  }
+});
+
+router.post('/leads/:id/find-email', async (req, res): Promise<any> => {
+  try {
+    const leads = readStoredLeads() as any[];
+    const leadIndex = leads.findIndex((lead: any) => lead.id === req.params.id);
+    const lead = req.body?.lead || leads[leadIndex];
+    if (!lead) {
+      return res.status(404).json({ error: 'Lead not found.' });
+    }
+
+    const profile = lead.profile || lead;
+    const result = await discoverProspectEmail({
+      fullName: profile.fullName,
+      currentCompany: profile.currentCompany,
+      companyWebsite: profile.contactDetails?.website || lead.companyAccount?.website,
+      linkedinUrl: profile.contactDetails?.linkedinUrl,
+      title: profile.currentTitle,
+      location: profile.location
+    });
+
+    const updatedLead = applyEmailDiscoveryToLead(lead, result);
+    if (leadIndex >= 0) {
+      leads[leadIndex] = updatedLead;
+      replaceStoredLeads(leads);
+    }
+
+    res.json({ lead: updatedLead, emailDiscovery: result, sandboxMode: false });
+  } catch (error: any) {
+    console.error('Error in /api/leads/:id/find-email:', error);
+    res.status(500).json({ error: error.message || 'Email discovery failed.' });
   }
 });
 

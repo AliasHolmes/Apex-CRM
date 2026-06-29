@@ -60,6 +60,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   // Enrichment step states
   const [enrichmentQueue, setEnrichmentQueue] = useState<Lead[]>([]);
   const [enrichmentStep, setEnrichmentStep] = useState<string>('');
+  const [discoveringEmailIds, setDiscoveringEmailIds] = useState<string[]>([]);
 
   React.useEffect(() => {
     if (enrichmentQueue.length === 0) {
@@ -283,6 +284,31 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     setSelectedLeadIds([]);
   };
 
+  const handleFindEmail = async (lead: Lead) => {
+    if (discoveringEmailIds.includes(lead.id)) return;
+    setDiscoveringEmailIds(prev => [...prev, lead.id]);
+    try {
+      const response = await fetch(`/api/leads/${lead.id}/find-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Email discovery failed');
+      if (data.lead?.profile && handleUpdateLeadProfile) {
+        handleUpdateLeadProfile(lead.id, data.lead.profile);
+      }
+      const status = data.emailDiscovery?.status || 'not_found';
+      triggerToast(data.emailDiscovery?.bestEmail
+        ? `Email discovery found ${data.emailDiscovery.bestEmail} (${status}).`
+        : `Email discovery finished: ${status}.`);
+    } catch (error: any) {
+      triggerToast(error.message || 'Email discovery failed.');
+    } finally {
+      setDiscoveringEmailIds(prev => prev.filter(id => id !== lead.id));
+    }
+  };
+
   const handleStartEnrichment = () => {
     const targetIds = selectedLeadIds.length > 0 ? selectedLeadIds : filteredLeads.map(l => l.id);
     
@@ -476,6 +502,17 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     });
+  };
+
+  const getEmailStatusMeta = (status?: string) => {
+    switch (status) {
+      case 'confirmed_public': return { label: 'Public exact', className: 'border-emerald-500/30 text-emerald-400' };
+      case 'company_public': return { label: 'Company public', className: 'border-sky-500/30 text-sky-400' };
+      case 'pattern_likely': return { label: 'Pattern likely', className: 'border-amber-500/30 text-amber-400' };
+      case 'domain_only': return { label: 'Domain only', className: 'border-slate-500/30 text-slate-400' };
+      case 'not_found': return { label: 'Not found', className: 'border-slate-700/50 text-slate-500' };
+      default: return { label: 'Unscored', className: 'border-slate-700/50 text-slate-500' };
+    }
   };
 
   const getStageBadgeColor = (stage: Lead['stage']) => {
@@ -753,6 +790,8 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 const hasValidAddedAt = !!addedAt && !Number.isNaN(addedAt.getTime());
                 const addedDate = hasValidAddedAt ? addedAt.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
                 const addedTime = hasValidAddedAt ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+                const emailStatus = getEmailStatusMeta(lead.profile.contactDetails?.emailStatus);
+                const isDiscoveringEmail = discoveringEmailIds.includes(lead.id);
 
                 return (
                   <TableRow 
@@ -805,14 +844,31 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                     )}
                   </TableCell>
                   <TableCell>
-                    {lead.profile.contactDetails?.email ? (
-                      <div className="flex items-center gap-1.5 font-semibold">
-                        <Mail className="w-3.5 h-3.5 text-muted-foreground" />
-                        <span>{lead.profile.contactDetails.email}</span>
+                    <div className="flex flex-col gap-1.5 min-w-[190px]">
+                      {lead.profile.contactDetails?.email ? (
+                        <div className="flex items-center gap-1.5 font-semibold">
+                          <Mail className="w-3.5 h-3.5 text-muted-foreground" />
+                          <span className="truncate max-w-[190px]" title={lead.profile.contactDetails.email}>{lead.profile.contactDetails.email}</span>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground italic">No emails available</span>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        <Badge variant="outline" className={`text-[9px] ${emailStatus.className}`}>
+                          {emailStatus.label}
+                          {lead.profile.contactDetails?.emailConfidence ? ` ${lead.profile.contactDetails.emailConfidence}%` : ''}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleFindEmail(lead)}
+                          disabled={isDiscoveringEmail}
+                          className="h-6 px-2 text-[10px] text-muted-foreground hover:text-primary"
+                        >
+                          {isDiscoveringEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
+                        </Button>
                       </div>
-                    ) : (
-                      <span className="text-muted-foreground italic">No emails available</span>
-                    )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-muted-foreground whitespace-nowrap">
                     <div className="text-xs font-medium text-slate-300">{addedDate}</div>

@@ -35,6 +35,31 @@ export type EnrichmentCacheLookup = {
   companyName?: string;
 };
 
+export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found';
+
+export type EmailDiscoveryCacheEntry = {
+  id?: string;
+  normalizedUrl?: string;
+  linkedinUsername?: string;
+  personName?: string;
+  companyName?: string;
+  companyDomain?: string;
+  discoveredEmail?: string;
+  status: EmailDiscoveryStatus;
+  confidence: number;
+  evidence: string;
+  createdAt?: string;
+  expiresAt?: string;
+};
+
+export type EmailDiscoveryCacheLookup = {
+  normalizedUrl?: string;
+  linkedinUsername?: string;
+  personName?: string;
+  companyName?: string;
+  companyDomain?: string;
+};
+
 export function getLeadsDb() {
   if (!leadsDb) {
     fs.mkdirSync(path.dirname(LEADS_DB_PATH), { recursive: true });
@@ -80,6 +105,26 @@ export function getLeadsDb() {
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
+
+      CREATE TABLE IF NOT EXISTS email_discovery_cache (
+        id TEXT PRIMARY KEY,
+        normalized_url TEXT,
+        linkedin_username TEXT,
+        person_name TEXT,
+        company_name TEXT,
+        company_domain TEXT,
+        discovered_email TEXT,
+        status TEXT NOT NULL,
+        confidence INTEGER NOT NULL,
+        evidence TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_email_cache_url ON email_discovery_cache(normalized_url);
+      CREATE INDEX IF NOT EXISTS idx_email_cache_username ON email_discovery_cache(linkedin_username);
+      CREATE INDEX IF NOT EXISTS idx_email_cache_person_company_domain ON email_discovery_cache(person_name, company_name, company_domain);
+      CREATE INDEX IF NOT EXISTS idx_email_cache_expires ON email_discovery_cache(expires_at);
 
       INSERT OR IGNORE INTO enrichment_cache (
         id,
@@ -365,6 +410,128 @@ export function upsertNegativeEnrichmentCacheEntry(entry: EnrichmentCacheEntry, 
     scrapeQuality: 'bad',
     sourceProvider: 'brightdata'
   }, ttlHours / 24, now);
+}
+
+const toEmailCacheRow = (row: any): EmailDiscoveryCacheEntry | null => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    normalizedUrl: row.normalized_url || undefined,
+    linkedinUsername: row.linkedin_username || undefined,
+    personName: row.person_name || undefined,
+    companyName: row.company_name || undefined,
+    companyDomain: row.company_domain || undefined,
+    discoveredEmail: row.discovered_email || undefined,
+    status: row.status,
+    confidence: Number(row.confidence || 0),
+    evidence: row.evidence || '',
+    createdAt: row.created_at,
+    expiresAt: row.expires_at
+  };
+};
+
+export function pruneExpiredEmailDiscoveryCache(now = new Date()) {
+  const db = getLeadsDb();
+  const result = db.prepare('DELETE FROM email_discovery_cache WHERE datetime(expires_at) <= datetime(?)').run(now.toISOString());
+  return Number(result.changes || 0);
+}
+
+export function getEmailDiscoveryCacheEntry(lookup: EmailDiscoveryCacheLookup, now = new Date()) {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
+  const linkedinUsername = normalizeCacheValue(lookup.linkedinUsername);
+  const personName = normalizeCacheValue(lookup.personName);
+  const companyName = normalizeCacheValue(lookup.companyName);
+  const companyDomain = normalizeCacheValue(lookup.companyDomain);
+
+  if (normalizedUrl || linkedinUsername) {
+    const row = db.prepare(`
+      SELECT * FROM email_discovery_cache
+      WHERE datetime(expires_at) > datetime(?)
+        AND (
+          (? != '' AND normalized_url = ?)
+          OR (? != '' AND linkedin_username = ?)
+        )
+      ORDER BY datetime(created_at) DESC
+      LIMIT 1
+    `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
+    const match = toEmailCacheRow(row);
+    if (match) return match;
+  }
+
+  if (personName && (companyDomain || companyName)) {
+    const row = db.prepare(`
+      SELECT * FROM email_discovery_cache
+      WHERE datetime(expires_at) > datetime(?)
+        AND person_name = ?
+        AND ((? != '' AND company_domain = ?) OR (? != '' AND company_name = ?))
+      ORDER BY datetime(created_at) DESC
+      LIMIT 1
+    `).get(cutoff, personName, companyDomain, companyDomain, companyName, companyName);
+    return toEmailCacheRow(row);
+  }
+
+  return null;
+}
+
+export function upsertEmailDiscoveryCacheEntry(entry: EmailDiscoveryCacheEntry, ttlDays = 14, now = new Date()) {
+  const db = getLeadsDb();
+  const createdAt = entry.createdAt || now.toISOString();
+  const expiresAt = entry.expiresAt || new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  const normalizedUrl = normalizeCacheValue(entry.normalizedUrl);
+  const linkedinUsername = normalizeCacheValue(entry.linkedinUsername);
+  const personName = normalizeCacheValue(entry.personName);
+  const companyName = normalizeCacheValue(entry.companyName);
+  const companyDomain = normalizeCacheValue(entry.companyDomain);
+  const id = entry.id || crypto.createHash('sha256')
+    .update([normalizedUrl, linkedinUsername, personName, companyName, companyDomain].filter(Boolean).join('|') || crypto.randomUUID())
+    .digest('hex');
+
+  db.prepare(`
+    INSERT INTO email_discovery_cache (
+      id,
+      normalized_url,
+      linkedin_username,
+      person_name,
+      company_name,
+      company_domain,
+      discovered_email,
+      status,
+      confidence,
+      evidence,
+      created_at,
+      expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      normalized_url = excluded.normalized_url,
+      linkedin_username = excluded.linkedin_username,
+      person_name = excluded.person_name,
+      company_name = excluded.company_name,
+      company_domain = excluded.company_domain,
+      discovered_email = excluded.discovered_email,
+      status = excluded.status,
+      confidence = excluded.confidence,
+      evidence = excluded.evidence,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at
+  `).run(
+    id,
+    normalizedUrl || null,
+    linkedinUsername || null,
+    personName || null,
+    companyName || null,
+    companyDomain || null,
+    entry.discoveredEmail || null,
+    entry.status,
+    Math.round(entry.confidence || 0),
+    entry.evidence || '',
+    createdAt,
+    expiresAt
+  );
+
+  pruneExpiredEmailDiscoveryCache(now);
+  return { ...entry, id, createdAt, expiresAt };
 }
 
 export function insertSearchLog(log: any) {

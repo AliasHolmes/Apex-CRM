@@ -8,7 +8,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import apiRouter from './server/routes/api.js';
-
+import { getLeadsDb } from './server/db.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -23,6 +23,14 @@ app.use('/api', apiRouter);
 // -----------------------------------------------------------------------------
 
 async function startServer() {
+  // Eagerly warm up the database during startup
+  try {
+    getLeadsDb();
+    console.log('Database initialized and warmed up.');
+  } catch (error) {
+    console.error('Failed to eagerly initialize database:', error);
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

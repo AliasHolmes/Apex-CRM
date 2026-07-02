@@ -44,6 +44,7 @@ export type DiscoverProspectEmailInput = {
 const CONTACT_PATHS = [
   '/contact',
   '/contact-us',
+  '/contact-us/',
   '/about',
   '/about-us',
   '/team',
@@ -51,14 +52,36 @@ const CONTACT_PATHS = [
   '/people',
   '/leadership',
   '/management',
+  '/company',
+  '/our-team',
+  '/team-members',
+  '/directory',
   '/press',
   '/news',
-  '/careers'
+  '/blog',
+  '/careers',
+  '/privacy',
+  '/terms'
 ];
 
 const GENERIC_PREFIXES = new Set([
   'info', 'hello', 'contact', 'sales', 'support', 'admin', 'office', 'team', 'careers',
-  'jobs', 'press', 'media', 'marketing', 'billing', 'help', 'service', 'enquiries', 'inquiries'
+  'jobs', 'press', 'media', 'marketing', 'billing', 'help', 'service', 'enquiries', 'inquiries',
+  'noreply', 'no-reply', 'privacy', 'legal', 'abuse', 'webmaster'
+]);
+
+const DIRECTORY_DOMAINS = new Set([
+  'linkedin.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'youtube.com',
+  'tiktok.com', 'crunchbase.com', 'zoominfo.com', 'apollo.io', 'rocketreach.co',
+  'signalhire.com', 'hunter.io', 'lusha.com', 'clutch.co', 'upwork.com', 'glassdoor.com',
+  'indeed.com', 'wikipedia.org', 'wikidata.org', 'bloomberg.com', 'reuters.com',
+  'google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com'
+]);
+
+const COMPANY_STOP_WORDS = new Set([
+  'the', 'and', 'of', 'for', 'in', 'llc', 'inc', 'ltd', 'co', 'corp', 'corporation',
+  'company', 'group', 'holdings', 'partners', 'services', 'solutions', 'systems', 'technologies',
+  'technology', 'international', 'global', 'usa', 'us'
 ]);
 
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
@@ -80,6 +103,52 @@ export function domainFromUrl(value?: string) {
   const url = asUrl(value);
   if (!url) return '';
   return url.hostname.toLowerCase().replace(/^www\./, '');
+}
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+function companyTokens(value?: string) {
+  return normalizeKey(value)
+    .split(/[^a-z0-9]+/)
+    .map(part => part.trim())
+    .filter(part => part.length >= 3 && !COMPANY_STOP_WORDS.has(part));
+}
+
+function rootDomain(domain: string) {
+  const parts = domain.toLowerCase().replace(/^www\./, '').split('.').filter(Boolean);
+  if (parts.length <= 2) return parts.join('.');
+  return parts.slice(-2).join('.');
+}
+
+function isDirectoryDomain(domain: string) {
+  const root = rootDomain(domain);
+  return DIRECTORY_DOMAINS.has(root) || Array.from(DIRECTORY_DOMAINS).some(blocked => root.endsWith(`.${blocked}`));
+}
+
+function selectCompanyWebsiteFromSearch(items: Array<{ title?: string; url?: string; content?: string }>, input: DiscoverProspectEmailInput) {
+  const tokens = companyTokens(input.currentCompany);
+  const person = normalizeKey(input.fullName);
+  const scored = items
+    .map(item => {
+      const domain = domainFromUrl(item.url || '');
+      if (!domain || isDirectoryDomain(domain)) return null;
+      const haystack = normalizeKey(`${item.title || ''} ${item.url || ''} ${item.content || ''}`);
+      const host = domain.split('.')[0].replace(/[^a-z0-9]/g, '');
+      const tokenHits = tokens.filter(token => haystack.includes(token) || host.includes(token)).length;
+      const personHit = person && haystack.includes(person) ? 1 : 0;
+      const score = tokenHits * 10 + personHit * 3 + (tokens.length > 0 && tokenHits === tokens.length ? 8 : 0);
+      if (tokens.length > 0 && tokenHits === 0) return null;
+      return { item, domain, score };
+    })
+    .filter((item): item is { item: { title?: string; url?: string; content?: string }; domain: string; score: number } => Boolean(item))
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  return best ? { domain: best.domain, website: best.item.url || `https://${best.domain}` } : null;
 }
 
 function domainFromEmail(value?: string) {
@@ -150,30 +219,37 @@ function inferPatternEmail(fullName: string | undefined, domain: string, knownEm
   if (tokens.length < 2) return null;
   const [first, ...rest] = tokens;
   const last = rest[rest.length - 1];
-  const personalLocals = knownEmails
+  const personalLocals = Array.from(new Set(knownEmails
     .filter(email => sameDomain(email, domain) && !isGenericEmail(email))
-    .map(email => email.split('@')[0].toLowerCase());
+    .map(email => email.split('@')[0].toLowerCase())
+    .filter(local => /^[a-z][a-z._-]*[a-z0-9]$/.test(local))));
 
   if (personalLocals.length < 2) return null;
 
   const patternCounts = new Map<string, number>();
   for (const local of personalLocals) {
     if (/^[a-z]+\.[a-z]+$/.test(local)) patternCounts.set('first.last', (patternCounts.get('first.last') || 0) + 1);
-    if (/^[a-z][a-z]+$/.test(local)) patternCounts.set('first', (patternCounts.get('first') || 0) + 1);
-    if (/^[a-z][a-z]+$/.test(local) && local.length > 4) patternCounts.set('flast', (patternCounts.get('flast') || 0) + 1);
     if (/^[a-z]+_[a-z]+$/.test(local)) patternCounts.set('first_last', (patternCounts.get('first_last') || 0) + 1);
+    if (/^[a-z]+-[a-z]+$/.test(local)) patternCounts.set('first-last', (patternCounts.get('first-last') || 0) + 1);
+    if (/^[a-z][a-z]+$/.test(local)) patternCounts.set('first', (patternCounts.get('first') || 0) + 1);
+    if (/^[a-z][a-z]{2,}$/.test(local)) patternCounts.set('flast', (patternCounts.get('flast') || 0) + 1);
+    if (/^[a-z]+[a-z]{3,}$/.test(local)) patternCounts.set('firstlast', (patternCounts.get('firstlast') || 0) + 1);
   }
 
-  const best = Array.from(patternCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
-  if (!best) return null;
+  const best = Array.from(patternCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+  if (!best || best[1] < 2) return null;
 
-  const local = best === 'first.last'
+  const local = best[0] === 'first.last'
     ? `${first}.${last}`
-    : best === 'first_last'
+    : best[0] === 'first_last'
       ? `${first}_${last}`
-      : best === 'flast'
-        ? `${first[0]}${last}`
-        : first;
+      : best[0] === 'first-last'
+        ? `${first}-${last}`
+        : best[0] === 'flast'
+          ? `${first[0]}${last}`
+          : best[0] === 'firstlast'
+            ? `${first}${last}`
+            : first;
 
   return `${local}@${domain}`;
 }
@@ -207,12 +283,19 @@ async function fetchPage(url: string, timeoutMs: number) {
   }
 }
 
-async function resolveCompanyDomain(input: DiscoverProspectEmailInput) {
+async function resolveCompanyDomain(input: DiscoverProspectEmailInput, timeoutMs: number): Promise<{ domain: string; website: string; sources: EmailDiscoveryEvidence[] }> {
   const explicitDomain = domainFromUrl(input.companyWebsite);
-  if (explicitDomain) return { domain: explicitDomain, website: `https://${explicitDomain}` };
+  if (explicitDomain) {
+    return {
+      domain: explicitDomain,
+      website: `https://${explicitDomain}`,
+      sources: [{ type: 'direct_fetch', url: `https://${explicitDomain}`, evidence: `Used supplied company website domain ${explicitDomain}` }]
+    };
+  }
 
-  if (!input.currentCompany) return { domain: '', website: '' };
+  if (!input.currentCompany) return { domain: '', website: '', sources: [] };
 
+  const sources: EmailDiscoveryEvidence[] = [];
   try {
     const website = await findCompanyWebsite({
       companyName: input.currentCompany,
@@ -220,10 +303,53 @@ async function resolveCompanyDomain(input: DiscoverProspectEmailInput) {
       brightDataSearch
     });
     const domain = domainFromUrl(website || '');
-    return { domain, website: website || (domain ? `https://${domain}` : '') };
+    if (domain) {
+      sources.push({ type: 'brightdata_search', url: website || `https://${domain}`, evidence: `Resolved official company domain for ${input.currentCompany}` });
+      return { domain, website: website || `https://${domain}`, sources };
+    }
   } catch {
-    return { domain: '', website: '' };
+    // Continue with explicit SERP/Tavily domain resolution fallbacks.
   }
+
+  const queries = Array.from(new Set([
+    `"${input.currentCompany}" official website`,
+    input.location ? `"${input.currentCompany}" "${input.location}" official website` : '',
+    input.fullName ? `"${input.fullName}" "${input.currentCompany}"` : '',
+    `"${input.currentCompany}" contact email`
+  ].filter(Boolean)));
+  const domainSearchLimit = clampNumber(process.env.EMAIL_DISCOVERY_DOMAIN_QUERY_LIMIT, 3, 1, 6);
+
+  if (process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN) {
+    for (const query of queries.slice(0, domainSearchLimit)) {
+      try {
+        const results = await brightDataSearch(query, { timeoutMs });
+        const selected = selectCompanyWebsiteFromSearch(results.slice(0, 8), input);
+        if (selected) {
+          sources.push({ type: 'brightdata_search', url: selected.website, evidence: `Resolved official company domain from query: ${query}` });
+          return { ...selected, sources };
+        }
+      } catch {
+        // Search provider failures should not block the rest of the waterfall.
+      }
+    }
+  }
+
+  if (process.env.TAVILY_API_KEY) {
+    for (const query of queries.slice(0, domainSearchLimit)) {
+      try {
+        const search = await tavilySearch(query);
+        const selected = selectCompanyWebsiteFromSearch(search.items.slice(0, 8), input);
+        if (selected) {
+          sources.push({ type: 'tavily_search', url: selected.website, evidence: `Resolved official company domain from query: ${query}` });
+          return { ...selected, sources };
+        }
+      } catch {
+        // Continue to no-domain result.
+      }
+    }
+  }
+
+  return { domain: '', website: '', sources };
 }
 
 function chooseBestResult(candidates: EmailDiscoveryResult[]) {
@@ -245,6 +371,48 @@ function fromCache(row: NonNullable<ReturnType<typeof getEmailDiscoveryCacheEntr
     sources: [{ type: 'cache', evidence: 'Loaded from email discovery cache' }, ...evidence],
     fallbackChannels: row.companyDomain ? { website: `https://${row.companyDomain}` } : {}
   };
+}
+
+function hasStableCacheKey(input: DiscoverProspectEmailInput, linkedinUsername: string, domain?: string) {
+  return Boolean(
+    domain ||
+    input.companyWebsite ||
+    linkedinUsername ||
+    (input.fullName && input.currentCompany)
+  );
+}
+
+function writeEmailDiscoveryCache(
+  input: DiscoverProspectEmailInput,
+  linkedinUsername: string,
+  result: EmailDiscoveryResult,
+  ttlDays: number,
+  normalizedUrl?: string
+) {
+  const domain = result.companyDomain || domainFromUrl(input.companyWebsite);
+  if (!hasStableCacheKey(input, linkedinUsername, domain)) return;
+  upsertEmailDiscoveryCacheEntry({
+    normalizedUrl: normalizedUrl || input.companyWebsite,
+    linkedinUsername,
+    personName: input.fullName,
+    companyName: input.currentCompany,
+    companyDomain: domain,
+    discoveredEmail: result.bestEmail,
+    status: result.status,
+    confidence: result.confidence,
+    evidence: JSON.stringify(result.sources)
+  }, ttlDays);
+}
+
+function buildEmailSearchQueries(input: DiscoverProspectEmailInput, domain: string) {
+  return Array.from(new Set([
+    input.fullName ? `"${input.fullName}" "@${domain}"` : '',
+    input.fullName && input.currentCompany ? `"${input.fullName}" "${input.currentCompany}" email` : '',
+    input.title && input.currentCompany ? `"${input.title}" "${input.currentCompany}" "@${domain}"` : '',
+    `site:${domain} "@${domain}"`,
+    input.fullName ? `site:${domain} "${input.fullName}"` : '',
+    input.currentCompany ? `"${input.currentCompany}" email contact "@${domain}"` : `"${domain}" email contact "@${domain}"`
+  ].filter(query => query.replace(/[^a-zA-Z0-9]/g, '').length > 8)));
 }
 
 export function applyEmailDiscoveryToLead<T extends Record<string, any>>(lead: T, result: EmailDiscoveryResult): T {
@@ -277,22 +445,27 @@ export function applyEmailDiscoveryToLead<T extends Record<string, any>>(lead: T
 export async function discoverProspectEmail(input: DiscoverProspectEmailInput): Promise<EmailDiscoveryResult> {
   const linkedinUsername = extractLinkedInUsername(input.linkedinUrl || '');
   const preliminaryDomain = domainFromUrl(input.companyWebsite);
-  const cached = getEmailDiscoveryCacheEntry({
-    normalizedUrl: input.companyWebsite,
-    linkedinUsername,
-    personName: input.fullName,
-    companyName: input.currentCompany,
-    companyDomain: preliminaryDomain
-  });
+  const cached = hasStableCacheKey(input, linkedinUsername, preliminaryDomain)
+    ? getEmailDiscoveryCacheEntry({
+      normalizedUrl: input.companyWebsite,
+      linkedinUsername,
+      personName: input.fullName,
+      companyName: input.currentCompany,
+      companyDomain: preliminaryDomain
+    })
+    : null;
   if (cached) return fromCache(cached);
 
   const ttlDays = Math.min(Math.max(Number(process.env.EMAIL_DISCOVERY_CACHE_TTL_DAYS || 14), 1), 60);
   const timeoutMs = Math.min(Math.max(Number(process.env.EMAIL_DISCOVERY_CRAWL_TIMEOUT_MS || 8000), 1000), 30000);
-  const { domain, website } = await resolveCompanyDomain(input);
+  const { domain, website, sources: domainEvidence } = await resolveCompanyDomain(input, timeoutMs);
   const mxValid = await hasValidMailServer(domain);
-  const evidence: EmailDiscoveryEvidence[] = mxValid
-    ? [{ type: 'dns', evidence: `MX records found for ${domain}` }]
-    : domain ? [{ type: 'dns', evidence: `No MX records found for ${domain}` }] : [];
+  const evidence: EmailDiscoveryEvidence[] = [...domainEvidence];
+  if (domain) {
+    evidence.push(mxValid
+      ? { type: 'dns', evidence: `MX records found for ${domain}` }
+      : { type: 'dns', evidence: `No MX records found for ${domain}` });
+  }
 
   if (!domain) {
     const result: EmailDiscoveryResult = {
@@ -302,16 +475,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
       sources: evidence,
       fallbackChannels: { linkedinUrl: input.linkedinUrl }
     };
-    upsertEmailDiscoveryCacheEntry({
-      normalizedUrl: input.companyWebsite,
-      linkedinUsername,
-      personName: input.fullName,
-      companyName: input.currentCompany,
-      companyDomain: domain,
-      status: result.status,
-      confidence: result.confidence,
-      evidence: JSON.stringify(result.sources)
-    }, ttlDays);
+    writeEmailDiscoveryCache(input, linkedinUsername, result, ttlDays, input.companyWebsite);
     return result;
   }
 
@@ -342,12 +506,30 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
     }
   };
 
-  const brightDataResults = await scrapeBatchAsMarkdown(contactUrls.slice(0, 10), timeoutMs);
+  const contactUrlLimit = clampNumber(process.env.EMAIL_DISCOVERY_CONTACT_URL_LIMIT, 12, 4, 20);
+  const searchQueryLimit = clampNumber(process.env.EMAIL_DISCOVERY_BRIGHTDATA_QUERY_LIMIT, 5, 1, 10);
+  const searchResultLimit = clampNumber(process.env.EMAIL_DISCOVERY_SEARCH_RESULT_LIMIT, 6, 2, 10);
+  const publicQueries = buildEmailSearchQueries(input, domain);
+
+  if (process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN) {
+    for (const query of publicQueries.slice(0, searchQueryLimit)) {
+      try {
+        const results = await brightDataSearch(query, { timeoutMs });
+        for (const item of results.slice(0, searchResultLimit)) {
+          inspectText(`${item.title}\n${item.content}`, item.url, 'brightdata_search');
+        }
+      } catch {
+        // Bright Data search is high value but optional; continue the waterfall on provider errors.
+      }
+    }
+  }
+
+  const brightDataResults = await scrapeBatchAsMarkdown(contactUrls.slice(0, contactUrlLimit), timeoutMs);
   for (const item of brightDataResults) inspectText(item.content, item.url, 'brightdata_batch');
 
-  if (candidates.length === 0 && process.env.TAVILY_API_KEY) {
+  if ((candidates.length === 0 || knownEmails.size < 2) && process.env.TAVILY_API_KEY) {
     try {
-      const extracted = await tavilyExtract(contactUrls.slice(0, 10), 'email contact address staff team leadership', {
+      const extracted = await tavilyExtract(contactUrls.slice(0, contactUrlLimit), 'email contact address staff team leadership privacy about', {
         extractDepth: 'basic',
         chunksPerSource: 5,
         timeout: Math.ceil(timeoutMs / 1000)
@@ -358,31 +540,17 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
     }
   }
 
-  if (candidates.length === 0) {
-    const directFetches = await Promise.all(contactUrls.slice(0, 6).map(async url => ({ url, text: await fetchPage(url, timeoutMs) })));
+  if (candidates.length === 0 || knownEmails.size < 2) {
+    const directFetches = await Promise.all(contactUrls.slice(0, Math.min(contactUrlLimit, 8)).map(async url => ({ url, text: await fetchPage(url, timeoutMs) })));
     for (const item of directFetches) {
       if (item.text) inspectText(item.text, item.url, 'direct_fetch');
     }
   }
 
-  if (process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN) {
-    const publicQueries = [
-      `"${input.fullName || input.currentCompany || domain}" "@${domain}"`,
-      `site:${domain} "@${domain}" "${input.fullName || input.currentCompany || ''}"`,
-      `"${input.currentCompany || domain}" email contact "@${domain}"`
-    ].filter(query => query.replace(/[^a-zA-Z0-9]/g, '').length > 8);
-
-    for (const query of publicQueries.slice(0, 3)) {
-      const results = await brightDataSearch(query, { timeoutMs });
-      for (const item of results.slice(0, 5)) inspectText(`${item.title}\n${item.content}`, item.url, 'brightdata_search');
-    }
-  }
-
-  if (candidates.length === 0 && process.env.TAVILY_API_KEY) {
+  if ((candidates.length === 0 || knownEmails.size < 2) && process.env.TAVILY_API_KEY) {
     try {
-      const domains = [domain, 'github.com', 'linkedin.com'];
-      const search = await tavilySearch(`"${input.fullName || input.currentCompany || domain}" "@${domain}" email OR contact`, domains);
-      for (const item of search.items.slice(0, 5)) {
+      const search = await tavilySearch(publicQueries[0] || `"${input.fullName || input.currentCompany || domain}" "@${domain}" email OR contact`, [domain]);
+      for (const item of search.items.slice(0, searchResultLimit)) {
         inspectText(`${item.title || ''}\n${item.content || ''}\n${item.raw_content || ''}`, item.url || '', 'tavily_search');
       }
     } catch {
@@ -426,17 +594,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
     };
   }
 
-  upsertEmailDiscoveryCacheEntry({
-    normalizedUrl: website || input.companyWebsite,
-    linkedinUsername,
-    personName: input.fullName,
-    companyName: input.currentCompany,
-    companyDomain: domain,
-    discoveredEmail: result.bestEmail,
-    status: result.status,
-    confidence: result.confidence,
-    evidence: JSON.stringify(result.sources)
-  }, ttlDays);
+  writeEmailDiscoveryCache(input, linkedinUsername, result, ttlDays, website || input.companyWebsite);
 
   return result;
 }

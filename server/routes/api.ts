@@ -1049,8 +1049,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         finalLeads.length,
         Math.max(Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || targetLimit), 0)
       );
+      const profileForEmailDiscovery = (lead: any) => lead.profile || lead;
       const leadsForEmailDiscovery = finalLeads.slice(0, maxEmailDiscovery).filter((lead: any) => {
-        if (emailDiscoveryMode === 'missing_only') return !lead.profile?.contactDetails?.email;
+        const profile = profileForEmailDiscovery(lead);
+        if (emailDiscoveryMode === 'missing_only') return !profile.contactDetails?.email;
         return true;
       });
       stats.emailDiscovery.attempted = leadsForEmailDiscovery.length;
@@ -1060,15 +1062,46 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
       const emailTasks = leadsForEmailDiscovery.map((lead: any) => async () => {
         try {
+          const profile = profileForEmailDiscovery(lead);
+          const contactDetails = profile.contactDetails || {};
+          const companyWebsite = contactDetails.website || lead.companyAccount?.website;
+          const hasLookupInput = Boolean(
+            profile.fullName ||
+            profile.currentCompany ||
+            companyWebsite ||
+            contactDetails.linkedinUrl
+          );
+
+          if (!hasLookupInput) {
+            stats.emailDiscovery.notFound++;
+            debugLogs.push({
+              timestamp: new Date().toISOString(),
+              type: 'email_discovery_skipped',
+              reason: 'missing_lookup_input'
+            });
+            return;
+          }
+
           const result = await discoverProspectEmail({
-            fullName: lead.profile?.fullName,
-            currentCompany: lead.profile?.currentCompany,
-            companyWebsite: lead.profile?.contactDetails?.website || lead.companyAccount?.website,
-            linkedinUrl: lead.profile?.contactDetails?.linkedinUrl,
-            title: lead.profile?.currentTitle,
-            location: lead.profile?.location
+            fullName: profile.fullName,
+            currentCompany: profile.currentCompany,
+            companyWebsite,
+            linkedinUrl: contactDetails.linkedinUrl,
+            title: profile.currentTitle,
+            location: profile.location
           });
           Object.assign(lead, applyEmailDiscoveryToLead(lead, result));
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'email_discovery_result',
+            lead: profile.fullName,
+            company: profile.currentCompany,
+            status: result.status,
+            bestEmail: result.bestEmail,
+            companyDomain: result.companyDomain,
+            confidence: result.confidence,
+            sourceTypes: result.sources.map(source => source.type)
+          });
           if (result.bestEmail) stats.emailDiscovery.found++;
           if (result.status === 'confirmed_public') stats.emailDiscovery.confirmedPublic++;
           else if (result.status === 'company_public') stats.emailDiscovery.companyPublic++;
@@ -1080,7 +1113,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           debugLogs.push({
             timestamp: new Date().toISOString(),
             type: 'email_discovery_error',
-            lead: lead.profile?.fullName,
+            lead: profileForEmailDiscovery(lead).fullName,
             error: e.message || String(e)
           });
         }

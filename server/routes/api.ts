@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache } from '../db.js';
+import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
 import { closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch, shouldAttemptBrightData } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -41,6 +41,75 @@ router.put('/leads', (req, res): any => {
     res.status(500).json({ error: error.message || 'Failed to persist leads' });
   }
 });
+
+router.patch('/leads/:id', (req, res): any => {
+  try {
+    const lead = req.body?.lead;
+    if (!lead || typeof lead !== 'object') {
+      return res.status(400).json({ error: 'Expected a lead object.' });
+    }
+    lead.id = req.params.id;
+    if (!lead.createdAt) {
+      lead.createdAt = new Date().toISOString();
+    }
+    upsertLead(lead);
+    res.json({ success: true, lead });
+  } catch (error: any) {
+    console.error(`Failed to upsert lead ${req.params.id} to SQLite:`, error);
+    res.status(500).json({ error: error.message || 'Failed to upsert lead' });
+  }
+});
+
+router.delete('/leads/:id', (req, res): any => {
+  try {
+    deleteLead(req.params.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error(`Failed to delete lead ${req.params.id} from SQLite:`, error);
+    res.status(500).json({ error: error.message || 'Failed to delete lead' });
+  }
+});
+
+router.delete('/leads', (req, res): any => {
+  try {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids)) {
+      return res.status(400).json({ error: 'Expected an array of ids in request body.' });
+    }
+    const db = getLeadsDb();
+    const stmt = db.prepare('DELETE FROM leads WHERE id = ?');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const id of ids) {
+        stmt.run(id);
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+    res.json({ success: true, count: ids.length });
+  } catch (error: any) {
+    console.error('Failed to bulk delete leads from SQLite:', error);
+    res.status(500).json({ error: error.message || 'Failed to bulk delete leads' });
+  }
+});
+
+router.post('/leads/bulk', (req, res): any => {
+  try {
+    const leads = normalizeIncomingLeads(req.body?.leads);
+    if (!leads) {
+      return res.status(400).json({ error: 'Expected a leads array.' });
+    }
+    upsertLeads(leads);
+    res.json({ success: true, count: leads.length });
+  } catch (error: any) {
+    console.error('Failed to bulk upsert leads in SQLite:', error);
+    res.status(500).json({ error: error.message || 'Failed to bulk upsert leads' });
+  }
+});
+
+
 // Active Health check
 router.get('/health', (req, res) => {
   res.json({
@@ -1182,6 +1251,48 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
 
+    const now = new Date().toISOString();
+    const mappedLeads = finalLeads.map((p: any, i: number) => {
+      const hasAccountContext = !!p.companyAccount;
+      const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+      const compositeScore = backendFinalScore > 0
+        ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
+        : p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
+      const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
+      return {
+        id: `lead-bulk-${Date.now()}-${i}`,
+        profile: p,
+        stage: 'SCRAPED',
+        notes: hasAccountContext
+          ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Review profile and advance to outreach.'}`
+          : 'Discovered via Tavily LinkedIn-indexed search.',
+        createdAt: now,
+        tags: hasAccountContext
+          ? ['LinkedIn Indexed', 'Account Context', p.industry || 'Tech']
+          : ['LinkedIn Indexed', p.industry || 'Tech'],
+        fitScore: p.scoreBreakdown?.fitScore,
+        intentScore: p.scoreBreakdown?.intentScore,
+        timingScore: p.scoreBreakdown?.timingScore,
+        compositeScore,
+        predictiveScore,
+        companyAccount: p.companyAccount,
+        decisionMakerVerification: p.decisionMakerVerification,
+        sourceProvider: p.sourceProvider || 'tavily',
+        evidenceReasons: p.evidenceReasons,
+        evidence: p.evidence,
+        scoreBreakdown: p.scoreBreakdown,
+        buyingSignalsDetected: p.companyAccount?.buyingSignals?.map((signal: any) => signal.label)
+      };
+    });
+
+    try {
+      upsertLeads(mappedLeads);
+      logEvent(`Successfully auto-persisted ${mappedLeads.length} leads on the backend.`);
+    } catch (e: any) {
+      console.error('Failed to auto-persist leads on backend:', e);
+      logEvent(`Error auto-persisting leads on backend: ${e.message}`);
+    }
+
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
     safeInsertSearchLog({
       id: sessionId,
@@ -1196,7 +1307,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
-    res.json({ leads: finalLeads, stats, sandboxMode: false, sessionId });
+    res.json({ leads: mappedLeads, stats, sandboxMode: false, sessionId });
+
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
 

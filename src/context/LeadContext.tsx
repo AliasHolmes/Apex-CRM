@@ -203,8 +203,9 @@ interface LeadContextType {
   leads: Lead[];
   isHydrated: boolean;
   saveLeadsToStorage: (updater: Lead[] | ((prev: Lead[]) => Lead[])) => void;
+  rehydrateLeads: () => Promise<void>;
   handleLeadAdded: (profile: LinkedInProfile) => void;
-  handleBulkLeadsAdded: (profiles: QualifiedLeadProfile[]) => void;
+  handleBulkLeadsAdded: (profiles: (QualifiedLeadProfile | Lead)[]) => void;
   handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
   handleUpdateLeadNotes: (leadId: string, notes: string) => void;
   handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
@@ -220,67 +221,73 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
 
+  const sanitizeLeads = (loadedLeads: any[]) => {
+    return loadedLeads.map(l => ({
+      ...l,
+      id: l.id || crypto.randomUUID()
+    }));
+  };
+
+  const loadLegacyBrowserLeads = () => {
+    try {
+      const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
+      if (!legacyStored) return null;
+
+      const parsed = JSON.parse(legacyStored);
+      return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
+    } catch (error) {
+      console.warn('Legacy browser lead migration failed:', error);
+      return null;
+    }
+  };
+
+  const rehydrateLeads = async () => {
+    try {
+      const stored = await loadLeadsFromSqliteBackend();
+      if (stored.initialized) {
+        setLeads(sanitizeLeads(stored.leads));
+        return;
+      }
+
+      const initialLeads = loadLegacyBrowserLeads() || sanitizeLeads(seedLeads);
+      setLeads(initialLeads);
+      persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
+    } catch (error) {
+      console.error('SQLite lead load failed:', error);
+      setLeads(loadLegacyBrowserLeads() || sanitizeLeads(seedLeads));
+    } finally {
+      setIsHydrated(true);
+    }
+  };
+
   useEffect(() => {
-    const sanitizeLeads = (loadedLeads: any[]) => {
-      return loadedLeads.map(l => ({
-        ...l,
-        id: l.id || crypto.randomUUID()
-      }));
-    };
-
-    const loadLegacyBrowserLeads = () => {
-      try {
-        const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
-        if (!legacyStored) return null;
-
-        const parsed = JSON.parse(legacyStored);
-        return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
-      } catch (error) {
-        console.warn('Legacy browser lead migration failed:', error);
-        return null;
-      }
-    };
-
-    const hydrateLeads = async () => {
-      try {
-        const stored = await loadLeadsFromSqliteBackend();
-        if (stored.initialized) {
-          setLeads(sanitizeLeads(stored.leads));
-          return;
-        }
-
-        const initialLeads = loadLegacyBrowserLeads() || sanitizeLeads(seedLeads);
-        setLeads(initialLeads);
-        persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
-      } catch (error) {
-        console.error('SQLite lead load failed:', error);
-        setLeads(loadLegacyBrowserLeads() || sanitizeLeads(seedLeads));
-      } finally {
-        setIsHydrated(true);
-      }
-    };
-
-    hydrateLeads();
+    rehydrateLeads();
   }, []);
 
-  // 2. Persist active leads array to the local SQLite backend whenever state updates.
-  useEffect(() => {
-    if (!isHydrated) return;
-
-    const timer = setTimeout(() => {
-      persistLeadsToSqliteBackend(leads).catch(error => console.warn('SQLite persist failed:', error));
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [leads, isHydrated]);
   const saveLeadsToStorage = (updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
     setLeads(prev => {
       return typeof updater === 'function' ? updater(prev) : updater;
     });
   };
 
+  const persistLeadPatch = async (lead: Lead) => {
+    try {
+      const response = await fetch(`/api/leads/${lead.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lead })
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to patch lead: ${response.status}`);
+      }
+    } catch (error) {
+      console.error(`Failed to sync lead ${lead.id} update to backend:`, error);
+    }
+  };
+
   // 3. Callback to add single scraped profile
   const handleLeadAdded = (profile: LinkedInProfile) => {
+    let newLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => {
       const existingKeys = new Set<string>();
       currentLeads.forEach(lead => buildProfileDedupeKeys(lead.profile).forEach(key => existingKeys.add(key)));
@@ -291,11 +298,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return currentLeads;
       }
 
-      // Generate a qualification Lead score based on title/profile length
       const compositeScore = Math.floor(Math.random() * 30) + 65; // realistic 65 - 95 score
       const predictiveScore = Math.floor(compositeScore * 0.9); // baseline likelihood
 
-      const newLead: Lead = {
+      newLead = {
         id: `lead-${Date.now()}`,
         profile,
         stage: 'SCRAPED',
@@ -308,33 +314,46 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
       return [newLead, ...currentLeads];
     });
+
+    if (newLead) {
+      persistLeadPatch(newLead);
+    }
   };
 
   // 4. Callback to handle bulk lead inputs
-  const handleBulkLeadsAdded = (profiles: QualifiedLeadProfile[]) => {
+  const handleBulkLeadsAdded = async (profiles: (QualifiedLeadProfile | Lead)[]) => {
+    let leadsToSaveBackend: Lead[] = [];
+
     saveLeadsToStorage(currentLeads => {
       const existingKeys = new Set<string>();
       currentLeads.forEach(l => buildProfileDedupeKeys(l.profile).forEach(key => existingKeys.add(key)));
 
-      const uniqueProfiles = profiles.filter(p => {
-        if (hasDuplicateProfile(p, existingKeys)) return false;
-        buildProfileDedupeKeys(p).forEach(key => existingKeys.add(key));
+      const uniqueItems = profiles.filter(item => {
+        const profile = ('profile' in item) ? item.profile : item;
+        if (hasDuplicateProfile(profile, existingKeys)) return false;
+        buildProfileDedupeKeys(profile).forEach(key => existingKeys.add(key));
         return true;
       });
 
-      if (uniqueProfiles.length === 0) {
+      if (uniqueItems.length === 0) {
         console.warn("All bulk profiles were duplicates, skipping CRM integration.");
         return currentLeads;
       }
 
-      const newLeads = uniqueProfiles.map((p, i) => {
+      const newLeads = uniqueItems.map((item, i) => {
+        if ('profile' in item) {
+          return item as Lead;
+        }
+
+        const p = item;
         const hasAccountContext = !!p.companyAccount;
         const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
         const compositeScore = backendFinalScore > 0
           ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
           : p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
         const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
-        return {
+
+        const newLead: Lead = {
           id: `lead-bulk-${Date.now()}-${i}`,
           profile: p,
           stage: 'SCRAPED' as Lead['stage'],
@@ -358,40 +377,107 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           scoreBreakdown: p.scoreBreakdown,
           buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
         };
+
+        leadsToSaveBackend.push(newLead);
+        return newLead;
       });
       return [...newLeads, ...currentLeads];
     });
+
+    if (leadsToSaveBackend.length > 0) {
+      try {
+        const response = await fetch('/api/leads/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leads: leadsToSaveBackend })
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to save bulk leads: ${response.status}`);
+        }
+      } catch (err) {
+        console.error('Failed to save bulk leads to backend:', err);
+      }
+    }
   };
 
   // 5. Update pipeline stage for CRM Lead
   const handleUpdateLeadStage = (leadId: string, stage: Lead['stage']) => {
+    let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, stage } : l)
+      currentLeads.map(l => {
+        if (l.id === leadId) {
+          updatedLead = { ...l, stage };
+          return updatedLead;
+        }
+        return l;
+      })
     );
+
+    if (updatedLead) {
+      persistLeadPatch(updatedLead);
+    }
   };
 
   // 6. Update internal notes for a lead
   const handleUpdateLeadNotes = (leadId: string, notes: string) => {
+    let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, notes } : l)
+      currentLeads.map(l => {
+        if (l.id === leadId) {
+          updatedLead = { ...l, notes };
+          return updatedLead;
+        }
+        return l;
+      })
     );
+
+    if (updatedLead) {
+      persistLeadPatch(updatedLead);
+    }
   };
 
   const handleUpdateLeadProfile = (leadId: string, profileUpdates: Partial<LinkedInProfile>) => {
+    let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, profile: { ...l.profile, ...profileUpdates }, notes: 'Profile dynamically enriched and verified by background AI pipeline.', lastEnrichedAt: new Date().toISOString() } : l)
+      currentLeads.map(l => {
+        if (l.id === leadId) {
+          updatedLead = {
+            ...l,
+            profile: { ...l.profile, ...profileUpdates },
+            notes: 'Profile dynamically enriched and verified by background AI pipeline.',
+            lastEnrichedAt: new Date().toISOString()
+          };
+          return updatedLead;
+        }
+        return l;
+      })
     );
+
+    if (updatedLead) {
+      persistLeadPatch(updatedLead);
+    }
   };
 
   // 7. Update custom tags for a lead
   const handleUpdateLeadTags = (leadId: string, tags: string[]) => {
+    let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => l.id === leadId ? { ...l, tags } : l)
+      currentLeads.map(l => {
+        if (l.id === leadId) {
+          updatedLead = { ...l, tags };
+          return updatedLead;
+        }
+        return l;
+      })
     );
+
+    if (updatedLead) {
+      persistLeadPatch(updatedLead);
+    }
   };
 
   // 8. Delete lead or leads permanently
-  const handleDeleteLead = (leadId: string) => {
+  const handleDeleteLead = async (leadId: string) => {
     try {
       console.log(`[App] Deleting lead ID: ${leadId}`);
       saveLeadsToStorage(currentLeads => {
@@ -399,12 +485,17 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         console.log(`[App] Delete lead - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
         return nextLeads;
       });
+
+      const response = await fetch(`/api/leads/${leadId}`, { method: 'DELETE' });
+      if (!response.ok) {
+        throw new Error(`Failed to delete lead: ${response.status}`);
+      }
     } catch (e) {
       console.error(`[App] Error during lead deletion:`, e);
     }
   };
 
-  const handleDeleteLeads = (leadIds: string[]) => {
+  const handleDeleteLeads = async (leadIds: string[]) => {
     try {
       console.log(`[App] Deleting bulk leads count: ${leadIds.length}`);
       const idSet = new Set(leadIds);
@@ -413,23 +504,53 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         console.log(`[App] Bulk delete leads - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
         return nextLeads;
       });
+
+      const response = await fetch('/api/leads', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: leadIds })
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to delete bulk leads: ${response.status}`);
+      }
     } catch (e) {
       console.error(`[App] Error during bulk lead deletion:`, e);
     }
   };
 
-  const handleUpdateLeadsStage = (leadIds: string[], stage: Lead['stage']) => {
+  const handleUpdateLeadsStage = async (leadIds: string[], stage: Lead['stage']) => {
     const idSet = new Set(leadIds);
-    saveLeadsToStorage(currentLeads => 
-      currentLeads.map(l => idSet.has(l.id) ? { ...l, stage } : l)
-    );
+    let updatedLeads: Lead[] = [];
+    saveLeadsToStorage(currentLeads => {
+      return currentLeads.map(l => {
+        if (idSet.has(l.id)) {
+          const updated = { ...l, stage };
+          updatedLeads.push(updated);
+          return updated;
+        }
+        return l;
+      });
+    });
+
+    if (updatedLeads.length > 0) {
+      try {
+        const response = await fetch('/api/leads/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ leads: updatedLeads })
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to bulk update stages: ${response.status}`);
+        }
+      } catch (err) {
+        console.error('Failed to sync bulk stage updates to backend:', err);
+      }
+    }
   };
-
-
 
   return (
     <LeadContext.Provider value={{
-      leads, isHydrated, saveLeadsToStorage,
+      leads, isHydrated, saveLeadsToStorage, rehydrateLeads,
       handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage,
       handleUpdateLeadNotes, handleUpdateLeadProfile, handleUpdateLeadTags,
       handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage
@@ -446,3 +567,4 @@ export function useLeads() {
   }
   return context;
 }
+

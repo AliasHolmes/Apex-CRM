@@ -93,7 +93,7 @@ interface ScrapeWorkspaceProps {
 }
 
 export default function ScrapeWorkspace() {
-  const { leads, handleLeadAdded, handleBulkLeadsAdded } = useLeads();
+  const { leads, handleLeadAdded, handleBulkLeadsAdded, rehydrateLeads } = useLeads();
   const { triggerToast } = useToast();
   const [activeTab, setActiveTab] = useState<'url' | 'paste' | 'find'>('url');
   
@@ -398,6 +398,7 @@ export default function ScrapeWorkspace() {
       }
 
       handleBulkLeadsAdded(fetchedLeads);
+      rehydrateLeads().catch(err => console.warn('Post-discovery rehydrate failed:', err));
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
       const stats = data.stats;
       if (stats?.stopReason === 'target_reached') {

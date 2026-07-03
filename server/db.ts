@@ -259,6 +259,76 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   }
 }
 
+export function upsertLead(lead: Record<string, any>) {
+  const db = getLeadsDb();
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT INTO leads (id, payload, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      payload = excluded.payload,
+      updated_at = excluded.updated_at
+  `);
+
+  stmt.run(
+    lead.id,
+    JSON.stringify(lead),
+    typeof lead.createdAt === 'string' ? lead.createdAt : now,
+    now
+  );
+
+  db.prepare(`
+    INSERT INTO app_meta (key, value, updated_at)
+    VALUES ('leads_initialized', 'true', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(now);
+}
+
+export function deleteLead(id: string) {
+  const db = getLeadsDb();
+  db.prepare('DELETE FROM leads WHERE id = ?').run(id);
+}
+
+export function upsertLeads(leads: Record<string, any>[]) {
+  const db = getLeadsDb();
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT INTO leads (id, payload, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      payload = excluded.payload,
+      updated_at = excluded.updated_at
+  `);
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const lead of leads) {
+      stmt.run(
+        lead.id,
+        JSON.stringify(lead),
+        typeof lead.createdAt === 'string' ? lead.createdAt : now,
+        now
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO app_meta (key, value, updated_at)
+      VALUES ('leads_initialized', 'true', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(now);
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('SQLite rollback failed:', rollbackError);
+    }
+    throw error;
+  }
+}
+
+
 const normalizeCacheValue = (value?: string) => (value || '').trim().toLowerCase();
 
 const toCacheRow = (row: any): EnrichmentCacheEntry | null => {

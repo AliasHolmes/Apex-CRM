@@ -470,7 +470,7 @@ export default function ScrapeWorkspace() {
                   </div>
                 </div>
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                ðŸ’¡ <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
+                💡 <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
                 Instead, Apex searches public LinkedIn-indexed results through <strong>Tavily</strong>, then extracts available facts 
                 and references for the target profile or name before consolidating them into a structured CRM record.
               </p>

@@ -27,8 +27,7 @@ By combining the power of a **local LiteLLM gateway** with automatic **OpenRoute
 ```mermaid
 graph TD
     Client[🖥️ React Frontend :3000] -->|REST API| Server[⚙️ Express Server Node v24]
-    Server -->|Sync Persistence| DB[(🗄️ Local SQLite)]
-    Server -->|Auth| OAuth[🔐 Google OAuth]
+    Server -->|Sync Persistence & Cache| DB[(🗄️ Local SQLite)]
     
     %% LLM Pathway
     Server -->|AI Prompts| LLM[🧠 LiteLLM Gateway :4000]
@@ -39,17 +38,26 @@ graph TD
     Server -->|Lead Discovery| Tavily[🔍 Tavily Search]
     Server -->|Profile Enrichment| BrightData[🕷️ Bright Data Scraping]
 
+    %% Email Discovery Pipeline
+    Server -.->|Waterfall Pipeline| EmailDiscovery{📧 Email Discovery}
+    EmailDiscovery -->|Step 1: Cache Lookup| DB
+    EmailDiscovery -->|Step 2: Scrape Batch| BrightData
+    EmailDiscovery -->|Step 3: Extract/Search| Tavily
+    EmailDiscovery -->|Step 4: Web Crawl| Crawl[🌐 Company Web Fetch]
+    EmailDiscovery -->|Step 5: MX Check| DNS[🌐 DNS MX Check]
+    EmailDiscovery -->|Step 6: Fallback| Pattern[🧠 Pattern Inference]
+
     classDef tech fill:#1e1e2e,stroke:#89b4fa,stroke-width:2px,color:#cdd6f4;
-    class Client,Server,DB,OAuth,LLM,Byesu,OpenRouter,Tavily,BrightData tech;
+    class Client,Server,DB,LLM,Byesu,OpenRouter,Tavily,BrightData,EmailDiscovery,Crawl,DNS,Pattern tech;
 ```
 
 ### Core Technologies
 
 - **Frontend**: React 19, TailwindCSS 4, Framer Motion (UI Animations), Lucide React (Icons)
 - **Backend**: Express.js, TypeScript, Node.js v24
-- **Database**: `node:sqlite` (Built-in Local-first DB with WAL mode and Enrichment Caching)
+- **Database**: `node:sqlite` (Built-in Local-first DB with WAL mode, Enrichment Cache, and Email Discovery Caching)
 - **AI Gateway**: LiteLLM (Local python-based routing proxy)
-- **Integrations**: Byesu (Primary LLM), OpenRouter (Secondary Fallback LLM), Tavily (Search), Bright Data (Headless LinkedIn Scraping), Google OAuth (Authentication)
+- **Integrations**: Byesu (Primary LLM), OpenRouter (Secondary Fallback LLM), Tavily (Search & Extract API), Bright Data (LinkedIn Profile & Search Scraper)
 
 ---
 
@@ -59,7 +67,8 @@ graph TD
 | :--- | :--- | :---: |
 | **Adaptive Lead Mining** | Auto-discover prospects via Tavily, score them, and verify them against target ICP criteria. | 🔍 |
 | **Deep Profile Enrichment**| Automatically enrich leads using Bright Data's headless LinkedIn scraping API. | 🕷️ |
-| **Enrichment Cache** | Local SQLite caching layer that prevents duplicate API scraping calls to save costs. | 🗄️ |
+| **Enrichment Cache** | Local SQLite caching layer that prevents duplicate API scraping & email discovery calls to save costs. | 🗄️ |
+| **Free-First Email Discovery** | A robust waterfall pipeline utilizing Bright Data batching, Tavily, local crawls, DNS/MX check, and email pattern inference to discover verified emails. | 📧 |
 | **LLM Gateway & Fallbacks**| Local LiteLLM proxy that routes to Byesu and automatically falls back to OpenRouter on failure. | 🧠 |
 | **CRM Pipeline** | Visual Kanban board to drag-and-drop leads through your sales funnel. | 📋 |
 | **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent. | ✉️ |
@@ -87,15 +96,25 @@ graph TD
 
    ```env
    # Gateway Mode: "direct" or "litellm"
-   LLM_GATEWAY_MODE="litellm"
+   LLM_GATEWAY_MODE="direct"
    
-   # API Keys
+   # Direct Mode (Byesu Primary LLM)
    OPENAI_API_KEY="your_byesu_key"
+   OPENAI_BASE="https://api.byesu.com/v1"
+   OPENAI_MODEL="gpt-5.5"
+
+   # LiteLLM Mode (Local Proxy with fallback)
    LITELLM_MASTER_KEY="sk-local-litellm"
    BYESU_API_KEY="your_byesu_key"
    OPENROUTER_API_KEY="your_openrouter_key"
+   
+   # External Integrations
    TAVILY_API_KEY="your_tavily_key"
    BRIGHTDATA_API_TOKEN="your_brightdata_token"
+
+   # Email Discovery Configuration
+   EMAIL_DISCOVERY_MODE="accepted_only" # "off" | "accepted_only" | "missing_only"
+   EMAIL_DISCOVERY_MAX_PER_SEARCH="10"
    ```
 
 3. **Start the Development Workspace:**

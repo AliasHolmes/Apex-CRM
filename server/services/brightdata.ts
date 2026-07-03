@@ -2,11 +2,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+type BrightDataTransport = 'hosted' | 'local';
+
 let brightDataClient: Client | null = null;
 let brightDataInitPromise: Promise<Client | null> | null = null;
+let activeTransport: BrightDataTransport | null = null;
 let disabledReason = '';
-let activeTransport: 'hosted' | 'local' | null = null;
 let disabledUntil = 0;
+let clientGeneration = 0;
+let inFlight = 0;
+let consecutiveFailures = 0;
+let lastError = '';
+let cooldownLogMutedUntil = 0;
+let scrapeBatchToolAvailable: boolean | null = null;
+let searchToolAvailable: boolean | null = null;
 
 const commandForPlatform = () => process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const baseTimeoutMs = () => Number(process.env.BRIGHTDATA_BASE_TIMEOUT || 15) * 1000;
@@ -26,37 +35,111 @@ const withHardTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label:
   }
 };
 
+const resetToolAvailability = () => {
+  scrapeBatchToolAvailable = null;
+  searchToolAvailable = null;
+};
+
+const cooldownMsForFailure = () => {
+  const planned = consecutiveFailures <= 1
+    ? 30_000
+    : consecutiveFailures === 2
+      ? 60_000
+      : 5 * 60_000;
+  return Math.min(planned, failureCooldownMs());
+};
+
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+const closeClientQuietly = async (client: Client | null) => {
+  if (!client) return;
+  try {
+    await client.close();
+  } catch {
+    // The transport may already be closed after an MCP/SSE failure.
+  }
+};
+
+const clearCurrentClient = (client?: Client | null) => {
+  if (client && brightDataClient && brightDataClient !== client) return false;
+  const clientToClose = client || brightDataClient;
+  if (clientToClose && brightDataClient === clientToClose) {
+    brightDataClient = null;
+    activeTransport = null;
+  }
+  brightDataInitPromise = null;
+  clientGeneration++;
+  resetToolAvailability();
+  void closeClientQuietly(clientToClose);
+  return true;
+};
+
+const markProviderFailure = (label: string, message: string, client?: Client | null) => {
+  consecutiveFailures++;
+  lastError = message;
+  disabledReason = `${label}: ${message}`;
+  disabledUntil = Date.now() + cooldownMsForFailure();
+  resetToolAvailability();
+  clearCurrentClient(client);
+
+  if (Date.now() >= cooldownLogMutedUntil) {
+    const seconds = Math.max(1, Math.ceil((disabledUntil - Date.now()) / 1000));
+    console.warn(`[brightdata] ${label} failed; cooling down for ${seconds}s: ${message}`);
+    cooldownLogMutedUntil = disabledUntil;
+  }
+};
+
+const markProviderSuccess = () => {
+  consecutiveFailures = 0;
+  lastError = '';
+  disabledReason = '';
+  disabledUntil = 0;
+};
+
 export function isBrightDataConfigured() {
   return Boolean(process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN);
 }
 
+export function isBrightDataCoolingDown() {
+  return Boolean(disabledUntil && Date.now() < disabledUntil);
+}
+
+export function shouldAttemptBrightData() {
+  return isBrightDataConfigured() && !isBrightDataCoolingDown();
+}
+
 export function getBrightDataStatus() {
+  const cooldownMsRemaining = Math.max(0, disabledUntil - Date.now());
   return {
     configured: isBrightDataConfigured(),
-    ready: Boolean(brightDataClient),
+    ready: Boolean(brightDataClient) && !isBrightDataCoolingDown(),
     transport: activeTransport,
     disabledReason,
-    disabledUntil
+    disabledUntil,
+    cooldownMsRemaining,
+    inFlight,
+    consecutiveFailures,
+    lastError
   };
 }
 
-async function connectHostedClient(apiToken: string) {
+async function connectHostedClient(apiToken: string, generation: number) {
   const client = new Client({ name: 'apex-crm-brightdata', version: '1.0.0' });
   const url = new URL('https://mcp.brightdata.com/mcp');
   url.searchParams.set('token', apiToken);
   const transport = new StreamableHTTPClientTransport(url);
   transport.onerror = (error) => {
-    disabledReason = error.message;
-    console.warn('[brightdata] hosted transport error:', error.message);
-    brightDataClient = null;
-    brightDataInitPromise = null;
+    if (generation !== clientGeneration || brightDataClient !== client) {
+      void closeClientQuietly(client);
+      return;
+    }
+    markProviderFailure('hosted transport', error.message, client);
   };
   await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data hosted MCP connect');
-  activeTransport = 'hosted';
   return client;
 }
 
-async function connectLocalClient(apiToken: string) {
+async function connectLocalClient(apiToken: string, generation: number) {
   const client = new Client({ name: 'apex-crm-brightdata', version: '1.0.0' });
   const transport = new StdioClientTransport({
     command: commandForPlatform(),
@@ -71,14 +154,14 @@ async function connectLocalClient(apiToken: string) {
   });
 
   transport.onerror = (error) => {
-    disabledReason = error.message;
-    console.warn('[brightdata] local transport error:', error.message);
-    brightDataClient = null;
-    brightDataInitPromise = null;
+    if (generation !== clientGeneration || brightDataClient !== client) {
+      void closeClientQuietly(client);
+      return;
+    }
+    markProviderFailure('local transport', error.message, client);
   };
 
   await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data local MCP connect');
-  activeTransport = 'local';
   return client;
 }
 
@@ -87,10 +170,11 @@ async function initBrightDataClient() {
     disabledReason = 'BRIGHTDATA_API_TOKEN is not configured';
     return null;
   }
+  if (isBrightDataCoolingDown()) return null;
 
   const apiToken = process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN || '';
   const mode = (process.env.BRIGHTDATA_MCP_TRANSPORT || 'hosted').toLowerCase();
-  const attempts: Array<'hosted' | 'local'> = mode === 'local'
+  const attempts: BrightDataTransport[] = mode === 'local'
     ? ['local']
     : mode === 'auto'
       ? ['hosted', 'local']
@@ -98,16 +182,23 @@ async function initBrightDataClient() {
 
   let lastError: unknown;
   for (const attempt of attempts) {
+    const generation = ++clientGeneration;
     try {
       const client = attempt === 'hosted'
-        ? await connectHostedClient(apiToken)
-        : await connectLocalClient(apiToken);
+        ? await connectHostedClient(apiToken, generation)
+        : await connectLocalClient(apiToken, generation);
+      if (generation !== clientGeneration) {
+        await closeClientQuietly(client);
+        return brightDataClient;
+      }
       brightDataClient = client;
-      disabledReason = '';
+      activeTransport = attempt;
+      markProviderSuccess();
       return client;
     } catch (error) {
       lastError = error;
-      disabledReason = error instanceof Error ? error.message : String(error);
+      disabledReason = errorMessage(error);
+      resetToolAvailability();
       console.warn(`[brightdata] ${attempt} transport unavailable:`, disabledReason);
     }
   }
@@ -116,19 +207,63 @@ async function initBrightDataClient() {
 }
 
 export async function getBrightDataClient() {
-  if (brightDataClient) return brightDataClient;
-  if (disabledUntil && Date.now() < disabledUntil) return null;
+  if (brightDataClient && !isBrightDataCoolingDown()) return brightDataClient;
+  if (isBrightDataCoolingDown()) return null;
   if (!brightDataInitPromise) {
     brightDataInitPromise = initBrightDataClient().catch((error) => {
-      disabledReason = error instanceof Error ? error.message : String(error);
-      disabledUntil = Date.now() + failureCooldownMs();
-      console.warn('[brightdata] disabled:', disabledReason);
+      markProviderFailure('initialization', errorMessage(error));
       return null;
     }).finally(() => {
       brightDataInitPromise = null;
     });
   }
   return brightDataInitPromise;
+}
+
+export async function closeBrightDataClient(options?: {
+  onlyIfIdle?: boolean;
+  onlyIfUnhealthy?: boolean;
+  reason?: string;
+}) {
+  if (options?.onlyIfIdle && inFlight > 0) return false;
+  if (options?.onlyIfUnhealthy && !isBrightDataCoolingDown() && !disabledReason) return false;
+  const client = brightDataClient;
+  clearCurrentClient(client);
+  if (!client) return false;
+  await closeClientQuietly(client);
+  if (!options?.onlyIfUnhealthy) {
+    disabledReason = options?.reason || '';
+    disabledUntil = 0;
+  }
+  return true;
+}
+
+async function withBrightDataClient<T>(
+  label: string,
+  operation: (client: Client) => Promise<T>,
+  options?: { throwOnUnavailable?: boolean; throwOnFailure?: boolean }
+): Promise<T | null> {
+  const client = await getBrightDataClient();
+  if (!client) {
+    if (options?.throwOnUnavailable) {
+      throw new Error(disabledReason || 'Bright Data MCP unavailable');
+    }
+    return null;
+  }
+
+  inFlight++;
+  try {
+    const result = await operation(client);
+    markProviderSuccess();
+    return result;
+  } catch (error) {
+    const message = errorMessage(error);
+    markProviderFailure(label, message, client);
+    if (options?.throwOnFailure) throw new Error(message);
+    return null;
+  } finally {
+    inFlight = Math.max(0, inFlight - 1);
+  }
 }
 
 const textFromToolResult = (result: any) => {
@@ -149,21 +284,20 @@ const textFromToolResult = (result: any) => {
 };
 
 export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs()) {
-  const client = await getBrightDataClient();
-  if (!client) throw new Error(disabledReason || 'Bright Data MCP unavailable');
+  return withBrightDataClient('scrape_as_markdown', async (client) => {
+    const result = await withHardTimeout(client.callTool(
+      { name: 'scrape_as_markdown', arguments: { url } },
+      undefined,
+      { timeout: timeoutMs }
+    ), timeoutMs, 'Bright Data scrape_as_markdown');
 
-  const result = await withHardTimeout(client.callTool(
-    { name: 'scrape_as_markdown', arguments: { url } },
-    undefined,
-    { timeout: timeoutMs }
-  ), timeoutMs, 'Bright Data scrape_as_markdown');
+    if ((result as any)?.isError) {
+      throw new Error(textFromToolResult(result) || 'Bright Data scrape_as_markdown returned an error');
+    }
 
-  if ((result as any)?.isError) {
-    throw new Error(textFromToolResult(result) || 'Bright Data scrape_as_markdown returned an error');
-  }
-
-  const markdown = textFromToolResult(result);
-  return markdown || null;
+    const markdown = textFromToolResult(result);
+    return markdown || null;
+  }, { throwOnUnavailable: true, throwOnFailure: true });
 }
 
 export type BrightDataBatchResult = {
@@ -172,42 +306,32 @@ export type BrightDataBatchResult = {
   sourceProvider: 'brightdata_batch';
 };
 
-let scrapeBatchToolAvailable: boolean | null = null;
-
 export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTimeoutMs()): Promise<BrightDataBatchResult[]> {
-  const client = await getBrightDataClient();
-  if (!client) return [];
-
-  if (scrapeBatchToolAvailable === null) {
-    try {
-      const tools = await client.listTools();
-      scrapeBatchToolAvailable = tools.tools.some(t => t.name === 'scrape_batch');
-    } catch {
-      scrapeBatchToolAvailable = false;
-    }
-  }
-
-  if (!scrapeBatchToolAvailable) {
-    disabledReason = 'scrape_batch tool unavailable in Bright Data MCP';
-    return [];
-  }
-
   const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 10);
   if (cleanUrls.length === 0) return [];
 
-  try {
-    const result = await withHardTimeout(client.callTool(
+  const result = await withBrightDataClient('scrape_batch', async (client) => {
+    if (scrapeBatchToolAvailable === null) {
+      const tools = await client.listTools();
+      scrapeBatchToolAvailable = tools.tools.some(t => t.name === 'scrape_batch');
+    }
+
+    if (!scrapeBatchToolAvailable) {
+      disabledReason = 'scrape_batch tool unavailable in Bright Data MCP';
+      return [];
+    }
+
+    const toolResult = await withHardTimeout(client.callTool(
       { name: 'scrape_batch', arguments: { urls: cleanUrls } },
       undefined,
       { timeout: timeoutMs }
     ), timeoutMs, 'Bright Data scrape_batch');
 
-    if ((result as any)?.isError) {
-      console.warn('[brightdata] scrape_batch error:', textFromToolResult(result));
-      return [];
+    if ((toolResult as any)?.isError) {
+      throw new Error(textFromToolResult(toolResult) || 'Bright Data scrape_batch returned an error');
     }
 
-    const structured = (result as any)?.structuredContent;
+    const structured = (toolResult as any)?.structuredContent;
     const candidates = Array.isArray(structured?.results)
       ? structured.results
       : Array.isArray(structured)
@@ -222,7 +346,7 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
       })).filter((item: BrightDataBatchResult) => item.url && item.content);
     }
 
-    const textResult = textFromToolResult(result);
+    const textResult = textFromToolResult(toolResult);
     if (!textResult) return [];
     try {
       const parsed = JSON.parse(textResult);
@@ -235,10 +359,9 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
     } catch {
       return cleanUrls.map(url => ({ url, content: textResult, sourceProvider: 'brightdata_batch' as const }));
     }
-  } catch (error) {
-    console.warn('[brightdata] scrape_batch failed:', error instanceof Error ? error.message : error);
-    return [];
-  }
+  });
+
+  return result || [];
 }
 
 export type BrightDataSearchResult = {
@@ -248,61 +371,47 @@ export type BrightDataSearchResult = {
   sourceProvider: 'brightdata_search';
 };
 
-let searchToolAvailable: boolean | null = null;
-
 export async function brightDataSearch(query: string, options?: {
   country?: string;
   page?: number;
   timeoutMs?: number;
 }): Promise<BrightDataSearchResult[]> {
-  const client = await getBrightDataClient();
-  if (!client) {
-    return [];
-  }
-
-  // Check tool availability once
-  if (searchToolAvailable === null) {
-    try {
+  const timeoutMs = options?.timeoutMs || baseTimeoutMs();
+  const result = await withBrightDataClient('search_engine', async (client) => {
+    if (searchToolAvailable === null) {
       const tools = await client.listTools();
       searchToolAvailable = tools.tools.some(t => t.name === 'search_engine');
-    } catch (e) {
-      searchToolAvailable = false;
     }
-  }
 
-  if (!searchToolAvailable) {
-    disabledReason = 'search_engine tool unavailable in Bright Data MCP';
-    return [];
-  }
+    if (!searchToolAvailable) {
+      disabledReason = 'search_engine tool unavailable in Bright Data MCP';
+      return [];
+    }
 
-  const timeoutMs = options?.timeoutMs || baseTimeoutMs();
-  
-  try {
-    const result = await withHardTimeout(client.callTool(
-      { 
-        name: 'search_engine', 
-        arguments: { 
-          query, 
-          country: options?.country || 'us', 
-          page: options?.page || 1 
-        } 
+    const toolResult = await withHardTimeout(client.callTool(
+      {
+        name: 'search_engine',
+        arguments: {
+          query,
+          country: options?.country || 'us',
+          page: options?.page || 1
+        }
       },
       undefined,
       { timeout: timeoutMs }
     ), timeoutMs, 'Bright Data search_engine');
 
-    if ((result as any)?.isError) {
-      console.warn('[brightdata] search_engine error:', textFromToolResult(result));
-      return [];
+    if ((toolResult as any)?.isError) {
+      throw new Error(textFromToolResult(toolResult) || 'Bright Data search_engine returned an error');
     }
 
-    const textResult = textFromToolResult(result);
+    const textResult = textFromToolResult(toolResult);
     if (!textResult) return [];
 
     let parsed: any;
     try {
       parsed = JSON.parse(textResult);
-    } catch (e) {
+    } catch {
       return [];
     }
 
@@ -313,8 +422,7 @@ export async function brightDataSearch(query: string, options?: {
       content: item.snippet || item.description || '',
       sourceProvider: 'brightdata_search' as const
     })).filter((item: BrightDataSearchResult) => item.url && item.title);
-  } catch (error) {
-    console.warn('[brightdata] search_engine exception:', error instanceof Error ? error.message : String(error));
-    return [];
-  }
+  });
+
+  return result || [];
 }

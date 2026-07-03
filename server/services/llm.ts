@@ -215,7 +215,11 @@ export async function tavilyExtract(
 /**
  * Calls OpenAI compatible API for pure text generation.
  */
-export async function openAIText(prompt: string, systemInstruction?: string): Promise<{ text: string }> {
+export async function openAIText(
+  prompt: string,
+  systemInstruction?: string,
+  options?: { maxTokens?: number; temperature?: number }
+): Promise<{ text: string }> {
   const apiKey = getAPIKey();
   if (!apiKey) throw new Error('No OpenAI compatible API key available.');
 
@@ -234,8 +238,8 @@ export async function openAIText(prompt: string, systemInstruction?: string): Pr
     body: JSON.stringify({
       model: OPENAI_MODEL,
       messages,
-      temperature: 0.1,
-      max_tokens: 4000
+      temperature: options?.temperature !== undefined ? options.temperature : 0.1,
+      max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000
     })
   });
 
@@ -293,7 +297,12 @@ function cleanJSONString(str: string): string {
  * Calls OpenAI compatible API with a request for a strict JSON response.
  * Used as step 2 to convert raw searched text into clean structured data.
  */
-export async function openAIStructured<T>(prompt: string, schema: any, systemInstruction?: string): Promise<T> {
+export async function openAIStructured<T>(
+  prompt: string,
+  schema: any,
+  systemInstruction?: string,
+  options?: { maxTokens?: number; temperature?: number }
+): Promise<T> {
   const apiKey = getAPIKey();
   if (!apiKey) throw new Error('No OpenAI compatible API key available.');
 
@@ -311,8 +320,8 @@ export async function openAIStructured<T>(prompt: string, schema: any, systemIns
   const body: any = {
     model: OPENAI_MODEL,
     messages,
-    temperature: 0.1,
-    max_tokens: 4000,
+    temperature: options?.temperature !== undefined ? options.temperature : 0.1,
+    max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000,
   };
   if (useJsonMode) {
     body.response_format = { type: "json_object" };

@@ -3,7 +3,7 @@ import crypto from 'crypto';
 
 import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache } from '../db.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
-import { getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch } from '../services/brightdata.js';
+import { closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch, shouldAttemptBrightData } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
@@ -15,6 +15,8 @@ import { applyEmailDiscoveryToLead, discoverProspectEmail } from '../leadSearch/
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
+
+const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 
 router.get('/leads', (req, res): any => {
   try {
@@ -210,7 +212,16 @@ router.get('/search-logs/:id/live', (req, res) => {
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 router.post('/find-leads', async (req, res): Promise<any> => {
-  const sessionId = req.body.sessionId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+  const suppliedSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
+  if (suppliedSessionId && !isSafeSessionId(suppliedSessionId)) {
+    return res.status(400).json({ error: 'Invalid sessionId.' });
+  }
+
+  const sessionId = suppliedSessionId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+  if (activeSessions.has(sessionId)) {
+    return res.status(409).json({ error: 'A lead mining session with this sessionId is already active.', sessionId });
+  }
+
   const sessionLogs: string[] = [];
   const debugLogs: any[] = [];
   const logEvent = (msg: string) => {
@@ -219,25 +230,19 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     sessionLogs.push(line);
     activeSessions.set(sessionId, sessionLogs);
   };
-  logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
 
   let generatedQueries: string[] = [];
   let rawResultsCount = 0;
   let leadsFound = 0;
   const promptQuery = req.body.query || '';
   const startedAt = Date.now();
-  insertSearchLog({
-    id: sessionId,
-    timestamp: new Date().toISOString(),
-    prompt: promptQuery,
-    generatedQueries: [],
-    status: 'running',
-    errorMessage: '',
-    rawResultsCount: 0,
-    leadsFound: 0,
-    detailedLogs: sessionLogs.join('\n'),
-    debugLogs: JSON.stringify(debugLogs)
-  });
+  const safeInsertSearchLog = (entry: Parameters<typeof insertSearchLog>[0]) => {
+    try {
+      insertSearchLog(entry);
+    } catch (error) {
+      console.warn('[find-leads] failed to write search log:', error instanceof Error ? error.message : String(error));
+    }
+  };
 
   const brightDataStats = {
     configured: isBrightDataConfigured(),
@@ -387,6 +392,20 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   };
 
   try {
+    logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
+    safeInsertSearchLog({
+      id: sessionId,
+      timestamp: new Date().toISOString(),
+      prompt: promptQuery,
+      generatedQueries: [],
+      status: 'running',
+      errorMessage: '',
+      rawResultsCount: 0,
+      leadsFound: 0,
+      detailedLogs: sessionLogs.join('\n'),
+      debugLogs: JSON.stringify(debugLogs)
+    });
+
     const { query, excludeList = [] } = req.body;
     const targetLimit = stats.requested;
     const maxRounds = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 4), 1), 8);
@@ -446,12 +465,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     const seenCandidateKeys = new Set<string>();
     const seenQueryTexts = new Set<string>();
     const evidenceByUrl = new Map<string, EvidenceMeta>();
-    const brightDataReady = isBrightDataConfigured();
+    const brightDataReady = shouldAttemptBrightData();
     let brightDataCircuitOpen = !brightDataReady;
     let previousRoundSummary: Record<string, any> = {};
 
     if (!brightDataReady) {
-      logEvent('Bright Data token not configured. Continuing Tavily-only.');
+      logEvent(isBrightDataConfigured() ? 'Bright Data is cooling down. Continuing Tavily-only.' : 'Bright Data token not configured. Continuing Tavily-only.');
     }
 
     // A small concurrency helper for promises
@@ -488,27 +507,36 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       });
 
       let planItems: SearchQueryPlanItem[] = [];
-      try {
-        const queryResult = await openAIStructured<any>(strategistPrompt, searchQueriesSchema, STRATEGIST_SYSTEM_PROMPT);
-        debugLogs.push({
-          timestamp: new Date().toISOString(),
-          type: 'llm_request',
-          label: `strategist_round_${round}`,
-          model: process.env.OPENAI_MODEL || 'gpt-5.5',
-          prompt: strategistPrompt,
-          systemInstruction: STRATEGIST_SYSTEM_PROMPT,
-          response: queryResult
-        });
-        planItems = normalizeQueryPlanItems(queryResult);
-      } catch (e: any) {
-        logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
-        debugLogs.push({
-          timestamp: new Date().toISOString(),
-          type: 'llm_error',
-          label: `strategist_round_${round}`,
-          prompt: strategistPrompt,
-          error: e.message
-        });
+      if (remaining <= 2 && round > 1) {
+        logEvent(`Round ${round}: target near completion (remaining: ${remaining}). Skipping LLM Strategist planning to optimize efficiency.`);
+      } else {
+        try {
+          const queryResult = await openAIStructured<any>(
+            strategistPrompt,
+            searchQueriesSchema,
+            STRATEGIST_SYSTEM_PROMPT,
+            { maxTokens: 800, temperature: 0.1 }
+          );
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'llm_request',
+            label: `strategist_round_${round}`,
+            model: process.env.OPENAI_MODEL || 'gpt-5.5',
+            prompt: strategistPrompt,
+            systemInstruction: STRATEGIST_SYSTEM_PROMPT,
+            response: queryResult
+          });
+          planItems = normalizeQueryPlanItems(queryResult);
+        } catch (e: any) {
+          logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'llm_error',
+            label: `strategist_round_${round}`,
+            prompt: strategistPrompt,
+            error: e.message
+          });
+        }
       }
 
       if (planItems.length === 0) {
@@ -702,39 +730,51 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         evidenceBlocks.push(`--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`);
       }
 
-      const chunks = chunkEvidenceBlocks(evidenceBlocks);
-      logEvent(`Round ${round}: extracting ${chunks.length} evidence batches.`);
+      const chunks = chunkEvidenceBlocks(evidenceBlocks, 6500);
+      logEvent(`Round ${round}: extracting ${chunks.length} evidence batches in parallel.`);
 
-      let provisionalLeads: any[] = [];
-      for (let i = 0; i < chunks.length && provisionalLeads.length < targetLimit * 2; i++) {
-        const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunks[i]}`;
+      const extractionTasks = chunks.map((chunk, idx) => async () => {
+        const chunkIndex = idx + 1;
+        const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunk}`;
         try {
-          const extracted = await openAIStructured<any[]>(prompt, bulkLeadsArraySchema, EXTRACTION_SYSTEM_PROMPT);
+          const extracted = await openAIStructured<any[]>(
+            prompt,
+            bulkLeadsArraySchema,
+            EXTRACTION_SYSTEM_PROMPT,
+            { maxTokens: 1500, temperature: 0.0 }
+          );
           const extractedLeads = Array.isArray(extracted) ? extracted : [];
           debugLogs.push({
             timestamp: new Date().toISOString(),
             type: 'llm_request',
-            label: `extraction_round_${round}_chunk_${i + 1}`,
+            label: `extraction_round_${round}_chunk_${chunkIndex}`,
             model: process.env.OPENAI_MODEL || 'gpt-5.5',
             prompt,
             systemInstruction: EXTRACTION_SYSTEM_PROMPT,
             response: extractedLeads
           });
-          logEvent(`Round ${round}, chunk ${i + 1}/${chunks.length}: extracted ${extractedLeads.length} profiles.`);
+          logEvent(`Round ${round}, chunk ${chunkIndex}/${chunks.length}: extracted ${extractedLeads.length} profiles.`);
           if (extractedLeads.length === 0) {
             noteRejection('llm_extraction_empty');
           }
-          provisionalLeads.push(...extractedLeads);
+          return extractedLeads;
         } catch (e: any) {
-          logEvent(`WARN: Extraction chunk ${i + 1}/${chunks.length} failed: ${e.message}`);
+          logEvent(`WARN: Extraction chunk ${chunkIndex}/${chunks.length} failed: ${e.message}`);
           debugLogs.push({
             timestamp: new Date().toISOString(),
             type: 'llm_error',
-            label: `extraction_round_${round}_chunk_${i + 1}`,
+            label: `extraction_round_${round}_chunk_${chunkIndex}`,
             prompt,
             error: e.message
           });
+          return [];
         }
+      });
+
+      const extractionResults = await asyncQueue(extractionTasks, 4);
+      let provisionalLeads: any[] = [];
+      for (const extractedLeads of extractionResults) {
+        provisionalLeads.push(...extractedLeads);
       }
 
       // 3. Filtering & Decision Maker Verification
@@ -807,7 +847,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         logEvent(`Round ${round}: ${leadsToEnrich.length} leads selected for deep profile enrichment.`);
 
         const enrichTasks = leadsToEnrich.map(({ lead, evidenceMeta, queryRun }) => async () => {
-          if (brightDataCircuitOpen || stats.enriched >= enrichmentCap) return;
+          if (brightDataCircuitOpen) return;
           const url = evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl;
           if (!url) return;
           
@@ -818,18 +858,24 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           const positiveCache = getEnrichmentCacheEntry({ normalizedUrl, linkedinUsername: username });
           const negativeCache = getNegativeEnrichmentCacheEntry({ normalizedUrl, linkedinUsername: username });
 
+          let enrichedOrCached = false;
+
           if (positiveCache) {
             stats.cacheHits++;
             brightDataStats.cacheHits++;
             evidenceMeta.sourceProvider = 'cache';
             evidenceMeta.evidenceQuality = positiveCache.scrapeQuality === 'good' ? 'good' : 'partial';
             evidenceMeta.evidenceBlock = positiveCache.evidenceBlock;
+            enrichedOrCached = true;
           } else if (negativeCache) {
             brightDataStats.negativeCacheHits++;
             const reason = negativeCache.evidenceBlock as RejectionReason;
             incrementRejection(brightDataStats.rejectionReasons, reason);
             noteRejection(reason, queryRun);
           } else if (username) {
+            if (stats.enriched >= enrichmentCap) return;
+            stats.enriched++;
+            let reservedEnrichmentSlot = true;
             brightDataStats.profileScrapesAttempted++;
             try {
               const markdown = await scrapeAsMarkdown(url);
@@ -857,8 +903,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                   evidenceMeta.sourceProvider = 'brightdata';
                   evidenceMeta.evidenceQuality = parsed.quality;
                   evidenceMeta.evidenceBlock = parsed.evidenceBlock;
-                  stats.enriched++;
                   brightDataStats.profileScrapesSucceeded++;
+                  enrichedOrCached = true;
                   
                   upsertEnrichmentCacheEntry({
                     normalizedUrl,
@@ -907,30 +953,36 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                 brightDataCircuitOpen = true;
                 logEvent('Bright Data circuit opened after consecutive failures. Continuing Tavily-only.');
               }
+            } finally {
+              if (reservedEnrichmentSlot && !enrichedOrCached) {
+                stats.enriched = Math.max(0, stats.enriched - 1);
+              }
             }
           }
 
-          lead.decisionMakerVerification = verifyDecisionMakerFromEvidence({
-            query: promptQuery,
-            fullName: lead.fullName,
-            currentTitle: lead.currentTitle,
-            currentCompany: lead.currentCompany,
-            headline: lead.headline,
-            evidenceText: evidenceMeta.evidenceBlock
-          });
+          if (enrichedOrCached) {
+            lead.decisionMakerVerification = verifyDecisionMakerFromEvidence({
+              query: promptQuery,
+              fullName: lead.fullName,
+              currentTitle: lead.currentTitle,
+              currentCompany: lead.currentCompany,
+              headline: lead.headline,
+              evidenceText: evidenceMeta.evidenceBlock
+            });
 
-          // Re-evaluate score with new evidence and updated authority verification.
-          lead.evidence = createLeadEvidence({
-            sourceUrl: evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl || '',
-            sourceProvider: evidenceMeta.sourceProvider,
-            sourceQuery: evidenceMeta.sourceQuery,
-            sourceRound: evidenceMeta.sourceRound,
-            evidenceQuality: evidenceMeta.evidenceQuality,
-            evidenceBlock: evidenceMeta.evidenceBlock,
-            whyThisLead: lead.evidenceReasons[0]
-          });
-          lead.scoreBreakdown = computeScoreBreakdown(lead, evidenceMeta.evidenceQuality, evidenceMeta.sourceProvider, lead.decisionMakerVerification);
-          lead.scoreOverride = lead.scoreBreakdown.finalScore;
+            // Re-evaluate score with new evidence and updated authority verification.
+            lead.evidence = createLeadEvidence({
+              sourceUrl: evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl || '',
+              sourceProvider: evidenceMeta.sourceProvider,
+              sourceQuery: evidenceMeta.sourceQuery,
+              sourceRound: evidenceMeta.sourceRound,
+              evidenceQuality: evidenceMeta.evidenceQuality,
+              evidenceBlock: evidenceMeta.evidenceBlock,
+              whyThisLead: lead.evidenceReasons[0]
+            });
+            lead.scoreBreakdown = computeScoreBreakdown(lead, evidenceMeta.evidenceQuality, evidenceMeta.sourceProvider, lead.decisionMakerVerification);
+            lead.scoreOverride = lead.scoreBreakdown.finalScore;
+          }
         });
 
         await asyncQueue(enrichTasks, profileConcurrency);
@@ -1131,7 +1183,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
 
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
-    insertSearchLog({
+    safeInsertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),
       prompt: promptQuery,
@@ -1144,13 +1196,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
-    activeSessions.delete(sessionId);
-    res.json({ leads: finalLeads, stats, sandboxMode: false });
+    res.json({ leads: finalLeads, stats, sandboxMode: false, sessionId });
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
 
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
-    insertSearchLog({
+    safeInsertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),
       prompt: promptQuery,
@@ -1163,8 +1214,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || 'Failed to locate leads.', stats, sessionId });
+    }
+  } finally {
     activeSessions.delete(sessionId);
-    res.status(500).json({ error: error.message || 'Failed to locate leads.', stats });
+    await closeBrightDataClient({ onlyIfIdle: true, onlyIfUnhealthy: true, reason: 'find-leads-complete' });
   }
 });
 

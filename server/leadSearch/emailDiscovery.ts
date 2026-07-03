@@ -5,7 +5,7 @@ import {
   upsertEmailDiscoveryCacheEntry,
   type EmailDiscoveryStatus
 } from '../db.js';
-import { brightDataSearch, scrapeBatchAsMarkdown } from '../services/brightdata.js';
+import { brightDataSearch, scrapeBatchAsMarkdown, shouldAttemptBrightData } from '../services/brightdata.js';
 import { tavilyExtract, tavilySearch } from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
 import { findCompanyWebsite } from './companyIntent.js';
@@ -254,13 +254,21 @@ function inferPatternEmail(fullName: string | undefined, domain: string, knownEm
   return `${local}@${domain}`;
 }
 
-async function hasValidMailServer(domain: string) {
+async function hasValidMailServer(domain: string, timeoutMs = 5000) {
   if (!domain) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const records = await dns.resolveMx(domain);
+    const records = await Promise.race([
+      dns.resolveMx(domain),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('DNS MX lookup timed out')), timeoutMs);
+      })
+    ]);
     return Array.isArray(records) && records.length > 0;
   } catch {
     return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -283,6 +291,20 @@ async function fetchPage(url: string, timeoutMs: number) {
   }
 }
 
+async function asyncMapLimit<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  const executing = new Set<Promise<void>>();
+  for (const item of items) {
+    const task = worker(item).then(result => { results.push(result); });
+    executing.add(task);
+    task.finally(() => executing.delete(task));
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  await Promise.all(executing);
+  return results;
+}
 async function resolveCompanyDomain(input: DiscoverProspectEmailInput, timeoutMs: number): Promise<{ domain: string; website: string; sources: EmailDiscoveryEvidence[] }> {
   const explicitDomain = domainFromUrl(input.companyWebsite);
   if (explicitDomain) {
@@ -319,7 +341,7 @@ async function resolveCompanyDomain(input: DiscoverProspectEmailInput, timeoutMs
   ].filter(Boolean)));
   const domainSearchLimit = clampNumber(process.env.EMAIL_DISCOVERY_DOMAIN_QUERY_LIMIT, 3, 1, 6);
 
-  if (process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN) {
+  if (shouldAttemptBrightData()) {
     for (const query of queries.slice(0, domainSearchLimit)) {
       try {
         const results = await brightDataSearch(query, { timeoutMs });
@@ -511,7 +533,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
   const searchResultLimit = clampNumber(process.env.EMAIL_DISCOVERY_SEARCH_RESULT_LIMIT, 6, 2, 10);
   const publicQueries = buildEmailSearchQueries(input, domain);
 
-  if (process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN) {
+  if (shouldAttemptBrightData()) {
     for (const query of publicQueries.slice(0, searchQueryLimit)) {
       try {
         const results = await brightDataSearch(query, { timeoutMs });
@@ -524,7 +546,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
     }
   }
 
-  const brightDataResults = await scrapeBatchAsMarkdown(contactUrls.slice(0, contactUrlLimit), timeoutMs);
+  const brightDataResults = shouldAttemptBrightData() ? await scrapeBatchAsMarkdown(contactUrls.slice(0, contactUrlLimit), timeoutMs) : [];
   for (const item of brightDataResults) inspectText(item.content, item.url, 'brightdata_batch');
 
   if ((candidates.length === 0 || knownEmails.size < 2) && process.env.TAVILY_API_KEY) {
@@ -541,7 +563,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
   }
 
   if (candidates.length === 0 || knownEmails.size < 2) {
-    const directFetches = await Promise.all(contactUrls.slice(0, Math.min(contactUrlLimit, 8)).map(async url => ({ url, text: await fetchPage(url, timeoutMs) })));
+    const directFetches = await asyncMapLimit(contactUrls.slice(0, Math.min(contactUrlLimit, 8)), 3, async url => ({ url, text: await fetchPage(url, timeoutMs) }));
     for (const item of directFetches) {
       if (item.text) inspectText(item.text, item.url, 'direct_fetch');
     }

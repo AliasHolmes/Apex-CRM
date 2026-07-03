@@ -95,19 +95,18 @@ graph TD
    Copy the `.env.example` file to `.env` and fill in your credentials.
 
    ```env
-   # Gateway Mode: "direct" or "litellm"
-   LLM_GATEWAY_MODE="direct"
-   
-   # Direct Mode (Byesu Primary LLM)
+   # Primary provider
    OPENAI_API_KEY="your_byesu_key"
+   BYESU_API_KEY="your_byesu_key"
    OPENAI_BASE="https://api.byesu.com/v1"
    OPENAI_MODEL="gpt-5.5"
 
-   # LiteLLM Mode (Local Proxy with fallback)
-   LITELLM_MASTER_KEY="sk-local-litellm"
-   BYESU_API_KEY="your_byesu_key"
+   # Direct fallbacks
    OPENROUTER_API_KEY="your_openrouter_key"
-   
+   OPENROUTER_MODEL="poolside/laguna-m.1:free"
+   GROQ_API_KEY="your_groq_key"
+   GROQ_MODEL="qwen/qwen3.6-27b"
+
    # External Integrations
    TAVILY_API_KEY="your_tavily_key"
    BRIGHTDATA_API_TOKEN="your_brightdata_token"
@@ -121,10 +120,7 @@ graph TD
    ```bash
    npm run dev
    ```
-   This single command will:
-   - Start the **LiteLLM Proxy** on `http://localhost:4000` in the background (using a project-local virtual environment).
-   - Start the **Apex CRM Dev Server** on `http://localhost:3000`.
-   - **Note**: Stopping the dev server (`Ctrl+C`) will automatically kill the background LiteLLM proxy.
+   This starts the **Apex CRM Dev Server** on `http://localhost:3000`. LLM fallback is handled directly inside the app process.
 
 ---
 

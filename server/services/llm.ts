@@ -8,33 +8,94 @@ export const Type = {
 };
 
 // -----------------------------------------------------------------------------
-// OpenAI Compatible REST API Helpers (OPENAI_API_KEY)
+// OpenAI-compatible REST API helpers with direct provider fallback.
 // -----------------------------------------------------------------------------
 
-const gatewayMode = process.env.LLM_GATEWAY_MODE || 'direct';
+type ChatMessage = {
+  role: 'system' | 'user';
+  content: string;
+};
 
-const defaultBase = gatewayMode === 'litellm'
-  ? (process.env.LITELLM_BASE_URL || 'http://localhost:4000/v1')
-  : (process.env.OPENAI_BASE || 'https://api.byesu.com/v1');
+type LLMProvider = {
+  id: 'primary' | 'openrouter' | 'groq';
+  name: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  headers?: Record<string, string>;
+};
 
-const defaultModel = gatewayMode === 'litellm'
-  ? (process.env.LITELLM_MODEL || 'apex-primary')
-  : (process.env.OPENAI_MODEL || 'gpt-5.5');
+export type LLMProviderSummary = Omit<LLMProvider, 'apiKey' | 'headers'> & {
+  configured: boolean;
+};
 
-const OPENAI_BASE = defaultBase;
-const OPENAI_MODEL = defaultModel;
+const DEFAULT_PRIMARY_BASE = 'https://api.byesu.com/v1';
+const DEFAULT_PRIMARY_MODEL = 'gpt-5.5';
+const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+const DEFAULT_OPENROUTER_MODEL = 'poolside/laguna-m.1:free';
+const DEFAULT_GROQ_BASE = 'https://api.groq.com/openai/v1';
+const DEFAULT_GROQ_MODEL = 'qwen/qwen3.6-27b';
+
+function cleanBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function getOpenRouterHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'X-Title': process.env.OPENROUTER_APP_TITLE || 'Apex CRM',
+  };
+  const referer = process.env.OPENROUTER_HTTP_REFERER || process.env.APP_URL;
+  if (referer && referer !== 'MY_APP_URL') {
+    headers['HTTP-Referer'] = referer;
+  }
+  return headers;
+}
+
+function getLLMProviderCandidates(): LLMProvider[] {
+  return [
+    {
+      id: 'primary',
+      name: process.env.OPENAI_PROVIDER_NAME || 'Byesu',
+      baseUrl: cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE),
+      model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
+      apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || '',
+    },
+    {
+      id: 'openrouter',
+      name: 'OpenRouter',
+      baseUrl: cleanBaseUrl(process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE),
+      model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+      apiKey: process.env.OPENROUTER_API_KEY || '',
+      headers: getOpenRouterHeaders(),
+    },
+    {
+      id: 'groq',
+      name: 'Groq',
+      baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
+      model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+      apiKey: process.env.GROQ_API_KEY || '',
+    },
+  ];
+}
+
+function getConfiguredLLMProviders(): LLMProvider[] {
+  return getLLMProviderCandidates().filter(provider => !!provider.apiKey);
+}
+
+export function getLLMProviderSummaries(): LLMProviderSummary[] {
+  return getLLMProviderCandidates().map(({ apiKey, headers, ...provider }) => ({
+    ...provider,
+    configured: !!apiKey,
+  }));
+}
 
 export function getAPIKey(): string {
-  const gatewayMode = process.env.LLM_GATEWAY_MODE || 'direct';
-  if (gatewayMode === 'litellm') {
-    return process.env.LITELLM_MASTER_KEY || '';
-  }
-  return process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || '';
+  return getConfiguredLLMProviders()[0]?.apiKey || '';
 }
 
 /**
  * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
- * Prevents indefinite hangs when the LLM proxy is slow or overloaded.
+ * Prevents indefinite hangs when an LLM provider is slow or overloaded.
  * Default: 45s timeout, 1 retry (waits 2s then 4s between attempts).
  */
 async function fetchWithRetry(
@@ -87,6 +148,88 @@ async function fetchWithRetry(
   }
   throw lastError;
 }
+
+class LLMProviderError extends Error {
+  provider: LLMProvider;
+  status?: number;
+
+  constructor(provider: LLMProvider, status: number | undefined, message: string) {
+    super(`[${provider.name}] ${message}`);
+    this.name = 'LLMProviderError';
+    this.provider = provider;
+    this.status = status;
+  }
+}
+
+function truncateProviderError(message: string): string {
+  return message.length > 500 ? `${message.slice(0, 500)}... [truncated]` : message;
+}
+
+function formatProviderFailures(errors: Error[]): string {
+  return errors.map(error => error.message).join(' | ');
+}
+
+async function withProviderFallback<T>(
+  operation: (provider: LLMProvider) => Promise<T>
+): Promise<T> {
+  const providers = getConfiguredLLMProviders();
+  if (providers.length === 0) {
+    throw new Error('No LLM provider API key available. Configure OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY.');
+  }
+
+  const failures: Error[] = [];
+  for (const provider of providers) {
+    try {
+      return await operation(provider);
+    } catch (error: any) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      failures.push(normalized);
+      console.warn(`[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`);
+    }
+  }
+
+  throw new Error(`All configured LLM providers failed: ${formatProviderFailures(failures)}`);
+}
+
+async function sendChatCompletion(
+  provider: LLMProvider,
+  messages: ChatMessage[],
+  options?: { maxTokens?: number; temperature?: number; responseFormat?: { type: 'json_object' } }
+): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        ...(provider.headers || {}),
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${provider.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages,
+        temperature: options?.temperature !== undefined ? options.temperature : 0.1,
+        max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000,
+        ...(options?.responseFormat ? { response_format: options.responseFormat } : {}),
+      })
+    });
+  } catch (error: any) {
+    throw new LLMProviderError(
+      provider,
+      undefined,
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  if (!res.ok) {
+    const err = truncateProviderError(await res.text());
+    throw new LLMProviderError(provider, res.status, `chat completion error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
 
 /** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
 function normalizeSchema(schema: any): any {
@@ -219,42 +362,19 @@ export async function openAIText(
   prompt: string,
   systemInstruction?: string,
   options?: { maxTokens?: number; temperature?: number }
-): Promise<{ text: string }> {
-  const apiKey = getAPIKey();
-  if (!apiKey) throw new Error('No OpenAI compatible API key available.');
-
-  const messages = [];
+): Promise<{ text: string; provider: string; model: string; baseUrl: string }> {
+  const messages: ChatMessage[] = [];
   if (systemInstruction) {
     messages.push({ role: 'system', content: (systemInstruction as any).toWellFormed ? (systemInstruction as any).toWellFormed() : systemInstruction });
   }
   messages.push({ role: 'user', content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt });
 
-  const res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages,
-      temperature: options?.temperature !== undefined ? options.temperature : 0.1,
-      max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000
-    })
-  });
-
-  if (!res.ok) {
-    let err = await res.text();
-    if (err.length > 500) {
-      err = err.slice(0, 500) + '... [truncated]';
-    }
-    throw new Error(`OpenAI text generation error ${res.status}: ${err}`);
-  }
-
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || '';
-
-  return { text };
+  return withProviderFallback(async (provider) => ({
+    text: await sendChatCompletion(provider, messages, options),
+    provider: provider.name,
+    model: provider.model,
+    baseUrl: provider.baseUrl,
+  }));
 }
 
 function cleanJSONString(str: string): string {
@@ -303,13 +423,10 @@ export async function openAIStructured<T>(
   systemInstruction?: string,
   options?: { maxTokens?: number; temperature?: number }
 ): Promise<T> {
-  const apiKey = getAPIKey();
-  if (!apiKey) throw new Error('No OpenAI compatible API key available.');
-
   let sysPrompt = systemInstruction || '';
   sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. The JSON must exactly match this schema:\n${JSON.stringify(normalizeSchema(schema), null, 2)}`;
 
-  const messages = [
+  const messages: ChatMessage[] = [
     { role: 'system', content: (sysPrompt as any).toWellFormed ? (sysPrompt as any).toWellFormed() : sysPrompt },
     { role: 'user', content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt }
   ];
@@ -317,72 +434,40 @@ export async function openAIStructured<T>(
   const jsonMode = process.env.LLM_JSON_MODE || 'auto';
   const useJsonMode = jsonMode === 'on' || jsonMode === 'auto';
 
-  const body: any = {
-    model: OPENAI_MODEL,
-    messages,
-    temperature: options?.temperature !== undefined ? options.temperature : 0.1,
-    max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000,
-  };
-  if (useJsonMode) {
-    body.response_format = { type: "json_object" };
-  }
-
-  let res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!res.ok) {
-    let err = await res.text();
-    const isJsonValidationError = 
-      res.status === 400 || 
-      res.status === 422 || 
-      err.includes('json_validate_failed') || 
-      err.includes('Failed to validate JSON') || 
-      err.includes('json_validate');
-
-    if (jsonMode === 'auto' && isJsonValidationError) {
-      console.warn(`[llm] Structured output call failed (JSON validation error). Retrying without response_format due to LLM_JSON_MODE=auto...`);
-      delete body.response_format;
-      res = await fetchWithRetry(`${OPENAI_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(body)
+  return withProviderFallback(async (provider) => {
+    let text = '';
+    try {
+      text = await sendChatCompletion(provider, messages, {
+        ...options,
+        ...(useJsonMode ? { responseFormat: { type: 'json_object' as const } } : {}),
       });
+    } catch (error: any) {
+      const isJsonValidationError =
+        error instanceof LLMProviderError &&
+        (error.status === 400 ||
+        error.status === 422 ||
+        error.message.includes('json_validate_failed') ||
+        error.message.includes('Failed to validate JSON') ||
+        error.message.includes('json_validate') ||
+        error.message.includes('response_format'));
 
-      if (!res.ok) {
-        let retryErr = await res.text();
-        if (retryErr.length > 500) {
-          retryErr = retryErr.slice(0, 500) + '... [truncated]';
-        }
-        throw new Error(`OpenAI structured call error ${res.status}: ${retryErr}`);
+      if (jsonMode === 'auto' && isJsonValidationError) {
+        console.warn(`[llm] Structured output call failed (JSON validation error). Retrying without response_format due to LLM_JSON_MODE=auto...`);
+        text = await sendChatCompletion(provider, messages, options);
+      } else {
+        throw error;
       }
-    } else {
-      if (err.length > 500) {
-        err = err.slice(0, 500) + '... [truncated]';
-      }
-      throw new Error(`OpenAI structured call error ${res.status}: ${err}`);
     }
-  }
 
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || '';
-
-  try {
-    return JSON.parse(cleanJSONString(text)) as T;
-  } catch {
-    throw new Error(`Failed to parse OpenAI JSON response: ${text.slice(0, 300)}`);
-  }
+    try {
+      return JSON.parse(cleanJSONString(text)) as T;
+    } catch {
+      throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response: ${text.slice(0, 300)}`);
+    }
+  });
 }
 
-/** Returns true when a real OpenAI API key is available. */
+/** Returns true when at least one LLM provider API key is available. */
 export function hasOpenAIKey(): boolean {
   return !!getAPIKey();
 }

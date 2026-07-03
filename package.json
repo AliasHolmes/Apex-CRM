@@ -13,8 +13,8 @@
         "test:enrichment": "tsx --test test/enrichmentCache.test.ts test/linkedinEvidence.test.ts",
         "test:lead-search": "tsx --test test/leadSearchHelpers.test.ts",
         "test:brightdata-upgrade": "tsx --test test/brightDataUpgrade.test.ts",
-        "test:litellm": "tsx --test test/litellm.test.ts",
-        "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/litellm.test.ts"
+        "test:llm": "tsx --test test/llmFallback.test.ts",
+        "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/llmFallback.test.ts"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 
 import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
-import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema } from '../services/llm.js';
+import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries } from '../services/llm.js';
 import { closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch, shouldAttemptBrightData } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
@@ -128,29 +128,24 @@ router.get('/health', (req, res) => {
 });
 
 router.get('/llm-health', async (req, res) => {
-  const gatewayMode = process.env.LLM_GATEWAY_MODE || 'direct';
-  const baseUrl = gatewayMode === 'litellm' 
-    ? (process.env.LITELLM_BASE_URL || 'http://localhost:4000/v1')
-    : (process.env.OPENAI_BASE || 'https://api.byesu.com/v1');
-  const model = gatewayMode === 'litellm'
-    ? (process.env.LITELLM_MODEL || 'apex-primary')
-    : (process.env.OPENAI_MODEL || 'gpt-5.5');
+  const configuredProviders = getLLMProviderSummaries();
 
   try {
     const response = await openAIText("Reply with exactly ok");
     const isOk = response.text.trim().toLowerCase().includes('ok');
     res.json({
-      mode: gatewayMode,
-      baseUrl,
-      model,
+      mode: 'direct-fallback',
+      provider: response.provider,
+      baseUrl: response.baseUrl,
+      model: response.model,
+      configuredProviders,
       ok: isOk,
       ...(isOk ? {} : { error: `Unexpected response: ${response.text}` })
     });
   } catch (error: any) {
     res.json({
-      mode: gatewayMode,
-      baseUrl,
-      model,
+      mode: 'direct-fallback',
+      configuredProviders,
       ok: false,
       error: error.message || String(error)
     });

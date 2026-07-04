@@ -20,7 +20,7 @@ import {
   History,
   FileSpreadsheet
 } from 'lucide-react';
-import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile, SearchLog } from '../types';
+import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile, SearchLog, MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -86,6 +86,32 @@ const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
   );
 };
 
+const formatDuration = (ms?: number) => {
+  if (!ms || ms < 0) return '0s';
+  return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 100) / 10}s`;
+};
+
+const TraceSummaryViewer = ({ traceSummary, traceEvents = [] }: { traceSummary?: MiningTraceSummary; traceEvents?: MiningTraceEvent[] }) => {
+  const providerSummary: ProviderSummary = traceSummary?.providerSummary || {};
+  const providers = Object.entries(providerSummary).filter(([, item]) => item.calls > 0 || item.failures > 0 || item.skipped > 0);
+  const phases = traceSummary?.phaseTimeline || [];
+  const cost = traceSummary?.costSummary;
+  const recent = traceEvents.slice(-6).reverse();
+  if (!traceSummary && traceEvents.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-3 border-t border-slate-800/60 pt-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-[10px] uppercase text-slate-500 font-bold">Events</div><div className="text-sm text-slate-200 font-semibold">{traceSummary?.eventCount ?? traceEvents.length}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-[10px] uppercase text-slate-500 font-bold">LLM Tokens</div><div className="text-sm text-indigo-300 font-semibold">{cost?.totalTokens?.toLocaleString?.() || 0}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-[10px] uppercase text-slate-500 font-bold">Est. Cost</div><div className="text-sm text-emerald-300 font-semibold">${(cost?.estimatedUsd || 0).toFixed(4)}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-[10px] uppercase text-slate-500 font-bold">Cost / Lead</div><div className="text-sm text-slate-200 font-semibold">${(cost?.costPerAcceptedLead || 0).toFixed(4)}</div></div>
+      </div>
+      {providers.length > 0 && <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{providers.map(([provider, item]) => (<div key={provider} className="bg-slate-950/50 border border-slate-800 rounded-md p-2 text-xs"><div className="flex items-center justify-between mb-1"><span className="uppercase font-bold text-slate-300">{provider}</span><span className="text-slate-500">avg {formatDuration(item.avgLatencyMs)}</span></div><div className="flex gap-3 text-[11px] text-slate-400"><span>{item.calls} calls</span><span className="text-emerald-400">{item.successes} ok</span><span className="text-rose-400">{item.failures} fail</span>{item.totalTokens > 0 && <span className="text-indigo-300">{item.totalTokens.toLocaleString()} tok</span>}</div></div>))}</div>}
+      {phases.length > 0 && <div className="flex flex-wrap gap-1.5">{phases.map(phase => (<span key={phase.phase} className={`px-2 py-1 rounded-md border text-[10px] font-semibold ${phase.status === 'error' ? 'border-rose-500/30 text-rose-300 bg-rose-500/5' : 'border-slate-700 text-slate-300 bg-slate-950/50'}`}>{phase.phase.replace(/_/g, ' ')} · {phase.events} · {formatDuration(phase.durationMs)}</span>))}</div>}
+      {recent.length > 0 && <div className="space-y-1">{recent.map(event => (<div key={event.id} className="text-[11px] text-slate-400 font-mono bg-slate-950/40 border border-slate-850 rounded px-2 py-1 flex justify-between gap-2"><span className="truncate">{event.phase}/{event.operation}{event.query ? ` · ${event.query}` : ''}</span><span className={event.status === 'error' ? 'text-rose-400' : event.status === 'success' ? 'text-emerald-400' : 'text-slate-500'}>{event.status}</span></div>))}</div>}
+    </div>
+  );
+};
 interface ScrapeWorkspaceProps {
   leads: Lead[];
   handleLeadAdded: (profile: LinkedInProfile) => void;
@@ -115,6 +141,7 @@ export default function ScrapeWorkspace() {
 
   // Diagnostic Terminal States for Adaptive Scraping & Nudge Logs
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [liveTraceEvents, setLiveTraceEvents] = useState<MiningTraceEvent[]>([]);
   
   const [showLogs, setShowLogs] = useState(false);
   const [searchLogs, setSearchLogs] = useState<SearchLog[]>([]);
@@ -345,6 +372,7 @@ export default function ScrapeWorkspace() {
     try {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'processing' } : t));
       setTerminalLogs([`[${new Date().toLocaleTimeString()}] Preparing lead discovery request...`]);
+      setLiveTraceEvents([]);
 
       // Build exclusions list of already scraped identifiers to pass to backend search
       const excludeUrlsAndEmails: string[] = [];
@@ -366,6 +394,9 @@ export default function ScrapeWorkspace() {
             const data = await res.json();
             if (Array.isArray(data.logs) && data.logs.length > 0) {
               setTerminalLogs(data.logs);
+            }
+            if (Array.isArray(data.traceEvents)) {
+              setLiveTraceEvents(data.traceEvents);
             }
           }
         } catch (e) {
@@ -740,6 +771,7 @@ Everything else is noise.`)}
                 <p className="text-slate-500 italic">Initiating diagnostic agent subroutines...</p>
               )}
             </div>
+            <TraceSummaryViewer traceEvents={liveTraceEvents} />
           </div>
         )}
 
@@ -921,6 +953,7 @@ Everything else is noise.`)}
                           </>
                         )}
                       </div>
+                      <TraceSummaryViewer traceSummary={log.traceSummary} traceEvents={log.traceEvents || []} />
                       {log.detailedLogs && (
                         <div className="mt-4 pt-3 border-t border-slate-800/50">
                           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Adaptive Terminal Output</p>

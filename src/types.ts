@@ -181,6 +181,82 @@ export interface ScrapingTask {
   createdAt: string;
 }
 
+export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'email' | 'sqlite' | 'system';
+export type MiningPhase = 'session' | 'strategy' | 'search' | 'candidate_processing' | 'extraction' | 'filtering' | 'enrichment' | 'email_discovery' | 'persistence';
+export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
+
+export interface MiningTraceEvent {
+  id: string;
+  timestamp: string;
+  phase: MiningPhase;
+  operation: string;
+  status: MiningEventStatus;
+  provider?: MiningProvider;
+  round?: number;
+  query?: string;
+  chunk?: { index: number; total: number; inputChars?: number };
+  latencyMs?: number;
+  counts?: Record<string, number>;
+  llm?: {
+    purpose?: string;
+    model?: string;
+    route?: string;
+    fallbackUsed?: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    estimatedCostUsd?: number;
+    finishReason?: string;
+    parseRetries?: number;
+  };
+  tavily?: { searchDepth?: string; maxResults?: number; includeDomains?: string[] };
+  brightData?: { transport?: string; target?: string; targetCount?: number; circuitOpen?: boolean; cooldownMsRemaining?: number; disabledReason?: string | null };
+  email?: { status?: string; cacheHit?: boolean; evidenceCount?: number; sourceTypes?: string[] };
+  error?: { message: string; code?: string };
+  metadata?: Record<string, unknown>;
+}
+
+export interface ProviderSummaryItem {
+  calls: number;
+  successes: number;
+  failures: number;
+  skipped: number;
+  latencyMs: number;
+  avgLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  fallbackUses: number;
+}
+
+export type ProviderSummary = Record<string, ProviderSummaryItem>;
+
+export interface CostSummary {
+  estimatedUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costPerAcceptedLead?: number;
+  tokensPerAcceptedLead?: number;
+}
+
+export interface PhaseTimelineItem {
+  phase: MiningPhase;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  status: MiningEventStatus;
+  events: number;
+}
+
+export interface MiningTraceSummary {
+  eventCount: number;
+  providerSummary: ProviderSummary;
+  costSummary: CostSummary;
+  phaseTimeline: PhaseTimelineItem[];
+  schemaVersion?: number;
+}
 export interface SearchLog {
   id: string;
   timestamp: string;
@@ -194,4 +270,10 @@ export interface SearchLog {
   debugLogs?: string;
   rejectionReasons?: Record<string, number>;
   queryRuns?: unknown[];
+  traceSummary?: MiningTraceSummary;
+  traceEvents?: MiningTraceEvent[];
+  providerSummary?: ProviderSummary;
+  costSummary?: CostSummary;
+  phaseTimeline?: PhaseTimelineItem[];
+  schemaVersion?: number;
 }

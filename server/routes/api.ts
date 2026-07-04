@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
+import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries } from '../services/llm.js';
 import { closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, brightDataSearch, shouldAttemptBrightData } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -12,9 +12,11 @@ import { incrementRejection, mapBrightDataRejection, type RejectionReason } from
 import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
 import { applyEmailDiscoveryToLead, discoverProspectEmail } from '../leadSearch/emailDiscovery.js';
+import { MiningTelemetryRecorder, estimateLLMCostUsd, getLLMRouteLabel, type MiningTraceEvent } from '../leadSearch/telemetry.js';
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
+export const activeSessionEvents = new Map<string, MiningTraceEvent[]>();
 
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 
@@ -246,20 +248,27 @@ ${pastedText}`;
 
 router.get('/search-logs', (req, res): any => {
   try {
-    const db = getLeadsDb();
-    const stmt = db.prepare('SELECT * FROM search_logs ORDER BY timestamp DESC');
-    const rows = stmt.all() as any[];
-    
-    const logs = rows.map(r => ({
-      id: r.id,
-      timestamp: r.timestamp,
-      prompt: r.prompt,
-      generatedQueries: JSON.parse(r.generated_queries || '[]'),
-      status: r.status,
-      errorMessage: r.error_message,
-      rawResultsCount: r.raw_results_count,
-      leadsFound: r.leads_found,
-      detailedLogs: r.detailed_logs
+    const logs = readSearchLogs().map((log: any) => ({
+      id: log.id,
+      timestamp: log.timestamp,
+      prompt: log.prompt,
+      generatedQueries: log.generatedQueries,
+      status: log.status,
+      errorMessage: log.errorMessage,
+      rawResultsCount: log.rawResultsCount,
+      leadsFound: log.leadsFound,
+      detailedLogs: log.detailedLogs,
+      debugLogs: log.debugLogs,
+      traceSummary: {
+        eventCount: log.traceEvents?.length || 0,
+        providerSummary: log.providerSummary || {},
+        costSummary: log.costSummary || {},
+        phaseTimeline: log.phaseTimeline || [],
+        schemaVersion: log.schemaVersion || 1
+      },
+      providerSummary: log.providerSummary || {},
+      costSummary: log.costSummary || {},
+      phaseTimeline: log.phaseTimeline || []
     }));
     res.json(logs);
   } catch (error: any) {
@@ -270,9 +279,35 @@ router.get('/search-logs', (req, res): any => {
 
 router.get('/search-logs/:id/live', (req, res) => {
   const logs = activeSessions.get(req.params.id) || [];
-  res.json({ logs });
+  const traceEvents = activeSessionEvents.get(req.params.id) || [];
+  res.json({ logs, traceEvents });
 });
 
+router.get('/mining-sessions/:sessionId/trace', (req, res): any => {
+  try {
+    const log = readSearchLogById(req.params.sessionId);
+    if (!log) return res.status(404).json({ error: 'Mining session trace not found.' });
+    res.json({
+      sessionId: log.id,
+      timestamp: log.timestamp,
+      prompt: log.prompt,
+      status: log.status,
+      errorMessage: log.errorMessage,
+      rawResultsCount: log.rawResultsCount,
+      leadsFound: log.leadsFound,
+      detailedLogs: log.detailedLogs,
+      debugLogs: log.debugLogs,
+      traceEvents: log.traceEvents || [],
+      providerSummary: log.providerSummary || {},
+      costSummary: log.costSummary || {},
+      phaseTimeline: log.phaseTimeline || [],
+      schemaVersion: log.schemaVersion || 1
+    });
+  } catch (error: any) {
+    console.error('Failed to read mining session trace:', error);
+    res.status(500).json({ error: 'Failed to retrieve mining session trace.' });
+  }
+});
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
 router.post('/find-leads', async (req, res): Promise<any> => {
@@ -300,14 +335,47 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   let leadsFound = 0;
   const promptQuery = req.body.query || '';
   const startedAt = Date.now();
+  const requestedLimit = Math.min(Math.max(Number(req.body.limit || 5), 1), 200);
+  const telemetry = new MiningTelemetryRecorder(sessionId, promptQuery, requestedLimit, new Date(startedAt).toISOString());
+  const recordTrace = (event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) => {
+    const recorded = telemetry.record(event);
+    activeSessionEvents.set(sessionId, telemetry.getEvents().slice(-100));
+    return recorded;
+  };
+  const traceLogFields = () => {
+    const trace = telemetry.getTrace();
+    return {
+      traceEvents: trace.events,
+      providerSummary: trace.providerSummary,
+      costSummary: trace.costSummary,
+      phaseTimeline: trace.phaseTimeline,
+      schemaVersion: trace.schemaVersion
+    };
+  };
   const safeInsertSearchLog = (entry: Parameters<typeof insertSearchLog>[0]) => {
     try {
-      insertSearchLog(entry);
+      insertSearchLog({ ...entry, ...traceLogFields() });
     } catch (error) {
       console.warn('[find-leads] failed to write search log:', error instanceof Error ? error.message : String(error));
     }
   };
-
+  const estimateTokens = (value: unknown) => Math.ceil(String(value || '').length / 4);
+  const summarizeLLM = (purpose: string, promptText: string, output: unknown, latencyMs: number, parseRetries = 0) => {
+    const route = getLLMRouteLabel();
+    const inputTokens = estimateTokens(promptText);
+    const outputTokens = estimateTokens(typeof output === 'string' ? output : JSON.stringify(output || ''));
+    return {
+      purpose,
+      model: route.model,
+      route: route.route,
+      fallbackUsed: false,
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
+      parseRetries
+    };
+  };
   const brightDataStats = {
     configured: isBrightDataConfigured(),
     attempted: 0,
@@ -326,7 +394,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   };
 
   const stats = {
-    requested: Math.min(Math.max(Number(req.body.limit || 5), 1), 200),
+    requested: requestedLimit,
     returned: 0,
     rawCandidates: 0,
     cacheHits: 0,
@@ -457,6 +525,14 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
   try {
     logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
+    recordTrace({
+      phase: 'session',
+      operation: 'start',
+      status: 'started',
+      provider: 'system',
+      counts: { requested: stats.requested },
+      metadata: { queryLength: String(promptQuery || '').length }
+    });
     safeInsertSearchLog({
       id: sessionId,
       timestamp: new Date().toISOString(),
@@ -574,7 +650,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       if (remaining <= 2 && round > 1) {
         logEvent(`Round ${round}: target near completion (remaining: ${remaining}). Skipping LLM Strategist planning to optimize efficiency.`);
       } else {
+        const strategyStarted = Date.now();
         try {
+          recordTrace({
+            phase: 'strategy',
+            operation: 'strategist_planning',
+            status: 'started',
+            provider: 'llm',
+            round,
+            metadata: { promptLength: strategistPrompt.length }
+          });
           const queryResult = await openAIStructured<any>(
             strategistPrompt,
             searchQueriesSchema,
@@ -591,7 +676,27 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             response: queryResult
           });
           planItems = normalizeQueryPlanItems(queryResult);
+          recordTrace({
+            phase: 'strategy',
+            operation: 'strategist_planning',
+            status: 'success',
+            provider: 'llm',
+            round,
+            latencyMs: Date.now() - strategyStarted,
+            counts: { generatedQueries: planItems.length },
+            llm: summarizeLLM('strategy', strategistPrompt, queryResult, Date.now() - strategyStarted)
+          });
         } catch (e: any) {
+          recordTrace({
+            phase: 'strategy',
+            operation: 'strategist_planning',
+            status: 'error',
+            provider: 'llm',
+            round,
+            latencyMs: Date.now() - strategyStarted,
+            error: { message: e.message || String(e) },
+            llm: summarizeLLM('strategy', strategistPrompt, '', Date.now() - strategyStarted)
+          });
           logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
           debugLogs.push({
             timestamp: new Date().toISOString(),
@@ -645,28 +750,70 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       });
 
       // 1. Tavily Search
-      const searchResults = await Promise.all(roundPlans.map((plan, index) => tavilySearch(plan.executableQuery, ['linkedin.com/in']).then(res => {
-        debugLogs.push({
-          timestamp: new Date().toISOString(),
-          type: 'tavily_search',
-          query: plan.executableQuery,
-          resultsCount: res.items?.length || 0,
-          results: res.items?.map((item: any) => ({ title: item.title, url: item.url, snippet: item.content || item.raw_content }))
-        });
-        return res;
-      }).catch(e => {
-        logEvent(`WARN: Tavily Search failed for query "${plan.executableQuery}": ${e.message}`);
-        debugLogs.push({
-          timestamp: new Date().toISOString(),
-          type: 'tavily_error',
-          query: plan.executableQuery,
-          error: e.message
-        });
-        return { text: '', sources: [], items: [], _failedQueryIndex: index };
-      })));
+      recordTrace({
+        phase: 'search',
+        operation: 'tavily_round_search',
+        status: 'started',
+        provider: 'tavily',
+        round,
+        counts: { queries: roundPlans.length },
+        tavily: {
+          searchDepth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
+          maxResults: Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20),
+          includeDomains: ['linkedin.com/in']
+        }
+      });
+      const searchResults = await Promise.all(roundPlans.map(async (plan, index) => {
+        const searchStarted = Date.now();
+        try {
+          const res = await tavilySearch(plan.executableQuery, ['linkedin.com/in']);
+          const resultsCount = res.items?.length || 0;
+          recordTrace({
+            phase: 'search',
+            operation: 'tavily_search',
+            status: 'success',
+            provider: 'tavily',
+            round,
+            query: plan.executableQuery,
+            latencyMs: Date.now() - searchStarted,
+            counts: { rawCandidates: resultsCount },
+            tavily: {
+              searchDepth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
+              maxResults: Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20),
+              includeDomains: ['linkedin.com/in']
+            }
+          });
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'tavily_search',
+            query: plan.executableQuery,
+            resultsCount,
+            results: res.items?.map((item: any) => ({ title: item.title, url: item.url, snippet: item.content || item.raw_content }))
+          });
+          return res;
+        } catch (e: any) {
+          recordTrace({
+            phase: 'search',
+            operation: 'tavily_search',
+            status: 'error',
+            provider: 'tavily',
+            round,
+            query: plan.executableQuery,
+            latencyMs: Date.now() - searchStarted,
+            error: { message: e.message || String(e) }
+          });
+          logEvent(`WARN: Tavily Search failed for query "${plan.executableQuery}": ${e.message}`);
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: 'tavily_error',
+            query: plan.executableQuery,
+            error: e.message
+          });
+          return { text: '', sources: [], items: [], _failedQueryIndex: index };
+        }
+      }));
 
-      let roundItems: any[] = [];
-      for (let resultIndex = 0; resultIndex < searchResults.length; resultIndex++) {
+      let roundItems: any[] = [];      for (let resultIndex = 0; resultIndex < searchResults.length; resultIndex++) {
         const result = searchResults[resultIndex];
         const items = Array.isArray(result.items) ? result.items : [];
         for (const item of items) {
@@ -690,11 +837,38 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           
           brightDataStats.searchAttempted += bdSearchPlans.length;
           
-          const bdResults = await Promise.all(bdSearchPlans.map(plan => brightDataSearch(plan.executableQuery).catch(e => {
-            logEvent(`WARN: Bright Data Search failed: ${e.message}`);
-            return [];
-          })));
-
+          const bdResults = await Promise.all(bdSearchPlans.map(async plan => {
+            const bdSearchStarted = Date.now();
+            try {
+              const results = await brightDataSearch(plan.executableQuery);
+              recordTrace({
+                phase: 'search',
+                operation: 'brightdata_search',
+                status: 'success',
+                provider: 'brightdata',
+                round,
+                query: plan.executableQuery,
+                latencyMs: Date.now() - bdSearchStarted,
+                counts: { rawCandidates: results.length },
+                brightData: getBrightDataStatus()
+              });
+              return results;
+            } catch (e: any) {
+              recordTrace({
+                phase: 'search',
+                operation: 'brightdata_search',
+                status: 'error',
+                provider: 'brightdata',
+                round,
+                query: plan.executableQuery,
+                latencyMs: Date.now() - bdSearchStarted,
+                error: { message: e.message || String(e) },
+                brightData: getBrightDataStatus()
+              });
+              logEvent(`WARN: Bright Data Search failed: ${e.message}`);
+              return [];
+            }
+          }));
           for (let resultIndex = 0; resultIndex < bdResults.length; resultIndex++) {
             const items = bdResults[resultIndex] || [];
             if (items.length > 0) brightDataStats.searchSucceeded++;
@@ -794,18 +968,28 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         evidenceBlocks.push(`--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`);
       }
 
-      const chunks = chunkEvidenceBlocks(evidenceBlocks, 6500);
+      const extractionChunkChars = Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 3200), 1800), 9000);
+      const chunks = chunkEvidenceBlocks(evidenceBlocks, extractionChunkChars);
       logEvent(`Round ${round}: extracting ${chunks.length} evidence batches in parallel.`);
+      recordTrace({
+        phase: 'extraction',
+        operation: 'chunk_evidence',
+        status: 'info',
+        provider: 'system',
+        round,
+        counts: { chunks: chunks.length, evidenceBlocks: evidenceBlocks.length }
+      });
 
       const extractionTasks = chunks.map((chunk, idx) => async () => {
         const chunkIndex = idx + 1;
+        const extractionStarted = Date.now();
         const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunk}`;
         try {
           const extracted = await openAIStructured<any[]>(
             prompt,
             bulkLeadsArraySchema,
             EXTRACTION_SYSTEM_PROMPT,
-            { maxTokens: 1500, temperature: 0.0 }
+            { maxTokens: Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3000), 1500), 8000), temperature: 0.0 }
           );
           const extractedLeads = Array.isArray(extracted) ? extracted : [];
           debugLogs.push({
@@ -818,11 +1002,33 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             response: extractedLeads
           });
           logEvent(`Round ${round}, chunk ${chunkIndex}/${chunks.length}: extracted ${extractedLeads.length} profiles.`);
+          recordTrace({
+            phase: 'extraction',
+            operation: 'llm_extract_chunk',
+            status: 'success',
+            provider: 'llm',
+            round,
+            chunk: { index: chunkIndex, total: chunks.length, inputChars: chunk.length },
+            latencyMs: Date.now() - extractionStarted,
+            counts: { extractedProfiles: extractedLeads.length },
+            llm: summarizeLLM('extraction', prompt, extractedLeads, Date.now() - extractionStarted)
+          });
           if (extractedLeads.length === 0) {
             noteRejection('llm_extraction_empty');
           }
           return extractedLeads;
         } catch (e: any) {
+          recordTrace({
+            phase: 'extraction',
+            operation: 'llm_extract_chunk',
+            status: 'error',
+            provider: 'llm',
+            round,
+            chunk: { index: chunkIndex, total: chunks.length, inputChars: chunk.length },
+            latencyMs: Date.now() - extractionStarted,
+            error: { message: e.message || String(e) },
+            llm: summarizeLLM('extraction', prompt, '', Date.now() - extractionStarted)
+          });
           logEvent(`WARN: Extraction chunk ${chunkIndex}/${chunks.length} failed: ${e.message}`);
           debugLogs.push({
             timestamp: new Date().toISOString(),
@@ -835,11 +1041,21 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         }
       });
 
-      const extractionResults = await asyncQueue(extractionTasks, 4);
+      const extractionConcurrency = Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1), 4);
+      const extractionResults = await asyncQueue(extractionTasks, extractionConcurrency);
       let provisionalLeads: any[] = [];
       for (const extractedLeads of extractionResults) {
         provisionalLeads.push(...extractedLeads);
       }
+
+      recordTrace({
+        phase: 'filtering',
+        operation: 'provisional_leads_ready',
+        status: 'success',
+        provider: 'system',
+        round,
+        counts: { provisionalLeads: provisionalLeads.length }
+      });
 
       // 3. Filtering & Decision Maker Verification
       let postFilterLeads: any[] = [];
@@ -900,6 +1116,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         postFilterLeads.push({ lead, evidenceMeta, queryRun });
       }
 
+      recordTrace({
+        phase: 'filtering',
+        operation: 'lead_filtering',
+        status: 'success',
+        provider: 'system',
+        round,
+        counts: { postFilterLeads: postFilterLeads.length },
+        metadata: { rejectionReasons: stats.rejectionReasons }
+      });
+
       // 4. Post-Filter Bright Data Profile Enrichment (Deep Scrape)
       if (profileEnrichmentStage === 'post_filter') {
         const leadsToEnrich = postFilterLeads.filter(({ lead, evidenceMeta }) => {
@@ -909,6 +1135,15 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         }).slice(0, profileMaxPerSearch);
 
         logEvent(`Round ${round}: ${leadsToEnrich.length} leads selected for deep profile enrichment.`);
+        recordTrace({
+          phase: 'enrichment',
+          operation: 'brightdata_profile_selection',
+          status: leadsToEnrich.length > 0 ? 'started' : 'skipped',
+          provider: 'brightdata',
+          round,
+          counts: { selectedForEnrichment: leadsToEnrich.length },
+          brightData: getBrightDataStatus()
+        });
 
         const enrichTasks = leadsToEnrich.map(({ lead, evidenceMeta, queryRun }) => async () => {
           if (brightDataCircuitOpen) return;
@@ -941,6 +1176,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             stats.enriched++;
             let reservedEnrichmentSlot = true;
             brightDataStats.profileScrapesAttempted++;
+            const scrapeStarted = Date.now();
             try {
               const markdown = await scrapeAsMarkdown(url);
               debugLogs.push({
@@ -980,10 +1216,30 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                     sourceProvider: 'brightdata'
                   }, ttlDays);
                   stats.cacheWrites++;
+                  recordTrace({
+                    phase: 'enrichment',
+                    operation: 'brightdata_profile_scrape',
+                    status: 'success',
+                    provider: 'brightdata',
+                    round,
+                    latencyMs: Date.now() - scrapeStarted,
+                    counts: { markdownChars: markdown.length },
+                    brightData: { ...getBrightDataStatus(), target: url }
+                  });
                 } else {
                   const mappedReason = mapBrightDataRejection(parsed.rejectionReason);
                   incrementRejection(brightDataStats.rejectionReasons, mappedReason);
                   noteRejection(mappedReason, queryRun);
+                  recordTrace({
+                    phase: 'enrichment',
+                    operation: 'brightdata_profile_scrape',
+                    status: 'skipped',
+                    provider: 'brightdata',
+                    round,
+                    latencyMs: Date.now() - scrapeStarted,
+                    brightData: { ...getBrightDataStatus(), target: url },
+                    metadata: { rejectionReason: parsed.rejectionReason || 'low quality' }
+                  });
                   logEvent(`Bright Data scrape rejected for ${username}: ${parsed.rejectionReason || 'low quality'}`);
                   
                   upsertNegativeEnrichmentCacheEntry({
@@ -998,6 +1254,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             } catch (e: any) {
               stats.brightDataFailures++;
               brightDataStats.failed++;
+              recordTrace({
+                phase: 'enrichment',
+                operation: 'brightdata_profile_scrape',
+                status: 'error',
+                provider: 'brightdata',
+                round,
+                latencyMs: Date.now() - scrapeStarted,
+                error: { message: e.message || String(e) },
+                brightData: { ...getBrightDataStatus(), target: url }
+              });
               incrementRejection(brightDataStats.rejectionReasons, 'brightdata_failed');
               debugLogs.push({
                 timestamp: new Date().toISOString(),
@@ -1174,6 +1440,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       stats.emailDiscovery.attempted = leadsForEmailDiscovery.length;
       if (leadsForEmailDiscovery.length > 0) {
         logEvent(`Email discovery: processing ${leadsForEmailDiscovery.length} accepted leads using free-first providers.`);
+        recordTrace({
+          phase: 'email_discovery',
+          operation: 'email_discovery_batch',
+          status: 'started',
+          provider: 'email',
+          counts: { leads: leadsForEmailDiscovery.length }
+        });
       }
 
       const emailTasks = leadsForEmailDiscovery.map((lead: any) => async () => {
@@ -1190,6 +1463,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
           if (!hasLookupInput) {
             stats.emailDiscovery.notFound++;
+            recordTrace({
+              phase: 'email_discovery',
+              operation: 'email_lookup',
+              status: 'skipped',
+              provider: 'email',
+              email: { status: 'missing_lookup_input' }
+            });
             debugLogs.push({
               timestamp: new Date().toISOString(),
               type: 'email_discovery_skipped',
@@ -1198,6 +1478,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             return;
           }
 
+          const emailStarted = Date.now();
           const result = await discoverProspectEmail({
             fullName: profile.fullName,
             currentCompany: profile.currentCompany,
@@ -1218,6 +1499,19 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             confidence: result.confidence,
             sourceTypes: result.sources.map(source => source.type)
           });
+          recordTrace({
+            phase: 'email_discovery',
+            operation: 'email_lookup',
+            status: 'success',
+            provider: 'email',
+            latencyMs: Date.now() - emailStarted,
+            email: {
+              status: result.status,
+              evidenceCount: result.sources.length,
+              sourceTypes: result.sources.map(source => source.type)
+            },
+            metadata: { lead: profile.fullName, company: profile.currentCompany }
+          });
           if (result.bestEmail) stats.emailDiscovery.found++;
           if (result.status === 'confirmed_public') stats.emailDiscovery.confirmedPublic++;
           else if (result.status === 'company_public') stats.emailDiscovery.companyPublic++;
@@ -1226,6 +1520,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           else stats.emailDiscovery.notFound++;
         } catch (e: any) {
           stats.emailDiscovery.failed++;
+          recordTrace({
+            phase: 'email_discovery',
+            operation: 'email_lookup',
+            status: 'error',
+            provider: 'email',
+            error: { message: e.message || String(e) }
+          });
           debugLogs.push({
             timestamp: new Date().toISOString(),
             type: 'email_discovery_error',
@@ -1280,14 +1581,33 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       };
     });
 
+    const persistStarted = Date.now();
     try {
       upsertLeads(mappedLeads);
+      recordTrace({
+        phase: 'persistence',
+        operation: 'upsert_leads',
+        status: 'success',
+        provider: 'sqlite',
+        latencyMs: Date.now() - persistStarted,
+        counts: { leads: mappedLeads.length }
+      });
       logEvent(`Successfully auto-persisted ${mappedLeads.length} leads on the backend.`);
     } catch (e: any) {
       console.error('Failed to auto-persist leads on backend:', e);
+      recordTrace({
+        phase: 'persistence',
+        operation: 'upsert_leads',
+        status: 'error',
+        provider: 'sqlite',
+        latencyMs: Date.now() - persistStarted,
+        error: { message: e.message || String(e) }
+      });
       logEvent(`Error auto-persisting leads on backend: ${e.message}`);
     }
 
+    telemetry.finish('success', stats);
+    const traceSummary = telemetry.getSummary();
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
     safeInsertSearchLog({
       id: sessionId,
@@ -1302,10 +1622,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
-    res.json({ leads: mappedLeads, stats, sandboxMode: false, sessionId });
+    res.json({ leads: mappedLeads, stats, traceSummary, sandboxMode: false, sessionId });
 
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
+    telemetry.finish('error', { ...stats, error: error.message || 'Failed to locate leads.' });
+    const traceSummary = telemetry.getSummary();
 
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
     safeInsertSearchLog({
@@ -1322,10 +1644,11 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     });
 
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message || 'Failed to locate leads.', stats, sessionId });
+      res.status(500).json({ error: error.message || 'Failed to locate leads.', stats, traceSummary, sessionId });
     }
   } finally {
     activeSessions.delete(sessionId);
+    activeSessionEvents.delete(sessionId);
     await closeBrightDataClient({ onlyIfIdle: true, onlyIfUnhealthy: true, reason: 'find-leads-complete' });
   }
 });

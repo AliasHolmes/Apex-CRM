@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import dotenv from 'dotenv';
+import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
 
 dotenv.config();
 
@@ -162,20 +163,29 @@ export function getLeadsDb() {
         raw_results_count INTEGER,
         leads_found INTEGER,
         detailed_logs TEXT,
-        debug_logs TEXT
+        debug_logs TEXT,
+        trace_events TEXT,
+        provider_summary TEXT,
+        cost_summary TEXT,
+        phase_timeline TEXT,
+        schema_version INTEGER
       );
     `);
 
-    try {
-      leadsDb.exec('ALTER TABLE search_logs ADD COLUMN detailed_logs TEXT;');
-    } catch (e) {
-      // Ignore if column already exists
-    }
-
-    try {
-      leadsDb.exec('ALTER TABLE search_logs ADD COLUMN debug_logs TEXT;');
-    } catch (e) {
-      // Ignore if column already exists
+    for (const statement of [
+      'ALTER TABLE search_logs ADD COLUMN detailed_logs TEXT;',
+      'ALTER TABLE search_logs ADD COLUMN debug_logs TEXT;',
+      'ALTER TABLE search_logs ADD COLUMN trace_events TEXT;',
+      'ALTER TABLE search_logs ADD COLUMN provider_summary TEXT;',
+      'ALTER TABLE search_logs ADD COLUMN cost_summary TEXT;',
+      'ALTER TABLE search_logs ADD COLUMN phase_timeline TEXT;',
+      'ALTER TABLE search_logs ADD COLUMN schema_version INTEGER;'
+    ]) {
+      try {
+        leadsDb.exec(statement);
+      } catch {
+        // Ignore if column already exists.
+      }
     }
   }
 
@@ -608,8 +618,24 @@ export function insertSearchLog(log: any) {
   try {
     const db = getLeadsDb();
     const insertStmt = db.prepare(`
-      INSERT INTO search_logs (id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs, debug_logs)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO search_logs (
+        id,
+        timestamp,
+        prompt,
+        generated_queries,
+        status,
+        error_message,
+        raw_results_count,
+        leads_found,
+        detailed_logs,
+        debug_logs,
+        trace_events,
+        provider_summary,
+        cost_summary,
+        phase_timeline,
+        schema_version
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         timestamp = excluded.timestamp,
         prompt = excluded.prompt,
@@ -619,7 +645,12 @@ export function insertSearchLog(log: any) {
         raw_results_count = excluded.raw_results_count,
         leads_found = excluded.leads_found,
         detailed_logs = excluded.detailed_logs,
-        debug_logs = excluded.debug_logs
+        debug_logs = excluded.debug_logs,
+        trace_events = excluded.trace_events,
+        provider_summary = excluded.provider_summary,
+        cost_summary = excluded.cost_summary,
+        phase_timeline = excluded.phase_timeline,
+        schema_version = excluded.schema_version
     `);
     insertStmt.run(
       log.id,
@@ -631,20 +662,66 @@ export function insertSearchLog(log: any) {
       log.rawResultsCount || 0,
       log.leadsFound || 0,
       log.detailedLogs || '',
-      log.debugLogs || ''
+      log.debugLogs || '',
+      JSON.stringify(log.traceEvents || []),
+      JSON.stringify(log.providerSummary || {}),
+      JSON.stringify(log.costSummary || {}),
+      JSON.stringify(log.phaseTimeline || []),
+      Number(log.schemaVersion || 1)
     );
 
-    // Keep only last 20
+    const retentionLimit = clampSearchLogRetentionLimit();
     const cullStmt = db.prepare(`
       DELETE FROM search_logs
       WHERE id NOT IN (
         SELECT id FROM search_logs
         ORDER BY timestamp DESC
-        LIMIT 20
+        LIMIT ?
       )
     `);
-    cullStmt.run();
+    cullStmt.run(retentionLimit);
   } catch (err) {
     console.error('Failed to write search log to DB:', err);
   }
+}
+
+const parseJSONField = <T>(value: unknown, fallback: T): T => {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const toSearchLogRecord = (row: any) => ({
+  id: row.id,
+  timestamp: row.timestamp,
+  prompt: row.prompt,
+  generatedQueries: parseJSONField<string[]>(row.generated_queries, []),
+  status: row.status,
+  errorMessage: row.error_message,
+  rawResultsCount: Number(row.raw_results_count || 0),
+  leadsFound: Number(row.leads_found || 0),
+  detailedLogs: row.detailed_logs || '',
+  debugLogs: row.debug_logs || '',
+  traceEvents: parseJSONField<any[]>(row.trace_events, []),
+  providerSummary: parseJSONField<Record<string, any>>(row.provider_summary, {}),
+  costSummary: parseJSONField<Record<string, any>>(row.cost_summary, {}),
+  phaseTimeline: parseJSONField<any[]>(row.phase_timeline, []),
+  schemaVersion: Number(row.schema_version || 1)
+});
+
+export function readSearchLogs() {
+  const rows = getLeadsDb()
+    .prepare('SELECT * FROM search_logs ORDER BY timestamp DESC')
+    .all() as any[];
+  return rows.map(toSearchLogRecord);
+}
+
+export function readSearchLogById(id: string) {
+  const row = getLeadsDb()
+    .prepare('SELECT * FROM search_logs WHERE id = ?')
+    .get(id) as any | undefined;
+  return row ? toSearchLogRecord(row) : null;
 }

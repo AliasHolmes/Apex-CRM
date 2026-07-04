@@ -1,0 +1,38 @@
+model_list:
+  - model_name: apex-primary
+    litellm_params:
+      model: hosted_vllm/gpt-5.5
+      api_base: https://api.byesu.com/v1
+      api_key: os.environ/BYESU_API_KEY
+      rpm: 60
+
+  # Fallback models stay available to LiteLLM. The app requests apex-primary;
+  # LiteLLM retries/cools down that deployment first and only falls through to
+  # these models when the primary request fails.
+  - model_name: apex-openrouter-fallback
+    litellm_params:
+      model: openrouter/poolside/laguna-m.1:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      rpm: 5
+
+  - model_name: apex-groq-fallback
+    litellm_params:
+      model: groq/qwen/qwen3.6-27b
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 5
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 120
+  num_retries: 2
+  allowed_fails: 1
+  cooldown_time: 60
+  fallbacks:
+    - apex-primary:
+        - apex-openrouter-fallback
+        - apex-groq-fallback
+    - apex-openrouter-fallback:
+        - apex-groq-fallback
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -377,38 +377,91 @@ export async function openAIText(
   }));
 }
 
-function cleanJSONString(str: string): string {
+function stripMarkdownFence(str: string): string {
   let cleaned = str.trim();
-  // Remove markdown code block wrappers
   if (cleaned.startsWith('```')) {
     const lines = cleaned.split('\n');
-    if (lines[0].startsWith('```')) {
-      lines.shift();
-    }
-    if (lines[lines.length - 1] === '```') {
-      lines.pop();
-    }
+    if (lines[0].startsWith('```')) lines.shift();
+    if (lines[lines.length - 1]?.trim() === '```') lines.pop();
     cleaned = lines.join('\n').trim();
   }
-  // Extract content between first [ or { and last ] or }
+  return cleaned;
+}
+
+function stripReasoningBlocks(str: string): string {
+  let cleaned = str.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const finalClose = cleaned.toLowerCase().lastIndexOf('</think>');
+  if (finalClose !== -1) {
+    cleaned = cleaned.slice(finalClose + '</think>'.length).trim();
+  }
+  return cleaned;
+}
+
+function getMarkedJSONBlock(str: string): string | null {
+  const match = str.match(/FINAL_JSON_START\s*([\s\S]*?)\s*FINAL_JSON_END/i);
+  return match?.[1]?.trim() || null;
+}
+
+function findBalancedJSONCandidates(str: string, preferArray: boolean): string[] {
+  const candidates: string[] = [];
+  const starts = preferArray ? ['[', '{'] : ['{', '['];
+
+  for (const startChar of starts) {
+    for (let start = str.indexOf(startChar); start !== -1; start = str.indexOf(startChar, start + 1)) {
+      const stack: string[] = [];
+      let inString = false;
+      let escaped = false;
+
+      for (let i = start; i < str.length; i++) {
+        const ch = str[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (ch === '\\') {
+            escaped = true;
+          } else if (ch === '"') {
+            inString = false;
+          }
+          continue;
+        }
+
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+        if (ch === '{') stack.push('}');
+        else if (ch === '[') stack.push(']');
+        else if (ch === '}' || ch === ']') {
+          if (stack.pop() !== ch) break;
+          if (stack.length === 0) {
+            candidates.push(str.slice(start, i + 1));
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return Array.from(new Set(candidates));
+}
+
+function cleanJSONString(str: string): string {
+  const marked = getMarkedJSONBlock(str);
+  if (marked) return stripMarkdownFence(marked);
+
+  let cleaned = stripMarkdownFence(stripReasoningBlocks(str));
   const firstBrace = cleaned.indexOf('{');
   const firstBracket = cleaned.indexOf('[');
   let startIdx = -1;
-  if (firstBrace !== -1 && firstBracket !== -1) {
-    startIdx = Math.min(firstBrace, firstBracket);
-  } else if (firstBrace !== -1) {
-    startIdx = firstBrace;
-  } else if (firstBracket !== -1) {
-    startIdx = firstBracket;
-  }
+  if (firstBrace !== -1 && firstBracket !== -1) startIdx = Math.min(firstBrace, firstBracket);
+  else if (firstBrace !== -1) startIdx = firstBrace;
+  else if (firstBracket !== -1) startIdx = firstBracket;
 
   if (startIdx !== -1) {
     const lastBrace = cleaned.lastIndexOf('}');
     const lastBracket = cleaned.lastIndexOf(']');
     const endIdx = Math.max(lastBrace, lastBracket);
-    if (endIdx !== -1 && endIdx > startIdx) {
-      cleaned = cleaned.slice(startIdx, endIdx + 1);
-    }
+    if (endIdx !== -1 && endIdx > startIdx) cleaned = cleaned.slice(startIdx, endIdx + 1);
   }
   return cleaned;
 }
@@ -421,18 +474,81 @@ export async function openAIStructured<T>(
   prompt: string,
   schema: any,
   systemInstruction?: string,
-  options?: { maxTokens?: number; temperature?: number }
+  options?: { maxTokens?: number; temperature?: number; retryOnParseFailure?: boolean }
 ): Promise<T> {
+  const jsonMode = process.env.LLM_JSON_MODE || 'off';
+  const useJsonMode = jsonMode === 'on' || jsonMode === 'auto';
+  const normalizedSchema = normalizeSchema(schema);
+  const schemaIsArray = normalizedSchema?.type === 'array';
+  const responseSchema = useJsonMode && schemaIsArray
+    ? {
+        type: 'object',
+        properties: {
+          items: normalizedSchema
+        },
+        required: ['items']
+      }
+    : normalizedSchema;
+
   let sysPrompt = systemInstruction || '';
-  sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. The JSON must exactly match this schema:\n${JSON.stringify(normalizeSchema(schema), null, 2)}`;
+  if (useJsonMode) {
+    sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. Do not include markdown, comments, <think> tags, explanations, or text before/after the JSON. The JSON must exactly match this schema:\n${JSON.stringify(responseSchema, null, 2)}`;
+  } else {
+    sysPrompt += `\n\nYou may reason internally or in <think>...</think>, but the final answer must include exactly one JSON value between FINAL_JSON_START and FINAL_JSON_END. Do not put schema examples or commentary between those markers. The final JSON must exactly match this schema:\n${JSON.stringify(responseSchema, null, 2)}`;
+  }
 
   const messages: ChatMessage[] = [
     { role: 'system', content: (sysPrompt as any).toWellFormed ? (sysPrompt as any).toWellFormed() : sysPrompt },
     { role: 'user', content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt }
   ];
 
-  const jsonMode = process.env.LLM_JSON_MODE || 'auto';
-  const useJsonMode = jsonMode === 'on' || jsonMode === 'auto';
+  const schemaRequired = Array.isArray(normalizedSchema?.required) ? normalizedSchema.required : [];
+  const coerceParsed = (parsed: any): T | null => {
+    if (schemaIsArray) {
+      const value = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.items) ? parsed.items : null);
+      if (!Array.isArray(value)) return null;
+      if (value.length > 0 && !value.some((item: any) => item && typeof item === 'object' && (
+        typeof item.fullName === 'string' ||
+        typeof item.headline === 'string' ||
+        typeof item.currentTitle === 'string' ||
+        typeof item.currentCompany === 'string' ||
+        item.contactDetails
+      ))) return null;
+      return value as T;
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    for (const key of schemaRequired) {
+      if (!(key in parsed)) return null;
+      const schemaProperty = normalizedSchema?.properties?.[key];
+      if (schemaProperty?.type === 'array' && !Array.isArray(parsed[key])) return null;
+    }
+    return parsed as T;
+  };
+
+  const parseStructuredText = (rawText: string): T => {
+    const sources = [
+      getMarkedJSONBlock(rawText),
+      stripReasoningBlocks(rawText),
+      rawText
+    ].filter((source): source is string => Boolean(source && source.trim()));
+
+    const parseErrors: string[] = [];
+    for (const source of sources) {
+      const directCandidates = [cleanJSONString(source), ...findBalancedJSONCandidates(source, schemaIsArray)];
+      for (const candidate of directCandidates) {
+        try {
+          const parsed = JSON.parse(stripMarkdownFence(candidate));
+          const coerced = coerceParsed(parsed);
+          if (coerced !== null) return coerced;
+        } catch (err: any) {
+          if (parseErrors.length < 3) parseErrors.push(err?.message || String(err));
+        }
+      }
+    }
+
+    throw new Error(parseErrors[0] || 'No schema-matching JSON block found');
+  };
 
   return withProviderFallback(async (provider) => {
     let text = '';
@@ -452,7 +568,7 @@ export async function openAIStructured<T>(
         error.message.includes('response_format'));
 
       if (jsonMode === 'auto' && isJsonValidationError) {
-        console.warn(`[llm] Structured output call failed (JSON validation error). Retrying without response_format due to LLM_JSON_MODE=auto...`);
+        console.warn(`[llm] Structured output call failed for ${provider.name}. Retrying without response_format due to LLM_JSON_MODE=auto...`);
         text = await sendChatCompletion(provider, messages, options);
       } else {
         throw error;
@@ -460,13 +576,42 @@ export async function openAIStructured<T>(
     }
 
     try {
-      return JSON.parse(cleanJSONString(text)) as T;
-    } catch {
-      throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response: ${text.slice(0, 300)}`);
+      return parseStructuredText(text);
+    } catch (firstParseError: any) {
+      const shouldRetry = options?.retryOnParseFailure !== false;
+      if (!shouldRetry) {
+        throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response (parse_error=${firstParseError?.message || 'unknown'}): ${text.slice(0, 300)}`);
+      }
+
+      const retryMaxTokens = Math.max(
+        Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
+        Math.min((options?.maxTokens || 4000) * 2, 8000)
+      );
+      const retryMessages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: `${sysPrompt}\n\nYour previous response was not usable. You may keep reasoning in <think>...</think>, but then output the final JSON only between FINAL_JSON_START and FINAL_JSON_END. Keep summaries and evidence reasons short enough to finish within the token limit.`
+        },
+        {
+          role: 'user',
+          content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt
+        }
+      ];
+      const retryText = await sendChatCompletion(provider, retryMessages, {
+        ...options,
+        maxTokens: retryMaxTokens,
+        temperature: 0,
+        ...(useJsonMode ? { responseFormat: { type: 'json_object' as const } } : {}),
+      });
+
+      try {
+        return parseStructuredText(retryText);
+      } catch {
+        throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response after retry (first_parse_error=${firstParseError?.message || 'unknown'}): ${retryText.slice(0, 300)}`);
+      }
     }
   });
 }
-
 /** Returns true when at least one LLM provider API key is available. */
 export function hasOpenAIKey(): boolean {
   return !!getAPIKey();
@@ -647,7 +792,7 @@ export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search stra
 
 /** Focused prompt for Step 3 - bulk extraction only. No outreach or scoring formula needed. */
 export const EXTRACTION_SYSTEM_PROMPT = `You are a CRM data extraction engine. Extract structured lead records from raw search result text and return valid JSON matching the schema exactly.
-Rules: Never invent data. Use empty strings for missing fields. Score fitScore/intentScore/timingScore 1-10 based only on signals visible in the provided text.`;
+Rules: Never invent data. Use empty strings for missing fields. Score fitScore/intentScore/timingScore 1-10 based only on signals visible in the provided text. Keep summaries under 140 characters and evidence reasons under 90 characters. If reasoning is visible, keep it outside the final JSON markers.`;
 
 // -----------------------------------------------------------------------------
 // Trimmed schema for bulk extraction.
@@ -681,8 +826,6 @@ export const bulkSingleProfileSchema = {
     timingScore: { type: Type.NUMBER, description: "Recent role change or trigger 1-10" },
     sourceProvider: { type: Type.STRING, description: "tavily or brightdata, copied from SOURCE_PROVIDER when present" },
     evidenceReasons: { type: Type.ARRAY, items: { type: Type.STRING }, description: "1-3 short evidence-backed reasons this prospect matches the user query" },
-    evidence: { type: Type.OBJECT, description: "Server-populated evidence object. Leave empty if not present in evidence." },
-    scoreBreakdown: { type: Type.OBJECT, description: "Server-populated score object. Leave empty if not present in evidence." },
   },
   required: ["fullName"],
 };

@@ -8,7 +8,7 @@ export const Type = {
 };
 
 // -----------------------------------------------------------------------------
-// OpenAI-compatible REST API helpers with direct provider fallback.
+// OpenAI-compatible REST API helpers with LiteLLM gateway and direct provider fallback.
 // -----------------------------------------------------------------------------
 
 type ChatMessage = {
@@ -17,7 +17,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: 'primary' | 'openrouter' | 'groq';
+  id: 'litellm' | 'primary' | 'openrouter' | 'groq';
   name: string;
   baseUrl: string;
   model: string;
@@ -35,6 +35,8 @@ const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const DEFAULT_OPENROUTER_MODEL = 'poolside/laguna-m.1:free';
 const DEFAULT_GROQ_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GROQ_MODEL = 'qwen/qwen3.6-27b';
+const DEFAULT_LITELLM_BASE = 'http://127.0.0.1:4000/v1';
+const DEFAULT_LITELLM_MODEL = 'apex-primary';
 
 function cleanBaseUrl(value: string): string {
   return value.replace(/\/+$/, '');
@@ -51,7 +53,21 @@ function getOpenRouterHeaders(): Record<string, string> {
   return headers;
 }
 
-function getLLMProviderCandidates(): LLMProvider[] {
+function getGatewayMode(): 'litellm' | 'direct' {
+  return (process.env.LLM_GATEWAY_MODE || 'litellm').toLowerCase() === 'direct' ? 'direct' : 'litellm';
+}
+
+function getLiteLLMProvider(): LLMProvider {
+  return {
+    id: 'litellm',
+    name: 'LiteLLM',
+    baseUrl: cleanBaseUrl(process.env.LITELLM_BASE_URL || process.env.LITELLM_BASE || DEFAULT_LITELLM_BASE),
+    model: process.env.LITELLM_MODEL || DEFAULT_LITELLM_MODEL,
+    apiKey: process.env.LITELLM_API_KEY || process.env.LITELLM_MASTER_KEY || process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || 'local-litellm',
+  };
+}
+
+function getDirectLLMProviderCandidates(): LLMProvider[] {
   return [
     {
       id: 'primary',
@@ -78,21 +94,29 @@ function getLLMProviderCandidates(): LLMProvider[] {
   ];
 }
 
+function getLLMProviderCandidates(): LLMProvider[] {
+  return getGatewayMode() === 'litellm'
+    ? [getLiteLLMProvider(), ...getDirectLLMProviderCandidates()]
+    : getDirectLLMProviderCandidates();
+}
+
 function getConfiguredLLMProviders(): LLMProvider[] {
-  return getLLMProviderCandidates().filter(provider => !!provider.apiKey);
+  if (getGatewayMode() === 'litellm') {
+    return [getLiteLLMProvider()];
+  }
+  return getDirectLLMProviderCandidates().filter(provider => !!provider.apiKey);
 }
 
 export function getLLMProviderSummaries(): LLMProviderSummary[] {
   return getLLMProviderCandidates().map(({ apiKey, headers, ...provider }) => ({
     ...provider,
-    configured: !!apiKey,
+    configured: provider.id === 'litellm' ? getGatewayMode() === 'litellm' : !!apiKey,
   }));
 }
 
 export function getAPIKey(): string {
   return getConfiguredLLMProviders()[0]?.apiKey || '';
 }
-
 /**
  * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
  * Prevents indefinite hangs when an LLM provider is slow or overloaded.
@@ -174,7 +198,7 @@ async function withProviderFallback<T>(
 ): Promise<T> {
   const providers = getConfiguredLLMProviders();
   if (providers.length === 0) {
-    throw new Error('No LLM provider API key available. Configure OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY.');
+    throw new Error('No LLM provider available. Use LLM_GATEWAY_MODE=litellm for the local LiteLLM proxy, or configure OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY for direct mode.');
   }
 
   const failures: Error[] = [];

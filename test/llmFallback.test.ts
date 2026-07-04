@@ -8,11 +8,12 @@ async function importLLM(suffix: string) {
   return import(`../server/services/llm.ts?t=${Date.now()}-${suffix}`);
 }
 
-describe('Direct LLM provider fallback', () => {
+describe('LLM gateway and provider fallback', () => {
   beforeEach(() => {
     for (const key of Object.keys(process.env)) {
       delete process.env[key];
     }
+    process.env.LLM_GATEWAY_MODE = 'direct';
   });
 
   afterEach(() => {
@@ -50,6 +51,35 @@ describe('Direct LLM provider fallback', () => {
 
     const body = JSON.parse(capturedOptions.body);
     assert.equal(body.model, 'gpt-5.5');
+  });
+
+  it('routes through LiteLLM apex-primary when LLM_GATEWAY_MODE=litellm', async () => {
+    process.env.LLM_GATEWAY_MODE = 'litellm';
+    process.env.LITELLM_MASTER_KEY = 'test-litellm-key';
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+
+    const llm = await importLLM('litellm-gateway');
+
+    let capturedUrl = '';
+    let capturedOptions: any = null;
+
+    globalThis.fetch = async (url, options) => {
+      capturedUrl = url.toString();
+      capturedOptions = options;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'litellm ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test prompt');
+    assert.equal(res.text, 'litellm ok');
+    assert.equal(res.provider, 'LiteLLM');
+    assert.equal(res.model, 'apex-primary');
+    assert.equal(capturedUrl, 'http://127.0.0.1:4000/v1/chat/completions');
+    assert.equal(capturedOptions.headers['Authorization'], 'Bearer test-litellm-key');
+
+    const body = JSON.parse(capturedOptions.body);
+    assert.equal(body.model, 'apex-primary');
   });
 
   it('falls back directly to OpenRouter when the primary provider fails', async () => {
@@ -175,7 +205,7 @@ describe('Direct LLM provider fallback', () => {
       async () => {
         await llm.openAIText('test');
       },
-      /No LLM provider API key available/
+      /No LLM provider available/
     );
   });
 });

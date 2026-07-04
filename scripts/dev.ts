@@ -25,7 +25,7 @@ for (const [key, value] of Object.entries(envFileValues)) {
 process.env.PYTHONUTF8 = process.env.PYTHONUTF8 || '1';
 process.env.PYTHONIOENCODING = process.env.PYTHONIOENCODING || 'utf-8';
 
-const gatewayMode = (process.env.LLM_GATEWAY_MODE || 'direct').toLowerCase();
+const gatewayMode = (process.env.LLM_GATEWAY_MODE || 'litellm').toLowerCase();
 let litellmProcess: ChildProcess | undefined;
 
 if (gatewayMode === 'litellm') {

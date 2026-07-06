@@ -19,6 +19,7 @@ import {
   Check, 
   UserPlus2,
   SlidersHorizontal,
+  ChevronLeft,
   ChevronRight,
   AlertTriangle,
   X,
@@ -49,6 +50,8 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('All');
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 100;
   
   // High-fidelity custom toast message state
   const [showConfirmBulkDelete, setShowConfirmBulkDelete] = useState(false);
@@ -218,12 +221,29 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     return matchesSearch && matchesStage;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filteredLeads.length / pageSize));
+  const activePage = Math.min(currentPage, totalPages);
+  const currentPageStartIndex = (activePage - 1) * pageSize;
+  const paginatedLeads = filteredLeads.slice(currentPageStartIndex, currentPageStartIndex + pageSize);
+  const visibleLeadIds = paginatedLeads.map(l => l.id);
+  const selectedVisibleLeadIds = visibleLeadIds.filter(id => selectedLeadIds.includes(id));
+  const pageStart = filteredLeads.length === 0 ? 0 : currentPageStartIndex + 1;
+  const pageEnd = Math.min(currentPageStartIndex + paginatedLeads.length, filteredLeads.length);
+
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [tableSearch, stageFilter]);
+
+  React.useEffect(() => {
+    setCurrentPage(prev => Math.min(prev, totalPages));
+  }, [totalPages]);
+
   // Toggle selection
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedLeadIds(filteredLeads.map(l => l.id));
+      setSelectedLeadIds(prev => Array.from(new Set([...prev, ...visibleLeadIds])));
     } else {
-      setSelectedLeadIds([]);
+      setSelectedLeadIds(prev => prev.filter(id => !visibleLeadIds.includes(id)));
     }
   };
 
@@ -761,7 +781,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <TableHead className="w-10 text-center">
                 <input
                   type="checkbox"
-                  checked={filteredLeads.length > 0 && selectedLeadIds.length === filteredLeads.length}
+                  checked={paginatedLeads.length > 0 && selectedVisibleLeadIds.length === paginatedLeads.length}
                   onChange={(e) => handleSelectAll(e.target.checked)}
                   className="rounded cursor-pointer"
                 />
@@ -784,7 +804,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 </TableCell>
               </TableRow>
             ) : (
-              filteredLeads.map((lead) => {
+              paginatedLeads.map((lead) => {
                 const isDuplicate = duplicateIds.has(lead.id);
                 const addedAt = lead.createdAt ? new Date(lead.createdAt) : null;
                 const hasValidAddedAt = !!addedAt && !Number.isNaN(addedAt.getTime());
@@ -905,6 +925,40 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
             )}
           </TableBody>
         </Table>
+        {filteredLeads.length > pageSize && (
+          <div className="flex flex-col gap-3 border-t bg-slate-950/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-xs font-medium text-muted-foreground">
+              Showing <span className="text-foreground">{pageStart}-{pageEnd}</span> of <span className="text-foreground">{filteredLeads.length}</span> matching prospects
+            </div>
+            <div className="flex items-center justify-between gap-2 sm:justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={activePage === 1}
+                className="h-8 px-2"
+                title="Previous page"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="sr-only">Previous page</span>
+              </Button>
+              <span className="min-w-24 text-center text-xs font-bold text-slate-300">
+                Page {activePage} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                disabled={activePage === totalPages}
+                className="h-8 px-2"
+                title="Next page"
+              >
+                <ChevronRight className="h-4 w-4" />
+                <span className="sr-only">Next page</span>
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Floating Action Bar */}

@@ -652,7 +652,7 @@ export const singleProfileSchema = {
     headline: { type: Type.STRING, description: "Professional headline or current summary statement" },
     currentCompany: { type: Type.STRING, description: "Name of current employer company" },
     currentTitle: { type: Type.STRING, description: "Current role/title" },
-    seniorityLevel: { type: Type.STRING, description: "C-Suite / VP / Director / Manager / IC / Founder" },
+    seniorityLevel: { type: Type.STRING, description: "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner." },
     companySizeEst: { type: Type.STRING, description: "1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN" },
     location: { type: Type.STRING, description: "City, State or Country" },
     summary: { type: Type.STRING, description: "A high-quality 2-3 sentence professional summary" },
@@ -816,7 +816,7 @@ export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search stra
 
 /** Focused prompt for Step 3 - bulk extraction only. No outreach or scoring formula needed. */
 export const EXTRACTION_SYSTEM_PROMPT = `You are a CRM data extraction engine. Extract structured lead records from raw search result text and return valid JSON matching the schema exactly.
-Rules: Never invent data. Use empty strings for missing fields. Score fitScore/intentScore/timingScore 1-10 based only on signals visible in the provided text. Keep summaries under 140 characters and evidence reasons under 90 characters. If reasoning is visible, keep it outside the final JSON markers.`;
+Rules: Never invent data. Use empty strings for missing fields. Score fitScore/intentScore/timingScore 1-10 based only on signals visible in the provided text. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If reasoning is visible, keep it outside the final JSON markers.`;
 
 // -----------------------------------------------------------------------------
 // Trimmed schema for bulk extraction.
@@ -832,7 +832,7 @@ export const bulkSingleProfileSchema = {
     headline: { type: Type.STRING, description: "Professional headline" },
     currentCompany: { type: Type.STRING, description: "Current employer" },
     currentTitle: { type: Type.STRING, description: "Current role/title" },
-    seniorityLevel: { type: Type.STRING, description: "C-Suite / VP / Director / Manager / IC / Founder" },
+    seniorityLevel: { type: Type.STRING, description: "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner." },
     companySizeEst: { type: Type.STRING, description: "1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN" },
     location: { type: Type.STRING, description: "City, State or Country" },
     industry: { type: Type.STRING, description: "Industry category (e.g. Software, Finance, Healthcare)" },

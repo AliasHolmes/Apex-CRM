@@ -76,6 +76,75 @@ test('post-enrichment verification rejects confirmed weak title', () => {
   assert.ok(result.confidence < 5);
 });
 
+test('decision-maker verification accepts executive acronyms and head roles', () => {
+  for (const currentTitle of ['CRO', 'Chief Revenue Officer', 'CIO', 'Head of Engineering', 'VP of Sales']) {
+    const result = verifyDecisionMakerFromEvidence({
+      query: 'find decision makers',
+      currentTitle
+    });
+
+    assert.strictEqual(result.titleMatched, true, currentTitle);
+    assert.strictEqual(result.ignoredTitle, false, currentTitle);
+    assert.ok(result.confidence >= 7, currentTitle);
+  }
+});
+
+test('decision-maker verification rejects assistant-to-executive false positive', () => {
+  const result = verifyDecisionMakerFromEvidence({
+    query: 'agency owners and CEOs',
+    currentTitle: 'Assistant to the CEO'
+  });
+
+  assert.strictEqual(result.titleMatched, true);
+  assert.strictEqual(result.ignoredTitle, true);
+  assert.ok(result.confidence < 5);
+});
+
+test('decision-maker verification rejects student organization founder false positive', () => {
+  const result = verifyDecisionMakerFromEvidence({
+    query: 'startup founders',
+    currentTitle: 'Co-Founder at Student Club'
+  });
+
+  assert.strictEqual(result.titleMatched, true);
+  assert.strictEqual(result.ignoredTitle, true);
+  assert.ok(result.confidence < 5);
+});
+
+test('decision-maker verification does not treat product owner as company owner', () => {
+  const result = verifyDecisionMakerFromEvidence({
+    query: 'business owners',
+    currentTitle: 'Product Owner'
+  });
+
+  assert.strictEqual(result.titleMatched, false);
+  assert.strictEqual(result.ignoredTitle, false);
+  assert.strictEqual(result.confidence, 5);
+});
+
+test('decision-maker verification does not treat principal IC titles as buyers', () => {
+  const result = verifyDecisionMakerFromEvidence({
+    query: 'technology buyers',
+    currentTitle: 'Principal Engineer'
+  });
+
+  assert.strictEqual(result.titleMatched, false);
+  assert.strictEqual(result.ignoredTitle, false);
+  assert.strictEqual(result.confidence, 5);
+});
+
+test('decision-maker verification uses extracted seniority as authority evidence', () => {
+  const result = verifyDecisionMakerFromEvidence({
+    query: 'clinic operators',
+    currentTitle: 'Professional',
+    seniorityLevel: 'Founder-Owner'
+  });
+
+  assert.strictEqual(result.titleMatched, true);
+  assert.strictEqual(result.ignoredTitle, false);
+  assert.ok(result.confidence >= 7);
+});
+
 test('findCompanyWebsite rejects social and job-board URLs and chooses official site', async () => {
   const website = await findCompanyWebsite({
     companyName: 'Bright Smile Dental',

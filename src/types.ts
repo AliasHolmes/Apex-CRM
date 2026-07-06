@@ -62,7 +62,7 @@ export interface LinkedInProfile {
   headline?: string;
   currentCompany?: string;
   currentTitle?: string;
-  seniorityLevel?: string; // New: C-Suite / VP / Director / Manager / IC / Founder
+  seniorityLevel?: string; // C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown
   companySizeEst?: string; // New: 1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN
   location?: string;
   summary?: string;

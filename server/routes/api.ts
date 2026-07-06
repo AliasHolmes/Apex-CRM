@@ -1117,6 +1117,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           currentTitle: lead.currentTitle,
           currentCompany: lead.currentCompany,
           headline: lead.headline,
+          seniorityLevel: lead.seniorityLevel,
           evidenceText: evidenceMeta.evidenceBlock
         });
 
@@ -1201,6 +1202,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             currentTitle: lead.currentTitle,
             currentCompany: lead.currentCompany,
             headline: lead.headline,
+            seniorityLevel: lead.seniorityLevel,
             evidenceText: evidenceMeta.evidenceBlock
           });
           lead.evidence = createLeadEvidence({
@@ -1526,6 +1528,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           currentTitle: lead.currentTitle,
           currentCompany: lead.currentCompany,
           headline: lead.headline,
+          seniorityLevel: lead.seniorityLevel,
           evidenceText: lead.evidence?.snippets?.join(' ') || ''
         });
         lead.decisionMakerVerification = finalDecisionMaker;

@@ -8,6 +8,7 @@ export type BrightDataReasonCode =
   | 'none'
   | 'target_transient'
   | 'target_blocked'
+  | 'request_invalid'
   | 'transport_transient'
   | 'provider_auth'
   | 'provider_quota'
@@ -70,8 +71,23 @@ const boundedNumber = (value: string | undefined, fallback: number, min: number,
 
 export const baseTimeoutSeconds = () => boundedNumber(process.env.BASE_TIMEOUT || process.env.BRIGHTDATA_BASE_TIMEOUT, 180, 1, 600);
 export const baseMaxRetries = () => boundedNumber(process.env.BASE_MAX_RETRIES, 2, 0, 3);
+export const BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = 5;
 const baseTimeoutMs = () => baseTimeoutSeconds() * 1000;
 const failureCooldownMs = () => Number(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS || 5_000);
+
+export function normalizeBrightDataUrl(url: string) {
+  const value = String(url || '').trim();
+  if (!value) {
+    throw new BrightDataError('Bright Data URL is empty', { reasonCode: 'request_invalid' });
+  }
+  try {
+    const parsed = new URL(value.startsWith('http://') || value.startsWith('https://') ? value : 'https://' + value);
+    if (!parsed.hostname) throw new Error('missing hostname');
+    return parsed.toString();
+  } catch {
+    throw new BrightDataError('Bright Data URL is invalid: ' + value, { reasonCode: 'request_invalid' });
+  }
+}
 
 const withHardTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -125,6 +141,9 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   }
   if (/tool .*unavailable|missing tool|invalid configuration|missing config|zone .*not found|required zone|not configured/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'provider_config', providerDisabled: true, statusCode });
+  }
+  if (statusCode === 400 || /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'request_invalid', statusCode });
   }
   if (/connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'transport_transient', retryable: true, clearClient: true, statusCode });
@@ -435,9 +454,10 @@ const textFromToolResult = (result: any) => {
 };
 
 export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs()) {
+  const scrapeUrl = normalizeBrightDataUrl(url);
   return withBrightDataClient('scrape_as_markdown', async (client) => {
     const result = await withHardTimeout(client.callTool(
-      { name: 'scrape_as_markdown', arguments: { url } },
+      { name: 'scrape_as_markdown', arguments: { url: scrapeUrl } },
       undefined,
       { timeout: timeoutMs }
     ), timeoutMs, 'Bright Data scrape_as_markdown');
@@ -464,7 +484,13 @@ export type BrightDataBatchResult = {
 };
 
 export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTimeoutMs()): Promise<BrightDataBatchResult[]> {
-  const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 10);
+  const cleanUrls = Array.from(new Set(urls.map(url => {
+    try {
+      return normalizeBrightDataUrl(url);
+    } catch {
+      return '';
+    }
+  }).filter(Boolean))).slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
   if (cleanUrls.length === 0) return [];
 
   const result = await withBrightDataClient('scrape_batch', async (client) => {

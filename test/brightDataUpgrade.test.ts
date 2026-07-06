@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
-import { baseMaxRetries, baseTimeoutSeconds, BrightDataError, classifyBrightDataError } from '../server/services/brightdata.js';
+import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, classifyBrightDataError, normalizeBrightDataUrl } from '../server/services/brightdata.js';
 
 test('verifyDecisionMakerFromEvidence accepts founder', (t) => {
   const result = verifyDecisionMakerFromEvidence({
@@ -159,4 +159,26 @@ test('Bright Data timeout and retry env defaults and clamps match MCP recommenda
 test('Bright DataError preserves explicit classifier metadata', () => {
   const original = new BrightDataError('empty response', { reasonCode: 'target_transient', retryable: true });
   assert.strictEqual(classifyBrightDataError(original), original);
+});
+
+test('Bright Data treats MCP request validation as non-provider failure', () => {
+  for (const message of [
+    'MCP error -32602: Tool scrape_batch parameter validation failed: urls: Array must contain at most 5 element(s)',
+    'HTTP 400: {"error":"Request validation failed","details":[{"message":"\"url\" must be a valid uri","type":"string.uri"}]}'
+  ]) {
+    const classified = classifyBrightDataError(new Error(message));
+    assert.strictEqual(classified.reasonCode, 'request_invalid');
+    assert.strictEqual(classified.retryable, false);
+    assert.strictEqual(classified.providerDisabled, false);
+    assert.strictEqual(classified.clearClient, false);
+  }
+});
+
+test('Bright Data URL normalization encodes LinkedIn unicode slugs before MCP validation', () => {
+  const unicodeUrl = 'https://www.linkedin.com/in/james-pe' + String.fromCharCode(241) + 'as-758a841b';
+  assert.strictEqual(
+    normalizeBrightDataUrl(unicodeUrl),
+    'https://www.linkedin.com/in/james-pe%C3%B1as-758a841b'
+  );
+  assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 5);
 });

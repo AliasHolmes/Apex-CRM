@@ -5,7 +5,7 @@ import {
   upsertEmailDiscoveryCacheEntry,
   type EmailDiscoveryStatus
 } from '../db.js';
-import { brightDataSearch, scrapeBatchAsMarkdown, shouldAttemptBrightData } from '../services/brightdata.js';
+import { brightDataSearch, classifyBrightDataError, scrapeBatchAsMarkdown, shouldAttemptBrightData } from '../services/brightdata.js';
 import { tavilyExtract, tavilySearch } from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
 import { findCompanyWebsite } from './companyIntent.js';
@@ -540,14 +540,23 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
         for (const item of results.slice(0, searchResultLimit)) {
           inspectText(`${item.title}\n${item.content}`, item.url, 'brightdata_search');
         }
-      } catch {
+      } catch (error) {
+        const classified = classifyBrightDataError(error);
+        evidence.push({ type: 'brightdata_search', evidence: 'Bright Data search skipped: ' + classified.reasonCode });
         // Bright Data search is high value but optional; continue the waterfall on provider errors.
       }
     }
   }
 
-  const brightDataResults = shouldAttemptBrightData() ? await scrapeBatchAsMarkdown(contactUrls.slice(0, contactUrlLimit), timeoutMs) : [];
-  for (const item of brightDataResults) inspectText(item.content, item.url, 'brightdata_batch');
+  if (shouldAttemptBrightData()) {
+    try {
+      const brightDataResults = await scrapeBatchAsMarkdown(contactUrls.slice(0, contactUrlLimit), timeoutMs);
+      for (const item of brightDataResults) inspectText(item.content, item.url, 'brightdata_batch');
+    } catch (error) {
+      const classified = classifyBrightDataError(error);
+      evidence.push({ type: 'brightdata_batch', evidence: 'Bright Data contact-page batch skipped: ' + classified.reasonCode });
+    }
+  }
 
   if ((candidates.length === 0 || knownEmails.size < 2) && process.env.TAVILY_API_KEY) {
     try {

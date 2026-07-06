@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
+import { baseMaxRetries, baseTimeoutSeconds, BrightDataError, classifyBrightDataError } from '../server/services/brightdata.js';
 
 test('verifyDecisionMakerFromEvidence accepts founder', (t) => {
   const result = verifyDecisionMakerFromEvidence({
@@ -99,4 +100,63 @@ test('findCompanyWebsite returns null when only blocked domains are present', as
   });
 
   assert.strictEqual(website, null);
+});
+
+test('Bright Data classifies target gateway failures as retryable target transients', () => {
+  for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body']) {
+    const classified = classifyBrightDataError(new Error(message));
+    assert.strictEqual(classified.reasonCode, 'target_transient');
+    assert.strictEqual(classified.retryable, true);
+    assert.strictEqual(classified.providerDisabled, false);
+    assert.strictEqual(classified.clearClient, false);
+  }
+});
+
+test('Bright Data classifies transport failures as retryable client resets', () => {
+  for (const message of ['Connection closed', 'SSE stream disconnected', 'MCP error -32000: process exited']) {
+    const classified = classifyBrightDataError(new Error(message));
+    assert.strictEqual(classified.reasonCode, 'transport_transient');
+    assert.strictEqual(classified.retryable, true);
+    assert.strictEqual(classified.providerDisabled, false);
+    assert.strictEqual(classified.clearClient, true);
+  }
+});
+
+test('Bright Data classifies auth and quota failures as provider disabled', () => {
+  for (const message of ['401 unauthorized invalid token', '403 forbidden', 'quota credits exhausted']) {
+    const classified = classifyBrightDataError(new Error(message));
+    assert.strictEqual(classified.providerDisabled, true);
+    assert.ok(['provider_auth', 'provider_quota'].includes(classified.reasonCode));
+  }
+});
+
+test('Bright Data timeout and retry env defaults and clamps match MCP recommendations', (t) => {
+  const oldBaseTimeout = process.env.BASE_TIMEOUT;
+  const oldBrightDataTimeout = process.env.BRIGHTDATA_BASE_TIMEOUT;
+  const oldRetries = process.env.BASE_MAX_RETRIES;
+  t.after(() => {
+    if (oldBaseTimeout === undefined) delete process.env.BASE_TIMEOUT; else process.env.BASE_TIMEOUT = oldBaseTimeout;
+    if (oldBrightDataTimeout === undefined) delete process.env.BRIGHTDATA_BASE_TIMEOUT; else process.env.BRIGHTDATA_BASE_TIMEOUT = oldBrightDataTimeout;
+    if (oldRetries === undefined) delete process.env.BASE_MAX_RETRIES; else process.env.BASE_MAX_RETRIES = oldRetries;
+  });
+
+  delete process.env.BASE_TIMEOUT;
+  delete process.env.BRIGHTDATA_BASE_TIMEOUT;
+  delete process.env.BASE_MAX_RETRIES;
+  assert.strictEqual(baseTimeoutSeconds(), 180);
+  assert.strictEqual(baseMaxRetries(), 2);
+
+  process.env.BRIGHTDATA_BASE_TIMEOUT = '90';
+  assert.strictEqual(baseTimeoutSeconds(), 90);
+  process.env.BASE_TIMEOUT = '240';
+  assert.strictEqual(baseTimeoutSeconds(), 240);
+  process.env.BASE_MAX_RETRIES = '9';
+  assert.strictEqual(baseMaxRetries(), 3);
+  process.env.BASE_MAX_RETRIES = '-1';
+  assert.strictEqual(baseMaxRetries(), 0);
+});
+
+test('Bright DataError preserves explicit classifier metadata', () => {
+  const original = new BrightDataError('empty response', { reasonCode: 'target_transient', retryable: true });
+  assert.strictEqual(classifyBrightDataError(original), original);
 });

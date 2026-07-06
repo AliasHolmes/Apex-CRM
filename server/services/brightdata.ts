@@ -1,8 +1,50 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import path from 'path';
 
 type BrightDataTransport = 'hosted' | 'local';
+export type BrightDataReasonCode =
+  | 'none'
+  | 'target_transient'
+  | 'target_blocked'
+  | 'transport_transient'
+  | 'provider_auth'
+  | 'provider_quota'
+  | 'provider_config'
+  | 'unknown';
+
+export type BrightDataHealth =
+  | 'unconfigured'
+  | 'idle'
+  | 'ready'
+  | 'degraded'
+  | 'transport_reconnecting'
+  | 'provider_disabled';
+
+export class BrightDataError extends Error {
+  reasonCode: BrightDataReasonCode;
+  retryable: boolean;
+  providerDisabled: boolean;
+  clearClient: boolean;
+  statusCode?: number;
+
+  constructor(message: string, options: {
+    reasonCode?: BrightDataReasonCode;
+    retryable?: boolean;
+    providerDisabled?: boolean;
+    clearClient?: boolean;
+    statusCode?: number;
+  } = {}) {
+    super(message);
+    this.name = 'BrightDataError';
+    this.reasonCode = options.reasonCode || 'unknown';
+    this.retryable = Boolean(options.retryable);
+    this.providerDisabled = Boolean(options.providerDisabled);
+    this.clearClient = Boolean(options.clearClient);
+    this.statusCode = options.statusCode;
+  }
+}
 
 let brightDataClient: Client | null = null;
 let brightDataInitPromise: Promise<Client | null> | null = null;
@@ -13,13 +55,23 @@ let clientGeneration = 0;
 let inFlight = 0;
 let consecutiveFailures = 0;
 let lastError = '';
+let lastReasonCode: BrightDataReasonCode = 'none';
+let lastRetryable = false;
+let healthOverride: BrightDataHealth | null = null;
 let cooldownLogMutedUntil = 0;
 let scrapeBatchToolAvailable: boolean | null = null;
 let searchToolAvailable: boolean | null = null;
 
-const commandForPlatform = () => process.platform === 'win32' ? 'npx.cmd' : 'npx';
-const baseTimeoutMs = () => Number(process.env.BRIGHTDATA_BASE_TIMEOUT || 15) * 1000;
-const failureCooldownMs = () => Number(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS || 10 * 60 * 1000);
+const boundedNumber = (value: string | undefined, fallback: number, min: number, max: number) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+};
+
+export const baseTimeoutSeconds = () => boundedNumber(process.env.BASE_TIMEOUT || process.env.BRIGHTDATA_BASE_TIMEOUT, 180, 1, 600);
+export const baseMaxRetries = () => boundedNumber(process.env.BASE_MAX_RETRIES, 2, 0, 3);
+const baseTimeoutMs = () => baseTimeoutSeconds() * 1000;
+const failureCooldownMs = () => Number(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS || 5_000);
 
 const withHardTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -27,7 +79,10 @@ const withHardTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label:
     return await Promise.race([
       promise,
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+        timer = setTimeout(() => reject(new BrightDataError(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`, {
+          reasonCode: 'target_transient',
+          retryable: true
+        })), timeoutMs);
       })
     ]);
   } finally {
@@ -50,6 +105,42 @@ const cooldownMsForFailure = () => {
 };
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+const statusFromMessage = (message: string) => {
+  const match = message.match(/\b(?:HTTP|status)\s*:?\s*(\d{3})\b/i) || message.match(/\b(4\d{2}|5\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
+};
+
+export function classifyBrightDataError(error: unknown): BrightDataError {
+  if (error instanceof BrightDataError) return error;
+  const message = errorMessage(error);
+  const lower = message.toLowerCase();
+  const statusCode = statusFromMessage(message);
+
+  if (statusCode === 401 || statusCode === 403 || /unauthorized|forbidden|invalid token|api[_ -]?token|cannot run mcp server without api_token/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'provider_auth', providerDisabled: true, statusCode });
+  }
+  if (/quota|credit|usage limit|limit exceeded|billing|payment/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'provider_quota', providerDisabled: true, statusCode });
+  }
+  if (/tool .*unavailable|missing tool|invalid configuration|missing config|zone .*not found|required zone|not configured/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'provider_config', providerDisabled: true, statusCode });
+  }
+  if (/connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'transport_transient', retryable: true, clearClient: true, statusCode });
+  }
+  if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'target_transient', retryable: true, statusCode });
+  }
+  if (/captcha|login wall|blocked|privacy checkpoint|sign in to view|authwall/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'target_blocked', statusCode });
+  }
+  return new BrightDataError(message, { reasonCode: 'unknown', statusCode });
+}
+
+export const isBrightDataRetryableError = (error: unknown) => classifyBrightDataError(error).retryable;
+export const isBrightDataProviderDisabledError = (error: unknown) => classifyBrightDataError(error).providerDisabled;
+export const isBrightDataTransientTargetError = (error: unknown) => classifyBrightDataError(error).reasonCode === 'target_transient';
 
 const closeClientQuietly = async (client: Client | null) => {
   if (!client) return;
@@ -74,13 +165,18 @@ const clearCurrentClient = (client?: Client | null) => {
   return true;
 };
 
-const markProviderFailure = (label: string, message: string, client?: Client | null) => {
+const markProviderFailure = (label: string, message: string, client?: Client | null, classified = classifyBrightDataError(message)) => {
   consecutiveFailures++;
   lastError = message;
+  lastReasonCode = classified.reasonCode;
+  lastRetryable = classified.retryable;
   disabledReason = `${label}: ${message}`;
   disabledUntil = Date.now() + cooldownMsForFailure();
-  resetToolAvailability();
-  clearCurrentClient(client);
+  healthOverride = classified.providerDisabled ? 'provider_disabled' : 'transport_reconnecting';
+  if (classified.clearClient || classified.providerDisabled) {
+    resetToolAvailability();
+    clearCurrentClient(client);
+  }
 
   if (Date.now() >= cooldownLogMutedUntil) {
     const seconds = Math.max(1, Math.ceil((disabledUntil - Date.now()) / 1000));
@@ -89,11 +185,21 @@ const markProviderFailure = (label: string, message: string, client?: Client | n
   }
 };
 
+const markToolFailure = (message: string, classified = classifyBrightDataError(message)) => {
+  lastError = message;
+  lastReasonCode = classified.reasonCode;
+  lastRetryable = classified.retryable;
+  if (classified.retryable) healthOverride = 'degraded';
+};
+
 const markProviderSuccess = () => {
   consecutiveFailures = 0;
   lastError = '';
+  lastReasonCode = 'none';
+  lastRetryable = false;
   disabledReason = '';
   disabledUntil = 0;
+  healthOverride = null;
 };
 
 export function isBrightDataConfigured() {
@@ -110,16 +216,36 @@ export function shouldAttemptBrightData() {
 
 export function getBrightDataStatus() {
   const cooldownMsRemaining = Math.max(0, disabledUntil - Date.now());
+  const configured = isBrightDataConfigured();
+  const coolingDown = isBrightDataCoolingDown();
+  const clientHot = Boolean(brightDataClient);
+  const health: BrightDataHealth = !configured
+    ? 'unconfigured'
+    : coolingDown && healthOverride === 'provider_disabled'
+      ? 'provider_disabled'
+      : coolingDown
+        ? 'transport_reconnecting'
+        : healthOverride === 'degraded'
+          ? 'degraded'
+          : clientHot
+            ? 'ready'
+            : 'idle';
   return {
-    configured: isBrightDataConfigured(),
-    ready: Boolean(brightDataClient) && !isBrightDataCoolingDown(),
+    configured,
+    ready: clientHot && !coolingDown,
+    health,
     transport: activeTransport,
     disabledReason,
     disabledUntil,
     cooldownMsRemaining,
     inFlight,
     consecutiveFailures,
-    lastError
+    lastError,
+    lastReasonCode,
+    retryable: lastRetryable,
+    baseTimeoutSeconds: baseTimeoutSeconds(),
+    baseMaxRetries: baseMaxRetries(),
+    clientHot
   };
 }
 
@@ -133,7 +259,11 @@ async function connectHostedClient(apiToken: string, generation: number) {
       void closeClientQuietly(client);
       return;
     }
-    markProviderFailure('hosted transport', error.message, client);
+    markProviderFailure('hosted transport', error.message, client, new BrightDataError(error.message, {
+      reasonCode: 'transport_transient',
+      retryable: true,
+      clearClient: true
+    }));
   };
   await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data hosted MCP connect');
   return client;
@@ -141,13 +271,19 @@ async function connectHostedClient(apiToken: string, generation: number) {
 
 async function connectLocalClient(apiToken: string, generation: number) {
   const client = new Client({ name: 'apex-crm-brightdata', version: '1.0.0' });
+  const serverPath = path.join(process.cwd(), 'node_modules', '@brightdata', 'mcp', 'server.js');
+  const timeoutSeconds = String(baseTimeoutSeconds());
+  const maxRetries = String(baseMaxRetries());
   const transport = new StdioClientTransport({
-    command: commandForPlatform(),
-    args: ['-y', '@brightdata/mcp'],
+    command: process.execPath,
+    args: [serverPath],
     env: {
       ...process.env,
       API_TOKEN: apiToken,
-      BRIGHTDATA_API_TOKEN: apiToken
+      BRIGHTDATA_API_TOKEN: apiToken,
+      BASE_TIMEOUT: timeoutSeconds,
+      BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
+      BASE_MAX_RETRIES: maxRetries
     } as Record<string, string>,
     stderr: 'inherit',
     cwd: process.cwd()
@@ -158,7 +294,11 @@ async function connectLocalClient(apiToken: string, generation: number) {
       void closeClientQuietly(client);
       return;
     }
-    markProviderFailure('local transport', error.message, client);
+    markProviderFailure('local transport', error.message, client, new BrightDataError(error.message, {
+      reasonCode: 'transport_transient',
+      retryable: true,
+      clearClient: true
+    }));
   };
 
   await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data local MCP connect');
@@ -168,6 +308,7 @@ async function connectLocalClient(apiToken: string, generation: number) {
 async function initBrightDataClient() {
   if (!isBrightDataConfigured()) {
     disabledReason = 'BRIGHTDATA_API_TOKEN is not configured';
+    healthOverride = 'unconfigured';
     return null;
   }
   if (isBrightDataCoolingDown()) return null;
@@ -197,7 +338,11 @@ async function initBrightDataClient() {
       return client;
     } catch (error) {
       lastError = error;
-      disabledReason = errorMessage(error);
+      const classified = classifyBrightDataError(error);
+      disabledReason = classified.message;
+      lastError = classified.message;
+      lastReasonCode = classified.reasonCode;
+      lastRetryable = classified.retryable;
       resetToolAvailability();
       console.warn(`[brightdata] ${attempt} transport unavailable:`, disabledReason);
     }
@@ -211,7 +356,8 @@ export async function getBrightDataClient() {
   if (isBrightDataCoolingDown()) return null;
   if (!brightDataInitPromise) {
     brightDataInitPromise = initBrightDataClient().catch((error) => {
-      markProviderFailure('initialization', errorMessage(error));
+      const classified = classifyBrightDataError(error);
+      markProviderFailure('initialization', classified.message, undefined, classified);
       return null;
     }).finally(() => {
       brightDataInitPromise = null;
@@ -234,6 +380,7 @@ export async function closeBrightDataClient(options?: {
   if (!options?.onlyIfUnhealthy) {
     disabledReason = options?.reason || '';
     disabledUntil = 0;
+    healthOverride = null;
   }
   return true;
 }
@@ -246,7 +393,7 @@ async function withBrightDataClient<T>(
   const client = await getBrightDataClient();
   if (!client) {
     if (options?.throwOnUnavailable) {
-      throw new Error(disabledReason || 'Bright Data MCP unavailable');
+      throw new BrightDataError(disabledReason || 'Bright Data MCP unavailable', classifyBrightDataError(disabledReason || 'Bright Data MCP unavailable'));
     }
     return null;
   }
@@ -257,9 +404,13 @@ async function withBrightDataClient<T>(
     markProviderSuccess();
     return result;
   } catch (error) {
-    const message = errorMessage(error);
-    markProviderFailure(label, message, client);
-    if (options?.throwOnFailure) throw new Error(message);
+    const classified = classifyBrightDataError(error);
+    if (classified.providerDisabled || classified.clearClient) {
+      markProviderFailure(label, classified.message, client, classified);
+    } else {
+      markToolFailure(classified.message, classified);
+    }
+    if (options?.throwOnFailure) throw classified;
     return null;
   } finally {
     inFlight = Math.max(0, inFlight - 1);
@@ -296,7 +447,13 @@ export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs())
     }
 
     const markdown = textFromToolResult(result);
-    return markdown || null;
+    if (!markdown) {
+      throw new BrightDataError('Bright Data scrape_as_markdown returned empty body', {
+        reasonCode: 'target_transient',
+        retryable: true
+      });
+    }
+    return markdown;
   }, { throwOnUnavailable: true, throwOnFailure: true });
 }
 
@@ -317,8 +474,10 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
     }
 
     if (!scrapeBatchToolAvailable) {
-      disabledReason = 'scrape_batch tool unavailable in Bright Data MCP';
-      return [];
+      throw new BrightDataError('scrape_batch tool unavailable in Bright Data MCP', {
+        reasonCode: 'provider_config',
+        providerDisabled: true
+      });
     }
 
     const toolResult = await withHardTimeout(client.callTool(
@@ -359,7 +518,7 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
     } catch {
       return cleanUrls.map(url => ({ url, content: textResult, sourceProvider: 'brightdata_batch' as const }));
     }
-  });
+  }, { throwOnUnavailable: true, throwOnFailure: true });
 
   return result || [];
 }
@@ -384,8 +543,10 @@ export async function brightDataSearch(query: string, options?: {
     }
 
     if (!searchToolAvailable) {
-      disabledReason = 'search_engine tool unavailable in Bright Data MCP';
-      return [];
+      throw new BrightDataError('search_engine tool unavailable in Bright Data MCP', {
+        reasonCode: 'provider_config',
+        providerDisabled: true
+      });
     }
 
     const toolResult = await withHardTimeout(client.callTool(
@@ -422,7 +583,7 @@ export async function brightDataSearch(query: string, options?: {
       content: item.snippet || item.description || '',
       sourceProvider: 'brightdata_search' as const
     })).filter((item: BrightDataSearchResult) => item.url && item.title);
-  });
+  }, { throwOnUnavailable: true, throwOnFailure: true });
 
   return result || [];
 }

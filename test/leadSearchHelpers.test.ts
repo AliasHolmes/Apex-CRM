@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../server/leadSearch/evidence.ts';
-import { computeScoreBreakdown } from '../server/leadSearch/scoring.ts';
+import { computeScoreBreakdown, rankLeadForFinalSelection } from '../server/leadSearch/scoring.ts';
 import { buildFallbackQueryPlan, normalizeQueryPlanItems, toLinkedInSearchQuery } from '../server/leadSearch/strategist.ts';
 import { incrementRejection, mapBrightDataRejection } from '../server/leadSearch/rejections.ts';
 
@@ -16,6 +16,24 @@ describe('lead search helpers', () => {
     assert.equal(score.evidenceQualityScore, 9);
     assert.equal(score.sourceConfidenceScore, 8);
     assert.equal(score.finalScore, 8.4);
+  });
+
+  it('ranks stronger evidence and authority above earlier acceptable leads', () => {
+    const earlyAcceptable = {
+      scoreBreakdown: { finalScore: 7 },
+      decisionMakerVerification: { confidence: 6 },
+      evidence: { evidenceQuality: 'weak', sourceProvider: 'tavily' },
+      contactDetails: {},
+    };
+    const laterStronger = {
+      scoreBreakdown: { finalScore: 6.8 },
+      decisionMakerVerification: { confidence: 9 },
+      evidence: { evidenceQuality: 'good', sourceProvider: 'brightdata' },
+      companyIntentEvidence: { evidenceQuality: 'good' },
+      contactDetails: { email: 'founder@example.com' },
+    };
+
+    assert.ok(rankLeadForFinalSelection(laterStronger) > rankLeadForFinalSelection(earlyAcceptable));
   });
 
   it('normalizes legacy string and structured strategist outputs', () => {

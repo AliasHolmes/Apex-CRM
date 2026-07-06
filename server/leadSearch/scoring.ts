@@ -28,6 +28,63 @@ export const sourceConfidenceScore = (provider: LeadSourceProvider) => {
   return 6;
 };
 
+const clampScore = (value: unknown, fallback: number) => scoreOrDefault(value, fallback);
+
+const providerForLead = (lead: Record<string, any>): LeadSourceProvider => {
+  const provider = lead.evidence?.sourceProvider || lead.sourceProvider;
+  if (provider === 'brightdata') return 'brightdata';
+  if (provider === 'cache') return 'cache';
+  return 'tavily';
+};
+
+const evidenceQualityForLead = (lead: Record<string, any>): EvidenceQuality => {
+  const quality = lead.evidence?.evidenceQuality;
+  return quality === 'good' || quality === 'partial' ? quality : 'weak';
+};
+
+const companyIntentScore = (lead: Record<string, any>) => {
+  const companyIntent = lead.companyIntentEvidence;
+  if (companyIntent?.evidenceQuality === 'good') return 9;
+  if (companyIntent?.evidenceQuality === 'partial') return 7;
+  const accountScore = Number(lead.companyAccount?.operationalPainScore);
+  if (Number.isFinite(accountScore) && accountScore > 0) {
+    return accountScore > 10 ? Math.min(accountScore / 10, 10) : Math.min(accountScore, 10);
+  }
+  return 5;
+};
+
+const contactabilityScore = (lead: Record<string, any>) => {
+  const contactDetails = lead.contactDetails || {};
+  const emailDiscovery = lead.emailDiscovery;
+  if (emailDiscovery?.status === 'confirmed_public') return 10;
+  if (emailDiscovery?.status === 'company_public') return 8;
+  if (emailDiscovery?.status === 'pattern_likely') return 6;
+  if (contactDetails.email && !String(contactDetails.email).toUpperCase().includes('INFERRED')) return 8;
+  if (contactDetails.email) return 6;
+  if (contactDetails.website || lead.companyAccount?.website) return 5;
+  return 4;
+};
+
+export function rankLeadForFinalSelection(lead: Record<string, any>): number {
+  const authorityScore = clampScore(lead.decisionMakerVerification?.confidence, 5);
+  const companyScore = companyIntentScore(lead);
+  const evidenceScore = evidenceQualityScore(evidenceQualityForLead(lead));
+  const contactScore = contactabilityScore(lead);
+  const sourceScore = sourceConfidenceScore(providerForLead(lead));
+  const baseScore = clampScore(lead.scoreBreakdown?.finalScore || lead.scoreOverride || lead.fitScore, 5);
+
+  const rank = (
+    authorityScore * 0.25 +
+    companyScore * 0.20 +
+    evidenceScore * 0.20 +
+    contactScore * 0.15 +
+    sourceScore * 0.10 +
+    baseScore * 0.10
+  );
+
+  return Number(Math.min(Math.max(rank, 1), 10).toFixed(2));
+}
+
 export function computeScoreBreakdown(
   lead: Record<string, any>,
   quality: EvidenceQuality,

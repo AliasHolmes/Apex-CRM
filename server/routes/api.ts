@@ -5,7 +5,7 @@ import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, norma
 import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
-import { computeScoreBreakdown, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
+import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
 import { buildFallbackQueryPlan, buildStrategistPrompt, normalizeQueryPlanItems, toLinkedInSearchQuery, type ProviderRunStats, type QueryRunStats, type SearchQueryPlanItem } from '../leadSearch/strategist.js';
 import { incrementRejection, mapBrightDataRejection, type RejectionReason } from '../leadSearch/rejections.js';
@@ -427,6 +427,11 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     brightData: brightDataStats,
     sourceProvider: 'tavily' as 'tavily' | 'brightdata_search' | 'mixed',
     brightDataSearchResults: 0,
+    rerank: {
+      poolTarget: 0,
+      poolSize: 0,
+      returned: 0
+    },
     emailDiscovery: {
       mode: String(req.body.emailDiscovery || process.env.EMAIL_DISCOVERY_MODE || 'accepted_only'),
       attempted: 0,
@@ -567,6 +572,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     const { query, excludeList = [] } = req.body;
     const targetLimit = stats.requested;
+    const rerankPoolMultiplier = Math.min(Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER || 3), 1), 5);
+    const rerankPoolMax = Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MAX || 30), targetLimit);
+    const rerankPoolTarget = Math.min(Math.max(targetLimit * rerankPoolMultiplier, targetLimit), rerankPoolMax);
+    stats.rerank.poolTarget = rerankPoolTarget;
     const maxRounds = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 4), 1), 8);
     const minScore = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MIN_SCORE || 6), 1), 10);
     const ttlDays = Math.min(Math.max(Number(process.env.BRIGHTDATA_CACHE_TTL_DAYS || 7), 1), 30);
@@ -653,14 +662,14 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       return results;
     };
 
-    for (let round = 1; round <= maxRounds && acceptedLeads.length < targetLimit; round++) {
+    for (let round = 1; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
       if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
         stats.stopReason = 'timeout';
         break;
       }
 
       stats.rounds = round;
-      const remaining = targetLimit - acceptedLeads.length;
+      const remaining = Math.max(rerankPoolTarget - acceptedLeads.length, 0);
       const strategistPrompt = buildStrategistPrompt({
         query,
         round,
@@ -980,7 +989,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       const evidenceBlocks: string[] = [];
 
       for (const item of candidateItems) {
-        if (acceptedLeads.length >= targetLimit) break;
+        if (acceptedLeads.length >= rerankPoolTarget) break;
         const url = item.url || '';
         const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
         const username = item._linkedinUsername || extractLinkedInUsername(url);
@@ -1521,7 +1530,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       const companyIntentTasks: (() => Promise<void>)[] = [];
 
       for (const { lead, queryRun } of postFilterLeads) {
-        if (acceptedLeads.length >= targetLimit) break;
+        if (acceptedLeads.length >= rerankPoolTarget) break;
         const finalDecisionMaker = lead.decisionMakerVerification || verifyDecisionMakerFromEvidence({
           query: promptQuery,
           fullName: lead.fullName,
@@ -1635,10 +1644,15 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       throw new Error('Could not extract any new qualified profiles from search results. Try more specific criteria.');
     }
 
-    acceptedLeads.sort((a, b) => effectiveScore(b) - effectiveScore(a));
+    stats.rerank.poolSize = acceptedLeads.length;
+    acceptedLeads.sort((a, b) => {
+      const rankDelta = rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a);
+      return rankDelta !== 0 ? rankDelta : effectiveScore(b) - effectiveScore(a);
+    });
     const finalLeads = acceptedLeads.slice(0, targetLimit);
     leadsFound = finalLeads.length;
     stats.returned = leadsFound;
+    stats.rerank.returned = leadsFound;
 
     const emailDiscoveryMode = String(req.body.emailDiscovery || process.env.EMAIL_DISCOVERY_MODE || 'accepted_only').toLowerCase();
     stats.emailDiscovery.mode = emailDiscoveryMode;

@@ -6,7 +6,7 @@ import {
   type EmailDiscoveryStatus
 } from '../db.js';
 import { brightDataSearch, classifyBrightDataError, scrapeBatchAsMarkdown, shouldAttemptBrightData } from '../services/brightdata.js';
-import { tavilyExtract, tavilySearch } from '../services/llm.js';
+import { hasTavilyKey, tavilyExtract, tavilySearch } from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
 import { findCompanyWebsite } from './companyIntent.js';
 
@@ -356,7 +356,7 @@ async function resolveCompanyDomain(input: DiscoverProspectEmailInput, timeoutMs
     }
   }
 
-  if (process.env.TAVILY_API_KEY) {
+  if (hasTavilyKey()) {
     for (const query of queries.slice(0, domainSearchLimit)) {
       try {
         const search = await tavilySearch(query);
@@ -558,7 +558,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
     }
   }
 
-  if ((candidates.length === 0 || knownEmails.size < 2) && process.env.TAVILY_API_KEY) {
+  if ((candidates.length === 0 || knownEmails.size < 2) && hasTavilyKey()) {
     try {
       const extracted = await tavilyExtract(contactUrls.slice(0, contactUrlLimit), 'email contact address staff team leadership privacy about', {
         extractDepth: 'basic',
@@ -578,7 +578,7 @@ export async function discoverProspectEmail(input: DiscoverProspectEmailInput): 
     }
   }
 
-  if ((candidates.length === 0 || knownEmails.size < 2) && process.env.TAVILY_API_KEY) {
+  if ((candidates.length === 0 || knownEmails.size < 2) && hasTavilyKey()) {
     try {
       const search = await tavilySearch(publicQueries[0] || `"${input.fullName || input.currentCompany || domain}" "@${domain}" email OR contact`, [domain]);
       for (const item of search.items.slice(0, searchResultLimit)) {

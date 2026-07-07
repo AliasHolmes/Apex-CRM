@@ -1,3 +1,5 @@
+import { ApiKeyPool, KeyRotationError, executeWithKeyRotation, parseApiKeys } from './keyRotator.js';
+
 export const Type = {
   STRING: 'STRING',
   NUMBER: 'NUMBER',
@@ -37,6 +39,11 @@ const DEFAULT_GROQ_BASE = 'https://api.groq.com/openai/v1';
 const DEFAULT_GROQ_MODEL = 'qwen/qwen3.6-27b';
 const DEFAULT_LITELLM_BASE = 'http://127.0.0.1:4000/v1';
 const DEFAULT_LITELLM_MODEL = 'apex-primary';
+
+const tavilyKeyPool = new ApiKeyPool('Tavily', () => parseApiKeys(
+  process.env.TAVILY_API_KEYS,
+  [process.env.TAVILY_API_KEY]
+));
 
 function cleanBaseUrl(value: string): string {
   return value.replace(/\/+$/, '');
@@ -112,6 +119,14 @@ export function getLLMProviderSummaries(): LLMProviderSummary[] {
     ...provider,
     configured: provider.id === 'litellm' ? getGatewayMode() === 'litellm' : !!apiKey,
   }));
+}
+
+export function hasTavilyKey(): boolean {
+  return tavilyKeyPool.hasConfiguredKeys();
+}
+
+export function getTavilyKeyStatus() {
+  return tavilyKeyPool.getStatus();
 }
 
 export function getAPIKey(): string {
@@ -277,38 +292,50 @@ function normalizeSchema(schema: any): any {
  * Calls Tavily Search directly.
  * Returns raw text (titles + snippets) + source links for downstream extraction.
  */
+function retryAfterMsFromResponse(res: Response) {
+  const retryAfter = res.headers.get('retry-after');
+  if (!retryAfter) return undefined;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const dateMs = Date.parse(retryAfter);
+  return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : undefined;
+}
+
 export async function tavilySearch(
   query: string,
   includeDomains?: string[]
 ): Promise<{ text: string; sources: { title: string; uri: string }[], items: any[] }> {
-  const apiKey = process.env.TAVILY_API_KEY;
-  if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
-
   const maxResults = Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20);
   const includeRawContent = process.env.TAVILY_INCLUDE_RAW_CONTENT !== 'false';
-  const res = await fetch('https://api.tavily.com/search', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query,
-      search_depth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
-      max_results: maxResults,
-      include_answer: false,
-      include_raw_content: includeRawContent,
-      include_usage: true,
-      ...(includeDomains ? { include_domains: includeDomains } : {})
-    }),
+  const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
+        max_results: maxResults,
+        include_answer: false,
+        include_raw_content: includeRawContent,
+        include_usage: true,
+        ...(includeDomains ? { include_domains: includeDomains } : {})
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new KeyRotationError(`Tavily search error ${res.status}: ${err}`, {
+        statusCode: res.status,
+        responseText: err,
+        retryAfterMs: retryAfterMsFromResponse(res)
+      });
+    }
+
+    return res.json();
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Tavily search error ${res.status}: ${err}`);
-  }
-
-  const data = await res.json();
   const items = Array.isArray(data.results) ? data.results : [];
 
   let text = '';
@@ -340,37 +367,40 @@ export async function tavilyExtract(
     timeout?: number;
   }
 ): Promise<TavilyExtractResult[]> {
-  const apiKey = process.env.TAVILY_API_KEY;
-  if (!apiKey) throw new Error('TAVILY_API_KEY is not set in environment.');
-
   const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 20);
   if (cleanUrls.length === 0) return [];
 
-  const res = await fetch('https://api.tavily.com/extract', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      urls: cleanUrls,
-      query,
-      extract_depth: options?.extractDepth || 'basic',
-      chunks_per_source: Math.min(Math.max(Number(options?.chunksPerSource || 5), 1), 5),
-      format: 'markdown',
-      include_images: false,
-      include_favicon: false,
-      include_usage: true,
-      timeout: Math.min(Math.max(Number(options?.timeout || 30), 1), 120)
-    }),
+  const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
+    const res = await fetch('https://api.tavily.com/extract', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        urls: cleanUrls,
+        query,
+        extract_depth: options?.extractDepth || 'basic',
+        chunks_per_source: Math.min(Math.max(Number(options?.chunksPerSource || 5), 1), 5),
+        format: 'markdown',
+        include_images: false,
+        include_favicon: false,
+        include_usage: true,
+        timeout: Math.min(Math.max(Number(options?.timeout || 30), 1), 120)
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new KeyRotationError(`Tavily extract error ${res.status}: ${err}`, {
+        statusCode: res.status,
+        responseText: err,
+        retryAfterMs: retryAfterMsFromResponse(res)
+      });
+    }
+
+    return res.json();
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Tavily extract error ${res.status}: ${err}`);
-  }
-
-  const data = await res.json();
   const results = Array.isArray(data.results) ? data.results : [];
   return results.map((item: any) => ({
     url: item.url || '',

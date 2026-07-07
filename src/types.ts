@@ -170,6 +170,7 @@ export interface Lead {
   evidenceReasons?: string[];
   evidence?: LeadEvidence;
   scoreBreakdown?: ScoreBreakdown;
+  emailDiscovery?: EmailDiscoveryResult;
 }
 
 export interface ScrapingTask {

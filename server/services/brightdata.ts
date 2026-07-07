@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import path from 'path';
+import { ApiKeyPool, parseApiKeys, type ApiKeyFailureKind, type FailureClassification } from './keyRotator.js';
 
 type BrightDataTransport = 'hosted' | 'local';
 export type BrightDataReasonCode =
@@ -50,6 +51,8 @@ export class BrightDataError extends Error {
 let brightDataClient: Client | null = null;
 let brightDataInitPromise: Promise<Client | null> | null = null;
 let activeTransport: BrightDataTransport | null = null;
+let activeApiToken = '';
+let activeApiTokenFingerprint = '';
 let disabledReason = '';
 let disabledUntil = 0;
 let clientGeneration = 0;
@@ -62,6 +65,11 @@ let healthOverride: BrightDataHealth | null = null;
 let cooldownLogMutedUntil = 0;
 let scrapeBatchToolAvailable: boolean | null = null;
 let searchToolAvailable: boolean | null = null;
+
+const brightDataKeyPool = new ApiKeyPool('Bright Data', () => parseApiKeys(
+  process.env.BRIGHTDATA_API_TOKENS,
+  [process.env.BRIGHTDATA_API_TOKEN, process.env.API_TOKEN]
+));
 
 const boundedNumber = (value: string | undefined, fallback: number, min: number, max: number) => {
   const parsed = Number(value);
@@ -161,6 +169,26 @@ export const isBrightDataRetryableError = (error: unknown) => classifyBrightData
 export const isBrightDataProviderDisabledError = (error: unknown) => classifyBrightDataError(error).providerDisabled;
 export const isBrightDataTransientTargetError = (error: unknown) => classifyBrightDataError(error).reasonCode === 'target_transient';
 
+const keyFailureKindForBrightData = (classified: BrightDataError): ApiKeyFailureKind => {
+  if (classified.reasonCode === 'provider_auth' || classified.reasonCode === 'provider_quota') return 'exhausted';
+  if (classified.reasonCode === 'request_invalid' || classified.reasonCode === 'provider_config') return 'request_invalid';
+  if (classified.reasonCode === 'transport_transient') return 'transient';
+  return 'unknown';
+};
+
+const markActiveTokenFailure = (classified: BrightDataError) => {
+  if (!activeApiToken) return;
+  const kind = keyFailureKindForBrightData(classified);
+  if (kind === 'request_invalid' || kind === 'unknown') return;
+  const failure: FailureClassification = {
+    kind,
+    statusCode: classified.statusCode,
+    cooldownMs: kind === 'transient' ? 15_000 : undefined,
+    message: classified.message
+  };
+  brightDataKeyPool.markFailure(activeApiToken, failure);
+};
+
 const closeClientQuietly = async (client: Client | null) => {
   if (!client) return;
   try {
@@ -176,6 +204,8 @@ const clearCurrentClient = (client?: Client | null) => {
   if (clientToClose && brightDataClient === clientToClose) {
     brightDataClient = null;
     activeTransport = null;
+    activeApiToken = '';
+    activeApiTokenFingerprint = '';
   }
   brightDataInitPromise = null;
   clientGeneration++;
@@ -192,6 +222,7 @@ const markProviderFailure = (label: string, message: string, client?: Client | n
   disabledReason = `${label}: ${message}`;
   disabledUntil = Date.now() + cooldownMsForFailure();
   healthOverride = classified.providerDisabled ? 'provider_disabled' : 'transport_reconnecting';
+  markActiveTokenFailure(classified);
   if (classified.clearClient || classified.providerDisabled) {
     resetToolAvailability();
     clearCurrentClient(client);
@@ -219,10 +250,11 @@ const markProviderSuccess = () => {
   disabledReason = '';
   disabledUntil = 0;
   healthOverride = null;
+  if (activeApiToken) brightDataKeyPool.markSuccess(activeApiToken);
 };
 
 export function isBrightDataConfigured() {
-  return Boolean(process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN);
+  return brightDataKeyPool.hasConfiguredKeys();
 }
 
 export function isBrightDataCoolingDown() {
@@ -230,16 +262,20 @@ export function isBrightDataCoolingDown() {
 }
 
 export function shouldAttemptBrightData() {
-  return isBrightDataConfigured() && !isBrightDataCoolingDown();
+  return isBrightDataConfigured() && brightDataKeyPool.hasAvailableKey() && !isBrightDataCoolingDown();
 }
 
 export function getBrightDataStatus() {
   const cooldownMsRemaining = Math.max(0, disabledUntil - Date.now());
   const configured = isBrightDataConfigured();
+  const keyPool = brightDataKeyPool.getStatus();
+  const hasAvailableKey = brightDataKeyPool.hasAvailableKey();
   const coolingDown = isBrightDataCoolingDown();
   const clientHot = Boolean(brightDataClient);
   const health: BrightDataHealth = !configured
     ? 'unconfigured'
+    : !hasAvailableKey
+      ? 'provider_disabled'
     : coolingDown && healthOverride === 'provider_disabled'
       ? 'provider_disabled'
       : coolingDown
@@ -251,9 +287,11 @@ export function getBrightDataStatus() {
             : 'idle';
   return {
     configured,
-    ready: clientHot && !coolingDown,
+    ready: clientHot && !coolingDown && hasAvailableKey,
     health,
     transport: activeTransport,
+    activeTokenFingerprint: activeApiTokenFingerprint,
+    keyPool,
     disabledReason,
     disabledUntil,
     cooldownMsRemaining,
@@ -326,13 +364,12 @@ async function connectLocalClient(apiToken: string, generation: number) {
 
 async function initBrightDataClient() {
   if (!isBrightDataConfigured()) {
-    disabledReason = 'BRIGHTDATA_API_TOKEN is not configured';
+    disabledReason = 'BRIGHTDATA_API_TOKEN or BRIGHTDATA_API_TOKENS is not configured';
     healthOverride = 'unconfigured';
     return null;
   }
   if (isBrightDataCoolingDown()) return null;
 
-  const apiToken = process.env.BRIGHTDATA_API_TOKEN || process.env.API_TOKEN || '';
   const mode = (process.env.BRIGHTDATA_MCP_TRANSPORT || 'hosted').toLowerCase();
   const attempts: BrightDataTransport[] = mode === 'local'
     ? ['local']
@@ -341,29 +378,61 @@ async function initBrightDataClient() {
       : ['hosted'];
 
   let lastError: unknown;
-  for (const attempt of attempts) {
-    const generation = ++clientGeneration;
-    try {
-      const client = attempt === 'hosted'
-        ? await connectHostedClient(apiToken, generation)
-        : await connectLocalClient(apiToken, generation);
-      if (generation !== clientGeneration) {
-        await closeClientQuietly(client);
-        return brightDataClient;
+  const attemptedTokens = new Set<string>();
+  while (attemptedTokens.size < brightDataKeyPool.getStatus().total) {
+    const selected = brightDataKeyPool.nextKey(attemptedTokens);
+    attemptedTokens.add(selected.key);
+    let tokenTransientFailure: BrightDataError | null = null;
+
+    for (const attempt of attempts) {
+      const generation = ++clientGeneration;
+      try {
+        const client = attempt === 'hosted'
+          ? await connectHostedClient(selected.key, generation)
+          : await connectLocalClient(selected.key, generation);
+        if (generation !== clientGeneration) {
+          await closeClientQuietly(client);
+          return brightDataClient;
+        }
+        brightDataClient = client;
+        activeTransport = attempt;
+        activeApiToken = selected.key;
+        activeApiTokenFingerprint = selected.fingerprint;
+        markProviderSuccess();
+        return client;
+      } catch (error) {
+        lastError = error;
+        const classified = classifyBrightDataError(error);
+        disabledReason = classified.message;
+        lastError = classified.message;
+        lastReasonCode = classified.reasonCode;
+        lastRetryable = classified.retryable;
+        resetToolAvailability();
+        console.warn(`[brightdata] ${attempt} transport unavailable for ${selected.label}:`, disabledReason);
+
+        if (classified.reasonCode === 'provider_auth' || classified.reasonCode === 'provider_quota') {
+          brightDataKeyPool.markFailure(selected.key, {
+            kind: 'exhausted',
+            statusCode: classified.statusCode,
+            message: classified.message
+          });
+          tokenTransientFailure = null;
+          break;
+        }
+
+        if (classified.reasonCode === 'transport_transient') {
+          tokenTransientFailure = classified;
+        }
       }
-      brightDataClient = client;
-      activeTransport = attempt;
-      markProviderSuccess();
-      return client;
-    } catch (error) {
-      lastError = error;
-      const classified = classifyBrightDataError(error);
-      disabledReason = classified.message;
-      lastError = classified.message;
-      lastReasonCode = classified.reasonCode;
-      lastRetryable = classified.retryable;
-      resetToolAvailability();
-      console.warn(`[brightdata] ${attempt} transport unavailable:`, disabledReason);
+    }
+
+    if (tokenTransientFailure) {
+      brightDataKeyPool.markFailure(selected.key, {
+        kind: 'transient',
+        statusCode: tokenTransientFailure.statusCode,
+        cooldownMs: 15_000,
+        message: tokenTransientFailure.message
+      });
     }
   }
 

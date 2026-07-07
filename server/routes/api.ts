@@ -2,7 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 
 import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
-import { hasOpenAIKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries } from '../services/llm.js';
+import { hasOpenAIKey, hasTavilyKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
@@ -118,7 +118,7 @@ router.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     hasKey: hasOpenAIKey(),
-    hasTavilyKey: !!process.env.TAVILY_API_KEY,
+    hasTavilyKey: hasTavilyKey(),
     hasOAuth: false,
     hasGoogleClient: false,
     brightData: getBrightDataStatus(),
@@ -127,6 +127,13 @@ router.get('/health', (req, res) => {
       maxPerSearch: Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || 10),
       cacheTtlDays: Number(process.env.EMAIL_DISCOVERY_CACHE_TTL_DAYS || 14)
     },
+  });
+});
+
+router.get('/key-rotation-status', (req, res) => {
+  res.json({
+    tavily: getTavilyKeyStatus(),
+    brightData: getBrightDataStatus().keyPool
   });
 });
 

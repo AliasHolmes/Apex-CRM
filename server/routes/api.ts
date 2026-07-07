@@ -12,6 +12,7 @@ import { incrementRejection, mapBrightDataRejection, type RejectionReason } from
 import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
 import { applyEmailDiscoveryToLead, discoverProspectEmail } from '../leadSearch/emailDiscovery.js';
+import { enrichLeadProfile } from '../leadSearch/profileEnrichment.js';
 import { MiningTelemetryRecorder, estimateLLMCostUsd, getLLMRouteLabel, type MiningTraceEvent } from '../leadSearch/telemetry.js';
 
 const router = Router();
@@ -433,7 +434,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       returned: 0
     },
     emailDiscovery: {
-      mode: String(req.body.emailDiscovery || process.env.EMAIL_DISCOVERY_MODE || 'accepted_only'),
+      mode: String(req.body.emailDiscovery || 'off'),
       attempted: 0,
       found: 0,
       confirmedPublic: 0,
@@ -591,7 +592,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     const companyIntentEnabled = process.env.BRIGHTDATA_COMPANY_INTENT_ENABLED === 'true';
     const companyIntentMinScore = Math.min(Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MIN_SCORE || 8), 1), 10);
     const companyIntentMaxPerSearch = Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 3), 0);
-    const profileEnrichmentStage = process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE || 'post_filter';
+    const profileEnrichmentStage = req.body.profileEnrichmentStage || 'on_demand';
 
     if (!query) throw new Error('Search criteria/query is required');
     if (!hasOpenAIKey()) throw new Error('OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.');
@@ -1654,7 +1655,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     stats.returned = leadsFound;
     stats.rerank.returned = leadsFound;
 
-    const emailDiscoveryMode = String(req.body.emailDiscovery || process.env.EMAIL_DISCOVERY_MODE || 'accepted_only').toLowerCase();
+    const emailDiscoveryMode = String(req.body.emailDiscovery || 'off').toLowerCase();
     stats.emailDiscovery.mode = emailDiscoveryMode;
     if (emailDiscoveryMode !== 'off') {
       const maxEmailDiscovery = Math.min(
@@ -1807,6 +1808,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         evidenceReasons: p.evidenceReasons,
         evidence: p.evidence,
         scoreBreakdown: p.scoreBreakdown,
+        emailDiscovery: p.emailDiscovery || { status: 'not_searched' },
         buyingSignalsDetected: p.companyAccount?.buyingSignals?.map((signal: any) => signal.label)
       };
     });
@@ -1926,15 +1928,61 @@ router.post('/leads/:id/find-email', async (req, res): Promise<any> => {
     });
 
     const updatedLead = applyEmailDiscoveryToLead(lead, result);
-    if (leadIndex >= 0) {
-      leads[leadIndex] = updatedLead;
-      replaceStoredLeads(leads);
-    }
+    upsertLead(updatedLead);
 
     res.json({ lead: updatedLead, emailDiscovery: result, sandboxMode: false });
   } catch (error: any) {
     console.error('Error in /api/leads/:id/find-email:', error);
     res.status(500).json({ error: error.message || 'Email discovery failed.' });
+  }
+});
+
+router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
+  try {
+    const leads = readStoredLeads() as any[];
+    const lead = req.body?.lead || leads.find((l: any) => l.id === req.params.id);
+    if (!lead) {
+      return res.status(404).json({ error: 'Lead not found.' });
+    }
+
+    const { forceProfileScrape = true, forceEmailDiscovery = true } = req.body || {};
+    
+    let currentLead = lead;
+    let profileEnrichment = null;
+    
+    if (forceProfileScrape) {
+      const enrichRes = await enrichLeadProfile(currentLead, {
+        force: Boolean(forceProfileScrape)
+      });
+      currentLead = enrichRes.lead;
+      profileEnrichment = enrichRes.result;
+    }
+
+    let emailDiscovery = null;
+    if (forceEmailDiscovery) {
+      const profile = currentLead.profile || currentLead;
+      emailDiscovery = await discoverProspectEmail({
+        fullName: profile.fullName,
+        currentCompany: profile.currentCompany,
+        companyWebsite: profile.contactDetails?.website || currentLead.companyAccount?.website,
+        linkedinUrl: profile.contactDetails?.linkedinUrl,
+        title: profile.currentTitle,
+        location: profile.location
+      });
+      currentLead = applyEmailDiscoveryToLead(currentLead, emailDiscovery);
+    }
+
+    upsertLead(currentLead);
+
+    res.json({
+      lead: currentLead,
+      profileEnrichment,
+      emailDiscovery,
+      sandboxMode: false
+    });
+  } catch (error: any) {
+    console.error('Error in /api/leads/:id/enrich-profile:', error);
+    res.status(500).json({ error: error.message || 'Profile enrichment failed.' });
   }
 });
 

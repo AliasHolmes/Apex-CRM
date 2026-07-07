@@ -36,7 +36,7 @@ export type EnrichmentCacheLookup = {
   companyName?: string;
 };
 
-export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found';
+export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found' | 'not_searched';
 
 export type EmailDiscoveryCacheEntry = {
   id?: string;

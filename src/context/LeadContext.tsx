@@ -209,6 +209,7 @@ interface LeadContextType {
   handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
   handleUpdateLeadNotes: (leadId: string, notes: string) => void;
   handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
+  handleMergeLead: (updatedLead: Lead) => void;
   handleUpdateLeadTags: (leadId: string, tags: string[]) => void;
   handleDeleteLead: (leadId: string) => void;
   handleDeleteLeads: (leadIds: string[]) => void;
@@ -458,6 +459,24 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const handleMergeLead = (updatedLead: Lead) => {
+    if (!updatedLead || !updatedLead.id) return;
+    let mergedLead: Lead | null = null;
+    saveLeadsToStorage(currentLeads =>
+      currentLeads.map(l => {
+        if (l.id === updatedLead.id) {
+          mergedLead = { ...l, ...updatedLead };
+          return mergedLead;
+        }
+        return l;
+      })
+    );
+
+    if (mergedLead) {
+      persistLeadPatch(mergedLead);
+    }
+  };
+
   // 7. Update custom tags for a lead
   const handleUpdateLeadTags = (leadId: string, tags: string[]) => {
     let updatedLead: Lead | null = null;
@@ -552,7 +571,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     <LeadContext.Provider value={{
       leads, isHydrated, saveLeadsToStorage, rehydrateLeads,
       handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage,
-      handleUpdateLeadNotes, handleUpdateLeadProfile, handleUpdateLeadTags,
+      handleUpdateLeadNotes, handleUpdateLeadProfile, handleMergeLead, handleUpdateLeadTags,
       handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage
     }}>
       {children}

@@ -45,7 +45,7 @@ interface LeadTableProps {
 }
 
 export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => void }) {
-  const { leads, handleUpdateLeadStage, handleUpdateLeadsStage, handleDeleteLead, handleDeleteLeads, handleUpdateLeadProfile, handleBulkLeadsAdded } = useLeads();
+  const { leads, handleUpdateLeadStage, handleUpdateLeadsStage, handleDeleteLead, handleDeleteLeads, handleUpdateLeadProfile, handleBulkLeadsAdded, handleMergeLead } = useLeads();
   const { triggerToast } = useToast();
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
@@ -75,43 +75,43 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     const item = enrichmentQueue[0];
 
     const processItem = async () => {
-      setEnrichmentStep(`Targeting ${item.profile.fullName}: Extracting web identifiers...`);
-      await new Promise(r => setTimeout(r, 800));
-      if (isCancelled) return;
-      
-      setEnrichmentStep(`Targeting ${item.profile.fullName}: Cross-referencing databases...`);
-      await new Promise(r => setTimeout(r, 800));
-      if (isCancelled) return;
+      setEnrichmentStep(`Targeting ${item.profile.fullName}: Scraping Bright Data & discovering email...`);
+      try {
+        const response = await fetch(`/api/leads/${item.id}/enrich-profile`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            forceProfileScrape: true,
+            forceEmailDiscovery: true
+          })
+        });
 
-      setEnrichmentStep(`Targeting ${item.profile.fullName}: Synthesizing semantic profile...`);
-      await new Promise(r => setTimeout(r, 800));
-      if (isCancelled) return;
+        if (isCancelled) return;
 
-      if (handleUpdateLeadProfile) {
-        const p = item.profile;
-        const updates: Partial<LinkedInProfile> = {};
-        
-        if (!p.contactDetails?.linkedinUrl && p.fullName) {
-          updates.contactDetails = { 
-            ...(p.contactDetails || {}), 
-            linkedinUrl: `https://linkedin.com/in/${p.fullName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Math.floor(Math.random()*1000)}` 
-          };
+        if (response.ok) {
+          const data = await response.json();
+          if (data.lead && handleMergeLead) {
+            handleMergeLead(data.lead);
+            triggerToast(`Successfully verified & enriched record for ${item.profile.fullName}.`);
+          } else if (data.lead && handleUpdateLeadProfile) {
+            handleUpdateLeadProfile(item.id, data.lead.profile);
+            triggerToast(`Successfully verified & enriched record for ${item.profile.fullName}.`);
+          }
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          console.warn(`Enrichment failed for ${item.profile.fullName}:`, errData.error || response.statusText);
+          triggerToast(`Failed to enrich ${item.profile.fullName}: ${errData.error || 'Server error'}`);
         }
-        
-        if (!p.summary || p.summary.includes('Imported') || p.summary.includes('Manually')) {
-          updates.summary = `Verified & Enriched Profile. ${p.fullName} operates as a key professional within ${p.industry || 'their specific industry segment'}, concentrating on scalable and measurable operational excellence. Connected to 500+ peers in overlapping sectors.`;
+      } catch (err: any) {
+        if (!isCancelled) {
+          console.error(`Error enriching ${item.profile.fullName}:`, err);
+          triggerToast(`Error enriching ${item.profile.fullName}`);
         }
-
-        if (!p.skills || p.skills.length === 0) {
-          updates.skills = ['Leadership', 'Operations', 'Strategy', 'Data Analysis'].sort(() => Math.random() - 0.5).slice(0, 3);
+      } finally {
+        if (!isCancelled) {
+          setEnrichmentQueue(prev => prev.slice(1));
         }
-
-        // Even if no specific fields were missing, we still want to mark it as enriched.
-        handleUpdateLeadProfile(item.id, updates);
-        triggerToast(`Successfully verified & enriched record for ${p.fullName}.`);
       }
-
-      setEnrichmentQueue(prev => prev.slice(1));
     };
 
     processItem();
@@ -119,7 +119,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     return () => {
       isCancelled = true;
     };
-  }, [enrichmentQueue, handleUpdateLeadProfile]);
+  }, [enrichmentQueue, handleMergeLead, handleUpdateLeadProfile]);
 
 
   const handleTriggerPurgeDuplicates = () => {
@@ -330,21 +330,21 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   };
 
   const handleStartEnrichment = () => {
-    const targetIds = selectedLeadIds.length > 0 ? selectedLeadIds : filteredLeads.map(l => l.id);
+    if (selectedLeadIds.length === 0) {
+      triggerToast('Please select one or more leads using the checkboxes first.');
+      return;
+    }
     
-    const targetLeads = leads
-      .filter(l => targetIds.includes(l.id))
-      .filter(l => !l.lastEnrichedAt); // Ensure it's not run multiple times on same prospect
+    const targetLeads = leads.filter(l => selectedLeadIds.includes(l.id));
       
     if (targetLeads.length === 0) {
-      triggerToast('All selected leads have already been enriched. No new tasks queued.');
-      setSelectedLeadIds([]);
+      triggerToast('No valid leads selected.');
       return;
     }
     
     setEnrichmentQueue(targetLeads);
     setSelectedLeadIds([]);
-    triggerToast(`Queued ${targetLeads.length} leads for AI background enrichment.`);
+    triggerToast(`Queued ${targetLeads.length} lead(s) for AI background enrichment & email discovery.`);
   };
 
   const handleBulkDeleteAction = () => {
@@ -531,6 +531,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       case 'pattern_likely': return { label: 'Pattern likely', className: 'border-amber-500/30 text-amber-400' };
       case 'domain_only': return { label: 'Domain only', className: 'border-slate-500/30 text-slate-400' };
       case 'not_found': return { label: 'Not found', className: 'border-slate-700/50 text-slate-500' };
+      case 'not_searched': return { label: 'Not searched', className: 'border-slate-700/50 text-slate-400 font-mono' };
       default: return { label: 'Unscored', className: 'border-slate-700/50 text-slate-500' };
     }
   };
@@ -660,10 +661,11 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               variant="outline"
               size="sm"
               onClick={handleStartEnrichment}
-              disabled={leads.length === 0 || enrichmentQueue.length > 0}
+              disabled={selectedLeadIds.length === 0 || enrichmentQueue.length > 0}
+              title={selectedLeadIds.length === 0 ? "Select leads using checkboxes to run AI enrichment" : "Run AI Enrichment & Email Discovery on selected leads"}
             >
               {enrichmentQueue.length > 0 ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
-              {enrichmentQueue.length > 0 ? 'Enriching...' : 'AI Enrich Pipeline'}
+              {enrichmentQueue.length > 0 ? `Enriching (${enrichmentQueue.length})...` : `AI Enrich Pipeline (${selectedLeadIds.length})`}
             </Button>
 
             <Button
@@ -810,7 +812,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 const hasValidAddedAt = !!addedAt && !Number.isNaN(addedAt.getTime());
                 const addedDate = hasValidAddedAt ? addedAt.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown';
                 const addedTime = hasValidAddedAt ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-                const emailStatus = getEmailStatusMeta(lead.profile.contactDetails?.emailStatus);
+                const emailStatus = getEmailStatusMeta(lead.emailDiscovery?.status || lead.profile.contactDetails?.emailStatus || 'not_searched');
                 const isDiscoveringEmail = discoveringEmailIds.includes(lead.id);
 
                 return (

@@ -411,7 +411,9 @@ export default function ScrapeWorkspace() {
           query: findQuery, 
           limit: leadLimit,
           excludeList: excludeUrlsAndEmails,
-          sessionId
+          sessionId,
+          profileEnrichmentStage: 'on_demand',
+          emailDiscovery: 'off'
         }),
         signal: requestController.signal,
       });
@@ -432,12 +434,21 @@ export default function ScrapeWorkspace() {
       rehydrateLeads().catch(err => console.warn('Post-discovery rehydrate failed:', err));
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
       const stats = data.stats;
+      const tavilyCalls = stats?.queryRuns?.length || stats?.rounds || 0;
+      const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
+                              (stats?.brightData?.profileScrapesAttempted || 0) + 
+                              (stats?.brightData?.companyScrapesAttempted || 0) + 
+                              (stats?.brightData?.batchScrapesAttempted || 0) + 
+                              (stats?.enriched || 0);
+      const cacheHits = stats?.cacheHits || 0;
+      const metricsInfo = stats ? ` (Tavily calls: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
+
       if (stats?.stopReason === 'target_reached') {
-        setSuccessMsg(`Target reached: ${fetchedLeads.length}/${leadLimit} qualified prospects added. Bright Data enriched ${stats.enriched || 0}; cache hits ${stats.cacheHits || 0}.`);
+        setSuccessMsg(`Target reached: ${fetchedLeads.length}/${leadLimit} qualified prospects added${metricsInfo}. Prospects are ready for review and manual AI enrichment.`);
       } else if (stats) {
-        setSuccessMsg(`Discovery finished with ${fetchedLeads.length}/${leadLimit} qualified prospects. Stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}. Bright Data enriched ${stats.enriched || 0}; cache hits ${stats.cacheHits || 0}.`);
+        setSuccessMsg(`Discovery finished with ${fetchedLeads.length}/${leadLimit} qualified prospects (Stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')})${metricsInfo}. Prospects are ready for review and manual AI enrichment.`);
       } else {
-        setSuccessMsg(`Discovery complete: ${fetchedLeads.length} LinkedIn-indexed profiles added to your CRM.`);
+        setSuccessMsg(`Discovery complete: ${fetchedLeads.length} LinkedIn-indexed profiles added to your CRM for review and manual AI enrichment.`);
       }
     } catch (err: any) {
       console.error(err);

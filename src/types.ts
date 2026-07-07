@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found';
+export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found' | 'not_searched';
 
 export interface EmailDiscoveryEvidence {
   type: 'brightdata_batch' | 'brightdata_search' | 'tavily_extract' | 'tavily_search' | 'direct_fetch' | 'pattern' | 'dns' | 'cache';

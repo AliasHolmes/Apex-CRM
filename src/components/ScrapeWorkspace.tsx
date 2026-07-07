@@ -107,8 +107,8 @@ const TraceSummaryViewer = ({ traceSummary, traceEvents = [] }: { traceSummary?:
         <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-[10px] uppercase text-slate-500 font-bold">Cost / Lead</div><div className="text-sm text-slate-200 font-semibold">${(cost?.costPerAcceptedLead || 0).toFixed(4)}</div></div>
       </div>
       {providers.length > 0 && <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{providers.map(([provider, item]) => (<div key={provider} className="bg-slate-950/50 border border-slate-800 rounded-md p-2 text-xs"><div className="flex items-center justify-between mb-1"><span className="uppercase font-bold text-slate-300">{provider}</span><span className="text-slate-500">avg {formatDuration(item.avgLatencyMs)}</span></div><div className="flex gap-3 text-[11px] text-slate-400"><span>{item.calls} calls</span><span className="text-emerald-400">{item.successes} ok</span><span className="text-rose-400">{item.failures} fail</span>{item.totalTokens > 0 && <span className="text-indigo-300">{item.totalTokens.toLocaleString()} tok</span>}</div></div>))}</div>}
-      {phases.length > 0 && <div className="flex flex-wrap gap-1.5">{phases.map(phase => (<span key={phase.phase} className={`px-2 py-1 rounded-md border text-[10px] font-semibold ${phase.status === 'error' ? 'border-rose-500/30 text-rose-300 bg-rose-500/5' : 'border-slate-700 text-slate-300 bg-slate-950/50'}`}>{phase.phase.replace(/_/g, ' ')} · {phase.events} · {formatDuration(phase.durationMs)}</span>))}</div>}
-      {recent.length > 0 && <div className="space-y-1">{recent.map(event => (<div key={event.id} className="text-[11px] text-slate-400 font-mono bg-slate-950/40 border border-slate-850 rounded px-2 py-1 flex justify-between gap-2"><span className="truncate">{event.phase}/{event.operation}{event.query ? ` · ${event.query}` : ''}</span><span className={event.status === 'error' ? 'text-rose-400' : event.status === 'success' ? 'text-emerald-400' : 'text-slate-500'}>{event.status}</span></div>))}</div>}
+      {phases.length > 0 && <div className="flex flex-wrap gap-1.5">{phases.map(phase => (<span key={phase.phase} className={`px-2 py-1 rounded-md border text-[10px] font-semibold ${phase.status === 'error' ? 'border-rose-500/30 text-rose-300 bg-rose-500/5' : 'border-slate-700 text-slate-300 bg-slate-950/50'}`}>{phase.phase.replace(/_/g, ' ')} - {phase.events} - {formatDuration(phase.durationMs)}</span>))}</div>}
+      {recent.length > 0 && <div className="space-y-1">{recent.map(event => (<div key={event.id} className="text-[11px] text-slate-400 font-mono bg-slate-950/40 border border-slate-850 rounded px-2 py-1 flex justify-between gap-2"><span className="truncate">{event.phase}/{event.operation}{event.query ? ` - ${event.query}` : ''}</span><span className={event.status === 'error' ? 'text-rose-400' : event.status === 'success' ? 'text-emerald-400' : 'text-slate-500'}>{event.status}</span></div>))}</div>}
     </div>
   );
 };
@@ -502,7 +502,7 @@ export default function ScrapeWorkspace() {
                   </div>
                 </div>
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                ðŸ’¡ <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
+                <strong>How it works:</strong> In the sandbox container, direct scrapers are blocked by LinkedIn's login walls. 
                 Instead, Apex searches public LinkedIn-indexed results through <strong>Tavily</strong>, then extracts available facts 
                 and references for the target profile or name before consolidating them into a structured CRM record.
               </p>

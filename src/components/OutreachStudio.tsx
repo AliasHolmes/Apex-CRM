@@ -235,10 +235,10 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   const readingTimeSeconds = Math.ceil((wordCount / 130) * 60);
 
   const polishMacros = [
-    { label: 'Shorten Draft ⏱️', directive: 'Please make the pitch extremely punchy, energetic, and under 90 words.' },
-    { label: 'Soften Call-To-Action 🤝', directive: 'Change the CTA portion to be low-friction, interest-based (e.g. open to seeing a 20s video on this?).' },
-    { label: 'Emphasize ROI & Metrics 📈', directive: 'Introduce a realistic business performance value point or metrics (e.g. 44% lift in bookings).' },
-    { label: 'Casual & Conversational ☕', directive: 'Rewrite using a highly casual, warm tone resembling a peer-to-peer slack chat instead of generic cold outbound.' }
+    { label: 'Shorten Draft', directive: 'Please make the pitch extremely punchy, energetic, and under 90 words.' },
+    { label: 'Soften Call-To-Action', directive: 'Change the CTA portion to be low-friction, interest-based (e.g. open to seeing a 20s video on this?).' },
+    { label: 'Emphasize ROI & Metrics', directive: 'Introduce a realistic business performance value point or metrics (e.g. 44% lift in bookings).' },
+    { label: 'Casual & Conversational', directive: 'Rewrite using a highly casual, warm tone resembling a peer-to-peer slack chat instead of generic cold outbound.' }
   ];
 
   return (
@@ -571,7 +571,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                 <div className="space-y-0.5 border-r border-slate-900 pr-2">
                   <div className="text-[9px] uppercase tracking-wider font-extrabold text-slate-500">Word Count</div>
                   <div className={`text-xs font-bold ${wordCount > 150 && medium === 'Cold Email' ? 'text-amber-400' : 'text-slate-200'}`}>
-                    {wordCount} words {wordCount > 150 && medium === 'Cold Email' && '⚠️'}
+                    {wordCount} words {wordCount > 150 && medium === 'Cold Email' && 'Warning'}
                   </div>
                 </div>
 
@@ -599,7 +599,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                 <div className="space-y-0.5 pl-2">
                   <div className="text-[9px] uppercase tracking-wider font-extrabold text-slate-500">Spam Check</div>
                   <div className={`text-xs font-bold ${spamMatches.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                    {spamMatches.length === 0 ? '0 Triggers Safe' : `${spamMatches.length} Triggers ⚠️`}
+                    {spamMatches.length === 0 ? '0 Triggers Safe' : `${spamMatches.length} Triggers Warning`}
                   </div>
                 </div>
               </div>
@@ -652,7 +652,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           {targetLead && (
             <div className="bg-indigo-500/5 p-3.5 rounded-xl border border-indigo-500/10 text-xs text-slate-450 flex items-center justify-between gap-4">
               <div>
-                <span className="font-bold text-indigo-300 block mb-1">🎯 Prospect Grounding Info:</span>
+                <span className="font-bold text-indigo-300 block mb-1">Prospect Grounding Info:</span>
                 <span className="text-slate-350">
                   Target: <span className="font-bold text-slate-200">{targetLead.profile.fullName}</span> | Industry: <span className="font-bold text-slate-200">{targetLead.profile.industry || 'B2B'}</span> | Email: <span className="font-bold text-slate-200">{targetLead.profile.contactDetails?.email || 'N/A'}</span>
                 </span>

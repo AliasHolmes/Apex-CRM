@@ -213,7 +213,7 @@ export default function CrmOverview({ leads }: CrmOverviewProps) {
                     <div>
                       <span className="font-semibold text-foreground hover:text-primary transition-colors">Harvested {l.profile.fullName}</span>
                       <span className="text-[10px] text-muted-foreground block mt-0.5">
-                        Structured under {l.profile.industry || 'Tech'} • {new Date(l.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        Structured under {l.profile.industry || 'Tech'} - {new Date(l.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
                   </div>

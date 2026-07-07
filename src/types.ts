@@ -159,7 +159,7 @@ export interface Lead {
   fitScore?: number; // ICP match based on title, industry, company size
   intentScore?: number; // Buying signals
   timingScore?: number; // Recent role change, funding event
-  compositeScore?: number; // (Fit × 0.4) + (Intent × 0.4) + (Timing × 0.2)
+  compositeScore?: number; // (Fit * 0.4) + (Intent * 0.4) + (Timing * 0.2)
   predictiveScore?: number; // 0-100% Likelihood to Close based on stage and scores
   tier?: 'TIER 1: PRIORITY' | 'TIER 2: ACTIVE' | 'TIER 3: WATCH' | 'TIER 4: DEPRIORITIZE';
   

@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>🚀 Apex CRM</h1>
+  <h1>Apex CRM</h1>
   <p><strong>Next-Generation AI-Powered Sales, Lead Mining & Prospecting Platform</strong></p>
 
   <p>
@@ -14,7 +14,7 @@
 
 ---
 
-## ✨ Overview
+## Overview
 
 **Apex CRM** is a cutting-edge, local-first Customer Relationship Management tool designed for modern sales teams. It seamlessly integrates AI-driven prospecting, intelligent lead enrichment, and automated outreach drafting into a single, lightning-fast workspace.
 
@@ -22,30 +22,30 @@ By combining the power of a **local LiteLLM gateway** with automatic **OpenRoute
 
 ---
 
-## 🛠️ Architecture & Tech Stack
+## Architecture & Tech Stack
 
 ```mermaid
 graph TD
-    Client[🖥️ React Frontend :3000] -->|REST API| Server[⚙️ Express Server Node v24]
-    Server -->|Sync Persistence & Cache| DB[(🗄️ Local SQLite)]
+    Client[React Frontend :3000] -->|REST API| Server[Express Server Node v24]
+    Server -->|Sync Persistence & Cache| DB[(Local SQLite)]
     
     %% LLM Pathway
-    Server -->|AI Prompts| LLM[🧠 LiteLLM Gateway :4000]
-    LLM -->|Primary| Byesu[🌐 Byesu API]
-    LLM -->|Fallback| OpenRouter[🌐 OpenRouter API]
+    Server -->|AI Prompts| LLM[LiteLLM Gateway :4000]
+    LLM -->|Primary| Byesu[Byesu API]
+    LLM -->|Fallback| OpenRouter[OpenRouter API]
 
     %% Search & Enrichment
-    Server -->|Lead Discovery| Tavily[🔍 Tavily Search]
-    Server -->|Profile Enrichment| BrightData[🕷️ Bright Data Scraping]
+    Server -->|Lead Discovery| Tavily[Tavily Search]
+    Server -->|Profile Enrichment| BrightData[Bright Data Scraping]
 
     %% Email Discovery Pipeline
-    Server -.->|Waterfall Pipeline| EmailDiscovery{📧 Email Discovery}
+    Server -.->|Waterfall Pipeline| EmailDiscovery{Email Discovery}
     EmailDiscovery -->|Step 1: Cache Lookup| DB
     EmailDiscovery -->|Step 2: Scrape Batch| BrightData
     EmailDiscovery -->|Step 3: Extract/Search| Tavily
-    EmailDiscovery -->|Step 4: Web Crawl| Crawl[🌐 Company Web Fetch]
-    EmailDiscovery -->|Step 5: MX Check| DNS[🌐 DNS MX Check]
-    EmailDiscovery -->|Step 6: Fallback| Pattern[🧠 Pattern Inference]
+    EmailDiscovery -->|Step 4: Web Crawl| Crawl[Company Web Fetch]
+    EmailDiscovery -->|Step 5: MX Check| DNS[DNS MX Check]
+    EmailDiscovery -->|Step 6: Fallback| Pattern[Pattern Inference]
 
     classDef tech fill:#1e1e2e,stroke:#89b4fa,stroke-width:2px,color:#cdd6f4;
     class Client,Server,DB,LLM,Byesu,OpenRouter,Tavily,BrightData,EmailDiscovery,Crawl,DNS,Pattern tech;
@@ -61,22 +61,22 @@ graph TD
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
-| Feature | Description | Icon |
-| :--- | :--- | :---: |
-| **Adaptive Lead Mining** | Auto-discover prospects via Tavily, score them, and verify them against target ICP criteria. | 🔍 |
-| **Deep Profile Enrichment**| Automatically enrich leads using Bright Data's headless LinkedIn scraping API. | 🕷️ |
-| **Enrichment Cache** | Local SQLite caching layer that prevents duplicate API scraping & email discovery calls to save costs. | 🗄️ |
-| **Free-First Email Discovery** | A robust waterfall pipeline utilizing Bright Data batching, Tavily, local crawls, DNS/MX check, and email pattern inference to discover verified emails. | 📧 |
-| **LLM Gateway & Fallbacks**| Local LiteLLM proxy that routes to Byesu and automatically falls back to OpenRouter on failure. | 🧠 |
-| **CRM Pipeline** | Visual Kanban board to drag-and-drop leads through your sales funnel. | 📋 |
-| **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent. | ✉️ |
-| **Local-First Speed** | Zero-latency UI with background syncing to a durable, local SQLite database. | ⚡ |
+| Feature | Description |
+| :--- | :--- |
+| **Adaptive Lead Mining** | Auto-discover prospects via Tavily, score them, and verify them against target ICP criteria. |
+| **Deep Profile Enrichment**| Automatically enrich leads using Bright Data's headless LinkedIn scraping API. |
+| **Enrichment Cache** | Local SQLite caching layer that prevents duplicate API scraping & email discovery calls to save costs. |
+| **Free-First Email Discovery** | A robust waterfall pipeline utilizing Bright Data batching, Tavily, local crawls, DNS/MX check, and email pattern inference to discover verified emails. |
+| **LLM Gateway & Fallbacks**| Local LiteLLM proxy that routes to Byesu and automatically falls back to OpenRouter on failure. |
+| **CRM Pipeline** | Visual Kanban board to drag-and-drop leads through your sales funnel. |
+| **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent. |
+| **Local-First Speed** | Zero-latency UI with background syncing to a durable, local SQLite database. |
 
 ---
 
-## 🚦 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -124,7 +124,7 @@ graph TD
 
 ---
 
-## 🔒 Privacy & Data
+## Privacy & Data
 
 Apex CRM is designed to be **Local-First**. Your lead data is stored in a local SQLite file (`.apex-data/apex-crm.sqlite`) instead of the cloud, giving you complete control over your sales database. The database uses WAL (Write-Ahead Logging) mode for robust, transactional reliability.
 

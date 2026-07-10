@@ -71,8 +71,8 @@ graph TD
 | **Free-First Email Discovery** | A robust waterfall pipeline utilizing Bright Data batching, Tavily, local crawls, DNS/MX check, and email pattern inference to discover verified emails. |
 | **LLM Gateway & Fallbacks**| Local LiteLLM proxy that routes to Byesu and automatically falls back to OpenRouter on failure. |
 | **CRM Pipeline** | Explicit stage transitions for the sales funnel, including terminal converted/lost states. |
-| **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent. |
-| **Local-First Reliability** | Versioned SQLite migrations, per-lead revisions, durable mining-session records, and client reconciliation after writes. |
+| **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent, saved directly to local SQLite. |
+| **Local-First Reliability** | Versioned SQLite migrations, per-lead revisions, activities logging, durable mining-session records, and client-server merging. |
 
 ---
 
@@ -129,14 +129,15 @@ npm run build
 npm run start
 ```
 
-The production server binds only to `127.0.0.1`. It blocks generated server bundles and source maps from static requests.
+The production server binds only to `127.0.0.1`. It blocks generated server bundles and source maps from static requests, and implements strict Host and Origin validation middleware to block DNS-rebinding and cross-origin access.
 
 ### Database migrations and recovery
 
 On startup, Apex CRM applies transactional SQLite migrations. Before a migration it writes a timestamped backup under `.apex-data/backups/`.
 
 - Schema v3 adds per-lead revisions and durable mining-session state.
-- A mining session left running after a process restart is recorded as `interrupted` instead of appearing active forever.
+- Schema v4 adds lead activity tracking (stage transitions, note edits, merges, and enrichments) and SQLite persistence for outreach drafts.
+- A mining session left running after a process restart is recorded as `interrupted` instead of appearing active forever (and handles SIGINT/SIGTERM process shutdown signals gracefully).
 - If a stale browser edit conflicts with a newer revision, the server returns the canonical record and the client reloads it.
 
 ### Verification

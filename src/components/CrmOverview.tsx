@@ -55,9 +55,9 @@ export default function CrmOverview({ leads }: CrmOverviewProps) {
   const getScoreLabel = (score: number | string) => {
     const num = Number(score);
     if (isNaN(num)) return 'Unrated';
-    if (num >= 8.0) return 'Top Tier (Hot)';
-    if (num >= 6.0) return 'Qualified (Warm)';
-    if (num >= 4.0) return 'Developing (Cool)';
+    if (num >= 80) return 'Top Tier (Hot)';
+    if (num >= 60) return 'Qualified (Warm)';
+    if (num >= 40) return 'Developing (Cool)';
     return 'Low Priority';
   };
 

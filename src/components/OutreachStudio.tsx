@@ -12,7 +12,7 @@ import {
   Clipboard, 
   RefreshCw, 
   Mail, 
-  Linkedin, 
+  Link2,
   Settings, 
   HelpCircle,
   Check,
@@ -211,7 +211,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   };
 
   const getPersonalizationScore = (text: string) => {
-    if (!targetLead || !text) return { score: 0, items: [] as string[] };
+    if (!targetLead || !text) return { score: 'None' as const, matches: [] as string[] };
     
     const items = [];
     const lowerText = text.toLowerCase();
@@ -231,13 +231,13 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
 
   const wordCount = outreachCopy ? outreachCopy.trim().split(/\s+/).filter(Boolean).length : 0;
   const spamMatches = outreachCopy ? checkSpamTriggers(outreachCopy) : [];
-  const personalizationCheck = outreachCopy ? getPersonalizationScore(outreachCopy) : { score: 'None', matches: [] };
+  const personalizationCheck = outreachCopy ? getPersonalizationScore(outreachCopy) : { score: 'None' as const, matches: [] as string[] };
   const readingTimeSeconds = Math.ceil((wordCount / 130) * 60);
 
   const polishMacros = [
     { label: 'Shorten Draft', directive: 'Please make the pitch extremely punchy, energetic, and under 90 words.' },
     { label: 'Soften Call-To-Action', directive: 'Change the CTA portion to be low-friction, interest-based (e.g. open to seeing a 20s video on this?).' },
-    { label: 'Emphasize ROI & Metrics', directive: 'Introduce a realistic business performance value point or metrics (e.g. 44% lift in bookings).' },
+    { label: 'Emphasize ROI', directive: 'Strengthen the value proposition using only evidence supplied in the prospect profile; do not invent metrics or outcomes.' },
     { label: 'Casual & Conversational', directive: 'Rewrite using a highly casual, warm tone resembling a peer-to-peer slack chat instead of generic cold outbound.' }
   ];
 
@@ -390,7 +390,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           <div className="grid grid-cols-3 gap-2">
             {[
               { id: 'Cold Email', icon: Mail, label: 'Email' },
-              { id: 'LinkedIn Connection Request', icon: Linkedin, label: 'Connect' },
+              { id: 'LinkedIn Connection Request', icon: Link2, label: 'Connect' },
               { id: 'Detailed InMail Pitch', icon: Settings, label: 'InMail' },
             ].map(m => {
               const Icon = m.icon;

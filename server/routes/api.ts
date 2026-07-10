@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
+import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -18,12 +18,31 @@ import { MiningTelemetryRecorder, estimateLLMCostUsd, getLLMRouteLabel, type Min
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
 export const activeSessionEvents = new Map<string, MiningTraceEvent[]>();
+export const cancelledSessions = new Set<string>();
 
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
+const isSafeLeadId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const leadStages = new Set(['SCRAPED', 'ENRICHED', 'SEQUENCE ACTIVE', 'REPLIED', 'MEETING BOOKED', 'NEGOTIATING', 'CONVERTED', 'LOST', 'NURTURE']);
+
+const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
+  if (!lead || typeof lead !== 'object' || Array.isArray(lead)) return false;
+  const value = lead as Record<string, any>;
+  return Boolean(
+    isSafeLeadId(String(value.id || '')) &&
+    value.profile && typeof value.profile === 'object' && !Array.isArray(value.profile) &&
+    typeof value.profile.fullName === 'string' &&
+    leadStages.has(value.stage)
+  );
+};
+
+const getTraceBrightDataStatus = () => {
+  const status = getBrightDataStatus();
+  return { ...status, transport: status.transport || undefined };
+};
 
 router.get('/leads', (req, res): any => {
   try {
-    res.json({ leads: readStoredLeads(), initialized: hasLeadStoreBeenInitialized() });
+    res.json({ apiVersion: 1, leads: readStoredLeads(), initialized: hasLeadStoreBeenInitialized() });
   } catch (error: any) {
     console.error('Failed to read leads from SQLite:', error);
     res.status(500).json({ error: error.message || 'Failed to read leads' });
@@ -33,12 +52,12 @@ router.get('/leads', (req, res): any => {
 router.put('/leads', (req, res): any => {
   try {
     const leads = normalizeIncomingLeads(req.body?.leads);
-    if (!leads) {
-      return res.status(400).json({ error: 'Expected a leads array.' });
+    if (!leads || leads.length > 1_000 || !leads.every(isPersistableLead)) {
+      return res.status(400).json({ error: 'Expected up to 1,000 valid lead records.' });
     }
 
     replaceStoredLeads(leads);
-    res.json({ success: true, count: leads.length });
+    res.json({ apiVersion: 1, success: true, count: leads.length });
   } catch (error: any) {
     console.error('Failed to persist leads to SQLite:', error);
     res.status(500).json({ error: error.message || 'Failed to persist leads' });
@@ -47,17 +66,22 @@ router.put('/leads', (req, res): any => {
 
 router.patch('/leads/:id', (req, res): any => {
   try {
-    const lead = req.body?.lead;
-    if (!lead || typeof lead !== 'object') {
-      return res.status(400).json({ error: 'Expected a lead object.' });
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid lead id.' });
     }
-    lead.id = req.params.id;
+    const lead = { ...(req.body?.lead || {}), id: req.params.id };
     if (!lead.createdAt) {
       lead.createdAt = new Date().toISOString();
     }
-    upsertLead(lead);
-    res.json({ success: true, lead });
+    if (!isPersistableLead(lead)) {
+      return res.status(400).json({ error: 'Expected a valid lead object.' });
+    }
+    const storedLead = upsertLead(lead);
+    res.json({ apiVersion: 1, success: true, lead: storedLead });
   } catch (error: any) {
+    if (error instanceof LeadRevisionConflictError) {
+      return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_REVISION_CONFLICT', lead: error.currentLead });
+    }
     console.error(`Failed to upsert lead ${req.params.id} to SQLite:`, error);
     res.status(500).json({ error: error.message || 'Failed to upsert lead' });
   }
@@ -65,8 +89,11 @@ router.patch('/leads/:id', (req, res): any => {
 
 router.delete('/leads/:id', (req, res): any => {
   try {
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid lead id.' });
+    }
     deleteLead(req.params.id);
-    res.json({ success: true });
+    res.json({ apiVersion: 1, success: true });
   } catch (error: any) {
     console.error(`Failed to delete lead ${req.params.id} from SQLite:`, error);
     res.status(500).json({ error: error.message || 'Failed to delete lead' });
@@ -76,8 +103,8 @@ router.delete('/leads/:id', (req, res): any => {
 router.delete('/leads', (req, res): any => {
   try {
     const ids = req.body?.ids;
-    if (!Array.isArray(ids)) {
-      return res.status(400).json({ error: 'Expected an array of ids in request body.' });
+    if (!Array.isArray(ids) || ids.length > 1_000 || !ids.every((id) => typeof id === 'string' && isSafeLeadId(id))) {
+      return res.status(400).json({ error: 'Expected up to 1,000 valid lead ids in request body.' });
     }
     const db = getLeadsDb();
     const stmt = db.prepare('DELETE FROM leads WHERE id = ?');
@@ -91,7 +118,7 @@ router.delete('/leads', (req, res): any => {
       db.exec('ROLLBACK');
       throw err;
     }
-    res.json({ success: true, count: ids.length });
+    res.json({ apiVersion: 1, success: true, count: ids.length });
   } catch (error: any) {
     console.error('Failed to bulk delete leads from SQLite:', error);
     res.status(500).json({ error: error.message || 'Failed to bulk delete leads' });
@@ -101,12 +128,15 @@ router.delete('/leads', (req, res): any => {
 router.post('/leads/bulk', (req, res): any => {
   try {
     const leads = normalizeIncomingLeads(req.body?.leads);
-    if (!leads) {
-      return res.status(400).json({ error: 'Expected a leads array.' });
+    if (!leads || leads.length > 1_000 || !leads.every(isPersistableLead)) {
+      return res.status(400).json({ error: 'Expected up to 1,000 valid lead records.' });
     }
-    upsertLeads(leads);
-    res.json({ success: true, count: leads.length });
+    const storedLeads = upsertLeads(leads);
+    res.json({ apiVersion: 1, success: true, count: storedLeads.length, leads: storedLeads });
   } catch (error: any) {
+    if (error instanceof LeadRevisionConflictError) {
+      return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_REVISION_CONFLICT', lead: error.currentLead });
+    }
     console.error('Failed to bulk upsert leads in SQLite:', error);
     res.status(500).json({ error: error.message || 'Failed to bulk upsert leads' });
   }
@@ -256,13 +286,14 @@ ${pastedText}`;
 
 router.get('/search-logs', (req, res): any => {
   try {
+    const sessionById = new Map(readMiningSessions(100).map((session) => [session.id, session]));
     const logs = readSearchLogs().map((log: any) => ({
       id: log.id,
       timestamp: log.timestamp,
       prompt: log.prompt,
       generatedQueries: log.generatedQueries,
-      status: log.status,
-      errorMessage: log.errorMessage,
+      status: sessionById.get(log.id)?.status || log.status,
+      errorMessage: sessionById.get(log.id)?.errorMessage || log.errorMessage,
       rawResultsCount: log.rawResultsCount,
       leadsFound: log.leadsFound,
       detailedLogs: log.detailedLogs,
@@ -278,7 +309,7 @@ router.get('/search-logs', (req, res): any => {
       costSummary: log.costSummary || {},
       phaseTimeline: log.phaseTimeline || []
     }));
-    res.json(logs);
+    res.json({ apiVersion: 1, logs });
   } catch (error: any) {
     console.error('Failed to read search logs:', error);
     res.status(500).json({ error: 'Failed to retrieve search logs.' });
@@ -288,28 +319,61 @@ router.get('/search-logs', (req, res): any => {
 router.get('/search-logs/:id/live', (req, res) => {
   const logs = activeSessions.get(req.params.id) || [];
   const traceEvents = activeSessionEvents.get(req.params.id) || [];
-  res.json({ logs, traceEvents });
+  res.json({ apiVersion: 1, logs, traceEvents, session: readMiningSessionById(req.params.id) });
+});
+
+router.get('/mining-sessions', (req, res): any => {
+  try {
+    res.json({ apiVersion: 1, sessions: readMiningSessions(Number(req.query.limit || 25)) });
+  } catch (error: any) {
+    console.error('Failed to read mining sessions:', error);
+    res.status(500).json({ error: 'Failed to retrieve mining sessions.' });
+  }
+});
+
+router.get('/mining-sessions/:sessionId', (req, res): any => {
+  if (!isSafeSessionId(req.params.sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
+  const session = readMiningSessionById(req.params.sessionId);
+  if (!session) return res.status(404).json({ error: 'Mining session not found.' });
+  res.json({ apiVersion: 1, session });
+});
+
+router.post('/mining-sessions/:sessionId/cancel', (req, res): any => {
+  const { sessionId } = req.params;
+  if (!isSafeSessionId(sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
+  if (!activeSessions.has(sessionId)) return res.status(404).json({ error: 'Mining session is not active.', sessionId });
+
+  cancelledSessions.add(sessionId);
+  const logs = activeSessions.get(sessionId) || [];
+  const cancellationRequestedAt = new Date().toISOString();
+  logs.push(`[${cancellationRequestedAt}] Cancellation requested by local user.`);
+  activeSessions.set(sessionId, logs);
+  const session = upsertMiningSession({ id: sessionId, status: 'cancellation_requested', cancellationRequestedAt });
+  res.status(202).json({ apiVersion: 1, success: true, sessionId, status: 'cancellation_requested', session });
 });
 
 router.get('/mining-sessions/:sessionId/trace', (req, res): any => {
   try {
     const log = readSearchLogById(req.params.sessionId);
-    if (!log) return res.status(404).json({ error: 'Mining session trace not found.' });
+    const session = readMiningSessionById(req.params.sessionId);
+    if (!log && !session) return res.status(404).json({ error: 'Mining session trace not found.' });
     res.json({
-      sessionId: log.id,
-      timestamp: log.timestamp,
-      prompt: log.prompt,
-      status: log.status,
-      errorMessage: log.errorMessage,
-      rawResultsCount: log.rawResultsCount,
-      leadsFound: log.leadsFound,
-      detailedLogs: log.detailedLogs,
-      debugLogs: log.debugLogs,
-      traceEvents: log.traceEvents || [],
-      providerSummary: log.providerSummary || {},
-      costSummary: log.costSummary || {},
-      phaseTimeline: log.phaseTimeline || [],
-      schemaVersion: log.schemaVersion || 1
+      apiVersion: 1,
+      session,
+      sessionId: log?.id || session?.id,
+      timestamp: log?.timestamp || session?.startedAt,
+      prompt: log?.prompt || session?.prompt,
+      status: session?.status || log?.status,
+      errorMessage: session?.errorMessage || log?.errorMessage,
+      rawResultsCount: log?.rawResultsCount || 0,
+      leadsFound: log?.leadsFound || 0,
+      detailedLogs: log?.detailedLogs || '',
+      debugLogs: log?.debugLogs || '',
+      traceEvents: log?.traceEvents || [],
+      providerSummary: log?.providerSummary || {},
+      costSummary: log?.costSummary || {},
+      phaseTimeline: log?.phaseTimeline || [],
+      schemaVersion: log?.schemaVersion || 1
     });
   } catch (error: any) {
     console.error('Failed to read mining session trace:', error);
@@ -331,7 +395,14 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
   const sessionLogs: string[] = [];
   const debugLogs: any[] = [];
+  const throwIfCancelled = () => {
+    if (!cancelledSessions.has(sessionId)) return;
+    const error = new Error('Lead discovery was cancelled.');
+    error.name = 'AbortError';
+    throw error;
+  };
   const logEvent = (msg: string) => {
+    throwIfCancelled();
     const line = `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
     sessionLogs.push(line);
@@ -342,9 +413,19 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   let rawResultsCount = 0;
   let leadsFound = 0;
   const promptQuery = req.body.query || '';
+  if (typeof promptQuery !== 'string' || !promptQuery.trim() || promptQuery.length > 2_000) {
+    return res.status(400).json({ error: 'query must be a non-empty string of 2,000 characters or fewer.' });
+  }
   const startedAt = Date.now();
   const requestedLimit = Math.min(Math.max(Number(req.body.limit || 5), 1), 200);
   const telemetry = new MiningTelemetryRecorder(sessionId, promptQuery, requestedLimit, new Date(startedAt).toISOString());
+  upsertMiningSession({
+    id: sessionId,
+    status: 'running',
+    prompt: promptQuery,
+    requestedLimit,
+    startedAt: new Date(startedAt).toISOString()
+  });
   const recordTrace = (event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) => {
     const recorded = telemetry.record(event);
     activeSessionEvents.set(sessionId, telemetry.getEvents().slice(-100));
@@ -556,6 +637,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   };
 
   try {
+    throwIfCancelled();
     logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
     recordTrace({
       phase: 'session',
@@ -891,7 +973,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                 query: plan.executableQuery,
                 latencyMs: Date.now() - bdSearchStarted,
                 counts: { rawCandidates: results.length },
-                brightData: getBrightDataStatus()
+                brightData: getTraceBrightDataStatus()
               });
               return results;
             } catch (e: any) {
@@ -916,7 +998,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                 query: plan.executableQuery,
                 latencyMs: Date.now() - bdSearchStarted,
                 error: { message: classified.reasonCode + ': ' + classified.message },
-                brightData: getBrightDataStatus()
+                brightData: getTraceBrightDataStatus()
               });
               logEvent(`WARN: Bright Data Search failed: ${classified.message}`);
               return [];
@@ -1208,7 +1290,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           provider: 'brightdata',
           round,
           counts: { selectedForEnrichment: selectedRows.length },
-          brightData: getBrightDataStatus()
+          brightData: getTraceBrightDataStatus()
         });
 
         const refreshLeadEvidence = (target: EnrichmentTarget) => {
@@ -1447,7 +1529,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
               round,
               latencyMs: Date.now() - started,
               counts: { requestedUrls: batchTargets.length, returnedUrls: batchResults.length, enrichedProfiles: successCount },
-              brightData: getBrightDataStatus()
+              brightData: getTraceBrightDataStatus()
             });
           } catch (error) {
             brightDataStats.batchScrapesFailed++;
@@ -1460,7 +1542,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
               round,
               latencyMs: Date.now() - started,
               error: { message: classified.reasonCode + ': ' + classified.message },
-              brightData: getBrightDataStatus()
+              brightData: getTraceBrightDataStatus()
             });
             if (classified.providerDisabled) break;
             for (const target of batchTargets) {
@@ -1507,7 +1589,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                 round,
                 latencyMs: Date.now() - started,
                 counts: { attempt: attempt + 1, markdownChars: markdown?.length || 0 },
-                brightData: { ...getBrightDataStatus(), target: target.url }
+                brightData: { ...getTraceBrightDataStatus(), target: target.url }
               });
               if (!target.enriched) break;
             } catch (error) {
@@ -1521,7 +1603,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
                 round,
                 latencyMs: Date.now() - started,
                 error: { message: classified.reasonCode + ': ' + classified.message },
-                brightData: { ...getBrightDataStatus(), target: target.url }
+                brightData: { ...getTraceBrightDataStatus(), target: target.url }
               });
               if (classified.providerDisabled || !classified.retryable) break;
             }
@@ -1786,13 +1868,15 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
 
     const now = new Date().toISOString();
-    const mappedLeads = finalLeads.map((p: any, i: number) => {
+    const mappedLeads: Record<string, any>[] = finalLeads.map((p: any, i: number) => {
       const hasAccountContext = !!p.companyAccount;
       const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
       const compositeScore = backendFinalScore > 0
         ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
-        : p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
-      const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
+        : Math.round(Math.min(Math.max(Number(p.companyAccount?.operationalPainScore || 0), 0), 10) * 10);
+      const predictiveScore = compositeScore > 0
+        ? Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)))
+        : 0;
       return {
         id: `lead-bulk-${Date.now()}-${i}`,
         profile: p,
@@ -1822,7 +1906,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     const persistStarted = Date.now();
     try {
-      upsertLeads(mappedLeads);
+      const persistedLeads = upsertLeads(mappedLeads);
       recordTrace({
         phase: 'persistence',
         operation: 'upsert_leads',
@@ -1831,7 +1915,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         latencyMs: Date.now() - persistStarted,
         counts: { leads: mappedLeads.length }
       });
-      logEvent(`Successfully auto-persisted ${mappedLeads.length} leads on the backend.`);
+      logEvent(`Successfully auto-persisted ${persistedLeads.length} leads on the backend.`);
+      mappedLeads.splice(0, mappedLeads.length, ...persistedLeads);
     } catch (e: any) {
       console.error('Failed to auto-persist leads on backend:', e);
       recordTrace({
@@ -1843,6 +1928,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         error: { message: e.message || String(e) }
       });
       logEvent(`Error auto-persisting leads on backend: ${e.message}`);
+      throw new Error(`Failed to persist discovered leads: ${e.message || String(e)}`);
     }
 
     telemetry.finish('success', stats);
@@ -1861,7 +1947,15 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
-    res.json({ leads: mappedLeads, stats, traceSummary, sandboxMode: false, sessionId });
+    upsertMiningSession({
+      id: sessionId,
+      status: 'success',
+      completedAt: new Date().toISOString(),
+      stats,
+      traceSummary
+    });
+
+    res.json({ apiVersion: 1, leads: mappedLeads, stats, traceSummary, sandboxMode: false, sessionId });
 
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
@@ -1882,12 +1976,23 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
+    const cancelled = error?.name === 'AbortError';
+    upsertMiningSession({
+      id: sessionId,
+      status: cancelled ? 'cancelled' : 'error',
+      completedAt: new Date().toISOString(),
+      errorMessage: error.message || 'Failed to locate leads.',
+      stats,
+      traceSummary
+    });
+
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message || 'Failed to locate leads.', stats, traceSummary, sessionId });
+      res.status(cancelled ? 499 : 500).json({ error: error.message || 'Failed to locate leads.', stats, traceSummary, sessionId, cancelled });
     }
   } finally {
     activeSessions.delete(sessionId);
     activeSessionEvents.delete(sessionId);
+    cancelledSessions.delete(sessionId);
     await closeBrightDataClient({ onlyIfIdle: true, onlyIfUnhealthy: true, reason: 'find-leads-complete' });
   }
 });
@@ -1917,9 +2022,10 @@ router.post('/email-discovery', async (req, res): Promise<any> => {
 
 router.post('/leads/:id/find-email', async (req, res): Promise<any> => {
   try {
-    const leads = readStoredLeads() as any[];
-    const leadIndex = leads.findIndex((lead: any) => lead.id === req.params.id);
-    const lead = req.body?.lead || leads[leadIndex];
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid lead id.' });
+    }
+    const lead = readStoredLeadById(req.params.id);
     if (!lead) {
       return res.status(404).json({ error: 'Lead not found.' });
     }
@@ -1946,13 +2052,15 @@ router.post('/leads/:id/find-email', async (req, res): Promise<any> => {
 
 router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
   try {
-    const leads = readStoredLeads() as any[];
-    const lead = req.body?.lead || leads.find((l: any) => l.id === req.params.id);
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid lead id.' });
+    }
+    const lead = readStoredLeadById(req.params.id);
     if (!lead) {
       return res.status(404).json({ error: 'Lead not found.' });
     }
 
-    const { forceProfileScrape = true, forceEmailDiscovery = true } = req.body || {};
+    const { forceProfileScrape = false, forceEmailDiscovery = false } = req.body || {};
     
     let currentLead = lead;
     let profileEnrichment = null;
@@ -1980,6 +2088,16 @@ router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
     }
 
     upsertLead(currentLead);
+
+    if (profileEnrichment?.status === 'error') {
+      return res.status(502).json({
+        error: profileEnrichment.error || 'Profile enrichment provider failed.',
+        lead: currentLead,
+        profileEnrichment,
+        emailDiscovery,
+        sandboxMode: false
+      });
+    }
 
     res.json({
       lead: currentLead,
@@ -2017,6 +2135,16 @@ router.post('/generate-outbound', async (req, res): Promise<any> => {
     }
 
     console.log(`[generate-outbound] Generating outreach for: ${profile.fullName}`);
+    const buyingSignalText = Array.isArray(buyingSignals)
+      ? buyingSignals
+        .map((signal) => typeof signal === 'string'
+          ? signal
+          : [signal?.label, signal?.evidence].filter(Boolean).join(': '))
+        .filter(Boolean)
+        .join('; ')
+      : typeof buyingSignals === 'string'
+        ? buyingSignals
+        : '';
 
     const prompt = `Generate a highly personalized outreach message for the following prospect.
 
@@ -2031,7 +2159,7 @@ router.post('/generate-outbound', async (req, res): Promise<any> => {
 - Pain Indicators: ${(profile.painIndicators || []).join(', ') || 'None listed'}
 - Career Signals: ${(profile.careerSignals || []).join(', ') || 'None listed'}
 - Tech Stack: ${(profile.techStackHints || []).join(', ') || 'Unknown'}
-- Buying Signals: ${buyingSignals || 'None provided'}
+- Buying Signals: ${buyingSignalText || 'None provided'}
 
 ## Campaign Settings
 - Tone: ${tone || 'Professional'}
@@ -2043,7 +2171,7 @@ router.post('/generate-outbound', async (req, res): Promise<any> => {
 - Channel: ${companyAccount ? 'Company LinkedIn Account' : 'Personal LinkedIn / Email'}
 
 ## Output Requirements
-Return a complete HTML-formatted outreach message.
+Return plain text only. Do not use HTML, markdown, or unsupported performance claims.
 Follow the Golden Rules strictly:
 1. Never start with "I"
 2. Be specific - reference something real from their profile
@@ -2052,7 +2180,7 @@ Follow the Golden Rules strictly:
 5. Cold email: max 150 words
 6. No spam words: guaranteed, synergy, leverage, disruptive, game-changing, revolutionary
 
-Format the output as clean HTML with proper line breaks and styling for display in a rich text editor.`;
+Use normal paragraph breaks so the result can be pasted into email, LinkedIn, or a mailto link.`;
 
     const { text: rawText } = await openAIText(prompt, APEX_SYSTEM_PROMPT);
 
@@ -2060,8 +2188,11 @@ Format the output as clean HTML with proper line breaks and styling for display 
       throw new Error('Failed to generate outreach copy.');
     }
 
-    // Wrap plain text in HTML if it's not already HTML
-    const text = rawText.includes('<') ? rawText : `<p>${rawText.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>')}</p>`;
+    const text = rawText
+      .replace(/<br\s*\/?\s*>/gi, '\n')
+      .replace(/<\/p\s*>/gi, '\n\n')
+      .replace(/<[^>]+>/g, '')
+      .trim();
 
     res.json({ text, sandboxMode: false });
   } catch (error: any) {
@@ -2075,14 +2206,17 @@ Format the output as clean HTML with proper line breaks and styling for display 
 // -----------------------------------------------------------------------------
 router.post('/chat', async (req, res): Promise<any> => {
   try {
-    const { query, leads = [] } = req.body;
+    const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
     if (!query) return res.status(400).json({ error: 'Query is required' });
+    if (query.length > 2_000) return res.status(400).json({ error: 'Query must be 2,000 characters or fewer.' });
 
     if (!hasOpenAIKey()) {
       return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable the AI Copilot.' });
     }
 
-    // Build a rich context summary of the CRM for LLM
+    // The database is canonical. Do not accept a browser-provided lead dump,
+    // and omit contact details/notes from the model context by default.
+    const leads = readStoredLeads() as any[];
     const stageCounts: Record<string, number> = {};
     leads.forEach((l: any) => {
       stageCounts[l.stage] = (stageCounts[l.stage] || 0) + 1;
@@ -2093,8 +2227,12 @@ router.post('/chat', async (req, res): Promise<any> => {
 
     const leadsContext = leads.length === 0
       ? 'The CRM pipeline is currently empty.'
-      : leads.slice(0, 100).map((l: any, i: number) =>
-          `${i + 1}. ${l.profile?.fullName} - ${l.profile?.currentTitle} at ${l.profile?.currentCompany} | Stage: ${l.stage} | Fit: ${l.profile?.fitScore ?? '?'}/10 | Intent: ${l.profile?.intentScore ?? '?'}/10`
+      : leads
+        .slice()
+        .sort((a, b) => Number(b.compositeScore || 0) - Number(a.compositeScore || 0))
+        .slice(0, 50)
+        .map((l: any, i: number) =>
+          `${i + 1}. ${l.profile?.fullName || 'Unknown'} - ${l.profile?.currentTitle || 'Unknown'} at ${l.profile?.currentCompany || 'Unknown'} | Stage: ${l.stage || 'Unknown'} | Fit: ${l.fitScore ?? '?'}/10 | Intent: ${l.intentScore ?? '?'}/10`
         ).join('\n');
 
     const systemPrompt = `${APEX_SYSTEM_PROMPT}
@@ -2105,7 +2243,7 @@ Total Leads: ${leads.length}
 ### Pipeline Stage Breakdown:
 ${stageSummary}
 
-### Active Leads List (Showing top 100):
+### Active Leads List (Showing top 50 by qualification):
 ${leadsContext}
 
 Answer the user's question about their CRM pipeline, leads, outreach strategy, or any sales-related query. Be direct, concise, and actionable. Format responses in markdown.`;

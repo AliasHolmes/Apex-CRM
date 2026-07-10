@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Lead, LinkedInProfile, QualifiedLeadProfile } from '../types';
+import { predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 
 // Define the high-fidelity pre-seed leads
@@ -205,15 +206,15 @@ interface LeadContextType {
   saveLeadsToStorage: (updater: Lead[] | ((prev: Lead[]) => Lead[])) => void;
   rehydrateLeads: () => Promise<void>;
   handleLeadAdded: (profile: LinkedInProfile) => void;
-  handleBulkLeadsAdded: (profiles: (QualifiedLeadProfile | Lead)[]) => void;
+  handleBulkLeadsAdded: (profiles: (QualifiedLeadProfile | Lead)[]) => Promise<void>;
   handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
   handleUpdateLeadNotes: (leadId: string, notes: string) => void;
   handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
   handleMergeLead: (updatedLead: Lead) => void;
   handleUpdateLeadTags: (leadId: string, tags: string[]) => void;
   handleDeleteLead: (leadId: string) => void;
-  handleDeleteLeads: (leadIds: string[]) => void;
-  handleUpdateLeadsStage: (leadIds: string[], stage: Lead['stage']) => void;
+  handleDeleteLeads: (leadIds: string[]) => Promise<void>;
+  handleUpdateLeadsStage: (leadIds: string[], stage: Lead['stage']) => Promise<void>;
 }
 
 const LeadContext = createContext<LeadContextType | undefined>(undefined);
@@ -250,12 +251,12 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const initialLeads = loadLegacyBrowserLeads() || sanitizeLeads(seedLeads);
+      const initialLeads = loadLegacyBrowserLeads() || [];
       setLeads(initialLeads);
       persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
     } catch (error) {
       console.error('SQLite lead load failed:', error);
-      setLeads(loadLegacyBrowserLeads() || sanitizeLeads(seedLeads));
+      setLeads(loadLegacyBrowserLeads() || []);
     } finally {
       setIsHydrated(true);
     }
@@ -272,17 +273,25 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   };
 
   const persistLeadPatch = async (lead: Lead) => {
+    const response = await fetch(`/api/leads/${lead.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lead })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.lead) {
+      throw new Error(data.error || `Failed to patch lead: ${response.status}`);
+    }
+    return data.lead as Lead;
+  };
+
+  const reconcileLeadPatch = async (lead: Lead) => {
     try {
-      const response = await fetch(`/api/leads/${lead.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lead })
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to patch lead: ${response.status}`);
-      }
+      const canonicalLead = await persistLeadPatch(lead);
+      setLeads(currentLeads => currentLeads.map(current => current.id === canonicalLead.id ? canonicalLead : current));
     } catch (error) {
       console.error(`Failed to sync lead ${lead.id} update to backend:`, error);
+      await rehydrateLeads();
     }
   };
 
@@ -299,8 +308,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return currentLeads;
       }
 
-      const compositeScore = Math.floor(Math.random() * 30) + 65; // realistic 65 - 95 score
-      const predictiveScore = Math.floor(compositeScore * 0.9); // baseline likelihood
+      const compositeScore = scoreLeadDeterministically(profile);
+      const predictiveScore = predictiveScoreFromComposite(compositeScore);
 
       newLead = {
         id: `lead-${Date.now()}`,
@@ -317,7 +326,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     });
 
     if (newLead) {
-      persistLeadPatch(newLead);
+      void reconcileLeadPatch(newLead);
     }
   };
 
@@ -351,8 +360,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
         const compositeScore = backendFinalScore > 0
           ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
-          : p.companyAccount?.operationalPainScore || Math.floor(Math.random() * 35) + 60;
-        const predictiveScore = Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)));
+          : scoreLeadDeterministically(p, p.companyAccount);
+        const predictiveScore = predictiveScoreFromComposite(compositeScore, hasAccountContext);
 
         const newLead: Lead = {
           id: `lead-bulk-${Date.now()}-${i}`,
@@ -392,11 +401,18 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ leads: leadsToSaveBackend })
         });
+        const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(`Failed to save bulk leads: ${response.status}`);
+          throw new Error(data.error || `Failed to save bulk leads: ${response.status}`);
+        }
+        if (Array.isArray(data.leads)) {
+          const serverLeads = new Map((data.leads as Lead[]).map(lead => [lead.id, lead]));
+          setLeads(currentLeads => currentLeads.map(lead => serverLeads.get(lead.id) || lead));
         }
       } catch (err) {
         console.error('Failed to save bulk leads to backend:', err);
+        await rehydrateLeads();
+        throw err;
       }
     }
   };
@@ -415,7 +431,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      persistLeadPatch(updatedLead);
+      void reconcileLeadPatch(updatedLead);
     }
   };
 
@@ -433,7 +449,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      persistLeadPatch(updatedLead);
+      void reconcileLeadPatch(updatedLead);
     }
   };
 
@@ -455,7 +471,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      persistLeadPatch(updatedLead);
+      void reconcileLeadPatch(updatedLead);
     }
   };
 
@@ -472,9 +488,6 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       })
     );
 
-    if (mergedLead) {
-      persistLeadPatch(mergedLead);
-    }
   };
 
   // 7. Update custom tags for a lead
@@ -491,7 +504,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      persistLeadPatch(updatedLead);
+      void reconcileLeadPatch(updatedLead);
     }
   };
 
@@ -511,6 +524,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       }
     } catch (e) {
       console.error(`[App] Error during lead deletion:`, e);
+      await rehydrateLeads();
     }
   };
 
@@ -524,16 +538,19 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return nextLeads;
       });
 
-      const response = await fetch('/api/leads', {
+        const response = await fetch('/api/leads', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: leadIds })
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to delete bulk leads: ${response.status}`);
-      }
+          body: JSON.stringify({ ids: leadIds })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
+        }
     } catch (e) {
       console.error(`[App] Error during bulk lead deletion:`, e);
+      await rehydrateLeads();
+      throw e;
     }
   };
 
@@ -558,11 +575,18 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ leads: updatedLeads })
         });
+        const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          throw new Error(`Failed to bulk update stages: ${response.status}`);
+          throw new Error(data.error || `Failed to bulk update stages: ${response.status}`);
+        }
+        if (Array.isArray(data.leads)) {
+          const serverLeads = new Map((data.leads as Lead[]).map(lead => [lead.id, lead]));
+          setLeads(currentLeads => currentLeads.map(lead => serverLeads.get(lead.id) || lead));
         }
       } catch (err) {
         console.error('Failed to sync bulk stage updates to backend:', err);
+        await rehydrateLeads();
+        throw err;
       }
     }
   };

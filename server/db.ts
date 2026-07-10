@@ -8,11 +8,180 @@ import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
+const LATEST_SCHEMA_VERSION = 3;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
 
 let leadsDb: DatabaseSync | null = null;
+
+function getTableColumns(db: DatabaseSync, tableName: string) {
+  return new Set((db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]).map((column) => column.name));
+}
+
+function addColumnIfMissing(db: DatabaseSync, tableName: string, columnName: string, definition: string) {
+  if (!getTableColumns(db, tableName).has(columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`);
+  }
+}
+
+function backupDatabaseBeforeMigration(previousVersion: number) {
+  if (previousVersion >= LATEST_SCHEMA_VERSION || !fs.existsSync(LEADS_DB_PATH)) return;
+
+  const stats = fs.statSync(LEADS_DB_PATH);
+  if (stats.size === 0) return;
+
+  const backupDir = path.join(path.dirname(LEADS_DB_PATH), 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `apex-crm.pre-migration-v${previousVersion}.${timestamp}.sqlite`);
+  fs.copyFileSync(LEADS_DB_PATH, backupPath);
+  console.log(`Database backup created before migration: ${backupPath}`);
+}
+
+function runMigrations(db: DatabaseSync) {
+  const currentVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number }).user_version || 0);
+  if (currentVersion >= LATEST_SCHEMA_VERSION) return;
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (currentVersion < 1) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS leads (
+          id TEXT PRIMARY KEY,
+          payload TEXT NOT NULL,
+          created_at TEXT,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS mcp_profile_cache (
+          username TEXT PRIMARY KEY,
+          enriched_data TEXT NOT NULL,
+          timestamp TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS enrichment_cache (
+          id TEXT PRIMARY KEY,
+          normalized_url TEXT,
+          linkedin_username TEXT,
+          person_name TEXT,
+          company_name TEXT,
+          evidence_block TEXT NOT NULL,
+          scrape_quality TEXT NOT NULL,
+          source_provider TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_enrichment_cache_url ON enrichment_cache(normalized_url);
+        CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
+        CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
+        CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
+
+        CREATE TABLE IF NOT EXISTS email_discovery_cache (
+          id TEXT PRIMARY KEY,
+          normalized_url TEXT,
+          linkedin_username TEXT,
+          person_name TEXT,
+          company_name TEXT,
+          company_domain TEXT,
+          discovered_email TEXT,
+          status TEXT NOT NULL,
+          confidence INTEGER NOT NULL,
+          evidence TEXT,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_cache_url ON email_discovery_cache(normalized_url);
+        CREATE INDEX IF NOT EXISTS idx_email_cache_username ON email_discovery_cache(linkedin_username);
+        CREATE INDEX IF NOT EXISTS idx_email_cache_person_company_domain ON email_discovery_cache(person_name, company_name, company_domain);
+        CREATE INDEX IF NOT EXISTS idx_email_cache_expires ON email_discovery_cache(expires_at);
+
+        CREATE TABLE IF NOT EXISTS search_logs (
+          id TEXT PRIMARY KEY,
+          timestamp TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          generated_queries TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error_message TEXT,
+          raw_results_count INTEGER,
+          leads_found INTEGER,
+          detailed_logs TEXT,
+          debug_logs TEXT,
+          trace_events TEXT,
+          provider_summary TEXT,
+          cost_summary TEXT,
+          phase_timeline TEXT,
+          schema_version INTEGER
+        );
+      `);
+    }
+
+    if (currentVersion < 2) {
+      addColumnIfMissing(db, 'search_logs', 'detailed_logs', 'detailed_logs TEXT');
+      addColumnIfMissing(db, 'search_logs', 'debug_logs', 'debug_logs TEXT');
+      addColumnIfMissing(db, 'search_logs', 'trace_events', 'trace_events TEXT');
+      addColumnIfMissing(db, 'search_logs', 'provider_summary', 'provider_summary TEXT');
+      addColumnIfMissing(db, 'search_logs', 'cost_summary', 'cost_summary TEXT');
+      addColumnIfMissing(db, 'search_logs', 'phase_timeline', 'phase_timeline TEXT');
+      addColumnIfMissing(db, 'search_logs', 'schema_version', 'schema_version INTEGER');
+      db.exec(`
+        INSERT OR IGNORE INTO enrichment_cache (
+          id, normalized_url, linkedin_username, person_name, company_name,
+          evidence_block, scrape_quality, source_provider, created_at, expires_at
+        )
+        SELECT
+          'legacy-mcp-' || username, NULL, lower(username), NULL, NULL,
+          enriched_data, 'partial', 'brightdata', timestamp, datetime(timestamp, '+7 days')
+        FROM mcp_profile_cache
+        WHERE username IS NOT NULL AND enriched_data IS NOT NULL;
+      `);
+    }
+
+    if (currentVersion < 3) {
+      addColumnIfMissing(db, 'leads', 'revision', 'revision INTEGER NOT NULL DEFAULT 1');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS mining_sessions (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          requested_limit INTEGER NOT NULL,
+          started_at TEXT NOT NULL,
+          completed_at TEXT,
+          cancellation_requested_at TEXT,
+          error_message TEXT,
+          stats_json TEXT,
+          trace_summary_json TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mining_sessions_updated_at ON mining_sessions(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_mining_sessions_status ON mining_sessions(status);
+
+        UPDATE mining_sessions
+        SET status = 'interrupted',
+            error_message = COALESCE(error_message, 'The local process stopped before this mining session completed.'),
+            completed_at = COALESCE(completed_at, updated_at),
+            updated_at = datetime('now')
+        WHERE status IN ('running', 'cancellation_requested');
+      `);
+    }
+
+    db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('SQLite migration rollback failed:', rollbackError);
+    }
+    throw error;
+  }
+}
 
 export type EnrichmentCacheQuality = 'good' | 'partial' | 'bad';
 
@@ -65,6 +234,8 @@ export function getLeadsDb() {
   if (!leadsDb) {
     fs.mkdirSync(path.dirname(LEADS_DB_PATH), { recursive: true });
     leadsDb = new DatabaseSync(LEADS_DB_PATH);
+    const currentVersion = Number((leadsDb.prepare('PRAGMA user_version').get() as { user_version?: number }).user_version || 0);
+    backupDatabaseBeforeMigration(currentVersion);
     leadsDb.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 10000;
@@ -171,22 +342,7 @@ export function getLeadsDb() {
         schema_version INTEGER
       );
     `);
-
-    for (const statement of [
-      'ALTER TABLE search_logs ADD COLUMN detailed_logs TEXT;',
-      'ALTER TABLE search_logs ADD COLUMN debug_logs TEXT;',
-      'ALTER TABLE search_logs ADD COLUMN trace_events TEXT;',
-      'ALTER TABLE search_logs ADD COLUMN provider_summary TEXT;',
-      'ALTER TABLE search_logs ADD COLUMN cost_summary TEXT;',
-      'ALTER TABLE search_logs ADD COLUMN phase_timeline TEXT;',
-      'ALTER TABLE search_logs ADD COLUMN schema_version INTEGER;'
-    ]) {
-      try {
-        leadsDb.exec(statement);
-      } catch {
-        // Ignore if column already exists.
-      }
-    }
+    runMigrations(leadsDb);
   }
 
   return leadsDb;
@@ -208,19 +364,33 @@ export function normalizeIncomingLeads(input: unknown) {
 
 export function readStoredLeads() {
   const rows = getLeadsDb()
-    .prepare('SELECT payload FROM leads ORDER BY datetime(COALESCE(created_at, updated_at)) DESC')
-    .all() as { payload: string }[];
+    .prepare('SELECT payload, revision FROM leads ORDER BY datetime(COALESCE(created_at, updated_at)) DESC')
+    .all() as { payload: string; revision: number }[];
 
   return rows
     .map((row) => {
       try {
-        return JSON.parse(row.payload);
+        return { ...JSON.parse(row.payload), revision: Number(row.revision || 1) };
       } catch (error) {
         console.warn('Skipping unreadable lead record from SQLite:', error);
         return null;
       }
     })
     .filter(Boolean);
+}
+
+export function readStoredLeadById(id: string) {
+  const row = getLeadsDb()
+    .prepare('SELECT payload, revision FROM leads WHERE id = ?')
+    .get(id) as { payload: string; revision: number } | undefined;
+
+  if (!row) return null;
+  try {
+    return { ...JSON.parse(row.payload), revision: Number(row.revision || 1) } as Record<string, any>;
+  } catch (error) {
+    console.warn(`Skipping unreadable lead ${id} from SQLite:`, error);
+    return null;
+  }
 }
 
 export function hasLeadStoreBeenInitialized() {
@@ -235,8 +405,8 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
   const insertLead = db.prepare(`
-    INSERT INTO leads (id, payload, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO leads (id, payload, created_at, updated_at, revision)
+    VALUES (?, ?, ?, ?, ?)
   `);
 
   db.exec('BEGIN IMMEDIATE');
@@ -244,11 +414,14 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
     db.prepare('DELETE FROM leads').run();
 
     for (const lead of leads) {
+      const revision = Number.isInteger(lead.revision) && lead.revision > 0 ? lead.revision : 1;
+      const storedLead: Record<string, any> = { ...lead, revision };
       insertLead.run(
-        lead.id,
-        JSON.stringify(lead),
-        typeof lead.createdAt === 'string' ? lead.createdAt : now,
-        now
+        storedLead.id,
+        JSON.stringify(storedLead),
+        typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
+        now,
+        revision
       );
     }
 
@@ -269,22 +442,44 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   }
 }
 
+export class LeadRevisionConflictError extends Error {
+  constructor(public readonly currentLead: Record<string, any>) {
+    super('This lead was changed by a newer request. Reload it before saving again.');
+    this.name = 'LeadRevisionConflictError';
+  }
+}
+
 export function upsertLead(lead: Record<string, any>) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
+  const existing = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(lead.id) as { payload: string; revision: number } | undefined;
+  const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
+  if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
+    let currentLead: Record<string, any> = { ...lead, revision: Number(existing.revision || 1) };
+    try {
+      currentLead = { ...JSON.parse(existing.payload), revision: Number(existing.revision || 1) };
+    } catch {
+      // Preserve a useful conflict payload even when a legacy payload is malformed.
+    }
+    throw new LeadRevisionConflictError(currentLead);
+  }
+  const revision = existing ? Number(existing.revision || 1) + 1 : 1;
+  const storedLead: Record<string, any> = { ...lead, revision };
   const stmt = db.prepare(`
-    INSERT INTO leads (id, payload, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO leads (id, payload, created_at, updated_at, revision)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       payload = excluded.payload,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      revision = excluded.revision
   `);
 
   stmt.run(
-    lead.id,
-    JSON.stringify(lead),
-    typeof lead.createdAt === 'string' ? lead.createdAt : now,
-    now
+    storedLead.id,
+    JSON.stringify(storedLead),
+    typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
+    now,
+    revision
   );
 
   db.prepare(`
@@ -292,6 +487,7 @@ export function upsertLead(lead: Record<string, any>) {
     VALUES ('leads_initialized', 'true', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(now);
+  return storedLead;
 }
 
 export function deleteLead(id: string) {
@@ -303,22 +499,40 @@ export function upsertLeads(leads: Record<string, any>[]) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
   const stmt = db.prepare(`
-    INSERT INTO leads (id, payload, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO leads (id, payload, created_at, updated_at, revision)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       payload = excluded.payload,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      revision = excluded.revision
   `);
+  const selectExisting = db.prepare('SELECT payload, revision FROM leads WHERE id = ?');
+  const storedLeads: Record<string, any>[] = [];
 
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const lead of leads) {
+      const existing = selectExisting.get(lead.id) as { payload: string; revision: number } | undefined;
+      const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
+      if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
+        let currentLead: Record<string, any> = { ...lead, revision: Number(existing.revision || 1) };
+        try {
+          currentLead = { ...JSON.parse(existing.payload), revision: Number(existing.revision || 1) };
+        } catch {
+          // The caller still receives a conflict response for legacy malformed data.
+        }
+        throw new LeadRevisionConflictError(currentLead);
+      }
+      const revision = existing ? Number(existing.revision || 1) + 1 : 1;
+      const storedLead: Record<string, any> = { ...lead, revision };
       stmt.run(
-        lead.id,
-        JSON.stringify(lead),
-        typeof lead.createdAt === 'string' ? lead.createdAt : now,
-        now
+        storedLead.id,
+        JSON.stringify(storedLead),
+        typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
+        now,
+        revision
       );
+      storedLeads.push(storedLead);
     }
 
     db.prepare(`
@@ -328,6 +542,7 @@ export function upsertLeads(leads: Record<string, any>[]) {
     `).run(now);
 
     db.exec('COMMIT');
+    return storedLeads;
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -724,4 +939,100 @@ export function readSearchLogById(id: string) {
     .prepare('SELECT * FROM search_logs WHERE id = ?')
     .get(id) as any | undefined;
   return row ? toSearchLogRecord(row) : null;
+}
+
+export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
+
+export type MiningSessionRecord = {
+  id: string;
+  status: MiningSessionStatus;
+  prompt: string;
+  requestedLimit: number;
+  startedAt: string;
+  completedAt?: string;
+  cancellationRequestedAt?: string;
+  errorMessage?: string;
+  stats?: Record<string, unknown>;
+  traceSummary?: Record<string, unknown>;
+  updatedAt: string;
+};
+
+const toMiningSessionRecord = (row: any): MiningSessionRecord => ({
+  id: row.id,
+  status: row.status,
+  prompt: row.prompt,
+  requestedLimit: Number(row.requested_limit || 0),
+  startedAt: row.started_at,
+  completedAt: row.completed_at || undefined,
+  cancellationRequestedAt: row.cancellation_requested_at || undefined,
+  errorMessage: row.error_message || undefined,
+  stats: parseJSONField<Record<string, unknown> | undefined>(row.stats_json, undefined),
+  traceSummary: parseJSONField<Record<string, unknown> | undefined>(row.trace_summary_json, undefined),
+  updatedAt: row.updated_at
+});
+
+export function readMiningSessionById(id: string) {
+  const row = getLeadsDb()
+    .prepare('SELECT * FROM mining_sessions WHERE id = ?')
+    .get(id) as any | undefined;
+  return row ? toMiningSessionRecord(row) : null;
+}
+
+export function readMiningSessions(limit = 25) {
+  const boundedLimit = Math.min(Math.max(Math.floor(limit) || 25, 1), 100);
+  const rows = getLeadsDb()
+    .prepare('SELECT * FROM mining_sessions ORDER BY datetime(updated_at) DESC LIMIT ?')
+    .all(boundedLimit) as any[];
+  return rows.map(toMiningSessionRecord);
+}
+
+export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Partial<Omit<MiningSessionRecord, 'id' | 'updatedAt'>> & { updatedAt?: string }) {
+  const db = getLeadsDb();
+  const existing = readMiningSessionById(update.id);
+  const now = update.updatedAt || new Date().toISOString();
+  const record: MiningSessionRecord = {
+    id: update.id,
+    status: update.status || existing?.status || 'running',
+    prompt: update.prompt ?? existing?.prompt ?? '',
+    requestedLimit: Number(update.requestedLimit ?? existing?.requestedLimit ?? 0),
+    startedAt: update.startedAt ?? existing?.startedAt ?? now,
+    completedAt: update.completedAt ?? existing?.completedAt,
+    cancellationRequestedAt: update.cancellationRequestedAt ?? existing?.cancellationRequestedAt,
+    errorMessage: update.errorMessage ?? existing?.errorMessage,
+    stats: update.stats ?? existing?.stats,
+    traceSummary: update.traceSummary ?? existing?.traceSummary,
+    updatedAt: now
+  };
+
+  db.prepare(`
+    INSERT INTO mining_sessions (
+      id, status, prompt, requested_limit, started_at, completed_at,
+      cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      status = excluded.status,
+      prompt = excluded.prompt,
+      requested_limit = excluded.requested_limit,
+      started_at = excluded.started_at,
+      completed_at = excluded.completed_at,
+      cancellation_requested_at = excluded.cancellation_requested_at,
+      error_message = excluded.error_message,
+      stats_json = excluded.stats_json,
+      trace_summary_json = excluded.trace_summary_json,
+      updated_at = excluded.updated_at
+  `).run(
+    record.id,
+    record.status,
+    record.prompt,
+    record.requestedLimit,
+    record.startedAt,
+    record.completedAt || null,
+    record.cancellationRequestedAt || null,
+    record.errorMessage || null,
+    record.stats ? JSON.stringify(record.stats) : null,
+    record.traceSummary ? JSON.stringify(record.traceSummary) : null,
+    record.updatedAt
+  );
+
+  return record;
 }

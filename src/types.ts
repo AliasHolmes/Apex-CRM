@@ -146,6 +146,8 @@ export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' |
 
 export interface Lead {
   id: string;
+  /** Incremented by SQLite on every write; included in mutations to reject stale edits. */
+  revision?: number;
   profile: LinkedInProfile;
   stage: LeadStage;
   notes?: string;
@@ -277,4 +279,20 @@ export interface SearchLog {
   costSummary?: CostSummary;
   phaseTimeline?: PhaseTimelineItem[];
   schemaVersion?: number;
+}
+
+export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
+
+export interface MiningSession {
+  id: string;
+  status: MiningSessionStatus;
+  prompt: string;
+  requestedLimit: number;
+  startedAt: string;
+  completedAt?: string;
+  cancellationRequestedAt?: string;
+  errorMessage?: string;
+  stats?: Record<string, unknown>;
+  traceSummary?: MiningTraceSummary;
+  updatedAt: string;
 }

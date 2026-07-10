@@ -36,6 +36,15 @@
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
 
+  /* Project-specific midpoints used by the existing CRM surfaces. */
+  --color-slate-205: #e2e8f0;
+  --color-slate-350: #94a3b8;
+  --color-slate-450: #64748b;
+  --color-slate-550: #475569;
+  --color-slate-850: #172033;
+  --color-slate-905: #0a0f1a;
+  --color-emerald-450: #10b981;
+
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);

@@ -16,7 +16,7 @@
 
 ## Overview
 
-**Apex CRM** is a cutting-edge, local-first Customer Relationship Management tool designed for modern sales teams. It seamlessly integrates AI-driven prospecting, intelligent lead enrichment, and automated outreach drafting into a single, lightning-fast workspace.
+**Apex CRM** is a local-first personal CRM for AI-assisted prospecting, deliberate enrichment, and outreach drafting. It is designed to run on one machine and keeps CRM data in local SQLite.
 
 By combining the power of a **local LiteLLM gateway** with automatic **OpenRouter fallback routing**, **Bright Data** for deep profile enrichment, **Tavily** for real-time web scraping, and a **Local SQLite** backend, Apex CRM provides a highly resilient and cost-effective sales intelligence pipeline.
 
@@ -26,7 +26,7 @@ By combining the power of a **local LiteLLM gateway** with automatic **OpenRoute
 
 ```mermaid
 graph TD
-    Client[React Frontend :3000] -->|REST API| Server[Express Server Node v24]
+    Client[React Frontend :3000] -->|REST API| Server[Express Server 127.0.0.1]
     Server -->|Sync Persistence & Cache| DB[(Local SQLite)]
     
     %% LLM Pathway
@@ -66,13 +66,13 @@ graph TD
 | Feature | Description |
 | :--- | :--- |
 | **Adaptive Lead Mining** | Auto-discover prospects via Tavily, score them, and verify them against target ICP criteria. |
-| **Deep Profile Enrichment**| Automatically enrich leads using Bright Data's headless LinkedIn scraping API. |
+| **Selected Profile Enrichment**| Enrich only the records selected in the inventory, with clear cache and provider status. |
 | **Enrichment Cache** | Local SQLite caching layer that prevents duplicate API scraping & email discovery calls to save costs. |
 | **Free-First Email Discovery** | A robust waterfall pipeline utilizing Bright Data batching, Tavily, local crawls, DNS/MX check, and email pattern inference to discover verified emails. |
 | **LLM Gateway & Fallbacks**| Local LiteLLM proxy that routes to Byesu and automatically falls back to OpenRouter on failure. |
-| **CRM Pipeline** | Visual Kanban board to drag-and-drop leads through your sales funnel. |
+| **CRM Pipeline** | Explicit stage transitions for the sales funnel, including terminal converted/lost states. |
 | **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent. |
-| **Local-First Speed** | Zero-latency UI with background syncing to a durable, local SQLite database. |
+| **Local-First Reliability** | Versioned SQLite migrations, per-lead revisions, durable mining-session records, and client reconciliation after writes. |
 
 ---
 
@@ -120,13 +120,38 @@ graph TD
    ```bash
    npm run dev
    ```
-   This starts the **Apex CRM Dev Server** on `http://localhost:3000`. LLM fallback is handled directly inside the app process.
+   This starts the **Apex CRM Dev Server** at `http://127.0.0.1:3000`. In LiteLLM mode it also starts the local proxy at `127.0.0.1:4000`.
+
+### Production run
+
+```bash
+npm run build
+npm run start
+```
+
+The production server binds only to `127.0.0.1`. It blocks generated server bundles and source maps from static requests.
+
+### Database migrations and recovery
+
+On startup, Apex CRM applies transactional SQLite migrations. Before a migration it writes a timestamped backup under `.apex-data/backups/`.
+
+- Schema v3 adds per-lead revisions and durable mining-session state.
+- A mining session left running after a process restart is recorded as `interrupted` instead of appearing active forever.
+- If a stale browser edit conflicts with a newer revision, the server returns the canonical record and the client reloads it.
+
+### Verification
+
+```bash
+npm run lint
+npm run test:lead-engine
+npm run build
+```
 
 ---
 
 ## Privacy & Data
 
-Apex CRM is designed to be **Local-First**. Your lead data is stored in a local SQLite file (`.apex-data/apex-crm.sqlite`) instead of the cloud, giving you complete control over your sales database. The database uses WAL (Write-Ahead Logging) mode for robust, transactional reliability.
+Apex CRM is designed for **local-only** use. Your lead data is stored in `.apex-data/apex-crm.sqlite`; external providers receive only the data required for the search, enrichment, email-discovery, or LLM request you initiate. The direct company-page fetcher rejects private/local destinations, uses HTTPS only, and caps response size.
 
 ---
 

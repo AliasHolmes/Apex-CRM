@@ -69,8 +69,8 @@ export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {
       }
       return { query: '' };
     })
-    .map(item => ({ ...item, query: sanitizeQueryText(item.query) }))
-    .filter(item => item.query);
+    .map((item: SearchQueryPlanItem) => ({ ...item, query: sanitizeQueryText(item.query) }))
+    .filter((item: SearchQueryPlanItem) => item.query);
 }
 
 export function buildFallbackQueryPlan(query: string): SearchQueryPlanItem[] {

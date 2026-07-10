@@ -11,20 +11,22 @@ model_list:
   # these models when the primary request fails.
   - model_name: apex-openrouter-fallback
     litellm_params:
-      model: openrouter/poolside/laguna-m.1:free
+      model: openrouter/mistralai/devstral-2512
+      api_base: os.environ/OPENROUTER_BASE_URL
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 5
 
   - model_name: apex-groq-fallback
     litellm_params:
       model: groq/qwen/qwen3.6-27b
+      api_base: os.environ/GROQ_BASE_URL
       api_key: os.environ/GROQ_API_KEY
       rpm: 5
 
 litellm_settings:
   drop_params: true
-  request_timeout: 120
-  num_retries: 2
+  request_timeout: 30
+  num_retries: 0
   allowed_fails: 1
   cooldown_time: 60
   fallbacks:

@@ -108,10 +108,12 @@ function getLLMProviderCandidates(): LLMProvider[] {
 }
 
 function getConfiguredLLMProviders(): LLMProvider[] {
+  const directProviders = getDirectLLMProviderCandidates().filter(provider => !!provider.apiKey);
   if (getGatewayMode() === 'litellm') {
-    return [getLiteLLMProvider()];
+    const directFallbacks = directProviders.filter(provider => provider.id !== 'primary');
+    return [getLiteLLMProvider(), ...directFallbacks];
   }
-  return getDirectLLMProviderCandidates().filter(provider => !!provider.apiKey);
+  return directProviders;
 }
 
 export function getLLMProviderSummaries(): LLMProviderSummary[] {

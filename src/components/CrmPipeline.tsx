@@ -10,8 +10,7 @@ import {
   MapPin, 
   Mail, 
   Phone, 
-  Linkedin, 
-  Twitter, 
+  Link2,
   Globe, 
   GraduationCap, 
   Tag, 
@@ -58,6 +57,16 @@ const pipelineStages: { id: Lead['stage']; label: string; bg: string; text: stri
   { id: 'NURTURE', label: 'Nurture', bg: 'bg-slate-800/40', text: 'text-slate-400', dot: 'bg-slate-500' },
   { id: 'LOST', label: 'Lost', bg: 'bg-red-950/20', text: 'text-red-300', dot: 'bg-red-500' }
 ];
+
+const nextStageByCurrentStage: Partial<Record<Lead['stage'], Lead['stage']>> = {
+  SCRAPED: 'ENRICHED',
+  ENRICHED: 'SEQUENCE ACTIVE',
+  'SEQUENCE ACTIVE': 'REPLIED',
+  REPLIED: 'MEETING BOOKED',
+  'MEETING BOOKED': 'NEGOTIATING',
+  NEGOTIATING: 'CONVERTED',
+  NURTURE: 'SEQUENCE ACTIVE'
+};
 
 export default function CrmPipeline({
   leads,
@@ -319,15 +328,15 @@ export default function CrmPipeline({
                                   <ChevronLeft className="w-3 h-3" />
                                 </Button>
                               )}
-                              {stage.id !== 'CONVERTED' && (
+                              {nextStageByCurrentStage[stage.id] && (
                                 <Button
                                   variant="outline"
                                   size="icon"
                                   className="w-6 h-6"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    const idx = pipelineStages.findIndex(s => s.id === stage.id);
-                                    onUpdateLeadStage(lead.id, pipelineStages[idx + 1].id);
+                                    const nextStage = nextStageByCurrentStage[stage.id];
+                                    if (nextStage) onUpdateLeadStage(lead.id, nextStage);
                                   }}
                                   title="Advance Stage"
                                 >
@@ -450,7 +459,7 @@ export default function CrmPipeline({
                       )}
                       {selectedLead.profile.contactDetails?.linkedinUrl && (
                         <div className="flex items-center gap-2 text-slate-350 col-span-1 md:col-span-2">
-                          <Linkedin className="w-3.5 h-3.5 text-slate-550 shrink-0" />
+                          <Link2 className="w-3.5 h-3.5 text-slate-550 shrink-0" />
                           <a
                             href={selectedLead.profile.contactDetails.linkedinUrl}
                             target="_blank"

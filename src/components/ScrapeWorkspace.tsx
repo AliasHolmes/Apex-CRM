@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
 import { motion, AnimatePresence } from 'motion/react';
@@ -119,6 +119,7 @@ interface ScrapeWorkspaceProps {
 }
 
 export default function ScrapeWorkspace() {
+  const activeDiscoveryRef = useRef<{ controller: AbortController; sessionId: string } | null>(null);
   const { leads, handleLeadAdded, handleBulkLeadsAdded, rehydrateLeads } = useLeads();
   const { triggerToast } = useToast();
   const [activeTab, setActiveTab] = useState<'url' | 'paste' | 'find'>('url');
@@ -127,11 +128,11 @@ export default function ScrapeWorkspace() {
   const [apiKeyDetected, setApiKeyDetected] = useState<boolean | null>(null);
 
   // URL Mode inputs
-  const [urlInput, setUrlInput] = useState('https://www.linkedin.com/in/siskind/');
+  const [urlInput, setUrlInput] = useState('');
   // Paste Mode inputs
   const [pastedText, setPastedText] = useState('');
   // Find Leads inputs
-  const [findQuery, setFindQuery] = useState('Immigration Attorneys in Memphis');
+  const [findQuery, setFindQuery] = useState('');
   const [leadLimit, setLeadLimit] = useState<number>(5);
   
   const [loading, setLoading] = useState(false);
@@ -150,7 +151,7 @@ export default function ScrapeWorkspace() {
     if (showLogs) {
       fetch('/api/search-logs')
         .then(r => r.json())
-        .then(data => setSearchLogs(data))
+        .then(data => setSearchLogs(Array.isArray(data) ? data : (Array.isArray(data.logs) ? data.logs : [])))
         .catch(console.error);
     }
   }, [showLogs]);
@@ -367,6 +368,7 @@ export default function ScrapeWorkspace() {
     const taskId = handleTaskAdd('search', findQuery);
     const requestController = new AbortController();
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
+    activeDiscoveryRef.current = { controller: requestController, sessionId };
     let pollInterval: ReturnType<typeof setInterval> | undefined;
 
     try {
@@ -430,8 +432,8 @@ export default function ScrapeWorkspace() {
         throw new Error('Search did not yield any new public leads. Try different criteria or industries.');
       }
 
-      handleBulkLeadsAdded(fetchedLeads);
-      rehydrateLeads().catch(err => console.warn('Post-discovery rehydrate failed:', err));
+      await handleBulkLeadsAdded(fetchedLeads);
+      await rehydrateLeads();
       updateTaskStatus(taskId, 'completed', fetchedLeads.length);
       const stats = data.stats;
       const tavilyCalls = stats?.queryRuns?.length || stats?.rounds || 0;
@@ -459,8 +461,17 @@ export default function ScrapeWorkspace() {
       updateTaskStatus(taskId, 'failed', 0);
     } finally {
       if (pollInterval) clearInterval(pollInterval);
+      activeDiscoveryRef.current = null;
       setLoading(false);
     }
+  };
+
+  const handleCancelDiscovery = () => {
+    const activeDiscovery = activeDiscoveryRef.current;
+    if (!activeDiscovery) return;
+    activeDiscovery.controller.abort();
+    setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Cancellation requested.`]);
+    void fetch(`/api/mining-sessions/${activeDiscovery.sessionId}/cancel`, { method: 'POST' });
   };
 
   return (
@@ -747,6 +758,9 @@ Everything else is noise.`)}
                   AGENT ACTIVE
                 </span>
                 <div className="h-3 w-3 bg-indigo-500 rounded-full animate-ping"></div>
+                <Button type="button" variant="outline" size="sm" onClick={handleCancelDiscovery} className="h-7 text-[10px]">
+                  Cancel
+                </Button>
               </div>
             </div>
 

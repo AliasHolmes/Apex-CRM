@@ -34,9 +34,10 @@ if (gatewayMode === 'litellm') {
     : path.join(process.cwd(), '.venv-litellm', 'bin', 'litellm');
 
   console.log('[dev-entry] Starting LiteLLM proxy...');
-  litellmProcess = spawn(litellmPath, ['--config', 'litellm.config.yaml', '--port', '4000'], {
+  litellmProcess = spawn(litellmPath, ['--config', 'litellm.config.yaml', '--host', '127.0.0.1', '--port', '4000'], {
     stdio: 'inherit',
     shell: false,
+    windowsHide: true,
     env: process.env,
   });
 } else {
@@ -46,7 +47,8 @@ if (gatewayMode === 'litellm') {
 console.log('[dev-entry] Starting Apex CRM dev server...');
 const crmProcess = spawn(isWindows ? 'npm.cmd' : 'npm', ['run', 'dev:server'], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
+  windowsHide: true,
   env: process.env,
 });
 
@@ -89,6 +91,13 @@ process.on('exit', () => {
 });
 
 if (litellmProcess) {
+  litellmProcess.on('error', (error) => {
+    if (!isCleaningUp) {
+      console.error('[dev-entry] LiteLLM proxy failed to start:', error);
+      cleanup();
+      process.exit(1);
+    }
+  });
   litellmProcess.on('exit', (code) => {
     if (!isCleaningUp) {
       console.log(`[dev-entry] LiteLLM proxy exited with code ${code}`);
@@ -97,6 +106,14 @@ if (litellmProcess) {
     }
   });
 }
+
+crmProcess.on('error', (error) => {
+  if (!isCleaningUp) {
+    console.error('[dev-entry] Apex CRM dev server failed to start:', error);
+    cleanup();
+    process.exit(1);
+  }
+});
 
 crmProcess.on('exit', (code) => {
   if (!isCleaningUp) {

@@ -82,6 +82,45 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(body.model, 'apex-primary');
   });
 
+  it('falls back from LiteLLM to direct non-primary providers when the proxy route fails', async () => {
+    process.env.LLM_GATEWAY_MODE = 'litellm';
+    process.env.LITELLM_MASTER_KEY = 'test-litellm-key';
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.OPENROUTER_MODEL = 'openrouter-test-model';
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('litellm-direct-fallback');
+    const calls: Array<{ url: string; body: any; auth: string }> = [];
+
+    globalThis.fetch = async (url, options: any) => {
+      calls.push({
+        url: url.toString(),
+        body: JSON.parse(options.body),
+        auth: options.headers['Authorization'],
+      });
+
+      if (calls.length === 1) {
+        return new Response('proxy timeout', { status: 504 });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'direct fallback ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test prompt');
+    assert.equal(res.text, 'direct fallback ok');
+    assert.equal(res.provider, 'OpenRouter');
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, 'http://127.0.0.1:4000/v1/chat/completions');
+    assert.equal(calls[0].body.model, 'apex-primary');
+    assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
+    assert.equal(calls[1].body.model, 'openrouter-test-model');
+  });
+
   it('falls back directly to OpenRouter when the primary provider fails', async () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';

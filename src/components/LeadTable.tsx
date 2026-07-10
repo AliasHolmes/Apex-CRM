@@ -12,7 +12,7 @@ import {
   Trash2, 
   Layers, 
   Mail, 
-  Linkedin, 
+  Link2,
   Compass, 
   Search, 
   Sparkles, 
@@ -92,7 +92,8 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           const data = await response.json();
           if (data.lead && handleMergeLead) {
             handleMergeLead(data.lead);
-            triggerToast(`Successfully verified & enriched record for ${item.profile.fullName}.`);
+            const outcome = data.profileEnrichment?.status || 'completed';
+            triggerToast(`Enrichment ${outcome.replace(/_/g, ' ')} for ${item.profile.fullName}.`);
           } else if (data.lead && handleUpdateLeadProfile) {
             handleUpdateLeadProfile(item.id, data.lead.profile);
             triggerToast(`Successfully verified & enriched record for ${item.profile.fullName}.`);
@@ -158,16 +159,20 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     }
   };
 
-  const handleExecutePurgeDuplicates = () => {
+  const handleExecutePurgeDuplicates = async () => {
     if (duplicateIdsToDelete.length === 0) return;
-    if (handleDeleteLeads) {
-      handleDeleteLeads(duplicateIdsToDelete);
-    } else {
-      duplicateIdsToDelete.forEach(id => handleDeleteLead(id));
+    try {
+      if (handleDeleteLeads) {
+        await handleDeleteLeads(duplicateIdsToDelete);
+      } else {
+        duplicateIdsToDelete.forEach(id => handleDeleteLead(id));
+      }
+      triggerToast(`Successfully purged ${duplicateIdsToDelete.length} duplicate leads.`);
+      setDuplicateIdsToDelete([]);
+      setShowConfirmPurgeDuplicates(false);
+    } catch (error: any) {
+      triggerToast(error.message || 'Could not delete duplicate leads. The CRM was reloaded.');
     }
-    triggerToast(`Successfully purged ${duplicateIdsToDelete.length} duplicate leads.`);
-    setDuplicateIdsToDelete([]);
-    setShowConfirmPurgeDuplicates(false);
   };
 
   // Helper to identify potential duplicates in the table
@@ -293,15 +298,19 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   };
 
   // Bulk operators
-  const handleBulkStageChange = (stage: Lead['stage']) => {
+  const handleBulkStageChange = async (stage: Lead['stage']) => {
     if (selectedLeadIds.length === 0) return;
-    if (handleUpdateLeadsStage) {
-      handleUpdateLeadsStage(selectedLeadIds, stage);
-    } else {
-      selectedLeadIds.forEach(id => handleUpdateLeadStage(id, stage));
+    try {
+      if (handleUpdateLeadsStage) {
+        await handleUpdateLeadsStage(selectedLeadIds, stage);
+      } else {
+        selectedLeadIds.forEach(id => handleUpdateLeadStage(id, stage));
+      }
+      triggerToast(`Updated ${selectedLeadIds.length} lead stages to ${stage.toUpperCase()}!`);
+      setSelectedLeadIds([]);
+    } catch (error: any) {
+      triggerToast(error.message || 'Could not update stages. The CRM was reloaded.');
     }
-    triggerToast(`Updated ${selectedLeadIds.length} lead stages to ${stage.toUpperCase()}!`);
-    setSelectedLeadIds([]);
   };
 
   const handleFindEmail = async (lead: Lead) => {
@@ -310,12 +319,13 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     try {
       const response = await fetch(`/api/leads/${lead.id}/find-email`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lead })
+        headers: { 'Content-Type': 'application/json' }
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Email discovery failed');
-      if (data.lead?.profile && handleUpdateLeadProfile) {
+      if (data.lead && handleMergeLead) {
+        handleMergeLead(data.lead);
+      } else if (data.lead?.profile && handleUpdateLeadProfile) {
         handleUpdateLeadProfile(lead.id, data.lead.profile);
       }
       const status = data.emailDiscovery?.status || 'not_found';
@@ -347,16 +357,20 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     triggerToast(`Queued ${targetLeads.length} lead(s) for AI background enrichment & email discovery.`);
   };
 
-  const handleBulkDeleteAction = () => {
+  const handleBulkDeleteAction = async () => {
     if (selectedLeadIds.length === 0) return;
-    if (handleDeleteLeads) {
-      handleDeleteLeads(selectedLeadIds);
-    } else {
-      selectedLeadIds.forEach(id => handleDeleteLead(id));
+    try {
+      if (handleDeleteLeads) {
+        await handleDeleteLeads(selectedLeadIds);
+      } else {
+        selectedLeadIds.forEach(id => handleDeleteLead(id));
+      }
+      triggerToast(`Successfully purged ${selectedLeadIds.length} leads.`);
+      setSelectedLeadIds([]);
+      setShowConfirmBulkDelete(false);
+    } catch (error: any) {
+      triggerToast(error.message || 'Could not delete leads. The CRM was reloaded.');
     }
-    triggerToast(`Successfully purged ${selectedLeadIds.length} leads.`);
-    setSelectedLeadIds([]);
-    setShowConfirmBulkDelete(false);
   };
 
   const handleBulkDelete = () => {
@@ -421,7 +435,9 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
 
       // Escape quotes and double quotes for clean CSV syntax
       return row.map(v => {
-        const escaped = String(v).replace(/"/g, '""');
+        const value = String(v);
+        const formulaSafeValue = /^[=+\-@]/.test(value.trimStart()) ? `'${value}` : value;
+        const escaped = formulaSafeValue.replace(/"/g, '""');
         return `"${escaped}"`;
       }).join(',');
     });
@@ -437,6 +453,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleCsvImport = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -448,11 +465,11 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
-      complete: (results) => {
+      complete: async (results) => {
         try {
           const rows = results.data as Record<string, string>[];
           
-          const newProfiles: LinkedInProfile[] = rows.map((row, i) => {
+          const newProfiles = rows.flatMap((row, i): LinkedInProfile[] => {
             // Flexible heuristic field mapping
             const getField = (keys: string[]) => {
               const matchingKey = Object.keys(row).find(k => keys.some(key => k.toLowerCase().includes(key)));
@@ -464,21 +481,14 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
             let fullName = getField(['full name', 'name', 'contact']);
             if (!fullName && (fName || lName)) {
               fullName = `${fName} ${lName}`.trim();
-            } else if (!fullName) {
-              fullName = `Unknown Contact ${i + 1}`;
             }
+            if (!fullName) return [];
 
             const company = getField(['company', 'employer', 'org']);
             const title = getField(['title', 'role', 'position']);
             const email = getField(['email']);
             const phone = getField(['phone', 'mobile']);
-            let linkedinUrl = getField(['linkedin', 'profile url', 'url']);
-
-            // Auto-enrichment logic: Missing LinkedIn URL
-            if (!linkedinUrl && company && fullName !== `Unknown Contact ${i + 1}`) {
-              const slug = `${fullName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${company.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
-              linkedinUrl = `https://linkedin.com/in/${slug}`;
-            }
+            const linkedinUrl = getField(['linkedin', 'profile url', 'url']);
 
             const industry = getField(['industry', 'sector']) || 'Tech';
             const location = getField(['location', 'country', 'city']);
@@ -486,7 +496,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
             const skillsStr = getField(['skills', 'tags']);
             const skills = skillsStr ? skillsStr.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
 
-            return {
+            return [{
               id: `imported-${Date.now()}-${i}`,
               fullName,
               headline: title ? `${title} @ ${company}` : 'Professional',
@@ -501,12 +511,15 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 linkedinUrl
               },
               skills
-            };
+            }];
           });
 
-          if (handleBulkLeadsAdded) {
-            handleBulkLeadsAdded(newProfiles);
-            triggerToast(`Successfully ingested and enriched ${newProfiles.length} rows.`);
+          if (newProfiles.length === 0) {
+            triggerToast('No valid named contacts found in the CSV. Nothing was imported.');
+          } else if (handleBulkLeadsAdded) {
+            await handleBulkLeadsAdded(newProfiles);
+            const skipped = rows.length - newProfiles.length;
+            triggerToast(`Imported ${newProfiles.length} contact${newProfiles.length === 1 ? '' : 's'} without synthetic enrichment.${skipped ? ` Skipped ${skipped} unnamed row${skipped === 1 ? '' : 's'}.` : ''}`);
           }
         } catch (err) {
           console.error(err);
@@ -849,7 +862,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                             title="Open LinkedIn"
                             className="text-muted-foreground hover:text-primary transition-colors"
                           >
-                            <Linkedin className="w-3.5 h-3.5" />
+                            <Link2 className="w-3.5 h-3.5" />
                           </a>
                         )}
                       </div>

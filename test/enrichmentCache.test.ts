@@ -8,6 +8,44 @@ process.env.APEX_DB_PATH = path.join(os.tmpdir(), `apex-cache-test-${Date.now()}
 const db = await import('../server/db.ts');
 
 describe('enrichment cache', () => {
+  it('initializes a versioned database schema', () => {
+    const version = db.getLeadsDb().prepare('PRAGMA user_version').get() as { user_version: number };
+    assert.equal(version.user_version, 3);
+  });
+
+  it('increments lead revisions and rejects stale writes', () => {
+    const baseLead = {
+      id: 'revision-test-lead',
+      profile: { fullName: 'Revision Test' },
+      stage: 'SCRAPED',
+      createdAt: '2026-07-11T00:00:00.000Z'
+    };
+    const created = db.upsertLead(baseLead);
+    assert.equal(created.revision, 1);
+    const updated = db.upsertLead({ ...created, notes: 'Fresh edit' });
+    assert.equal(updated.revision, 2);
+    assert.throws(() => db.upsertLead({ ...created, notes: 'Stale edit' }), db.LeadRevisionConflictError);
+  });
+
+  it('persists mining session state independently of live memory', () => {
+    const created = db.upsertMiningSession({
+      id: 'mining-session-test',
+      status: 'running',
+      prompt: 'Dentists in Austin',
+      requestedLimit: 5,
+      startedAt: '2026-07-11T00:00:00.000Z'
+    });
+    assert.equal(created.status, 'running');
+    const completed = db.upsertMiningSession({
+      id: created.id,
+      status: 'success',
+      completedAt: '2026-07-11T00:01:00.000Z',
+      stats: { accepted: 3 }
+    });
+    assert.equal(completed.stats?.accepted, 3);
+    assert.equal(db.readMiningSessionById(created.id)?.status, 'success');
+  });
+
   it('returns unexpired cache hits by URL and username', () => {
     const now = new Date('2026-06-25T00:00:00.000Z');
     db.upsertEnrichmentCacheEntry({

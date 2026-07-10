@@ -27,7 +27,10 @@ export async function enrichLeadProfile(
   options: EnrichLeadProfileOptions = {}
 ): Promise<{ lead: Record<string, any>; result: ProfileEnrichmentResult }> {
   const { force = false, ttlDays = 7 } = options;
-  const rawUrl = lead.contactDetails?.linkedinUrl || lead.evidence?.sourceUrl || lead.profile?.contactDetails?.linkedinUrl;
+  // Discovery stores a Lead wrapper while older callers can still pass a profile.
+  // Keep person fields on the profile and qualification metadata on the lead.
+  const profile = lead.profile && typeof lead.profile === 'object' ? lead.profile : lead;
+  const rawUrl = profile.contactDetails?.linkedinUrl || lead.evidence?.sourceUrl;
 
   if (!rawUrl) {
     return {
@@ -63,14 +66,14 @@ export async function enrichLeadProfile(
     quality: EvidenceQuality,
     evidenceBlock: string
   ) => {
-    const query = lead.evidence?.sourceQuery || lead.headline || lead.currentTitle || '';
+    const query = lead.evidence?.sourceQuery || profile.headline || profile.currentTitle || '';
     lead.decisionMakerVerification = verifyDecisionMakerFromEvidence({
       query,
-      fullName: lead.fullName || lead.profile?.fullName || '',
-      currentTitle: lead.currentTitle || lead.profile?.currentTitle || '',
-      currentCompany: lead.currentCompany || lead.profile?.currentCompany || '',
-      headline: lead.headline || lead.profile?.headline || '',
-      seniorityLevel: lead.seniorityLevel || lead.profile?.seniorityLevel || '',
+      fullName: profile.fullName || '',
+      currentTitle: profile.currentTitle || '',
+      currentCompany: profile.currentCompany || '',
+      headline: profile.headline || '',
+      seniorityLevel: profile.seniorityLevel || '',
       evidenceText: evidenceBlock
     });
 
@@ -137,19 +140,19 @@ export async function enrichLeadProfile(
       };
     }
 
-    const title = lead.currentTitle || lead.profile?.currentTitle || lead.headline || 'Untitled';
+    const title = profile.currentTitle || profile.headline || 'Untitled';
     const snippet = lead.evidence?.evidenceBlock || '';
     const parsed = parseLinkedInEvidence(markdown, { title, url: rawUrl, snippet });
 
     if (parsed.quality === 'good' || parsed.quality === 'partial') {
-      if (parsed.personName && (!lead.fullName || lead.fullName === 'Unknown')) lead.fullName = parsed.personName;
-      if (parsed.companyName && (!lead.currentCompany || lead.currentCompany === 'Unknown')) lead.currentCompany = parsed.companyName;
+      if (parsed.personName && (!profile.fullName || profile.fullName === 'Unknown')) profile.fullName = parsed.personName;
+      if (parsed.companyName && (!profile.currentCompany || profile.currentCompany === 'Unknown')) profile.currentCompany = parsed.companyName;
 
       upsertEnrichmentCacheEntry({
         normalizedUrl,
         linkedinUsername: username,
-        personName: parsed.personName || lead.fullName || '',
-        companyName: parsed.companyName || lead.currentCompany || '',
+        personName: parsed.personName || profile.fullName || '',
+        companyName: parsed.companyName || profile.currentCompany || '',
         evidenceBlock: parsed.evidenceBlock,
         scrapeQuality: parsed.quality,
         sourceProvider: 'brightdata'

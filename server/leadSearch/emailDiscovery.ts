@@ -1,4 +1,5 @@
 import dns from 'dns/promises';
+import net from 'node:net';
 
 import {
   getEmailDiscoveryCacheEntry,
@@ -85,6 +86,7 @@ const COMPANY_STOP_WORDS = new Set([
 ]);
 
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+const MAX_DIRECT_FETCH_BYTES = 512 * 1024;
 
 const normalizeText = (value?: string) => (value || '').trim();
 const normalizeKey = (value?: string) => normalizeText(value).toLowerCase();
@@ -97,6 +99,42 @@ function asUrl(value?: string) {
   } catch {
     return null;
   }
+}
+
+function isPublicIpAddress(address: string) {
+  if (net.isIP(address) === 4) {
+    const [first, second] = address.split('.').map(Number);
+    return !(
+      first === 0 || first === 10 || first === 127 || first >= 224 ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && (second === 0 || second === 168)) ||
+      (first === 198 && (second === 18 || second === 19))
+    );
+  }
+
+  if (net.isIP(address) === 6) {
+    const normalized = address.toLowerCase();
+    return !(normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80:'));
+  }
+
+  return false;
+}
+
+function isSafePublicHostname(hostname: string) {
+  const normalized = hostname.trim().toLowerCase().replace(/\.$/, '');
+  if (!normalized || normalized === 'localhost' || normalized.endsWith('.localhost') || normalized.endsWith('.local')) return false;
+  return net.isIP(normalized) ? isPublicIpAddress(normalized) : /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized);
+}
+
+async function hostnameResolvesPublicly(hostname: string) {
+  if (!isSafePublicHostname(hostname)) return false;
+  if (net.isIP(hostname)) return isPublicIpAddress(hostname);
+
+  const records = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
+  const addresses = records.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  return addresses.length > 0 && addresses.every(isPublicIpAddress);
 }
 
 export function domainFromUrl(value?: string) {
@@ -255,7 +293,7 @@ function inferPatternEmail(fullName: string | undefined, domain: string, knownEm
 }
 
 async function hasValidMailServer(domain: string, timeoutMs = 5000) {
-  if (!domain) return false;
+  if (!domain || !isSafePublicHostname(domain)) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const records = await Promise.race([
@@ -273,17 +311,43 @@ async function hasValidMailServer(domain: string, timeoutMs = 5000) {
 }
 
 async function fetchPage(url: string, timeoutMs: number) {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return '';
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || (parsed.port && parsed.port !== '443')) return '';
+  if (!(await hostnameResolvesPublicly(parsed.hostname))) return '';
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       signal: controller.signal,
+      redirect: 'manual',
       headers: { 'User-Agent': 'ApexCRM/1.0 contact discovery' }
     });
     if (!res.ok) return '';
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('text/') && !contentType.includes('html') && !contentType.includes('markdown')) return '';
-    return await res.text();
+    const contentLength = Number(res.headers.get('content-length') || 0);
+    if (contentLength > MAX_DIRECT_FETCH_BYTES || !res.body) return '';
+
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_DIRECT_FETCH_BYTES) {
+        await reader.cancel();
+        return '';
+      }
+      chunks.push(value);
+    }
+    return new TextDecoder().decode(Buffer.concat(chunks));
   } catch {
     return '';
   } finally {

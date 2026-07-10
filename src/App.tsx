@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { lazy, Suspense, useState } from 'react';
 import { LeadProvider, useLeads } from './context/LeadContext';
 import { ToastProvider, useToast } from './context/ToastContext';
 import { motion, AnimatePresence } from 'motion/react';
@@ -21,7 +21,6 @@ import {
   Briefcase, 
   MapPin, 
   Mail, 
-  Linkedin, 
   Tag, 
   X, 
   Database,
@@ -29,7 +28,7 @@ import {
   ChevronRight,
   Check
 } from 'lucide-react';
-import { LinkedInProfile, Lead, ContactDetails, QualifiedLeadProfile } from './types';
+import { LinkedInProfile, Lead } from './types';
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
@@ -37,16 +36,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
-// Import our modular dashboard blocks
-import ScrapeWorkspace from './components/ScrapeWorkspace';
-import CrmPipeline from './components/CrmPipeline';
-import LeadTable from './components/LeadTable';
-import OutreachStudio from './components/OutreachStudio';
-import CrmOverview from './components/CrmOverview';
+// Large workspaces load only when the user opens their tab.
+const ScrapeWorkspace = lazy(() => import('./components/ScrapeWorkspace'));
+const CrmPipeline = lazy(() => import('./components/CrmPipeline'));
+const LeadTable = lazy(() => import('./components/LeadTable'));
+const OutreachStudio = lazy(() => import('./components/OutreachStudio'));
+const CrmOverview = lazy(() => import('./components/CrmOverview'));
+const CrmCopilot = lazy(() => import('./components/CrmCopilot'));
 
-import { buildProfileDedupeKeys, hasDuplicateProfile } from './utils/leadDedupe';
+const TabLoading = () => (
+  <div className="min-h-56 grid place-items-center text-sm text-slate-400" role="status">
+    Loading workspace...
+  </div>
+);
 
-// Define the high-fidelity pre-seed leads
+import { predictiveScoreFromComposite, scoreLeadDeterministically } from './utils/leadScore';
+
+/* Removed demo seed records. Real CRM state is loaded from SQLite or an explicit legacy-browser migration.
 const seedLeads: Lead[] = [
   {
     id: 'seed-siskind',
@@ -209,7 +215,7 @@ const seedLeads: Lead[] = [
     compositeScore: 5.6,
     tier: 'TIER 3: WATCH'
   }
-];
+]; */
 const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
 
 type StoredLeadsResponse = {
@@ -243,30 +249,11 @@ async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
 }
 
 function Dashboard() {
-  const { leads, isHydrated, saveLeadsToStorage, handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage, handleUpdateLeadNotes, handleUpdateLeadProfile, handleUpdateLeadTags, handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage } = useLeads();
+  const { leads, saveLeadsToStorage, handleUpdateLeadStage, handleUpdateLeadNotes, handleUpdateLeadTags, handleDeleteLead } = useLeads();
   const { triggerToast } = useToast();
   const [activeTab, setActiveTab] = useState<'overview' | 'workspace' | 'pipeline' | 'inventory' | 'outreach'>('overview');
   
   const [selectedLeadForOutreach, setSelectedLeadForOutreach] = useState<Lead | null>(null);
-  const [authStatus, setAuthStatus] = useState<{hasOAuth: boolean}>({ hasOAuth: false });
-
-  // Poll for OAuth authentication status
-  useEffect(() => {
-    const checkAuth = () => {
-      fetch('/api/health')
-        .then(r => r.json())
-        .then(data => {
-          if (data) {
-            setAuthStatus({ hasOAuth: !!data.hasOAuth });
-          }
-        })
-        .catch(() => {});
-    };
-    checkAuth();
-    const interval = setInterval(checkAuth, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
   // Manual Lead Creation Form states
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualName, setManualName] = useState('');
@@ -293,7 +280,7 @@ function Dashboard() {
       summary: manualSummary || 'Manually loaded prospect details.',
       contactDetails: {
         email: manualEmail,
-        linkedinUrl: manualUrl || `https://linkedin.com/in/${(manualName || '').toLowerCase().replace(/\s+/g, '-')}`
+        linkedinUrl: manualUrl || undefined
       },
       experiences: manualTitle ? [{ title: manualTitle, company: manualCompany }] : []
     };
@@ -322,8 +309,8 @@ function Dashboard() {
         return currentLeads;
       }
 
-      const compositeScore = Math.floor(Math.random() * 20) + 75; // high qualification
-      const predictiveScore = Math.floor(compositeScore * 0.9);
+      const compositeScore = scoreLeadDeterministically(newProfile);
+      const predictiveScore = predictiveScoreFromComposite(compositeScore);
       const newLead: Lead = {
         id: `lead-manual-${Date.now()}`,
         profile: newProfile,
@@ -448,13 +435,15 @@ function Dashboard() {
         
         {/* Dynamic Navigation Content Layout */}
         <div className="space-y-6">
-                    <div className={activeTab === 'workspace' ? 'block' : 'hidden'} aria-hidden={activeTab !== 'workspace'}>
+          {activeTab === 'workspace' && (
+            <div>
             <div className="mb-6">
               <h2 className="text-xl font-extrabold text-white tracking-tight">Lead Extraction Terminal</h2>
               <p className="text-xs text-slate-400 mt-1">Acquire prospective detail schemas using direct URL mapping, raw text clipboard extraction, or general criteria discoverers.</p>
             </div>
-            <ScrapeWorkspace />
-          </div>
+              <Suspense fallback={<TabLoading />}><ScrapeWorkspace /></Suspense>
+            </div>
+          )}
 <AnimatePresence mode="wait">
             {activeTab === 'overview' && (
               <motion.div
@@ -464,7 +453,7 @@ function Dashboard() {
                 exit={{ opacity: 0, y: -15, scale: 0.98 }}
                 transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
               >
-                <CrmOverview leads={leads} />
+                <Suspense fallback={<TabLoading />}><CrmOverview leads={leads} /></Suspense>
               </motion.div>
             )}
             {activeTab === 'pipeline' && (
@@ -481,14 +470,14 @@ function Dashboard() {
                     <p className="text-xs text-slate-400 mt-1">Supervise outbound status stages and analyze qualification indexes.</p>
                   </div>
                 </div>
-                <CrmPipeline 
+                <Suspense fallback={<TabLoading />}><CrmPipeline
                   leads={leads}
                   onUpdateLeadStage={handleUpdateLeadStage}
                   onUpdateLeadNotes={handleUpdateLeadNotes}
                   onUpdateLeadTags={handleUpdateLeadTags}
                   onDeleteLead={handleDeleteLead}
                   onSelectLeadForOutreach={handleSelectLeadForOutreach}
-                />
+                /></Suspense>
               </motion.div>
             )}
 
@@ -500,7 +489,7 @@ function Dashboard() {
                 exit={{ opacity: 0, y: -15, scale: 0.98 }}
                 transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
               >
-                <LeadTable onAddManualLead={() => setShowManualModal(true)} />
+                <Suspense fallback={<TabLoading />}><LeadTable onAddManualLead={() => setShowManualModal(true)} /></Suspense>
               </motion.div>
             )}
 
@@ -516,15 +505,17 @@ function Dashboard() {
                   <h2 className="text-xl font-extrabold text-white tracking-tight">Outbound Copywriter Studio</h2>
                   <p className="text-xs text-slate-400 mt-1">Harness advanced model synthesis to write context-aware connection pitches and sequence campaigns.</p>
                 </div>
-                <OutreachStudio 
+                <Suspense fallback={<TabLoading />}><OutreachStudio
                   selectedLeadForOutreach={selectedLeadForOutreach}
                   leads={leads}
-                />
+                /></Suspense>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
       </main>
+
+      <Suspense fallback={null}><CrmCopilot /></Suspense>
 
       {/* Manual log Contact Modal overlay */}
       <Dialog open={showManualModal} onOpenChange={setShowManualModal}>

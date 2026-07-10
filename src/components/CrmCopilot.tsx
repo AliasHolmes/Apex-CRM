@@ -1,16 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MessageSquare, X, Send, Bot, User } from 'lucide-react';
-import { Lead } from '../types';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-interface CrmCopilotProps {
-  leads: Lead[];
-}
-
-export default function CrmCopilot({ leads }: CrmCopilotProps) {
+export default function CrmCopilot() {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<{role: 'user' | 'assistant', content: string}[]>([
     { role: 'assistant', content: "Hi! I'm your Apex CRM Copilot. I can analyze your pipeline, summarize leads, or help draft emails. What do you need?" }
@@ -37,7 +32,7 @@ export default function CrmCopilot({ leads }: CrmCopilotProps) {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: userMessage, leads })
+        body: JSON.stringify({ query: userMessage })
       });
 
       const data = await response.json();

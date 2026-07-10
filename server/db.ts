@@ -8,7 +8,7 @@ import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 3;
+const LATEST_SCHEMA_VERSION = 4;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -35,8 +35,22 @@ function backupDatabaseBeforeMigration(previousVersion: number) {
   fs.mkdirSync(backupDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(backupDir, `apex-crm.pre-migration-v${previousVersion}.${timestamp}.sqlite`);
-  fs.copyFileSync(LEADS_DB_PATH, backupPath);
-  console.log(`Database backup created before migration: ${backupPath}`);
+
+  // Use VACUUM INTO instead of fs.copyFileSync. When SQLite is in WAL mode,
+  // a raw file copy may miss pages that are in the .wal sidecar but not yet
+  // checkpointed into the main file, producing a corrupt backup. VACUUM INTO
+  // always produces a complete, self-contained snapshot regardless of WAL state.
+  try {
+    const srcDb = new DatabaseSync(LEADS_DB_PATH, { open: true });
+    srcDb.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+    srcDb.close();
+    console.log(`WAL-safe database backup created before migration: ${backupPath}`);
+  } catch (vacuumError) {
+    // Fallback to raw copy if VACUUM INTO is unavailable (very old Node.js versions).
+    console.warn('VACUUM INTO failed, falling back to file copy for backup:', vacuumError);
+    fs.copyFileSync(LEADS_DB_PATH, backupPath);
+    console.log(`(Fallback) Database backup created before migration: ${backupPath}`);
+  }
 }
 
 function runMigrations(db: DatabaseSync) {
@@ -168,6 +182,42 @@ function runMigrations(db: DatabaseSync) {
             completed_at = COALESCE(completed_at, updated_at),
             updated_at = datetime('now')
         WHERE status IN ('running', 'cancellation_requested');
+      `);
+    }
+
+    if (currentVersion < 4) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lead_activities (
+          id         TEXT    PRIMARY KEY,
+          lead_id    TEXT    NOT NULL,
+          type       TEXT    NOT NULL,
+          from_value TEXT,
+          to_value   TEXT    NOT NULL,
+          actor      TEXT    NOT NULL DEFAULT 'user',
+          created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_activities_lead_id
+          ON lead_activities(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_lead_activities_created_at
+          ON lead_activities(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS outreach_drafts (
+          id            TEXT    PRIMARY KEY,
+          lead_id       TEXT    NOT NULL,
+          lead_name     TEXT    NOT NULL,
+          company_name  TEXT,
+          tone          TEXT    NOT NULL,
+          medium        TEXT    NOT NULL,
+          sequence_step TEXT    NOT NULL,
+          word_count    INTEGER NOT NULL DEFAULT 0,
+          body          TEXT    NOT NULL,
+          created_at    TEXT    NOT NULL,
+          updated_at    TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_outreach_drafts_lead_id
+          ON outreach_drafts(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_outreach_drafts_created_at
+          ON outreach_drafts(created_at DESC);
       `);
     }
 
@@ -1035,4 +1085,129 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
   );
 
   return record;
+}
+
+// -- Lead Activities ----------------------------------------------------------
+
+export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'email_discovery' | 'import' | 'merge';
+
+export type LeadActivityRecord = {
+  id: string;
+  leadId: string;
+  type: LeadActivityType;
+  fromValue?: string;
+  toValue: string;
+  actor: string;
+  createdAt: string;
+};
+
+// -- Lead Activity Helpers ----------------------------------------------------
+
+export function insertLeadActivity(entry: Omit<LeadActivityRecord, 'id'> & { id?: string }): void {
+  try {
+    const db = getLeadsDb();
+    const id = entry.id || crypto.randomUUID();
+    db.prepare(`
+      INSERT OR IGNORE INTO lead_activities (id, lead_id, type, from_value, to_value, actor, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      entry.leadId,
+      entry.type,
+      entry.fromValue || null,
+      entry.toValue,
+      entry.actor || 'user',
+      entry.createdAt || new Date().toISOString()
+    );
+  } catch (err) {
+    // Activity logging must never fail silently in a way that breaks the main write path.
+    console.warn('[db] Failed to insert lead activity:', err instanceof Error ? err.message : err);
+  }
+}
+
+export function readLeadActivities(leadId: string, limit = 100): LeadActivityRecord[] {
+  const db = getLeadsDb();
+  const rows = db.prepare(`
+    SELECT * FROM lead_activities WHERE lead_id = ? ORDER BY created_at DESC LIMIT ?
+  `).all(leadId, Math.min(limit, 500)) as any[];
+  return rows.map((row) => ({
+    id: row.id,
+    leadId: row.lead_id,
+    type: row.type as LeadActivityType,
+    fromValue: row.from_value || undefined,
+    toValue: row.to_value,
+    actor: row.actor,
+    createdAt: row.created_at
+  }));
+}
+
+// -- Outreach Draft Helpers ---------------------------------------------------
+
+export type OutreachDraftRecord = {
+  id: string;
+  leadId: string;
+  leadName: string;
+  companyName?: string;
+  tone: string;
+  medium: string;
+  sequenceStep: string;
+  wordCount: number;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function upsertOutreachDraft(draft: OutreachDraftRecord): OutreachDraftRecord {
+  const db = getLeadsDb();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO outreach_drafts (id, lead_id, lead_name, company_name, tone, medium, sequence_step, word_count, body, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      lead_name     = excluded.lead_name,
+      company_name  = excluded.company_name,
+      tone          = excluded.tone,
+      medium        = excluded.medium,
+      sequence_step = excluded.sequence_step,
+      word_count    = excluded.word_count,
+      body          = excluded.body,
+      updated_at    = excluded.updated_at
+  `).run(
+    draft.id,
+    draft.leadId,
+    draft.leadName,
+    draft.companyName || null,
+    draft.tone,
+    draft.medium,
+    draft.sequenceStep,
+    Math.round(draft.wordCount || 0),
+    draft.body,
+    draft.createdAt || now,
+    now
+  );
+  return { ...draft, updatedAt: now };
+}
+
+export function readOutreachDrafts(limit = 50): OutreachDraftRecord[] {
+  const db = getLeadsDb();
+  const rows = db.prepare(`
+    SELECT * FROM outreach_drafts ORDER BY created_at DESC LIMIT ?
+  `).all(Math.min(limit, 200)) as any[];
+  return rows.map((row) => ({
+    id: row.id,
+    leadId: row.lead_id,
+    leadName: row.lead_name,
+    companyName: row.company_name || undefined,
+    tone: row.tone,
+    medium: row.medium,
+    sequenceStep: row.sequence_step,
+    wordCount: Number(row.word_count || 0),
+    body: row.body,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }));
+}
+
+export function deleteOutreachDraft(id: string): void {
+  getLeadsDb().prepare('DELETE FROM outreach_drafts WHERE id = ?').run(id);
 }

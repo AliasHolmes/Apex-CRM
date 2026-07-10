@@ -3,7 +3,12 @@ import { Lead, LinkedInProfile, QualifiedLeadProfile } from '../types';
 import { predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 
-// Define the high-fidelity pre-seed leads
+/**
+ * Demo leads pre-populated for UI illustration purposes.
+ * These contain FABRICATED contact details (email, phone, LinkedIn URLs) and
+ * should be replaced with real prospects before using the CRM in production.
+ * They are tagged "Demo Data" so users can identify and remove them easily.
+ */
 const seedLeads: Lead[] = [
   {
     id: 'seed-siskind',
@@ -56,9 +61,9 @@ const seedLeads: Lead[] = [
       skills: ['Immigration Law', 'Legal Technology', 'Product Architecture', 'GenAI', 'Digital Marketing']
     },
     stage: 'ENRICHED',
-    notes: 'Primary targeted lead directly matching requested lookup details. High interest sector, expert in legal LLM tooling.',
+    notes: '[DEMO] Pre-loaded demonstration lead. Replace with real prospects - contact details are illustrative only.',
     createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-    tags: ['Key Target', 'Legal AI Pioneer', 'Premium Account'],
+    tags: ['Demo Data', 'Key Target', 'Legal AI Pioneer'],
     fitScore: 9,
     intentScore: 8,
     timingScore: 7,
@@ -110,9 +115,9 @@ const seedLeads: Lead[] = [
       skills: ['Distributed Systems', 'PostgreSQL', 'LegalTech', 'Vector Databases', 'Startups']
     },
     stage: 'MEETING BOOKED',
-    notes: 'Intro schedule set for next Wednesday at 2 PM PST. They are looking to leverage our direct CSV integration models.',
+    notes: '[DEMO] Pre-loaded demonstration lead. Replace with real prospects - contact details are illustrative only.',
     createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-    tags: ['Founder', 'Warm Intro', 'SF Based'],
+    tags: ['Demo Data', 'Founder', 'Warm Intro'],
     fitScore: 8,
     intentScore: 9,
     timingScore: 8,
@@ -157,9 +162,9 @@ const seedLeads: Lead[] = [
       skills: ['Executive Search', 'Org Design', 'Scaling HR', 'Sourcing Platforms']
     },
     stage: 'SEQUENCE ACTIVE',
-    notes: 'Outreach campaign initiated using our Conversational Tone email pitch sequence on June 4th. Awaiting feedback loop.',
+    notes: '[DEMO] Pre-loaded demonstration lead. Replace with real prospects - contact details are illustrative only.',
     createdAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-    tags: ['Recruiting Executive', 'Outbound Pipe'],
+    tags: ['Demo Data', 'Recruiting Executive', 'Outbound Pipe'],
     fitScore: 7,
     intentScore: 5,
     timingScore: 4,
@@ -211,6 +216,7 @@ interface LeadContextType {
   handleUpdateLeadNotes: (leadId: string, notes: string) => void;
   handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
   handleMergeLead: (updatedLead: Lead) => void;
+  handleServerMergeLead: (winnerId: string, duplicateId: string) => Promise<void>;
   handleUpdateLeadTags: (leadId: string, tags: string[]) => void;
   handleDeleteLead: (leadId: string) => void;
   handleDeleteLeads: (leadIds: string[]) => Promise<void>;
@@ -319,7 +325,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         createdAt: new Date().toISOString(),
         tags: ['Scraped Lead', profile.industry || 'Tech'],
         compositeScore,
-        predictiveScore
+        predictiveScore,
+        qualificationScore: predictiveScore
       };
 
       return [newLead, ...currentLeads];
@@ -379,6 +386,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           timingScore: p.scoreBreakdown?.timingScore,
           compositeScore,
           predictiveScore,
+          qualificationScore: predictiveScore,
           companyAccount: p.companyAccount,
           decisionMakerVerification: p.decisionMakerVerification,
           sourceProvider: p.sourceProvider || 'tavily',
@@ -477,17 +485,35 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
   const handleMergeLead = (updatedLead: Lead) => {
     if (!updatedLead || !updatedLead.id) return;
-    let mergedLead: Lead | null = null;
-    saveLeadsToStorage(currentLeads =>
-      currentLeads.map(l => {
-        if (l.id === updatedLead.id) {
-          mergedLead = { ...l, ...updatedLead };
-          return mergedLead;
-        }
-        return l;
-      })
+    setLeads(currentLeads =>
+      currentLeads.map(l => (l.id === updatedLead.id ? { ...l, ...updatedLead } : l))
     );
+  };
 
+  const handleServerMergeLead = async (winnerId: string, duplicateId: string): Promise<void> => {
+    // Optimistically remove duplicate from UI immediately.
+    setLeads(currentLeads => currentLeads.filter(l => l.id !== duplicateId));
+
+    try {
+      const response = await fetch(`/api/leads/${winnerId}/merge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duplicateId })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `Merge failed: ${response.status}`);
+      }
+      if (data.lead) {
+        setLeads(currentLeads =>
+          currentLeads.map(l => (l.id === winnerId ? (data.lead as Lead) : l))
+        );
+      }
+    } catch (err) {
+      console.error('[App] Lead merge failed:', err);
+      await rehydrateLeads();
+      throw err;
+    }
   };
 
   // 7. Update custom tags for a lead
@@ -595,7 +621,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     <LeadContext.Provider value={{
       leads, isHydrated, saveLeadsToStorage, rehydrateLeads,
       handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage,
-      handleUpdateLeadNotes, handleUpdateLeadProfile, handleMergeLead, handleUpdateLeadTags,
+      handleUpdateLeadNotes, handleUpdateLeadProfile, handleMergeLead, handleServerMergeLead, handleUpdateLeadTags,
       handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage
     }}>
       {children}

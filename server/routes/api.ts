@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads } from '../db.js';
+import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -19,6 +19,10 @@ const router = Router();
 export const activeSessions = new Map<string, string[]>();
 export const activeSessionEvents = new Map<string, MiningTraceEvent[]>();
 export const cancelledSessions = new Set<string>();
+
+// Cache for /api/llm-health to avoid charging tokens on every page load.
+let _llmHealthCache: { result: Record<string, any>; expiresAt: number } | null = null;
+const LLM_HEALTH_CACHE_MS = 60_000;
 
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 const isSafeLeadId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -50,6 +54,12 @@ router.get('/leads', (req, res): any => {
 });
 
 router.put('/leads', (req, res): any => {
+  if (!process.env.APEX_ALLOW_LEGACY_REPLACE) {
+    return res.status(405).json({
+      error: 'Bulk lead replacement is disabled. Set APEX_ALLOW_LEGACY_REPLACE=true in .env to enable it.',
+      code: 'LEGACY_REPLACE_DISABLED'
+    });
+  }
   try {
     const leads = normalizeIncomingLeads(req.body?.leads);
     if (!leads || leads.length > 1_000 || !leads.every(isPersistableLead)) {
@@ -76,7 +86,22 @@ router.patch('/leads/:id', (req, res): any => {
     if (!isPersistableLead(lead)) {
       return res.status(400).json({ error: 'Expected a valid lead object.' });
     }
+    const previousLead = readStoredLeadById(req.params.id);
+    const previousStage = previousLead?.stage;
+
     const storedLead = upsertLead(lead);
+
+    if (storedLead.stage && previousStage && previousStage !== storedLead.stage) {
+      insertLeadActivity({
+        leadId: storedLead.id,
+        type: 'stage_change',
+        fromValue: previousStage,
+        toValue: storedLead.stage,
+        actor: 'user',
+        createdAt: new Date().toISOString()
+      });
+    }
+
     res.json({ apiVersion: 1, success: true, lead: storedLead });
   } catch (error: any) {
     if (error instanceof LeadRevisionConflictError) {
@@ -97,6 +122,113 @@ router.delete('/leads/:id', (req, res): any => {
   } catch (error: any) {
     console.error(`Failed to delete lead ${req.params.id} from SQLite:`, error);
     res.status(500).json({ error: error.message || 'Failed to delete lead' });
+  }
+});
+
+router.get('/leads/:id/activities', (req, res): any => {
+  try {
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid lead id.' });
+    }
+    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 500);
+    const activities = readLeadActivities(req.params.id, limit);
+    res.json({ apiVersion: 1, activities });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to read lead activities.' });
+  }
+});
+
+router.post('/leads/:id/merge', (req, res): any => {
+  try {
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid winner lead id.' });
+    }
+    const duplicateId = typeof req.body?.duplicateId === 'string' ? req.body.duplicateId.trim() : '';
+    if (!duplicateId || !isSafeLeadId(duplicateId)) {
+      return res.status(400).json({ error: 'duplicateId must be a valid lead id string.' });
+    }
+    if (req.params.id === duplicateId) {
+      return res.status(400).json({ error: 'A lead cannot be merged into itself.' });
+    }
+
+    const db = getLeadsDb();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const winner = readStoredLeadById(req.params.id);
+      const duplicate = readStoredLeadById(duplicateId);
+
+      if (!winner) {
+        db.exec('ROLLBACK');
+        return res.status(404).json({ error: 'Winner lead not found.' });
+      }
+      if (!duplicate) {
+        db.exec('ROLLBACK');
+        return res.status(404).json({ error: 'Duplicate lead not found.' });
+      }
+
+      // Merge strategy: keep winner's fields; fill blanks from duplicate.
+      const mergeField = <T>(winVal: T, dupVal: T): T =>
+        (winVal === null || winVal === undefined || winVal === '') ? dupVal : winVal;
+
+      const mergedProfile = {
+        ...duplicate.profile,   // Start with duplicate as base
+        ...winner.profile,      // Winner fields overwrite
+        // Specifically fill in any blank profile fields from duplicate:
+        headline: mergeField(winner.profile.headline, duplicate.profile.headline),
+        summary: mergeField(winner.profile.summary, duplicate.profile.summary),
+        location: mergeField(winner.profile.location, duplicate.profile.location),
+        seniorityLevel: mergeField(winner.profile.seniorityLevel, duplicate.profile.seniorityLevel),
+        companySizeEst: mergeField(winner.profile.companySizeEst, duplicate.profile.companySizeEst),
+        contactDetails: {
+          ...(duplicate.profile.contactDetails || {}),
+          ...(winner.profile.contactDetails || {}),
+          // If winner has no email but duplicate does, use duplicate's.
+          email: mergeField(winner.profile.contactDetails?.email, duplicate.profile.contactDetails?.email),
+          phone: mergeField(winner.profile.contactDetails?.phone, duplicate.profile.contactDetails?.phone),
+          linkedinUrl: mergeField(winner.profile.contactDetails?.linkedinUrl, duplicate.profile.contactDetails?.linkedinUrl),
+        },
+        skills: Array.from(new Set([...(winner.profile.skills || []), ...(duplicate.profile.skills || [])])),
+        experiences: winner.profile.experiences?.length ? winner.profile.experiences : (duplicate.profile.experiences || []),
+        education: winner.profile.education?.length ? winner.profile.education : (duplicate.profile.education || []),
+      };
+
+      // Union tags, deduplicated.
+      const mergedTags = Array.from(new Set([...(winner.tags || []), ...(duplicate.tags || [])]));
+
+      const mergedLead = {
+        ...winner,
+        profile: mergedProfile,
+        tags: mergedTags,
+        notes: winner.notes || duplicate.notes || '',
+        lastEnrichedAt: winner.lastEnrichedAt || duplicate.lastEnrichedAt,
+        companyAccount: winner.companyAccount || duplicate.companyAccount,
+        evidence: winner.evidence || duplicate.evidence
+      };
+
+      upsertLead(mergedLead);
+      db.prepare('DELETE FROM leads WHERE id = ?').run(duplicateId);
+
+      // Log the merge activity.
+      insertLeadActivity({
+        leadId: winner.id,
+        type: 'merge',
+        fromValue: duplicateId,
+        toValue: winner.id,
+        actor: 'user',
+        createdAt: new Date().toISOString()
+      });
+
+      db.exec('COMMIT');
+
+      const savedMerged = readStoredLeadById(winner.id);
+      res.json({ apiVersion: 1, lead: savedMerged, deleted: duplicateId });
+    } catch (innerError) {
+      try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw innerError;
+    }
+  } catch (error: any) {
+    console.error('Failed to merge leads:', error);
+    res.status(500).json({ error: error.message || 'Lead merge failed.' });
   }
 });
 
@@ -169,24 +301,33 @@ router.get('/key-rotation-status', (req, res) => {
 
 router.get('/llm-health', async (req, res) => {
   const configuredProviders = getLLMProviderSummaries();
+  const force = req.query.force === 'true';
+
+  if (!force && _llmHealthCache && Date.now() < _llmHealthCache.expiresAt) {
+    return res.json({ ..._llmHealthCache.result, cached: true, configuredProviders });
+  }
 
   try {
     const response = await openAIText("Reply with exactly ok");
     const isOk = response.text.trim().toLowerCase().includes('ok');
-    res.json({
+    const result: Record<string, any> = {
       mode: 'direct-fallback',
       provider: response.provider,
       baseUrl: response.baseUrl,
       model: response.model,
-      configuredProviders,
       ok: isOk,
+      cached: false,
       ...(isOk ? {} : { error: `Unexpected response: ${response.text}` })
-    });
+    };
+    _llmHealthCache = { result, expiresAt: Date.now() + LLM_HEALTH_CACHE_MS };
+    res.json({ ...result, configuredProviders });
   } catch (error: any) {
+    _llmHealthCache = null; // Do not cache failures
     res.json({
       mode: 'direct-fallback',
       configuredProviders,
       ok: false,
+      cached: false,
       error: error.message || String(error)
     });
   }
@@ -2108,6 +2249,61 @@ router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
   } catch (error: any) {
     console.error('Error in /api/leads/:id/enrich-profile:', error);
     res.status(500).json({ error: error.message || 'Profile enrichment failed.' });
+  }
+});
+// -- Outreach Draft Endpoints -------------------------------------------------
+
+router.get('/outreach-drafts', (req, res): any => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+    res.json({ apiVersion: 1, drafts: readOutreachDrafts(limit) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to read outreach drafts.' });
+  }
+});
+
+router.post('/outreach-drafts', (req, res): any => {
+  try {
+    const { id, leadId, leadName, companyName, tone, medium, sequenceStep, wordCount, body } = req.body || {};
+    if (
+      typeof id !== 'string' || !id.trim() ||
+      typeof leadId !== 'string' || !leadId.trim() ||
+      typeof leadName !== 'string' || !leadName.trim() ||
+      typeof body !== 'string' || !body.trim()
+    ) {
+      return res.status(400).json({ error: 'id, leadId, leadName, and body are required strings.' });
+    }
+    if (!isSafeLeadId(id) || !isSafeLeadId(leadId)) {
+      return res.status(400).json({ error: 'Invalid id or leadId format.' });
+    }
+    const draft = upsertOutreachDraft({
+      id: id.trim(),
+      leadId: leadId.trim(),
+      leadName: String(leadName).trim(),
+      companyName: typeof companyName === 'string' ? companyName.trim() : undefined,
+      tone: String(tone || 'neutral').trim(),
+      medium: String(medium || 'email').trim(),
+      sequenceStep: String(sequenceStep || 'Step 1').trim(),
+      wordCount: Number(wordCount || 0),
+      body: String(body).trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    res.json({ apiVersion: 1, draft });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to save outreach draft.' });
+  }
+});
+
+router.delete('/outreach-drafts/:id', (req, res): any => {
+  try {
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid draft id.' });
+    }
+    deleteOutreachDraft(req.params.id);
+    res.json({ apiVersion: 1, success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to delete outreach draft.' });
   }
 });
 

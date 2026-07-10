@@ -32,6 +32,43 @@ app.use((_, res, next) => {
 });
 app.use(express.json({ limit: '1mb' }));
 
+// DNS-Rebinding Guard
+// Validates Host and Origin headers on every API request. Even though the server is
+// bound to 127.0.0.1, a malicious page open in the user's browser can still reach
+// localhost via same-machine loopback unless we explicitly reject non-loopback Host values.
+app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction): any => {
+  const rawHost = (req.headers.host || '').toLowerCase();
+  const colonIdx = rawHost.lastIndexOf(':');
+  const hostname = colonIdx !== -1 ? rawHost.slice(0, colonIdx) : rawHost;
+  const portStr = colonIdx !== -1 ? rawHost.slice(colonIdx + 1) : '';
+  const port = portStr ? Number(portStr) : 80;
+
+  const isLoopbackHost = hostname === 'localhost' || hostname === '127.0.0.1';
+  const isCorrectPort = !portStr || port === PORT;
+
+  if (!isLoopbackHost || !isCorrectPort) {
+    return res.status(400).type('text/plain').send('Invalid Host header. Direct API access from non-loopback origins is blocked.');
+  }
+
+  const originHeader = req.headers.origin;
+  if (originHeader) {
+    let originOk = false;
+    try {
+      const originUrl = new URL(originHeader);
+      const oHost = originUrl.hostname.toLowerCase();
+      const oPort = originUrl.port ? Number(originUrl.port) : (originUrl.protocol === 'https:' ? 443 : 80);
+      originOk = (oHost === 'localhost' || oHost === '127.0.0.1') && oPort === PORT;
+    } catch {
+      // Malformed Origin header - reject.
+    }
+    if (!originOk) {
+      return res.status(400).type('text/plain').send('Cross-origin API access is blocked.');
+    }
+  }
+
+  next();
+});
+
 // Mount the API router
 app.use('/api', apiRouter);
 app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -90,10 +127,40 @@ async function startServer() {
   const server = app.listen(PORT, HOST, () => {
     console.log(`Server launched at http://${HOST}:${PORT} in ${isProduction ? 'production' : 'development'} mode.`);
   });
+
   server.on('error', (error) => {
     console.error(`Unable to start Apex CRM on ${HOST}:${PORT}:`, error);
     process.exitCode = 1;
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`\n[${signal}] Shutting down Apex CRM server gracefully...`);
+    server.close(() => {
+      console.log('HTTP server closed.');
+      process.exit(0);
+    });
+    // Mark any active mining sessions as interrupted so the DB is consistent.
+    try {
+      getLeadsDb().exec(`
+        UPDATE mining_sessions
+        SET status        = 'interrupted',
+            error_message = COALESCE(error_message, 'Server process exited (${signal}).'),
+            completed_at  = COALESCE(completed_at, datetime('now')),
+            updated_at    = datetime('now')
+        WHERE status IN ('running', 'cancellation_requested')
+      `);
+    } catch (dbErr) {
+      console.warn('Could not update interrupted mining sessions:', dbErr);
+    }
+    // Force-exit if server doesn't close within 5 seconds.
+    setTimeout(() => {
+      console.error('Server did not close in time - forcing exit.');
+      process.exit(1);
+    }, 5_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
 }
 
 startServer();

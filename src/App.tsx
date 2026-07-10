@@ -354,7 +354,8 @@ function Dashboard() {
         createdAt: new Date().toISOString(),
         tags: ['Manual Entry'],
         compositeScore,
-        predictiveScore
+        predictiveScore,
+        qualificationScore: predictiveScore
       };
 
       // Reset inputs

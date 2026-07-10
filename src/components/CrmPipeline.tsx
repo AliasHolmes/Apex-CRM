@@ -250,9 +250,9 @@ export default function CrmPipeline({
                                   <Badge variant={lead.compositeScore >= 80 ? "default" : lead.compositeScore >= 60 ? "secondary" : "outline"} className="text-[9px] px-1.5 py-0.5">
                                     ICP: {lead.compositeScore}
                                   </Badge>
-                                  {lead.predictiveScore && (
+                                  {(lead.qualificationScore ?? lead.predictiveScore) && (
                                     <Badge variant="outline" className="text-[9px] px-1.5 py-0.5 border-indigo-500/30 text-indigo-400">
-                                      {lead.predictiveScore}% Close
+                                      {lead.qualificationScore ?? lead.predictiveScore}% Qualified
                                     </Badge>
                                   )}
                                 </div>

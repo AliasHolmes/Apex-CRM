@@ -76,15 +76,58 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   const [savedDrafts, setSavedDrafts] = useState<SavedOutreachDraft[]>([]);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(OUTREACH_DRAFTS_KEY);
-      if (saved) setSavedDrafts(JSON.parse(saved));
-    } catch (error) {
-      console.warn('Failed to load outreach drafts', error);
-    }
+    // Load drafts from the SQLite backend. On first load, migrate any legacy
+    // localStorage drafts to the server and then clear the local copy.
+    const loadDrafts = async () => {
+      try {
+        const res = await fetch('/api/outreach-drafts');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.drafts && data.drafts.length > 0) {
+          setSavedDrafts(data.drafts.map((d: any) => ({
+            id: d.id,
+            leadId: d.leadId,
+            leadName: d.leadName,
+            companyName: d.companyName,
+            tone: d.tone,
+            medium: d.medium,
+            sequenceStep: d.sequenceStep,
+            wordCount: d.wordCount,
+            createdAt: d.createdAt,
+            text: d.body
+          })));
+          return;
+        }
+
+        // Server has no drafts - check for legacy localStorage data and migrate once.
+        const legacy = localStorage.getItem(OUTREACH_DRAFTS_KEY);
+        if (legacy) {
+          const parsed: SavedOutreachDraft[] = JSON.parse(legacy);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setSavedDrafts(parsed);
+            // Migrate each draft to the server silently.
+            await Promise.allSettled(parsed.map((d) =>
+              fetch('/api/outreach-drafts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: d.id, leadId: d.leadId, leadName: d.leadName, companyName: d.companyName, tone: d.tone, medium: d.medium, sequenceStep: d.sequenceStep, wordCount: d.wordCount, body: d.text })
+              })
+            ));
+            localStorage.removeItem(OUTREACH_DRAFTS_KEY);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to load outreach drafts from server, falling back to localStorage:', error);
+        try {
+          const saved = localStorage.getItem(OUTREACH_DRAFTS_KEY);
+          if (saved) setSavedDrafts(JSON.parse(saved));
+        } catch { /* ignore */ }
+      }
+    };
+    void loadDrafts();
   }, []);
 
-  const rememberDraft = (draftText: string, lead: Lead) => {
+  const rememberDraft = async (draftText: string, lead: Lead) => {
     if (!draftText.trim()) return;
     const nextDraft: SavedOutreachDraft = {
       id: `draft-${Date.now()}`,
@@ -98,11 +141,28 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
       createdAt: new Date().toISOString(),
       text: draftText
     };
-    setSavedDrafts(prev => {
-      const next = [nextDraft, ...prev].slice(0, 12);
-      localStorage.setItem(OUTREACH_DRAFTS_KEY, JSON.stringify(next));
-      return next;
-    });
+    // Optimistically update the UI.
+    setSavedDrafts(prev => [nextDraft, ...prev].slice(0, 12));
+    // Persist to the server.
+    try {
+      await fetch('/api/outreach-drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: nextDraft.id,
+          leadId: nextDraft.leadId,
+          leadName: nextDraft.leadName,
+          companyName: nextDraft.companyName,
+          tone: nextDraft.tone,
+          medium: nextDraft.medium,
+          sequenceStep: nextDraft.sequenceStep,
+          wordCount: nextDraft.wordCount,
+          body: nextDraft.text
+        })
+      });
+    } catch (err) {
+      console.warn('Failed to save outreach draft to server:', err);
+    }
   };
 
   const stepsList = [

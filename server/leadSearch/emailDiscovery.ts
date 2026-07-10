@@ -1,5 +1,10 @@
-import dns from 'dns/promises';
+import dnsPromise from 'dns/promises';
+import dnsSync from 'dns';
+import https from 'https';
+import http from 'http';
 import net from 'node:net';
+
+const dns = dnsPromise;
 
 import {
   getEmailDiscoveryCacheEntry,
@@ -310,49 +315,98 @@ async function hasValidMailServer(domain: string, timeoutMs = 5000) {
   }
 }
 
-async function fetchPage(url: string, timeoutMs: number) {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return '';
-  }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || (parsed.port && parsed.port !== '443')) return '';
-  if (!(await hostnameResolvesPublicly(parsed.hostname))) return '';
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'manual',
-      headers: { 'User-Agent': 'ApexCRM/1.0 contact discovery' }
-    });
-    if (!res.ok) return '';
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('text/') && !contentType.includes('html') && !contentType.includes('markdown')) return '';
-    const contentLength = Number(res.headers.get('content-length') || 0);
-    if (contentLength > MAX_DIRECT_FETCH_BYTES || !res.body) return '';
-
-    const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalBytes += value.byteLength;
-      if (totalBytes > MAX_DIRECT_FETCH_BYTES) {
-        await reader.cancel();
-        return '';
-      }
-      chunks.push(value);
+function fetchPage(url: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return resolve('');
     }
-    return new TextDecoder().decode(Buffer.concat(chunks));
-  } catch {
-    return '';
-  } finally {
-    clearTimeout(timer);
-  }
+
+    if (
+      (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return resolve('');
+    }
+
+    // Reject non-standard ports - only 80 (http) and 443 (https) are expected for contact pages.
+    if (parsed.port && parsed.port !== '80' && parsed.port !== '443') return resolve('');
+
+    const mod = parsed.protocol === 'https:' ? https : http;
+
+    // The lookup callback fires at socket connect time - AFTER DNS resolves but
+    // BEFORE the TCP connection is established. This is the correct place to block
+    // private/loopback IPs because there is no race between resolution and connect.
+    const lookupGuard = (
+      hostname: string,
+      opts: dnsSync.LookupOptions,
+      cb: (err: NodeJS.ErrnoException | null, address: string, family: number) => void
+    ) => {
+      dnsSync.lookup(hostname, { ...opts, all: false }, (err, address, family) => {
+        if (err) return cb(err, '', 0);
+        if (!isPublicIpAddress(address)) {
+          const blocked = new Error(`SSRF_BLOCKED: Resolved IP ${address} for ${hostname} is private or loopback.`) as NodeJS.ErrnoException;
+          blocked.code = 'EACCES';
+          return cb(blocked, '', 0);
+        }
+        cb(null, address, family);
+      });
+    };
+
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      headers: { 'User-Agent': 'ApexCRM/1.0 contact discovery' },
+      timeout: timeoutMs,
+      lookup: lookupGuard
+    };
+
+    const req = mod.get(options as any, (res) => {
+      const { statusCode = 0 } = res;
+      // Only follow 2xx; do NOT follow redirects (manual redirect handling).
+      if (statusCode < 200 || statusCode >= 300) {
+        res.destroy();
+        return resolve('');
+      }
+      const contentType = res.headers['content-type'] || '';
+      if (!contentType.includes('text/') && !contentType.includes('html') && !contentType.includes('markdown')) {
+        res.destroy();
+        return resolve('');
+      }
+
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+
+      res.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.byteLength;
+        if (totalBytes > MAX_DIRECT_FETCH_BYTES) {
+          res.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+      res.on('error', () => resolve(''));
+    });
+
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EACCES') {
+        // Only log unexpected errors; EACCES is our intentional SSRF block.
+        console.debug('[fetchPage] Request error:', err.message);
+      }
+      resolve('');
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      resolve('');
+    });
+  });
 }
 
 async function asyncMapLimit<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {

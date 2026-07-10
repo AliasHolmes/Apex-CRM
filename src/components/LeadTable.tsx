@@ -45,7 +45,7 @@ interface LeadTableProps {
 }
 
 export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => void }) {
-  const { leads, handleUpdateLeadStage, handleUpdateLeadsStage, handleDeleteLead, handleDeleteLeads, handleUpdateLeadProfile, handleBulkLeadsAdded, handleMergeLead } = useLeads();
+  const { leads, handleUpdateLeadStage, handleUpdateLeadsStage, handleDeleteLead, handleDeleteLeads, handleUpdateLeadProfile, handleBulkLeadsAdded, handleMergeLead, handleServerMergeLead } = useLeads();
   const { triggerToast } = useToast();
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
   const [tableSearch, setTableSearch] = useState('');
@@ -806,7 +806,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <TableHead>Employer / Company Name</TableHead>
               <TableHead>Corporate Outreach Email</TableHead>
               <TableHead>Added</TableHead>
-              <TableHead className="text-center">Predictive Score</TableHead>
+              <TableHead className="text-center">Qualification Score</TableHead>
               <TableHead className="text-center">Pipeline status</TableHead>
               <TableHead className="text-right">Delete</TableHead>
             </TableRow>
@@ -910,9 +910,9 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                     {addedTime && <div className="text-[10px] text-slate-500 mt-0.5">{addedTime}</div>}
                   </TableCell>
                   <TableCell className="text-center">
-                    {lead.predictiveScore ? (
+                    {(lead.qualificationScore ?? lead.predictiveScore) ? (
                       <Badge variant="outline" className="border-indigo-500/30 text-indigo-400">
-                        {lead.predictiveScore}% Close
+                        {lead.qualificationScore ?? lead.predictiveScore}% Qualified
                       </Badge>
                     ) : <span className="text-slate-600 text-[10px]">--</span>}
                   </TableCell>

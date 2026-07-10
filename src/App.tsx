@@ -44,6 +44,41 @@ const OutreachStudio = lazy(() => import('./components/OutreachStudio'));
 const CrmOverview = lazy(() => import('./components/CrmOverview'));
 const CrmCopilot = lazy(() => import('./components/CrmCopilot'));
 
+class AppErrorBoundary extends React.Component<
+  React.PropsWithChildren,
+  { error: Error | null }
+> {
+  state = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
+          <section className="mx-auto max-w-xl rounded-xl border border-rose-500/30 bg-slate-900 p-6 shadow-2xl">
+            <p className="text-sm font-semibold text-rose-300">Apex CRM could not render this workspace.</p>
+            <p className="mt-2 text-sm text-slate-300">
+              Reload the app to recover. If this repeats, the browser console contains the underlying error.
+            </p>
+            <button
+              type="button"
+              className="mt-5 rounded-md bg-indigo-500 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-400"
+              onClick={() => window.location.reload()}
+            >
+              Reload Apex CRM
+            </button>
+          </section>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 const TabLoading = () => (
   <div className="min-h-56 grid place-items-center text-sm text-slate-400" role="status">
     Loading workspace...

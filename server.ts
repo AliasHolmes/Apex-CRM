@@ -14,6 +14,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '127.0.0.1';
 const isProduction = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
+const scriptSourcePolicy = isProduction ? "'self'" : "'self' 'unsafe-inline'";
 
 // This is a single-user, local desktop service. Keep it loopback-only and avoid
 // accepting arbitrarily large bodies before an API handler has a chance to validate them.
@@ -25,7 +26,7 @@ app.use((_, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; base-uri 'self'; frame-ancestors 'none'"
+    `default-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src ${scriptSourcePolicy}; base-uri 'self'; frame-ancestors 'none'`
   );
   next();
 });

@@ -45,7 +45,14 @@ if (gatewayMode === 'litellm') {
 }
 
 console.log('[dev-entry] Starting Apex CRM dev server...');
-const crmProcess = spawn(isWindows ? 'npm.cmd' : 'npm', ['run', 'dev:server'], {
+// `spawn('npm.cmd', ..., { shell: false })` throws EINVAL on Windows, while
+// `shell: true` triggers Node's unescaped-argument warning. Invoke cmd.exe
+// directly with a fixed command instead, keeping the Unix path shell-free.
+const crmCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'npm';
+const crmArgs = isWindows
+  ? ['/d', '/s', '/c', 'npm.cmd run dev:server']
+  : ['run', 'dev:server'];
+const crmProcess = spawn(crmCommand, crmArgs, {
   stdio: 'inherit',
   shell: false,
   windowsHide: true,

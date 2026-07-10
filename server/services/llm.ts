@@ -31,7 +31,7 @@ export type LLMProviderSummary = Omit<LLMProvider, 'apiKey' | 'headers'> & {
   configured: boolean;
 };
 
-const DEFAULT_PRIMARY_BASE = 'https://api.byesu.com/v1';
+const DEFAULT_PRIMARY_BASE = 'https://byesu.com/v1';
 const DEFAULT_PRIMARY_MODEL = 'gpt-5.5';
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 const DEFAULT_OPENROUTER_MODEL = 'poolside/laguna-m.1:free';

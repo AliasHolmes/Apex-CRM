@@ -2,7 +2,7 @@ model_list:
   - model_name: apex-primary
     litellm_params:
       model: hosted_vllm/gpt-5.5
-      api_base: https://api.byesu.com/v1
+      api_base: https://byesu.com/v1
       api_key: os.environ/BYESU_API_KEY
       rpm: 60
 

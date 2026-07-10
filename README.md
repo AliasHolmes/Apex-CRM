@@ -98,7 +98,7 @@ graph TD
    # Primary provider
    OPENAI_API_KEY="your_byesu_key"
    BYESU_API_KEY="your_byesu_key"
-   OPENAI_BASE="https://api.byesu.com/v1"
+   OPENAI_BASE="https://byesu.com/v1"
    OPENAI_MODEL="gpt-5.5"
 
    # Direct fallbacks

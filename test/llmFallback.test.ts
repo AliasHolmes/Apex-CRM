@@ -46,7 +46,7 @@ describe('LLM gateway and provider fallback', () => {
     const res = await llm.openAIText('test prompt');
     assert.equal(res.text, 'ok');
     assert.equal(res.provider, 'Byesu');
-    assert.equal(capturedUrl, 'https://api.byesu.com/v1/chat/completions');
+    assert.equal(capturedUrl, 'https://byesu.com/v1/chat/completions');
     assert.equal(capturedOptions.headers['Authorization'], 'Bearer test-primary-key');
 
     const body = JSON.parse(capturedOptions.body);
@@ -151,7 +151,7 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(res.text, 'fallback ok');
     assert.equal(res.provider, 'OpenRouter');
     assert.equal(calls.length, 2);
-    assert.equal(calls[0].url, 'https://api.byesu.com/v1/chat/completions');
+    assert.equal(calls[0].url, 'https://byesu.com/v1/chat/completions');
     assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
     assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
     assert.equal(calls[1].title, 'Apex CRM');

@@ -303,12 +303,59 @@ function retryAfterMsFromResponse(res: Response) {
   return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : undefined;
 }
 
+export type TavilySearchOptions = {
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  searchDepth?: 'basic' | 'fast' | 'ultra-fast' | 'advanced';
+  topic?: 'general' | 'news';
+  timeRange?: 'day' | 'week' | 'month' | 'year';
+  country?: string;
+  maxResults?: number;
+  includeRawContent?: boolean;
+  chunksPerSource?: number;
+};
+
+/**
+ * Tavily's include_domains and exclude_domains fields accept domain names.
+ * Callers sometimes have a full URL or a LinkedIn /in/ path, so normalize at
+ * the provider boundary instead of sending a path as a supposed domain.
+ */
+export function normalizeTavilyDomain(value: string) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return parsed.hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
 export async function tavilySearch(
   query: string,
-  includeDomains?: string[]
+  domainsOrOptions?: string[] | TavilySearchOptions
 ): Promise<{ text: string; sources: { title: string; uri: string }[], items: any[] }> {
-  const maxResults = Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20);
-  const includeRawContent = process.env.TAVILY_INCLUDE_RAW_CONTENT !== 'false';
+  const options: TavilySearchOptions = Array.isArray(domainsOrOptions)
+    ? { includeDomains: domainsOrOptions }
+    : (domainsOrOptions || {});
+  const requestedDepth = options.searchDepth || process.env.TAVILY_SEARCH_DEPTH || 'basic';
+  const searchDepth = ['basic', 'fast', 'ultra-fast', 'advanced'].includes(requestedDepth)
+    ? requestedDepth as TavilySearchOptions['searchDepth']
+    : 'basic';
+  const maxResults = Math.min(Math.max(Number(options.maxResults || process.env.TAVILY_MAX_RESULTS || 10), 1), 20);
+  const includeRawContent = options.includeRawContent ?? process.env.TAVILY_INCLUDE_RAW_CONTENT !== 'false';
+  const topic = options.topic === 'news' ? 'news' : 'general';
+  // Tavily documents lowercase country enum values (for example, "united states").
+  const country = options.country?.trim().toLowerCase();
+  const chunksPerSource = searchDepth === 'advanced' || searchDepth === 'fast'
+    ? Math.min(Math.max(Number(options.chunksPerSource || 2), 1), 3)
+    : undefined;
+  const includeDomains = Array.from(new Set((options.includeDomains || [])
+    .map(normalizeTavilyDomain)
+    .filter(Boolean))).slice(0, 30);
+  const excludeDomains = Array.from(new Set((options.excludeDomains || [])
+    .map(normalizeTavilyDomain)
+    .filter(Boolean))).slice(0, 30);
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -318,12 +365,16 @@ export async function tavilySearch(
       },
       body: JSON.stringify({
         query,
-        search_depth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
+        search_depth: searchDepth,
         max_results: maxResults,
         include_answer: false,
         include_raw_content: includeRawContent,
         include_usage: true,
-        ...(includeDomains ? { include_domains: includeDomains } : {})
+        ...(chunksPerSource ? { chunks_per_source: chunksPerSource } : {}),
+        ...(includeDomains.length ? { include_domains: includeDomains } : {}),
+        ...(excludeDomains.length ? { exclude_domains: excludeDomains } : {}),
+        ...(options.timeRange ? { time_range: options.timeRange } : {}),
+        ...(topic === 'news' ? { topic } : { topic, ...(country ? { country } : {}) })
       }),
     });
 
@@ -829,12 +880,46 @@ export const searchQueriesSchema = {
           intent: { type: Type.STRING, description: "find_decision_makers | find_buying_signal | expand_surface_area | recover_from_low_yield | reduce_duplicates" },
           expectedSignal: { type: Type.STRING, description: "Short reason this query should surface relevant prospects" },
           priority: { type: Type.NUMBER, description: "Lower numbers run first" },
+          lane: { type: Type.STRING, description: "person | account | signal" },
+          providerPreference: { type: Type.STRING, description: "tavily | brightdata | corroborate" },
+          searchDepth: { type: Type.STRING, description: "basic | fast | ultra-fast | advanced. Prefer basic; advanced only for one high-value signal task." },
+          topic: { type: Type.STRING, description: "general | news" },
+          timeRange: { type: Type.STRING, description: "week | month | year when recency is relevant" },
+          country: { type: Type.STRING, description: "Country name only when explicit geography matters" },
         },
         required: ["query"],
       }
     }
   },
   required: ["queries"]
+};
+
+export const searchSpecSchema = {
+  type: Type.OBJECT,
+  properties: {
+    mode: { type: Type.STRING, description: 'person_first | account_first | signal_first | local_business' },
+    person: {
+      type: Type.OBJECT,
+      properties: {
+        includeTitles: { type: Type.ARRAY, items: { type: Type.STRING } },
+        excludeTitles: { type: Type.ARRAY, items: { type: Type.STRING } },
+        seniorities: { type: Type.ARRAY, items: { type: Type.STRING } },
+        locations: { type: Type.ARRAY, items: { type: Type.STRING } }
+      }
+    },
+    company: {
+      type: Type.OBJECT,
+      properties: {
+        industries: { type: Type.ARRAY, items: { type: Type.STRING } },
+        keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+        locations: { type: Type.ARRAY, items: { type: Type.STRING } },
+        employeeRange: { type: Type.OBJECT, properties: { min: { type: Type.NUMBER }, max: { type: Type.NUMBER } } }
+      }
+    },
+    signals: { type: Type.OBJECT, properties: { include: { type: Type.ARRAY, items: { type: Type.STRING } }, recencyDays: { type: Type.NUMBER } } },
+    exclusions: { type: Type.OBJECT, properties: { companies: { type: Type.ARRAY, items: { type: Type.STRING } }, domains: { type: Type.ARRAY, items: { type: Type.STRING } } } },
+    maxPerCompany: { type: Type.NUMBER }
+  }
 };
 
 // -----------------------------------------------------------------------------
@@ -846,9 +931,10 @@ export const searchQueriesSchema = {
 /** Minimal prompt for Step 1 - query generation only. */
 export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce precise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Output only valid JSON.`;
 
-/** Focused prompt for Step 3 - bulk extraction only. No outreach or scoring formula needed. */
-export const EXTRACTION_SYSTEM_PROMPT = `You are a CRM data extraction engine. Extract structured lead records from raw search result text and return valid JSON matching the schema exactly.
-Rules: Never invent data. Use empty strings for missing fields. Score fitScore/intentScore/timingScore 1-10 based only on signals visible in the provided text. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If reasoning is visible, keep it outside the final JSON markers.`;
+/** Focused prompt for Step 3 - initial scouting only. Deep enrichment and email
+ * discovery deliberately happen after manual selection. */
+export const EXTRACTION_SYSTEM_PROMPT = `You are a B2B prospect scouting extraction engine. Extract only facts directly supported by source evidence and return valid JSON matching the schema exactly.
+Rules: Never invent data. Use empty strings for missing fields. Do not infer or generate email addresses. Do not invent employment history, company size, funding, intent, or timing. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If reasoning is visible, keep it outside the final JSON markers.`;
 
 // -----------------------------------------------------------------------------
 // Trimmed schema for bulk extraction.
@@ -865,21 +951,20 @@ export const bulkSingleProfileSchema = {
     currentCompany: { type: Type.STRING, description: "Current employer" },
     currentTitle: { type: Type.STRING, description: "Current role/title" },
     seniorityLevel: { type: Type.STRING, description: "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner." },
-    companySizeEst: { type: Type.STRING, description: "1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN" },
+    companySizeEst: { type: Type.STRING, description: "Company size only when the source explicitly provides it; otherwise UNKNOWN" },
     location: { type: Type.STRING, description: "City, State or Country" },
     industry: { type: Type.STRING, description: "Industry category (e.g. Software, Finance, Healthcare)" },
     summary: { type: Type.STRING, description: "2-sentence professional summary" },
     contactDetails: {
       type: Type.OBJECT,
       properties: {
-        email: { type: Type.STRING, description: "Email if found, or INFERRED pattern" },
-        linkedinUrl: { type: Type.STRING, description: "Full LinkedIn profile URL" },
+        linkedinUrl: { type: Type.STRING, description: "Full public professional profile URL when supplied by source LINK" },
         website: { type: Type.STRING, description: "Company or personal website" },
       },
     },
-    fitScore: { type: Type.NUMBER, description: "ICP match 1-10" },
-    intentScore: { type: Type.NUMBER, description: "Buying signals 1-10" },
-    timingScore: { type: Type.NUMBER, description: "Recent role change or trigger 1-10" },
+    fitScore: { type: Type.NUMBER, description: "Conservative 1-10 match based only on explicit title, company, industry, and location evidence" },
+    intentScore: { type: Type.NUMBER, description: "1-10 only when a specific public signal is visible; otherwise use 5" },
+    timingScore: { type: Type.NUMBER, description: "1-10 only when a dated public trigger is visible; otherwise use 5" },
     sourceProvider: { type: Type.STRING, description: "tavily or brightdata, copied from SOURCE_PROVIDER when present" },
     evidenceReasons: { type: Type.ARRAY, items: { type: Type.STRING }, description: "1-3 short evidence-backed reasons this prospect matches the user query" },
   },

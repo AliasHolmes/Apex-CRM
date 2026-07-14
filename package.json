@@ -12,12 +12,13 @@
         "lint": "tsc --noEmit",
         "test:enrichment": "tsx --test test/enrichmentCache.test.ts test/linkedinEvidence.test.ts",
         "test:lead-search": "tsx --test test/leadSearchHelpers.test.ts",
+        "test:scout": "tsx --test test/scoutPipeline.test.ts",
         "test:brightdata-upgrade": "tsx --test test/brightDataUpgrade.test.ts",
         "test:key-rotation": "tsx --test test/keyRotator.test.ts test/tavilyRotation.test.ts",
         "test:llm": "tsx --test test/llmFallback.test.ts",
         "test:telemetry": "tsx --test test/telemetry.test.ts",
         "test:glyphs": "tsx --test test/encodingHygiene.test.ts",
-        "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts"
+        "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/scoutPipeline.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts"
     },
     "dependencies": {
         "@brightdata/mcp": "^2.11.0",
@@ -35,6 +36,8 @@
         "papaparse": "^5.5.4",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",
+        "react-markdown": "^10.1.0",
+        "remark-gfm": "^4.0.1",
         "tailwind-merge": "^3.6.0",
         "tailwindcss-animate": "^1.0.7"
     },

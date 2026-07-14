@@ -10,7 +10,7 @@ const db = await import('../server/db.ts');
 describe('enrichment cache', () => {
   it('initializes a versioned database schema', () => {
     const version = db.getLeadsDb().prepare('PRAGMA user_version').get() as { user_version: number };
-    assert.equal(version.user_version, 4);
+    assert.equal(version.user_version, 5);
   });
 
   it('increments lead revisions and rejects stale writes', () => {

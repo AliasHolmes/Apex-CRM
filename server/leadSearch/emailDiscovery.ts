@@ -145,7 +145,10 @@ async function hostnameResolvesPublicly(hostname: string) {
 export function domainFromUrl(value?: string) {
   const url = asUrl(value);
   if (!url) return '';
-  return url.hostname.toLowerCase().replace(/^www\./, '');
+  const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+  // A URL parser accepts one-label hosts such as https://goto/, but they are
+  // not valid public company domains and cannot be safely fetched.
+  return isSafePublicHostname(hostname) ? hostname : '';
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number) {
@@ -182,9 +185,13 @@ function selectCompanyWebsiteFromSearch(items: Array<{ title?: string; url?: str
       const haystack = normalizeKey(`${item.title || ''} ${item.url || ''} ${item.content || ''}`);
       const host = domain.split('.')[0].replace(/[^a-z0-9]/g, '');
       const tokenHits = tokens.filter(token => haystack.includes(token) || host.includes(token)).length;
+      const hostnameHits = tokens.filter(token => host.includes(token)).length;
       const personHit = person && haystack.includes(person) ? 1 : 0;
-      const score = tokenHits * 10 + personHit * 3 + (tokens.length > 0 && tokenHits === tokens.length ? 8 : 0);
-      if (tokens.length > 0 && tokenHits === 0) return null;
+      const score = tokenHits * 10 + hostnameHits * 12 + personHit * 3 + (tokens.length > 0 && tokenHits === tokens.length ? 8 : 0);
+      // A news page can contain both the company and founder name. Require the
+      // candidate domain itself to resemble the company before treating it as
+      // an official website.
+      if (tokens.length > 0 && (tokenHits === 0 || hostnameHits === 0)) return null;
       return { item, domain, score };
     })
     .filter((item): item is { item: { title?: string; url?: string; content?: string }; domain: string; score: number } => Boolean(item))
@@ -334,25 +341,29 @@ function fetchPage(url: string, timeoutMs: number): Promise<string> {
 
     // Reject non-standard ports - only 80 (http) and 443 (https) are expected for contact pages.
     if (parsed.port && parsed.port !== '80' && parsed.port !== '443') return resolve('');
+    if (!isSafePublicHostname(parsed.hostname)) return resolve('');
 
     const mod = parsed.protocol === 'https:' ? https : http;
 
     // The lookup callback fires at socket connect time - AFTER DNS resolves but
     // BEFORE the TCP connection is established. This is the correct place to block
     // private/loopback IPs because there is no race between resolution and connect.
-    const lookupGuard = (
-      hostname: string,
-      opts: dnsSync.LookupOptions,
-      cb: (err: NodeJS.ErrnoException | null, address: string, family: number) => void
-    ) => {
-      dnsSync.lookup(hostname, { ...opts, all: false }, (err, address, family) => {
+    const lookupGuard = (hostname: string, opts: dnsSync.LookupOptions, cb: any) => {
+      // Node's HTTP agent can request `all: true`. The previous callback
+      // returned a scalar address in that case, which produced "Invalid IP
+      // address: undefined" after otherwise successful Bright Data work.
+      dnsSync.lookup(hostname, { ...opts, all: true }, (err, records) => {
         if (err) return cb(err, '', 0);
-        if (!isPublicIpAddress(address)) {
-          const blocked = new Error(`SSRF_BLOCKED: Resolved IP ${address} for ${hostname} is private or loopback.`) as NodeJS.ErrnoException;
+        const publicRecords = (Array.isArray(records) ? records : [])
+          .filter((record) => isPublicIpAddress(record.address));
+        if (publicRecords.length === 0) {
+          const blocked = new Error(`SSRF_BLOCKED: ${hostname} did not resolve to a public IP address.`) as NodeJS.ErrnoException;
           blocked.code = 'EACCES';
           return cb(blocked, '', 0);
         }
-        cb(null, address, family);
+        if (opts.all) return cb(null, publicRecords);
+        const selected = publicRecords[0];
+        return cb(null, selected.address, selected.family);
       });
     };
 

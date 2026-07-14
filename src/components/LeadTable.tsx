@@ -827,6 +827,9 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 const addedTime = hasValidAddedAt ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
                 const emailStatus = getEmailStatusMeta(lead.emailDiscovery?.status || lead.profile.contactDetails?.emailStatus || 'not_searched');
                 const isDiscoveringEmail = discoveringEmailIds.includes(lead.id);
+                const scout = (lead as any).scout || (lead.profile as any).scout;
+                const linkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
+                const linkedInSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent([lead.profile.fullName, lead.profile.currentCompany].filter(Boolean).join(' '))}`;
 
                 return (
                   <TableRow 
@@ -854,18 +857,24 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                             <Sparkles className="w-3.5 h-3.5" />
                           </div>
                         )}
-                        {lead.profile.contactDetails?.linkedinUrl && (
-                          <a
-                            href={lead.profile.contactDetails.linkedinUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="Open LinkedIn"
-                            className="text-muted-foreground hover:text-primary transition-colors"
-                          >
-                            <Link2 className="w-3.5 h-3.5" />
-                          </a>
-                        )}
+                        <a
+                          href={linkedInProfileUrl || linkedInSearchUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={linkedInProfileUrl ? 'Open LinkedIn profile' : 'Find this person on LinkedIn'}
+                          className="text-muted-foreground hover:text-primary transition-colors"
+                        >
+                          <Link2 className="w-3.5 h-3.5" />
+                        </a>
                       </div>
+                      {scout?.matchedCriteria?.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1" title={`Evidence sources: ${scout.sourceProviders?.join(', ') || 'public web'}. ${scout.uncertainties?.join(' ') || ''}`}>
+                          {scout.matchedCriteria.slice(0, 2).map((reason: string) => (
+                            <Badge key={reason} variant="outline" className="h-4 px-1 text-[8px] font-medium text-emerald-400 border-emerald-500/25">{reason}</Badge>
+                          ))}
+                          {scout.corroborationScore >= 7 && <Badge variant="outline" className="h-4 px-1 text-[8px] text-indigo-300 border-indigo-500/25">corroborated</Badge>}
+                        </div>
+                      )}
                     </TableCell>
                   <TableCell className="text-muted-foreground truncate max-w-[200px]" title={lead.profile.currentTitle}>
                     {lead.profile.currentTitle || 'Professional'}

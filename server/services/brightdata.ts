@@ -3,6 +3,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import path from 'path';
 import { ApiKeyPool, parseApiKeys, type ApiKeyFailureKind, type FailureClassification } from './keyRotator.js';
+import { brightDataFreeTierCapabilities } from '../leadSearch/freeTier.js';
 
 type BrightDataTransport = 'hosted' | 'local';
 export type BrightDataReasonCode =
@@ -255,6 +256,32 @@ const markProviderSuccess = () => {
 
 export function isBrightDataConfigured() {
   return brightDataKeyPool.hasConfiguredKeys();
+}
+
+/**
+ * Bright Data's Rapid/free MCP surface deliberately exposes only public web
+ * search and single-page Markdown scraping.  Default to that safer surface
+ * unless a deployment has explicitly opted into a Pro account.
+ */
+export function isBrightDataFreeTier() {
+  return (process.env.BRIGHTDATA_PLAN || 'free').trim().toLowerCase() !== 'pro';
+}
+
+export function getBrightDataCapabilities() {
+  const free = isBrightDataFreeTier();
+  return {
+    ...(free
+      ? brightDataFreeTierCapabilities()
+      : {
+          provider: 'brightdata' as const,
+          plan: 'pro' as const,
+          monthlyUnitLimit: Number(process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET) || undefined,
+          supportedTools: ['search_engine', 'scrape_as_markdown', 'scrape_batch'],
+          unavailableTools: [] as string[]
+        }),
+    configured: isBrightDataConfigured(),
+    rapidModeOnly: free
+  };
 }
 
 export function isBrightDataCoolingDown() {
@@ -562,6 +589,25 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
   }).filter(Boolean))).slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
   if (cleanUrls.length === 0) return [];
 
+  // `scrape_batch` is not exposed by Bright Data's Rapid/free MCP. Keep the
+  // explicit deep-enrichment stage functional without probing an unavailable
+  // tool, and keep the fallback intentionally small.
+  if (isBrightDataFreeTier()) {
+    const fallbackLimit = Math.min(
+      cleanUrls.length,
+      Math.max(1, Math.floor(Number(process.env.BRIGHTDATA_FREE_BATCH_FALLBACK_MAX_URLS) || 2))
+    );
+    const results = await Promise.all(cleanUrls.slice(0, fallbackLimit).map(async (url) => {
+      try {
+        const content = await scrapeAsMarkdown(url, timeoutMs);
+        return content ? { url, content, sourceProvider: 'brightdata_batch' as const } : null;
+      } catch {
+        return null;
+      }
+    }));
+    return results.filter((item): item is BrightDataBatchResult => Boolean(item));
+  }
+
   const result = await withBrightDataClient('scrape_batch', async (client) => {
     if (scrapeBatchToolAvailable === null) {
       const tools = await client.listTools();
@@ -625,11 +671,36 @@ export type BrightDataSearchResult = {
   sourceProvider: 'brightdata_search';
 };
 
-export async function brightDataSearch(query: string, options?: {
+export type BrightDataSearchOptions = {
   country?: string;
-  page?: number;
+  geoLocation?: string;
+  cursor?: string;
   timeoutMs?: number;
-}): Promise<BrightDataSearchResult[]> {
+};
+
+/** Bright Data search_engine accepts a two-letter geo_location value. */
+export function normalizeBrightDataGeoLocation(value?: string) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return /^[a-z]{2}$/.test(normalized) ? normalized : '';
+}
+
+/**
+ * Keep the MCP argument names aligned with @brightdata/mcp's search_engine
+ * schema: query, engine, cursor, and geo_location. In particular, `country`
+ * and `page` are not valid tool arguments in the installed client.
+ */
+export function buildBrightDataSearchArguments(query: string, options: BrightDataSearchOptions = {}) {
+  const configuredGeo = options.geoLocation || options.country || process.env.BRIGHTDATA_SEARCH_GEO_LOCATION || 'us';
+  const geoLocation = normalizeBrightDataGeoLocation(configuredGeo);
+  return {
+    query,
+    engine: 'google' as const,
+    ...(options.cursor ? { cursor: options.cursor } : {}),
+    ...(geoLocation ? { geo_location: geoLocation } : {})
+  };
+}
+
+export async function brightDataSearch(query: string, options?: BrightDataSearchOptions): Promise<BrightDataSearchResult[]> {
   const timeoutMs = options?.timeoutMs || baseTimeoutMs();
   const result = await withBrightDataClient('search_engine', async (client) => {
     if (searchToolAvailable === null) {
@@ -647,11 +718,7 @@ export async function brightDataSearch(query: string, options?: {
     const toolResult = await withHardTimeout(client.callTool(
       {
         name: 'search_engine',
-        arguments: {
-          query,
-          country: options?.country || 'us',
-          page: options?.page || 1
-        }
+        arguments: buildBrightDataSearchArguments(query, options)
       },
       undefined,
       { timeout: timeoutMs }

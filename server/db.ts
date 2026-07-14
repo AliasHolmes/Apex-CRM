@@ -8,7 +8,7 @@ import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 4;
+const LATEST_SCHEMA_VERSION = 5;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -218,6 +218,48 @@ function runMigrations(db: DatabaseSync) {
           ON outreach_drafts(lead_id);
         CREATE INDEX IF NOT EXISTS idx_outreach_drafts_created_at
           ON outreach_drafts(created_at DESC);
+      `);
+    }
+
+    if (currentVersion < 5) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS saved_searches (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          query TEXT NOT NULL,
+          spec_json TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          max_per_company INTEGER NOT NULL DEFAULT 2,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_run_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_searches_updated_at
+          ON saved_searches(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS query_performance (
+          scope_key TEXT PRIMARY KEY,
+          family TEXT NOT NULL,
+          lane TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          runs INTEGER NOT NULL DEFAULT 0,
+          raw_candidates INTEGER NOT NULL DEFAULT 0,
+          unique_candidates INTEGER NOT NULL DEFAULT 0,
+          extracted_candidates INTEGER NOT NULL DEFAULT 0,
+          accepted_candidates INTEGER NOT NULL DEFAULT 0,
+          duplicate_candidates INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_query_performance_updated_at
+          ON query_performance(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS provider_usage (
+          provider TEXT NOT NULL,
+          period TEXT NOT NULL,
+          units INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(provider, period)
+        );
       `);
     }
 
@@ -989,6 +1031,183 @@ export function readSearchLogById(id: string) {
     .prepare('SELECT * FROM search_logs WHERE id = ?')
     .get(id) as any | undefined;
   return row ? toSearchLogRecord(row) : null;
+}
+
+export type SavedSearchRecord = {
+  id: string;
+  name: string;
+  query: string;
+  spec: Record<string, unknown>;
+  mode: string;
+  maxPerCompany: number;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+};
+
+const toSavedSearchRecord = (row: any): SavedSearchRecord => ({
+  id: row.id,
+  name: row.name,
+  query: row.query,
+  spec: parseJSONField<Record<string, unknown>>(row.spec_json, {}),
+  mode: row.mode,
+  maxPerCompany: Math.max(1, Number(row.max_per_company || 2)),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  lastRunAt: row.last_run_at || undefined
+});
+
+export function readSavedSearches(limit = 50) {
+  const rows = getLeadsDb().prepare(`
+    SELECT * FROM saved_searches ORDER BY datetime(updated_at) DESC LIMIT ?
+  `).all(Math.min(Math.max(Math.floor(limit) || 50, 1), 100)) as any[];
+  return rows.map(toSavedSearchRecord);
+}
+
+export function readSavedSearchById(id: string) {
+  const row = getLeadsDb().prepare('SELECT * FROM saved_searches WHERE id = ?').get(id) as any | undefined;
+  return row ? toSavedSearchRecord(row) : null;
+}
+
+export function upsertSavedSearch(input: Omit<SavedSearchRecord, 'id' | 'createdAt' | 'updatedAt' | 'lastRunAt'> & { id?: string }) {
+  const db = getLeadsDb();
+  const now = new Date().toISOString();
+  const existing = input.id ? readSavedSearchById(input.id) : null;
+  const record: SavedSearchRecord = {
+    id: input.id || crypto.randomUUID(),
+    name: String(input.name || '').trim().slice(0, 120),
+    query: String(input.query || '').trim().slice(0, 1000),
+    spec: input.spec && typeof input.spec === 'object' ? input.spec : {},
+    mode: String(input.mode || 'person_first').trim().slice(0, 40),
+    maxPerCompany: Math.min(Math.max(Math.floor(Number(input.maxPerCompany) || 2), 1), 10),
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    lastRunAt: existing?.lastRunAt
+  };
+  if (!record.name || !record.query) throw new Error('A saved search needs a name and a query.');
+
+  db.prepare(`
+    INSERT INTO saved_searches (
+      id, name, query, spec_json, mode, max_per_company, created_at, updated_at, last_run_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      query = excluded.query,
+      spec_json = excluded.spec_json,
+      mode = excluded.mode,
+      max_per_company = excluded.max_per_company,
+      updated_at = excluded.updated_at
+  `).run(
+    record.id,
+    record.name,
+    record.query,
+    JSON.stringify(record.spec),
+    record.mode,
+    record.maxPerCompany,
+    record.createdAt,
+    record.updatedAt,
+    record.lastRunAt || null
+  );
+  return record;
+}
+
+export function deleteSavedSearch(id: string) {
+  return Number(getLeadsDb().prepare('DELETE FROM saved_searches WHERE id = ?').run(id).changes || 0);
+}
+
+export function markSavedSearchRun(id: string, now = new Date().toISOString()) {
+  getLeadsDb().prepare(`
+    UPDATE saved_searches SET last_run_at = ?, updated_at = ? WHERE id = ?
+  `).run(now, now, id);
+}
+
+export type QueryPerformanceUpdate = {
+  family: string;
+  lane: string;
+  provider: string;
+  rawCandidates?: number;
+  uniqueCandidates?: number;
+  extractedCandidates?: number;
+  acceptedCandidates?: number;
+  duplicateCandidates?: number;
+};
+
+export function recordQueryPerformance(update: QueryPerformanceUpdate) {
+  const family = String(update.family || 'general').slice(0, 80);
+  const lane = String(update.lane || 'person').slice(0, 80);
+  const provider = String(update.provider || 'tavily').slice(0, 80);
+  const scopeKey = [family, lane, provider].join('|').toLowerCase();
+  getLeadsDb().prepare(`
+    INSERT INTO query_performance (
+      scope_key, family, lane, provider, runs, raw_candidates, unique_candidates,
+      extracted_candidates, accepted_candidates, duplicate_candidates, updated_at
+    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_key) DO UPDATE SET
+      runs = query_performance.runs + 1,
+      raw_candidates = query_performance.raw_candidates + excluded.raw_candidates,
+      unique_candidates = query_performance.unique_candidates + excluded.unique_candidates,
+      extracted_candidates = query_performance.extracted_candidates + excluded.extracted_candidates,
+      accepted_candidates = query_performance.accepted_candidates + excluded.accepted_candidates,
+      duplicate_candidates = query_performance.duplicate_candidates + excluded.duplicate_candidates,
+      updated_at = excluded.updated_at
+  `).run(
+    scopeKey,
+    family,
+    lane,
+    provider,
+    Math.max(0, Math.floor(update.rawCandidates || 0)),
+    Math.max(0, Math.floor(update.uniqueCandidates || 0)),
+    Math.max(0, Math.floor(update.extractedCandidates || 0)),
+    Math.max(0, Math.floor(update.acceptedCandidates || 0)),
+    Math.max(0, Math.floor(update.duplicateCandidates || 0)),
+    new Date().toISOString()
+  );
+}
+
+export function readQueryPerformance(limit = 100) {
+  return getLeadsDb().prepare(`
+    SELECT * FROM query_performance ORDER BY datetime(updated_at) DESC LIMIT ?
+  `).all(Math.min(Math.max(Math.floor(limit) || 100, 1), 500)) as any[];
+}
+
+const usagePeriod = (date = new Date()) => date.toISOString().slice(0, 7);
+
+export function readProviderUsage(provider?: string, period = usagePeriod()) {
+  const db = getLeadsDb();
+  if (provider) {
+    const row = db.prepare('SELECT * FROM provider_usage WHERE provider = ? AND period = ?').get(provider, period) as any | undefined;
+    return row ? { provider: row.provider, period: row.period, units: Number(row.units || 0), updatedAt: row.updated_at } : null;
+  }
+  return (db.prepare('SELECT * FROM provider_usage WHERE period = ? ORDER BY provider').all(period) as any[])
+    .map((row) => ({ provider: row.provider, period: row.period, units: Number(row.units || 0), updatedAt: row.updated_at }));
+}
+
+/** Reserve provider units before a chargeable free-tier operation. */
+export function reserveProviderUsage(provider: string, units: number, monthlyLimit?: number) {
+  const requested = Math.max(0, Math.floor(units || 0));
+  const period = usagePeriod();
+  const db = getLeadsDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const current = db.prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
+      .get(provider, period) as { units?: number } | undefined;
+    const used = Number(current?.units || 0);
+    const allowed = !monthlyLimit || used + requested <= monthlyLimit;
+    if (allowed && requested) {
+      db.prepare(`
+        INSERT INTO provider_usage (provider, period, units, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(provider, period) DO UPDATE SET
+          units = excluded.units,
+          updated_at = excluded.updated_at
+      `).run(provider, period, used + requested, new Date().toISOString());
+    }
+    db.exec('COMMIT');
+    return { allowed, used, requested, remaining: monthlyLimit ? Math.max(0, monthlyLimit - used - (allowed ? requested : 0)) : undefined };
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* no-op */ }
+    throw error;
+  }
 }
 
 export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';

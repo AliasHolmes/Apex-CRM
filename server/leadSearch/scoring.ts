@@ -53,33 +53,23 @@ const companyIntentScore = (lead: Record<string, any>) => {
   return 5;
 };
 
-const contactabilityScore = (lead: Record<string, any>) => {
-  const contactDetails = lead.contactDetails || {};
-  const emailDiscovery = lead.emailDiscovery;
-  if (emailDiscovery?.status === 'confirmed_public') return 10;
-  if (emailDiscovery?.status === 'company_public') return 8;
-  if (emailDiscovery?.status === 'pattern_likely') return 6;
-  if (contactDetails.email && !String(contactDetails.email).toUpperCase().includes('INFERRED')) return 8;
-  if (contactDetails.email) return 6;
-  if (contactDetails.website || lead.companyAccount?.website) return 5;
-  return 4;
-};
-
 export function rankLeadForFinalSelection(lead: Record<string, any>): number {
   const authorityScore = clampScore(lead.decisionMakerVerification?.confidence, 5);
   const companyScore = companyIntentScore(lead);
   const evidenceScore = evidenceQualityScore(evidenceQualityForLead(lead));
-  const contactScore = contactabilityScore(lead);
+  const criteriaCoverageScore = clampScore(lead.scout?.criteriaCoverageScore, 5);
+  const corroborationScore = clampScore(lead.scout?.corroborationScore, 4);
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
   const baseScore = clampScore(lead.scoreBreakdown?.finalScore || lead.scoreOverride || lead.fitScore, 5);
 
   const rank = (
-    authorityScore * 0.25 +
+    authorityScore * 0.30 +
     companyScore * 0.20 +
     evidenceScore * 0.20 +
-    contactScore * 0.15 +
-    sourceScore * 0.10 +
-    baseScore * 0.10
+    corroborationScore * 0.15 +
+    criteriaCoverageScore * 0.10 +
+    sourceScore * 0.03 +
+    baseScore * 0.02
   );
 
   return Number(Math.min(Math.max(rank, 1), 10).toFixed(2));

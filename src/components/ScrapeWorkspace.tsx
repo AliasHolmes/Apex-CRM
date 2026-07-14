@@ -18,7 +18,9 @@ import {
   ArrowRight,
   Database,
   History,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Save,
+  SlidersHorizontal
 } from 'lucide-react';
 import { LinkedInProfile, Lead, ScrapingTask, QualifiedLeadProfile, SearchLog, MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '../types';
 import { Button } from "@/components/ui/button";
@@ -134,6 +136,14 @@ export default function ScrapeWorkspace() {
   // Find Leads inputs
   const [findQuery, setFindQuery] = useState('');
   const [leadLimit, setLeadLimit] = useState<number>(5);
+  const [discoveryMode, setDiscoveryMode] = useState<'person_first' | 'account_first' | 'signal_first' | 'local_business'>('person_first');
+  const [maxPerCompany, setMaxPerCompany] = useState(2);
+  const [searchSpec, setSearchSpec] = useState<any>(null);
+  const [searchPreview, setSearchPreview] = useState<any>(null);
+  const [providerCapabilities, setProviderCapabilities] = useState<any>(null);
+  const [savedSearches, setSavedSearches] = useState<any[]>([]);
+  const [selectedSavedSearchId, setSelectedSavedSearchId] = useState('');
+  const [savedSearchName, setSavedSearchName] = useState('');
   
   const [loading, setLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -155,6 +165,22 @@ export default function ScrapeWorkspace() {
         .catch(console.error);
     }
   }, [showLogs]);
+
+  const refreshScoutWorkspace = async () => {
+    const [capabilitiesResponse, searchesResponse] = await Promise.all([
+      fetch('/api/provider-capabilities'),
+      fetch('/api/saved-searches')
+    ]);
+    if (capabilitiesResponse.ok) setProviderCapabilities(await capabilitiesResponse.json());
+    if (searchesResponse.ok) {
+      const data = await searchesResponse.json();
+      setSavedSearches(Array.isArray(data.searches) ? data.searches : []);
+    }
+  };
+
+  useEffect(() => {
+    void refreshScoutWorkspace().catch(() => {});
+  }, []);
 
   // Live logs are handled directly via active status polling during search execution
 
@@ -206,6 +232,88 @@ export default function ScrapeWorkspace() {
 
   const updateTaskStatus = (taskId: string, status: 'completed' | 'failed', resultCount?: number) => {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status, resultCount } : t));
+  };
+
+  const activeSpec = () => ({
+    ...(searchSpec || {}),
+    mode: discoveryMode,
+    maxPerCompany
+  });
+
+  const handlePreviewScout = async () => {
+    if (!findQuery.trim() || loading) return;
+    setErrorCode(null);
+    try {
+      const response = await fetch('/api/lead-search/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: findQuery, discoveryMode, searchSpec: searchSpec ? activeSpec() : undefined })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not plan this scout search.');
+      setSearchPreview(data);
+      setSearchSpec(data.spec);
+      setDiscoveryMode(data.spec?.mode || discoveryMode);
+      setMaxPerCompany(data.spec?.maxPerCompany || maxPerCompany);
+    } catch (error: any) {
+      setErrorCode(error.message || 'Could not plan this scout search.');
+    }
+  };
+
+  const handleSaveSearch = async () => {
+    if (!findQuery.trim()) return;
+    const name = savedSearchName.trim() || findQuery.trim().slice(0, 72);
+    try {
+      const response = await fetch('/api/saved-searches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, query: findQuery, spec: activeSpec() })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save this search.');
+      setSelectedSavedSearchId(data.search.id);
+      setSavedSearchName(data.search.name);
+      await refreshScoutWorkspace();
+      triggerToast('Scout search saved.');
+    } catch (error: any) {
+      setErrorCode(error.message || 'Could not save this search.');
+    }
+  };
+
+  const applySavedSearch = (id: string) => {
+    setSelectedSavedSearchId(id);
+    const saved = savedSearches.find((item) => item.id === id);
+    if (!saved) return;
+    setFindQuery(saved.query || '');
+    setSearchSpec(saved.spec || null);
+    setDiscoveryMode(saved.mode || saved.spec?.mode || 'person_first');
+    setMaxPerCompany(saved.maxPerCompany || saved.spec?.maxPerCompany || 2);
+    setSavedSearchName(saved.name || '');
+    setSearchPreview(null);
+  };
+
+  const handleUseLookalike = (leadId: string) => {
+    const seed = leads.find((lead) => lead.id === leadId);
+    const profile = seed?.profile;
+    if (!profile) return;
+    const title = String(profile.currentTitle || '').trim();
+    const company = String(profile.currentCompany || '').trim();
+    const location = String(profile.location || '').trim();
+    const industry = String((seed as any)?.companyAccount?.industry || profile.industry || '').trim();
+    const prompt = `Find prospects similar to ${title || 'the decision maker'}${company ? ` at ${company}` : ''}${industry ? ` in ${industry}` : ''}${location ? ` around ${location}` : ''}.`;
+    setFindQuery(prompt);
+    setSearchSpec({
+      version: 1,
+      mode: 'person_first',
+      person: { includeTitles: title ? [title] : [], excludeTitles: [], seniorities: [], locations: location ? [location] : [] },
+      company: { industries: industry ? [industry] : [], keywords: [company || industry || title].filter(Boolean), locations: location ? [location] : [] },
+      signals: { include: [] },
+      exclusions: { companies: company ? [company] : [], domains: [] },
+      maxPerCompany
+    });
+    setDiscoveryMode('person_first');
+    setSearchPreview(null);
+    setSelectedSavedSearchId('');
   };
 
   // Helper system to check if user has already scraped are added a prospect
@@ -414,6 +522,9 @@ export default function ScrapeWorkspace() {
           limit: leadLimit,
           excludeList: excludeUrlsAndEmails,
           sessionId,
+          discoveryMode,
+          searchSpec: activeSpec(),
+          savedSearchId: selectedSavedSearchId || undefined,
           profileEnrichmentStage: 'on_demand',
           emailDiscovery: 'off'
         }),
@@ -654,7 +765,57 @@ Everything else is noise.`)}
                     />
                   </div>
                   <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-[11px] text-indigo-200 leading-relaxed">
-                    Tavily scouts public LinkedIn-indexed results, Bright Data enriches fresh profile links when configured, and Apex keeps mining toward your selected target.
+                    Scout mode uses public web evidence only. Deep profile enrichment and email discovery remain separate, manual stages after you review the prospects.
+                  </div>
+
+                  <div className="rounded-xl border bg-muted/40 p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-xs font-bold"><SlidersHorizontal className="w-3.5 h-3.5 text-indigo-400" /> Scout controls</div>
+                      <div className="flex items-center gap-2">
+                        <Button type="button" variant="outline" size="sm" onClick={handlePreviewScout} disabled={loading || !findQuery.trim()} className="h-7 text-[10px]">
+                          <Sparkles className="w-3 h-3 mr-1" /> Plan search
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={handleSaveSearch} disabled={loading || !findQuery.trim()} className="h-7 text-[10px]">
+                          <Save className="w-3 h-3 mr-1" /> Save
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <select value={discoveryMode} onChange={(e) => { setDiscoveryMode(e.target.value as typeof discoveryMode); setSearchPreview(null); }} disabled={loading} className="h-8 rounded-md border bg-background px-2 text-xs">
+                        <option value="person_first">People first</option>
+                        <option value="account_first">Accounts first</option>
+                        <option value="signal_first">Signals first</option>
+                        <option value="local_business">Local businesses</option>
+                      </select>
+                      <Input value={savedSearchName} onChange={(e) => setSavedSearchName(e.target.value)} placeholder="Saved-search name" disabled={loading} className="h-8 text-xs" />
+                      <div className="flex items-center gap-2 rounded-md border bg-background px-2">
+                        <span className="text-[10px] text-muted-foreground whitespace-nowrap">Max/account</span>
+                        <Input type="number" min={1} max={5} value={maxPerCompany} onChange={(e) => setMaxPerCompany(Math.max(1, Math.min(5, Number(e.target.value) || 1)))} disabled={loading} className="h-7 border-0 px-1 text-xs" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <select value={selectedSavedSearchId} onChange={(e) => applySavedSearch(e.target.value)} disabled={loading} className="h-8 rounded-md border bg-background px-2 text-xs">
+                        <option value="">Load a saved scout search...</option>
+                        {savedSearches.map((saved) => <option key={saved.id} value={saved.id}>{saved.name}</option>)}
+                      </select>
+                      <select value="" onChange={(e) => handleUseLookalike(e.target.value)} disabled={loading || leads.length === 0} className="h-8 rounded-md border bg-background px-2 text-xs">
+                        <option value="">More like an existing prospect...</option>
+                        {leads.slice(0, 100).map((lead) => <option key={lead.id} value={lead.id}>{lead.profile.fullName}{lead.profile.currentCompany ? ` - ${lead.profile.currentCompany}` : ''}</option>)}
+                      </select>
+                    </div>
+                    {providerCapabilities && (
+                      <div className="flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+                        <Badge variant="outline">Tavily free: {providerCapabilities.tavily?.usage?.units || 0}/{providerCapabilities.tavily?.monthlyLimit || 1000} credits</Badge>
+                        <Badge variant="outline">Bright Data free: {providerCapabilities.brightData?.usage?.units || 0}/{providerCapabilities.brightData?.monthlyUnitLimit || providerCapabilities.brightData?.monthlyLimit || 5000} requests</Badge>
+                        <Badge variant="outline">Scout-only: no automatic email or deep profile scrape</Badge>
+                      </div>
+                    )}
+                    {searchPreview?.spec && (
+                      <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2 text-[10px] text-emerald-100 space-y-1">
+                        <div className="font-bold">Planned lanes: {(searchPreview.tasks || []).map((task: any) => task.lane).filter((lane: string, index: number, lanes: string[]) => lanes.indexOf(lane) === index).join(', ') || 'person'}</div>
+                        <div>Criteria: {[...(searchPreview.spec.person?.includeTitles || []), ...(searchPreview.spec.company?.industries || []), ...(searchPreview.spec.signals?.include || [])].slice(0, 6).join(' / ') || 'your brief'}</div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-end">
@@ -736,7 +897,7 @@ Everything else is noise.`)}
               </div>
 
               <p className="text-xs text-muted-foreground leading-relaxed bg-muted/50 p-3.5 rounded-xl border">
-                <strong>LinkedIn Discovery:</strong> Tavily finds candidates, Bright Data enriches uncached profile links when available, and Apex filters noisy evidence before adding qualified prospects.
+                <strong>Prospect Scout:</strong> Tavily searches public evidence; Bright Data can provide a small corroborating public-web search when needed. The resulting prospects are intentionally held for your manual deep-enrichment and email-discovery decisions.
               </p>
             </form>
             </TabsContent>

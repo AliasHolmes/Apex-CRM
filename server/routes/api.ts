@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft } from '../db.js';
-import { hasOpenAIKey, hasTavilyKey, tavilySearch, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus } from '../services/llm.js';
-import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
+import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, reserveProviderUsage } from '../db.js';
+import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus } from '../services/llm.js';
+import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
@@ -14,6 +14,10 @@ import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyInt
 import { applyEmailDiscoveryToLead, discoverProspectEmail } from '../leadSearch/emailDiscovery.js';
 import { enrichLeadProfile } from '../leadSearch/profileEnrichment.js';
 import { MiningTelemetryRecorder, estimateLLMCostUsd, getLLMRouteLabel, type MiningTraceEvent } from '../leadSearch/telemetry.js';
+import { buildFallbackQueryPlan as buildScoutFallbackQueryPlan, buildFallbackSearchSpec, buildRetrievalTasks, buildSearchSpecPrompt, buildStrategistPrompt as buildScoutStrategistPrompt, normalizeSearchSpec, type DiscoveryMode, type SearchSpec } from '../leadSearch/searchSpec.js';
+import { ScoutFreeTierBudget, brightDataFreeTierCapabilities, tavilyFreeTierCapabilities } from '../leadSearch/freeTier.js';
+import { fuseObservations, type ScoutObservation } from '../leadSearch/observations.js';
+import { buildScoutEvidence, selectDiversifiedLeads } from '../leadSearch/scoutScoring.js';
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
@@ -284,6 +288,10 @@ router.get('/health', (req, res) => {
     hasOAuth: false,
     hasGoogleClient: false,
     brightData: getBrightDataStatus(),
+    providerCapabilities: {
+      tavily: { ...tavilyFreeTierCapabilities(), configured: hasTavilyKey() },
+      brightData: getBrightDataCapabilities()
+    },
     emailDiscovery: {
       mode: process.env.EMAIL_DISCOVERY_MODE || 'accepted_only',
       maxPerSearch: Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || 10),
@@ -493,6 +501,91 @@ router.post('/mining-sessions/:sessionId/cancel', (req, res): any => {
   res.status(202).json({ apiVersion: 1, success: true, sessionId, status: 'cancellation_requested', session });
 });
 
+router.get('/provider-capabilities', (req, res): any => {
+  try {
+    res.json({
+      apiVersion: 1,
+      tavily: {
+        ...tavilyFreeTierCapabilities(),
+        configured: hasTavilyKey(),
+        usage: readProviderUsage('tavily')
+      },
+      brightData: {
+        ...getBrightDataCapabilities(),
+        usage: readProviderUsage('brightdata')
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Could not read provider capabilities.' });
+  }
+});
+
+router.get('/saved-searches', (req, res): any => {
+  try {
+    res.json({ apiVersion: 1, searches: readSavedSearches(Number(req.query.limit || 50)) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Could not read saved searches.' });
+  }
+});
+
+router.post('/saved-searches', (req, res): any => {
+  try {
+    const query = String(req.body?.query || '').trim();
+    const spec = normalizeSearchSpec(req.body?.spec, query);
+    const record = upsertSavedSearch({
+      id: typeof req.body?.id === 'string' ? req.body.id : undefined,
+      name: String(req.body?.name || '').trim(),
+      query,
+      spec,
+      mode: spec.mode,
+      maxPerCompany: spec.maxPerCompany
+    });
+    res.status(201).json({ apiVersion: 1, search: record });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Could not save search.' });
+  }
+});
+
+router.delete('/saved-searches/:id', (req, res): any => {
+  try {
+    res.json({ apiVersion: 1, deleted: deleteSavedSearch(req.params.id) > 0 });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Could not delete saved search.' });
+  }
+});
+
+router.post('/lead-search/preview', async (req, res): Promise<any> => {
+  const query = String(req.body?.query || '').trim();
+  if (!query) return res.status(400).json({ error: 'Search criteria/query is required.' });
+  const requestedMode = req.body?.discoveryMode as DiscoveryMode | undefined;
+  let spec = normalizeSearchSpec(req.body?.searchSpec, query);
+  if (!req.body?.searchSpec) {
+    spec = buildFallbackSearchSpec(query, requestedMode);
+    if (hasOpenAIKey()) {
+      try {
+        spec = normalizeSearchSpec(await openAIStructured(
+          buildSearchSpecPrompt(query),
+          searchSpecSchema,
+          STRATEGIST_SYSTEM_PROMPT,
+          { maxTokens: 700, temperature: 0 }
+        ), query);
+      } catch {
+        // A deterministic preview still lets the user edit and run a search when LLM planning is unavailable.
+      }
+    }
+  }
+  const tasks = buildRetrievalTasks(buildScoutFallbackQueryPlan(query, spec), spec);
+  res.json({
+    apiVersion: 1,
+    spec,
+    tasks,
+    capabilities: {
+      tavily: { ...tavilyFreeTierCapabilities(), configured: hasTavilyKey() },
+      brightData: getBrightDataCapabilities()
+    }
+  });
+});
+
 router.get('/mining-sessions/:sessionId/trace', (req, res): any => {
   try {
     const log = readSearchLogById(req.params.sessionId);
@@ -657,6 +750,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     brightData: brightDataStats,
     sourceProvider: 'tavily' as 'tavily' | 'brightdata_search' | 'mixed',
     brightDataSearchResults: 0,
+    scout: {
+      mode: 'person_first' as DiscoveryMode,
+      maxPerCompany: 2,
+      spec: null as SearchSpec | null,
+      freeTier: {} as Record<string, unknown>,
+      lightweightEvidenceUpgrades: 0
+    },
     rerank: {
       poolTarget: 0,
       poolSize: 0,
@@ -684,6 +784,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     sourceQuery: string;
     sourceRound: number;
     queryRun?: QueryRunStats;
+    sourceProviders?: string[];
+    sourceCount?: number;
+    lanes?: string[];
+    corroborated?: boolean;
   };
 
   const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
@@ -743,9 +847,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       evidenceBlock,
       evidenceQuality: 'weak',
       sourceProvider: lead.sourceProvider === 'brightdata_search' ? 'brightdata' : (lead.sourceProvider === 'brightdata' ? 'brightdata' : 'tavily'),
-      sourceUrl,
-      sourceQuery: promptQuery,
-      sourceRound: stats.rounds || 1
+        sourceUrl,
+        sourceQuery: promptQuery,
+      sourceRound: stats.rounds || 1,
+      sourceProviders: [lead.sourceProvider || 'tavily'],
+      sourceCount: 1,
+      lanes: [lead.discoveryLane || 'person'],
+      corroborated: false
     };
   };
 
@@ -827,6 +935,47 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     if (!query) throw new Error('Search criteria/query is required');
     if (!hasOpenAIKey()) throw new Error('OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.');
 
+    const requestedMode = ['person_first', 'account_first', 'signal_first', 'local_business'].includes(req.body.discoveryMode)
+      ? req.body.discoveryMode as DiscoveryMode
+      : 'person_first';
+    let searchSpec = normalizeSearchSpec(req.body.searchSpec, query);
+    if (!req.body.searchSpec) {
+      searchSpec = buildFallbackSearchSpec(query, requestedMode);
+      const specStarted = Date.now();
+      try {
+        searchSpec = normalizeSearchSpec(await openAIStructured(
+          buildSearchSpecPrompt(query),
+          searchSpecSchema,
+          STRATEGIST_SYSTEM_PROMPT,
+          { maxTokens: 700, temperature: 0 }
+        ), query);
+        recordTrace({
+          phase: 'strategy', operation: 'search_spec_compile', status: 'success', provider: 'llm',
+          latencyMs: Date.now() - specStarted, metadata: { mode: searchSpec.mode }
+        });
+      } catch (error: any) {
+        logEvent(`WARN: Search-spec compiler failed: ${error.message || String(error)}. Using deterministic spec.`);
+        recordTrace({
+          phase: 'strategy', operation: 'search_spec_compile', status: 'error', provider: 'llm',
+          latencyMs: Date.now() - specStarted, error: { message: error.message || String(error) }
+        });
+      }
+    }
+    const freeTierBudget = new ScoutFreeTierBudget();
+    const tavilyCapabilities = tavilyFreeTierCapabilities();
+    const brightDataCapabilities = brightDataFreeTierCapabilities();
+    stats.scout = {
+      mode: searchSpec.mode,
+      maxPerCompany: searchSpec.maxPerCompany,
+      spec: searchSpec,
+      freeTier: {
+        tavily: tavilyCapabilities,
+        brightData: brightDataCapabilities,
+        session: freeTierBudget.snapshot()
+      },
+      lightweightEvidenceUpgrades: 0
+    };
+
     const expiredRows = pruneExpiredEnrichmentCache();
     if (expiredRows > 0) logEvent(`Pruned ${expiredRows} expired enrichment cache rows.`);
     const expiredEmailRows = pruneExpiredEmailDiscoveryCache();
@@ -901,13 +1050,24 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
       stats.rounds = round;
       const remaining = Math.max(rerankPoolTarget - acceptedLeads.length, 0);
-      const strategistPrompt = buildStrategistPrompt({
+      const historicalYield = Object.fromEntries(readQueryPerformance(30).map((row: any) => [
+        `${row.family}:${row.lane}:${row.provider}`,
+        {
+          runs: Number(row.runs || 0),
+          accepted: Number(row.accepted_candidates || 0),
+          unique: Number(row.unique_candidates || 0),
+          duplicates: Number(row.duplicate_candidates || 0)
+        }
+      ]));
+      const strategistPrompt = buildScoutStrategistPrompt({
         query,
+        spec: searchSpec,
         round,
         maxRounds,
         remaining,
         previousQueries: generatedQueries,
-        previousRoundSummary
+        previousRoundSummary,
+        queryPerformance: historicalYield
       });
 
       let planItems: SearchQueryPlanItem[] = [];
@@ -973,13 +1133,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       }
 
       if (planItems.length === 0) {
-        planItems = buildFallbackQueryPlan(query);
+        planItems = buildScoutFallbackQueryPlan(query, searchSpec);
         logEvent(`Round ${round}: using ${planItems.length} deterministic fallback queries.`);
       }
 
-      const roundPlans = planItems
-        .sort((a, b) => (a.priority || 99) - (b.priority || 99))
-        .map(item => ({ item, executableQuery: toLinkedInSearchQuery(item) }))
+      const roundPlans = buildRetrievalTasks(planItems, searchSpec)
+        .map(item => ({ item, executableQuery: item.query }))
         .filter(plan => {
           const key = plan.executableQuery.toLowerCase();
           if (seenQueryTexts.has(key)) return false;
@@ -1007,7 +1166,11 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           evidenceBlocks: 0,
           extractedLeads: 0,
           acceptedLeads: 0,
-          rejectionReasons: {}
+          rejectionReasons: {},
+          lane: plan.item.lane,
+          providerPreference: plan.item.providerPreference,
+          tavilySearchDepth: plan.item.tavily.searchDepth,
+          corroboratedCandidates: 0
         };
         stats.queryRuns.push(run);
         return run;
@@ -1022,15 +1185,26 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         round,
         counts: { queries: roundPlans.length },
         tavily: {
-          searchDepth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
+          searchDepth: 'task-specific',
           maxResults: Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20),
-          includeDomains: ['linkedin.com/in']
+          includeDomains: Array.from(new Set(roundPlans.flatMap(plan => plan.item.tavily.includeDomains || [])))
         }
       });
       const searchResults = await Promise.all(roundPlans.map(async (plan, index) => {
         const searchStarted = Date.now();
         try {
-          const res = await tavilySearch(plan.executableQuery, ['linkedin.com/in']);
+          const tavilyOptions = plan.item.tavily;
+          const estimatedCredits = tavilyOptions.searchDepth === 'advanced' ? 2 : 1;
+          if (!freeTierBudget.reserveTavilySearch(tavilyOptions.searchDepth)) {
+            logEvent(`Round ${round}: skipped Tavily task after reaching the per-search free-tier budget.`);
+            return { text: '', sources: [], items: [], _failedQueryIndex: index, _skippedFreeTier: true };
+          }
+          const monthlyReservation = reserveProviderUsage('tavily', estimatedCredits, tavilyCapabilities.monthlyLimit);
+          if (!monthlyReservation.allowed) {
+            logEvent(`Round ${round}: skipped Tavily task because the configured monthly free-tier budget is exhausted.`);
+            return { text: '', sources: [], items: [], _failedQueryIndex: index, _skippedFreeTier: true };
+          }
+          const res = await tavilySearch(plan.executableQuery, tavilyOptions);
           const resultsCount = res.items?.length || 0;
           recordTrace({
             phase: 'search',
@@ -1042,9 +1216,9 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             latencyMs: Date.now() - searchStarted,
             counts: { rawCandidates: resultsCount },
             tavily: {
-              searchDepth: process.env.TAVILY_SEARCH_DEPTH || 'basic',
-              maxResults: Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20),
-              includeDomains: ['linkedin.com/in']
+              searchDepth: tavilyOptions.searchDepth,
+              maxResults: tavilyOptions.maxResults,
+              includeDomains: tavilyOptions.includeDomains
             }
           });
           debugLogs.push({
@@ -1093,10 +1267,15 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         const isSecondaryTriggered = brightDataSearchMode === 'secondary';
 
         if (isFallbackTriggered || isSecondaryTriggered) {
-          usingBrightDataSearch = true;
-          stats.sourceProvider = stats.sourceProvider === 'tavily' && roundItems.length === 0 ? 'brightdata_search' : 'mixed';
-          
-          const bdSearchPlans = isSecondaryTriggered ? roundPlans.slice(0, 2) : roundPlans;
+          const corroborationPlans = roundPlans.filter(plan => plan.item.providerPreference === 'corroborate' || plan.item.providerPreference === 'brightdata');
+          const bdSearchPlans = (isSecondaryTriggered ? corroborationPlans : corroborationPlans)
+            .slice(0, Number(process.env.BRIGHTDATA_SCOUT_MAX_REQUESTS_PER_SEARCH || 2));
+          if (bdSearchPlans.length === 0) {
+            logEvent(`Round ${round}: no account/signal tasks need Bright Data corroboration.`);
+          } else {
+            usingBrightDataSearch = true;
+            stats.sourceProvider = stats.sourceProvider === 'tavily' && roundItems.length === 0 ? 'brightdata_search' : 'mixed';
+          }
           logEvent(`Round ${round}: executing ${bdSearchPlans.length} Bright Data searches (mode: ${brightDataSearchMode}).`);
           
           brightDataStats.searchAttempted += bdSearchPlans.length;
@@ -1104,7 +1283,20 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           const bdResults = await Promise.all(bdSearchPlans.map(async plan => {
             const bdSearchStarted = Date.now();
             try {
-              const results = await brightDataSearch(plan.executableQuery);
+              if (!freeTierBudget.reserveBrightDataSearch()) {
+                logEvent(`Round ${round}: skipped Bright Data corroboration after reaching the per-search free-tier budget.`);
+                return [];
+              }
+              const monthlyReservation = reserveProviderUsage('brightdata', 1, brightDataCapabilities.monthlyLimit);
+              if (!monthlyReservation.allowed) {
+                logEvent(`Round ${round}: skipped Bright Data corroboration because the configured monthly free-tier budget is exhausted.`);
+                return [];
+              }
+              // Bright Data's Google-backed search can use a site constraint;
+              // Tavily receives the plain query plus its documented domain
+              // filter. Both paths therefore feed the same LinkedIn-first
+              // candidate gate below.
+              const results = await brightDataSearch(toLinkedInSearchQuery(plan.item));
               recordTrace({
                 phase: 'search',
                 operation: 'brightdata_search',
@@ -1147,28 +1339,56 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           }));
           for (let resultIndex = 0; resultIndex < bdResults.length; resultIndex++) {
             const items = bdResults[resultIndex] || [];
+            const originalPlanIndex = roundPlans.indexOf(bdSearchPlans[resultIndex]);
             if (items.length > 0) brightDataStats.searchSucceeded++;
             stats.brightDataSearchResults += items.length;
             for (const item of items) {
               item.sourceProvider = 'brightdata_search';
-              roundItems.push({ item, resultIndex });
+              roundItems.push({ item, resultIndex: originalPlanIndex >= 0 ? originalPlanIndex : resultIndex });
             }
           }
         }
       }
 
-      // Deduplicate candidates
-      let uniqueRoundItems = [];
-      for (const { item, resultIndex } of roundItems) {
-        const queryRun = queryRuns[resultIndex];
+      // Fuse provider observations before extraction. This retains independent
+      // corroboration rather than discarding Bright Data results as duplicates.
+      const observations: ScoutObservation[] = roundItems.map(({ item, resultIndex }) => {
         const plan = roundPlans[resultIndex];
-        
-        const url = item.url || item.link || '';
+        const queryRun = queryRuns[resultIndex];
+        if (queryRun) queryRun.rawCandidates++;
+        return {
+          title: String(item.title || ''),
+          url: String(item.url || item.link || ''),
+          content: String(item.content || item.snippet || item.raw_content || ''),
+          provider: item.sourceProvider === 'brightdata_search' ? 'brightdata' : 'tavily',
+          query: plan?.executableQuery || promptQuery,
+          round,
+          family: plan?.item.family,
+          lane: plan?.item.lane,
+          intent: plan?.item.intent,
+          expectedSignal: plan?.item.expectedSignal,
+          raw: item
+        };
+      });
+      const fusedObservations = fuseObservations(observations);
+      let uniqueRoundItems: any[] = [];
+      for (const observation of fusedObservations) {
+        const planIndex = roundPlans.findIndex(plan => plan.executableQuery === observation.query);
+        const queryRun = planIndex >= 0 ? queryRuns[planIndex] : undefined;
+        const plan = planIndex >= 0 ? roundPlans[planIndex] : undefined;
+        const item = { ...observation.raw };
+        const url = observation.url;
         const username = extractLinkedInUsername(url);
         const normalizedUrl = normalizeLinkedInUrl(url);
-        
-        // Skip immediately if the candidate already exists in our CRM!
-        if (username && existingKeys.has(`linkedin:${username}`)) {
+
+        // Never let an article, company site, or generic search result become
+        // a prospect record. This collector is deliberately LinkedIn-first.
+        if (!username || !normalizedUrl) {
+          noteRejection('missing_linkedin_profile', queryRun);
+          continue;
+        }
+
+        if (existingKeys.has(`linkedin:${username}`)) {
           noteRejection('duplicate_existing_lead', queryRun);
           continue;
         }
@@ -1177,25 +1397,30 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           continue;
         }
 
-        const candidateKey = username || normalizedUrl || normalizeDedupeValue(`${item.title || ''} ${item.content || item.snippet || ''}`);
-        
-        if (!candidateKey || seenCandidateKeys.has(candidateKey)) {
-          // don't reject twice if it's mixed
-          continue;
-        }
+        const candidateKey = username || normalizedUrl || observation.identityKey;
+        if (!candidateKey || seenCandidateKeys.has(candidateKey)) continue;
         seenCandidateKeys.add(candidateKey);
-        
+
+        item.url = url;
+        item.title = observation.title;
+        item.content = observation.content;
+        item.sourceProvider = observation.sourceProviders.includes('brightdata') ? 'brightdata_search' : 'tavily';
         item._normalizedUrl = normalizedUrl;
         item._linkedinUsername = username;
-        item._sourceQuery = plan.executableQuery;
+        item._sourceQuery = observation.query;
         item._sourceRound = round;
-        item._queryFamily = plan.item.family;
-        item._queryIntent = plan.item.intent;
-        item._expectedSignal = plan.item.expectedSignal;
+        item._queryFamily = observation.family || plan?.item.family;
+        item._queryIntent = observation.intent || plan?.item.intent;
+        item._expectedSignal = observation.expectedSignal || plan?.item.expectedSignal;
         item._queryRun = queryRun;
-        
-        queryRun.rawCandidates++;
-        queryRun.uniqueCandidates++;
+        item._sourceProviders = observation.sourceProviders;
+        item._sourceCount = observation.sourceCount;
+        item._lanes = observation.lanes;
+        item._corroborated = observation.corroborated;
+        if (queryRun) {
+          queryRun.uniqueCandidates++;
+          if (observation.corroborated) queryRun.corroboratedCandidates = (queryRun.corroboratedCandidates || 0) + 1;
+        }
         uniqueRoundItems.push(item);
       }
 
@@ -1209,13 +1434,59 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       }
 
       uniqueRoundItems.sort((a, b) => {
-        const scoreItem = (item: any) => `${item.title || ''} ${item.content || ''} ${item.raw_content || ''}`.length + (extractLinkedInUsername(item.url) ? 250 : 0);
+        const scoreItem = (item: any) =>
+          `${item.title || ''} ${item.content || ''} ${item.raw_content || ''}`.length +
+          (extractLinkedInUsername(item.url) ? 180 : 0) +
+          Number(item._sourceCount || 1) * 160 +
+          (item._corroborated ? 180 : 0) +
+          (Array.isArray(item._lanes) && item._lanes.includes('signal') ? 40 : 0);
         return scoreItem(b) - scoreItem(a);
       });
 
       const candidateBudget = Math.min(uniqueRoundItems.length, Math.max(targetLimit * 4, 4));
       const candidateItems = uniqueRoundItems.slice(0, candidateBudget);
       logEvent(`Round ${round}: using top ${candidateItems.length}/${uniqueRoundItems.length} candidates for extraction budget.`);
+
+      // A small, evidence-only Tavily extract batch resolves ambiguous public
+      // pages. It never performs profile enrichment and remains inside the
+      // documented free Extract allowance (one credit per five URLs).
+      const upgradeTargets = candidateItems.filter((item: any) => {
+        const url = String(item.url || '');
+        return url && !/linkedin\.com\/in\//i.test(url) && String(item.content || '').length < 420;
+      });
+      const acceptedUpgradeCount = freeTierBudget.reserveTavilyExtract(upgradeTargets.length);
+      if (acceptedUpgradeCount > 0) {
+        const upgradeUrls = upgradeTargets.slice(0, acceptedUpgradeCount).map((item: any) => String(item.url));
+        const upgradeCredits = Math.ceil(upgradeUrls.length / 5);
+        const monthlyReservation = reserveProviderUsage('tavily', upgradeCredits, tavilyCapabilities.monthlyLimit);
+        if (monthlyReservation.allowed) {
+          try {
+            const extractedPages = await tavilyExtract(upgradeUrls, query, { extractDepth: 'basic', chunksPerSource: 1 });
+            const contentByUrl = new Map(extractedPages.map(page => [normalizeDedupeValue(page.url), page.rawContent]));
+            for (const item of upgradeTargets.slice(0, acceptedUpgradeCount)) {
+              const extracted = contentByUrl.get(normalizeDedupeValue(item.url));
+              if (extracted) {
+                item.raw_content = [item.raw_content, extracted].filter(Boolean).join('\n');
+                item.content = [item.content, extracted.slice(0, 1800)].filter(Boolean).join('\n');
+              }
+            }
+            stats.scout.lightweightEvidenceUpgrades += extractedPages.length;
+            recordTrace({
+              phase: 'search', operation: 'tavily_lightweight_extract', status: 'success', provider: 'tavily', round,
+              counts: { requestedUrls: upgradeUrls.length, extractedUrls: extractedPages.length },
+              tavily: { searchDepth: 'basic' }
+            });
+          } catch (error: any) {
+            logEvent(`WARN: Lightweight Tavily evidence extraction failed: ${error.message || String(error)}`);
+            recordTrace({ phase: 'search', operation: 'tavily_lightweight_extract', status: 'error', provider: 'tavily', round, error: { message: error.message || String(error) } });
+          }
+        }
+      }
+      stats.scout.freeTier = {
+        tavily: tavilyCapabilities,
+        brightData: brightDataCapabilities,
+        session: freeTierBudget.snapshot()
+      };
 
       const evidenceBlocks: string[] = [];
 
@@ -1237,9 +1508,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           sourceUrl: url,
           sourceQuery: item._sourceQuery || '',
           sourceRound: item._sourceRound || round,
-          queryRun
+          queryRun,
+          sourceProviders: Array.isArray(item._sourceProviders) ? item._sourceProviders : [sourceProvider],
+          sourceCount: Number(item._sourceCount || 1),
+          lanes: Array.isArray(item._lanes) ? item._lanes : [item._queryLane || 'person'],
+          corroborated: Boolean(item._corroborated)
         };
-        evidenceByUrl.set(normalizedUrl, evidenceMeta);
+        evidenceByUrl.set(normalizedUrl || normalizeDedupeValue(url), evidenceMeta);
         if (queryRun) queryRun.evidenceBlocks++;
         evidenceBlocks.push(`--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`);
       }
@@ -1337,7 +1612,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       let postFilterLeads: any[] = [];
       for (const lead of provisionalLeads) {
         const normalizedLeadUrl = normalizeLinkedInUrl(lead.contactDetails?.linkedinUrl);
-        const evidenceMeta = evidenceByUrl.get(normalizedLeadUrl) || fallbackEvidenceForLead(lead);
+        const evidenceMeta = evidenceByUrl.get(normalizedLeadUrl || normalizeDedupeValue(lead.contactDetails?.linkedinUrl)) || fallbackEvidenceForLead(lead);
         const queryRun = evidenceMeta.queryRun;
 
         // Identity/Role checks
@@ -1374,6 +1649,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           evidenceQuality: evidenceMeta.evidenceQuality,
           evidenceBlock: evidenceMeta.evidenceBlock,
           whyThisLead: lead.evidenceReasons[0]
+        });
+        lead.discoveryLane = evidenceMeta.lanes?.[0] || 'person';
+        lead.scout = buildScoutEvidence(lead, searchSpec, {
+          sourceProviders: evidenceMeta.sourceProviders,
+          sourceCount: evidenceMeta.sourceCount,
+          lanes: evidenceMeta.lanes
         });
 
         lead.scoreBreakdown = computeScoreBreakdown(lead, evidenceMeta.evidenceQuality, evidenceMeta.sourceProvider, dmVerification);
@@ -1862,6 +2143,18 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       }
 
       const roundRuns = stats.queryRuns.filter(run => run.round === round);
+      for (const run of roundRuns) {
+        recordQueryPerformance({
+          family: run.family || 'general',
+          lane: run.lane || 'person',
+          provider: run.providerPreference || 'tavily',
+          rawCandidates: run.rawCandidates,
+          uniqueCandidates: run.uniqueCandidates,
+          extractedCandidates: run.extractedLeads,
+          acceptedCandidates: run.acceptedLeads,
+          duplicateCandidates: Number(run.rejectionReasons.duplicate_existing_lead || 0)
+        });
+      }
       previousRoundSummary = {
         rawCandidates: roundRuns.reduce((sum, run) => sum + run.rawCandidates, 0),
         uniqueCandidates: roundRuns.reduce((sum, run) => sum + run.uniqueCandidates, 0),
@@ -1876,11 +2169,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     }
 
     stats.rerank.poolSize = acceptedLeads.length;
+    acceptedLeads.forEach((lead) => { lead.finalSelectionScore = rankLeadForFinalSelection(lead); });
     acceptedLeads.sort((a, b) => {
-      const rankDelta = rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a);
+      const rankDelta = Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0);
       return rankDelta !== 0 ? rankDelta : effectiveScore(b) - effectiveScore(a);
     });
-    const finalLeads = acceptedLeads.slice(0, targetLimit);
+    const finalLeads = selectDiversifiedLeads(acceptedLeads, targetLimit, searchSpec.maxPerCompany);
     leadsFound = finalLeads.length;
     stats.returned = leadsFound;
     stats.rerank.returned = leadsFound;
@@ -2036,6 +2330,9 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         predictiveScore,
         companyAccount: p.companyAccount,
         decisionMakerVerification: p.decisionMakerVerification,
+        scout: p.scout,
+        finalSelectionScore: p.finalSelectionScore,
+        discoveryLane: p.discoveryLane,
         sourceProvider: p.sourceProvider || 'tavily',
         evidenceReasons: p.evidenceReasons,
         evidence: p.evidence,
@@ -2095,6 +2392,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       stats,
       traceSummary
     });
+
+    if (typeof req.body?.savedSearchId === 'string' && readSavedSearchById(req.body.savedSearchId)) {
+      markSavedSearchRun(req.body.savedSearchId);
+    }
 
     res.json({ apiVersion: 1, leads: mappedLeads, stats, traceSummary, sandboxMode: false, sessionId });
 

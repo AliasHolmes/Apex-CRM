@@ -20,6 +20,12 @@ export type SearchQueryPlanItem = {
   intent?: QueryIntent;
   expectedSignal?: string;
   priority?: number;
+  lane?: 'person' | 'account' | 'signal';
+  providerPreference?: 'tavily' | 'brightdata' | 'corroborate';
+  searchDepth?: 'basic' | 'fast' | 'ultra-fast' | 'advanced';
+  topic?: 'general' | 'news';
+  timeRange?: 'week' | 'month' | 'year';
+  country?: string;
 };
 
 export type QueryRunStats = {
@@ -33,6 +39,10 @@ export type QueryRunStats = {
   extractedLeads: number;
   acceptedLeads: number;
   rejectionReasons: Record<string, number>;
+  lane?: string;
+  providerPreference?: string;
+  tavilySearchDepth?: string;
+  corroboratedCandidates?: number;
 };
 
 export type ProviderRunStats = {
@@ -65,6 +75,12 @@ export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {
           intent: item.intent,
           expectedSignal: typeof item.expectedSignal === 'string' ? item.expectedSignal : undefined,
           priority: Number.isFinite(Number(item.priority)) ? Number(item.priority) : undefined,
+          lane: item.lane === 'person' || item.lane === 'account' || item.lane === 'signal' ? item.lane : undefined,
+          providerPreference: item.providerPreference === 'tavily' || item.providerPreference === 'brightdata' || item.providerPreference === 'corroborate' ? item.providerPreference : undefined,
+          searchDepth: ['basic', 'fast', 'ultra-fast', 'advanced'].includes(item.searchDepth) ? item.searchDepth : undefined,
+          topic: item.topic === 'news' || item.topic === 'general' ? item.topic : undefined,
+          timeRange: ['week', 'month', 'year'].includes(item.timeRange) ? item.timeRange : undefined,
+          country: typeof item.country === 'string' ? item.country.trim().slice(0, 2) : undefined,
         };
       }
       return { query: '' };
@@ -84,7 +100,8 @@ export function buildFallbackQueryPlan(query: string): SearchQueryPlanItem[] {
   return fallbacks.filter(item => item.query.trim().length > 0);
 }
 export function toLinkedInSearchQuery(item: SearchQueryPlanItem) {
-  return sanitizeQueryText(item.query);
+  const query = sanitizeQueryText(item.query);
+  return query ? `site:linkedin.com/in/ ${query}` : '';
 }
 
 export function buildStrategistPrompt(params: {

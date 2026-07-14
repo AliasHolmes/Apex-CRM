@@ -35,9 +35,11 @@ const hostnameFor = (url: string) => {
   }
 };
 
+const isPublicDomain = (hostname: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(hostname);
+
 const isBlockedUrl = (url: string) => {
   const host = hostnameFor(url);
-  return !host || BLOCKED_DOMAINS.some(domain => host === domain || host.endsWith(`.${domain}`));
+  return !isPublicDomain(host) || BLOCKED_DOMAINS.some(domain => host === domain || host.endsWith(`.${domain}`));
 };
 
 const companyMatchScore = (companyName: string, result: SearchResult) => {
@@ -47,7 +49,12 @@ const companyMatchScore = (companyName: string, result: SearchResult) => {
 
   const host = hostnameFor(result.url).replace(/\.[a-z.]+$/, '').replace(/[^a-z0-9]+/g, ' ');
   const text = `${host} ${result.title || ''} ${result.content || ''}`.toLowerCase();
-  return tokens.reduce((score, token) => score + (text.includes(token) ? 1 : 0), 0);
+  const hostMatches = tokens.filter(token => host.includes(token));
+  // Search snippets often mention a company while belonging to a news article.
+  // An official-site candidate needs at least one meaningful company token in
+  // its own hostname, not merely in its page text.
+  if (hostMatches.length === 0) return 0;
+  return tokens.reduce((score, token) => score + (text.includes(token) ? 1 : 0), 0) + hostMatches.length * 3;
 };
 
 export async function findCompanyWebsite(input: {

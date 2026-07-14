@@ -3,6 +3,7 @@ export type RejectionReason =
   | 'duplicate_existing_lead'
   | 'missing_identity'
   | 'missing_role_context'
+  | 'missing_linkedin_profile'
   | 'score_below_minimum'
   | 'weak_evidence'
   | 'brightdata_login_wall'

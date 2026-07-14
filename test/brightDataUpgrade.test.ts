@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
-import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, classifyBrightDataError, normalizeBrightDataUrl } from '../server/services/brightdata.js';
+import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, classifyBrightDataError, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
 
 test('verifyDecisionMakerFromEvidence accepts founder', (t) => {
   const result = verifyDecisionMakerFromEvidence({
@@ -171,6 +171,20 @@ test('findCompanyWebsite returns null when only blocked domains are present', as
   assert.strictEqual(website, null);
 });
 
+test('findCompanyWebsite rejects one-label and news-article domains that only mention the company', async () => {
+  const website = await findCompanyWebsite({
+    companyName: 'Cal AI',
+    location: 'Miami',
+    brightDataSearch: async () => [
+      { title: 'Cal AI founder profile', url: 'https://cnbc.com/young-founder-cal-ai', content: 'Cal AI founder interview' },
+      { title: 'GoTo official', url: 'https://goto/', content: 'Cal AI partner' },
+      { title: 'Cal AI official website', url: 'https://cal.ai', content: 'Official Cal AI product site' }
+    ]
+  });
+
+  assert.strictEqual(website, 'https://cal.ai');
+});
+
 test('Bright Data classifies target gateway failures as retryable target transients', () => {
   for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body']) {
     const classified = classifyBrightDataError(new Error(message));
@@ -250,4 +264,13 @@ test('Bright Data URL normalization encodes LinkedIn unicode slugs before MCP va
     'https://www.linkedin.com/in/james-pe%C3%B1as-758a841b'
   );
   assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 5);
+});
+
+test('Bright Data search arguments match the installed MCP search_engine schema', () => {
+  assert.strictEqual(normalizeBrightDataGeoLocation('US'), 'us');
+  assert.strictEqual(normalizeBrightDataGeoLocation('United States'), '');
+  assert.deepStrictEqual(
+    buildBrightDataSearchArguments('AI founders', { country: 'US', cursor: 'next-page' }),
+    { query: 'AI founders', engine: 'google', cursor: 'next-page', geo_location: 'us' }
+  );
 });

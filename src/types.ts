@@ -131,6 +131,17 @@ export interface ScoreBreakdown {
   finalScore: number;
 }
 
+export interface ScoutEvidence {
+  matchedCriteria: string[];
+  sourceCount: number;
+  sourceProviders: string[];
+  lanes: string[];
+  criteriaCoverageScore: number;
+  corroborationScore: number;
+  evidenceCoverageScore: number;
+  uncertainties: string[];
+}
+
 export interface QualifiedLeadProfile extends LinkedInProfile {
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
@@ -140,6 +151,9 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   evidence?: LeadEvidence;
   scoreBreakdown?: ScoreBreakdown;
   emailDiscovery?: EmailDiscoveryResult;
+  scout?: ScoutEvidence;
+  finalSelectionScore?: number;
+  discoveryLane?: string;
 }
 
 export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';
@@ -174,6 +188,9 @@ export interface Lead {
   evidence?: LeadEvidence;
   scoreBreakdown?: ScoreBreakdown;
   emailDiscovery?: EmailDiscoveryResult;
+  scout?: ScoutEvidence;
+  finalSelectionScore?: number;
+  discoveryLane?: string;
 }
 
 export interface ScrapingTask {

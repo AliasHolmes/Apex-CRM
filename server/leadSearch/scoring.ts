@@ -1,4 +1,4 @@
-export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache';
+export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
 export type EvidenceQuality = 'weak' | 'partial' | 'good';
 
 export type ScoreBreakdown = {
@@ -23,8 +23,8 @@ export const evidenceQualityScore = (quality: EvidenceQuality) => {
 };
 
 export const sourceConfidenceScore = (provider: LeadSourceProvider) => {
-  if (provider === 'brightdata') return 8;
-  if (provider === 'cache') return 7;
+  if (provider === 'brightdata' || provider === 'manual') return 8;
+  if (provider === 'cache' || provider === 'import') return 7;
   return 6;
 };
 
@@ -34,6 +34,8 @@ const providerForLead = (lead: Record<string, any>): LeadSourceProvider => {
   const provider = lead.evidence?.sourceProvider || lead.sourceProvider;
   if (provider === 'brightdata') return 'brightdata';
   if (provider === 'cache') return 'cache';
+  if (provider === 'manual') return 'manual';
+  if (provider === 'import') return 'import';
   return 'tavily';
 };
 

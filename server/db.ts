@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import dotenv from 'dotenv';
 import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
+import { REVIEW_STATUS_SET as REVIEW_STATUSES, NEXT_ACTION_SET as NEXT_ACTIONS } from '../src/types.js';
 
 dotenv.config();
 
@@ -15,8 +16,6 @@ export const LEADS_DB_PATH = process.env.APEX_DB_PATH
 
 let leadsDb: DatabaseSync | null = null;
 
-const REVIEW_STATUSES = new Set(['UNREVIEWED', 'KEEP', 'MAYBE', 'REJECT']);
-const NEXT_ACTIONS = new Set(['NONE', 'OPEN_LINKEDIN', 'RESEARCH', 'CONNECT', 'MESSAGE']);
 
 const isUsableEmail = (value: unknown): value is string => {
   if (typeof value !== 'string') return false;

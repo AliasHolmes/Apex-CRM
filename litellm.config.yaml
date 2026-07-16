@@ -8,16 +8,6 @@ model_list:
       api_key: os.environ/BYESU_API_KEY
       rpm: 60
 
-  # Fix #4: internal LiteLLM fallback so a timed-out apex-primary does not
-  # immediately bubble up — LiteLLM retries on this model first before the
-  # app-level provider chain (Mistral → Groq) takes over.
-  - model_name: apex-fallback
-    litellm_params:
-      model: groq/llama-3.1-8b-instant
-      api_key: os.environ/GROQ_API_KEY
-
-router_settings:
-  fallbacks: [{"apex-primary": ["apex-fallback"]}]
 
 litellm_settings:
   # LiteLLM owns only the primary deployment. Apex owns direct provider

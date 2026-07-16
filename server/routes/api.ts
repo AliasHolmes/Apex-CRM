@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
+import { LEAD_STAGE_SET as leadStages, REVIEW_STATUS_SET as reviewStatuses, NEXT_ACTION_SET as nextActions } from '../../src/types.js';
+import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getProfileDomain, getLinkedInHandle } from '../../src/utils/leadDedupe.js';
 
 import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, reserveProviderUsage } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt } from '../services/llm.js';
@@ -7,7 +9,7 @@ import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataS
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
-import { buildFallbackQueryPlan, buildStrategistPrompt, normalizeQueryPlanItems, toLinkedInSearchQuery, type ProviderRunStats, type QueryRunStats, type SearchQueryPlanItem } from '../leadSearch/strategist.js';
+import { normalizeQueryPlanItems, toLinkedInSearchQuery, type ProviderRunStats, type QueryRunStats, type SearchQueryPlanItem } from '../leadSearch/strategist.js';
 import { incrementRejection, mapBrightDataRejection, type RejectionReason } from '../leadSearch/rejections.js';
 import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
@@ -30,9 +32,6 @@ const LLM_HEALTH_CACHE_MS = 60_000;
 
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 const isSafeLeadId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const leadStages = new Set(['SCRAPED', 'ENRICHED', 'SEQUENCE ACTIVE', 'REPLIED', 'MEETING BOOKED', 'NEGOTIATING', 'CONVERTED', 'LOST', 'NURTURE']);
-const reviewStatuses = new Set(['UNREVIEWED', 'KEEP', 'MAYBE', 'REJECT']);
-const nextActions = new Set(['NONE', 'OPEN_LINKEDIN', 'RESEARCH', 'CONNECT', 'MESSAGE']);
 
 const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
   if (!lead || typeof lead !== 'object' || Array.isArray(lead)) return false;
@@ -804,42 +803,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
   };
 
-  const normalizeDedupeValue = (value?: string) => (value || '')
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .replace(/\/$/, '')
-    .trim();
-
-  const getProfileDomain = (profile: any) => {
-    const website = profile?.contactDetails?.website;
-    if (website) return normalizeDedupeValue(website).split('/')[0];
-    const email = profile?.contactDetails?.email;
-    if (email && email.includes('@')) return email.toLowerCase().split('@')[1];
-    return '';
-  };
-
-  const profileKeys = (profile: any) => {
-    const keys = new Set<string>();
-    const email = normalizeDedupeValue(profile?.contactDetails?.email);
-    const linkedin = extractLinkedInUsername(profile?.contactDetails?.linkedinUrl);
-    const name = normalizeDedupeValue(profile?.fullName);
-    const company = normalizeDedupeValue(profile?.currentCompany);
-    const domain = getProfileDomain(profile);
-    if (email) keys.add(`email:${email}`);
-    if (linkedin) keys.add(`linkedin:${linkedin}`);
-    if (name && company) keys.add(`name_company:${name}::${company}`);
-    if (name && domain) keys.add(`name_domain:${name}::${domain}`);
-    return keys;
-  };
-
-  const hasDuplicateKeys = (profile: any, existingKeys: Set<string>) => {
-    for (const key of profileKeys(profile)) {
-      if (existingKeys.has(key)) return true;
-    }
-    return false;
-  };
-
+  const profileKeys = (profile: any) => buildProfileDedupeKeys(profile || {});
+  const hasDuplicateKeys = (profile: any, existingKeys: Set<string>) => hasDuplicateProfile(profile || {}, existingKeys);
   const addProfileKeys = (profile: any, existingKeys: Set<string>) => {
     profileKeys(profile).forEach(key => existingKeys.add(key));
   };
@@ -856,8 +821,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       evidenceBlock,
       evidenceQuality: 'weak',
       sourceProvider: lead.sourceProvider === 'brightdata_search' ? 'brightdata' : (lead.sourceProvider === 'brightdata' ? 'brightdata' : 'tavily'),
-        sourceUrl,
-        sourceQuery: promptQuery,
+      sourceUrl,
+      sourceQuery: promptQuery,
       sourceRound: stats.rounds || 1,
       sourceProviders: [lead.sourceProvider || 'tavily'],
       sourceCount: 1,

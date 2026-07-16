@@ -1,32 +1,5 @@
-export type QueryFamily =
-  | 'persona_title'
-  | 'industry_vertical'
-  | 'pain_signal'
-  | 'growth_signal'
-  | 'tooling_signal'
-  | 'local_market'
-  | 'company_type';
-
-export type QueryIntent =
-  | 'find_decision_makers'
-  | 'find_buying_signal'
-  | 'expand_surface_area'
-  | 'recover_from_low_yield'
-  | 'reduce_duplicates';
-
-export type SearchQueryPlanItem = {
-  query: string;
-  family?: QueryFamily;
-  intent?: QueryIntent;
-  expectedSignal?: string;
-  priority?: number;
-  lane?: 'person' | 'account' | 'signal';
-  providerPreference?: 'tavily' | 'brightdata' | 'corroborate';
-  searchDepth?: 'basic' | 'fast' | 'ultra-fast' | 'advanced';
-  topic?: 'general' | 'news';
-  timeRange?: 'week' | 'month' | 'year';
-  country?: string;
-};
+import type { QueryFamily, QueryIntent, SearchQueryPlanItem } from './searchSpec.js';
+export type { QueryFamily, QueryIntent, SearchQueryPlanItem };
 
 export type QueryRunStats = {
   round: number;

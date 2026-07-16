@@ -1,3 +1,5 @@
+import { getLinkedInHandle } from '../../src/utils/leadDedupe.js';
+
 export type ScrapeQuality = 'good' | 'partial' | 'bad';
 
 export type ParsedLinkedInEvidence = {
@@ -66,9 +68,7 @@ export function normalizeLinkedInUrl(url?: string) {
 }
 
 export function extractLinkedInUsername(url?: string) {
-  const normalized = normalizeLinkedInUrl(url);
-  const match = normalized.match(/linkedin\.com\/in\/([^/?#]+)/i);
-  return match?.[1]?.toLowerCase() || '';
+  return getLinkedInHandle(url);
 }
 
 const cleanMarkdownLine = (line: string) => normalizeWhitespace(

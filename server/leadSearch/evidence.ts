@@ -49,6 +49,6 @@ export function createLeadEvidence(params: {
   };
 }
 
-export function sourceProviderForScore(provider: 'brightdata' | 'tavily' | 'cache'): LeadSourceProvider {
+export function sourceProviderForScore(provider: LeadSourceProvider): LeadSourceProvider {
   return provider;
 }

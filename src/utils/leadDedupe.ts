@@ -10,20 +10,23 @@ export const normalizeDedupeValue = (value?: string) =>
 
 export const getLinkedInHandle = (url?: string) => {
   const normalized = normalizeDedupeValue(url);
-  const marker = 'linkedin.com/in/';
-  if (!normalized.includes(marker)) return normalized;
-  return normalized.split(marker)[1]?.split(/[?#/]/)[0] || normalized;
-};
-
-export const getProfileDomain = (profile: LinkedInProfile) => {
-  const website = profile.contactDetails?.website;
-  if (website) return normalizeDedupeValue(website).split('/')[0];
-  const email = profile.contactDetails?.email;
-  if (email && email.includes('@')) return email.toLowerCase().split('@')[1];
+  const match = normalized.match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (match?.[1]) return match[1].toLowerCase();
+  if (normalized && !normalized.includes('/') && !normalized.includes('linkedin.com')) return normalized;
   return '';
 };
 
-export const buildProfileDedupeKeys = (profile: LinkedInProfile) => {
+export const getProfileDomain = (profile?: Partial<LinkedInProfile> | Record<string, any>) => {
+  if (!profile || typeof profile !== 'object') return '';
+  const website = profile.contactDetails?.website;
+  if (website) return normalizeDedupeValue(website).split('/')[0];
+  const email = profile.contactDetails?.email;
+  if (email && typeof email === 'string' && email.includes('@')) return email.toLowerCase().split('@')[1];
+  return '';
+};
+
+export const buildProfileDedupeKeys = (profile?: Partial<LinkedInProfile> | Record<string, any>) => {
+  if (!profile || typeof profile !== 'object') return new Set<string>();
   const keys = new Set<string>();
   const email = normalizeDedupeValue(profile.contactDetails?.email);
   const linkedinHandle = getLinkedInHandle(profile.contactDetails?.linkedinUrl);
@@ -38,7 +41,7 @@ export const buildProfileDedupeKeys = (profile: LinkedInProfile) => {
   return keys;
 };
 
-export const hasDuplicateProfile = (profile: LinkedInProfile, existingKeys: Set<string>) => {
+export const hasDuplicateProfile = (profile: Partial<LinkedInProfile> | Record<string, any>, existingKeys: Set<string>) => {
   for (const key of buildProfileDedupeKeys(profile)) {
     if (existingKeys.has(key)) return true;
   }

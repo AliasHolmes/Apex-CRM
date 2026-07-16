@@ -29,10 +29,26 @@ export type SearchSpec = {
   maxPerCompany: number;
 };
 
+export type QueryFamily =
+  | 'persona_title'
+  | 'industry_vertical'
+  | 'pain_signal'
+  | 'growth_signal'
+  | 'tooling_signal'
+  | 'local_market'
+  | 'company_type';
+
+export type QueryIntent =
+  | 'find_decision_makers'
+  | 'find_buying_signal'
+  | 'expand_surface_area'
+  | 'recover_from_low_yield'
+  | 'reduce_duplicates';
+
 export type SearchQueryPlanItem = {
   query: string;
-  family?: 'persona_title' | 'industry_vertical' | 'pain_signal' | 'growth_signal' | 'tooling_signal' | 'local_market' | 'company_type';
-  intent?: 'find_decision_makers' | 'find_buying_signal' | 'expand_surface_area' | 'recover_from_low_yield' | 'reduce_duplicates';
+  family?: QueryFamily;
+  intent?: QueryIntent;
   expectedSignal?: string;
   priority?: number;
   lane?: QueryLane;

@@ -125,9 +125,17 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   discoveryLane?: string;
 }
 
-export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';
-export type ReviewStatus = 'UNREVIEWED' | 'KEEP' | 'MAYBE' | 'REJECT';
-export type NextAction = 'NONE' | 'OPEN_LINKEDIN' | 'RESEARCH' | 'CONNECT' | 'MESSAGE';
+export const LEAD_STAGES = ['SCRAPED', 'ENRICHED', 'SEQUENCE ACTIVE', 'REPLIED', 'MEETING BOOKED', 'NEGOTIATING', 'CONVERTED', 'LOST', 'NURTURE'] as const;
+export const REVIEW_STATUSES = ['UNREVIEWED', 'KEEP', 'MAYBE', 'REJECT'] as const;
+export const NEXT_ACTIONS = ['NONE', 'OPEN_LINKEDIN', 'RESEARCH', 'CONNECT', 'MESSAGE'] as const;
+
+export type LeadStage = typeof LEAD_STAGES[number];
+export type ReviewStatus = typeof REVIEW_STATUSES[number];
+export type NextAction = typeof NEXT_ACTIONS[number];
+
+export const LEAD_STAGE_SET = new Set<string>(LEAD_STAGES);
+export const REVIEW_STATUS_SET = new Set<string>(REVIEW_STATUSES);
+export const NEXT_ACTION_SET = new Set<string>(NEXT_ACTIONS);
 
 export interface Lead {
   id: string;
@@ -244,6 +252,15 @@ export interface PhaseTimelineItem {
 }
 
 export interface MiningTraceSummary {
+  sessionId?: string;
+  query?: string;
+  requested?: number;
+  status?: 'running' | 'success' | 'error';
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  stopReason?: string;
+  returned?: number;
   eventCount: number;
   providerSummary: ProviderSummary;
   costSummary: CostSummary;

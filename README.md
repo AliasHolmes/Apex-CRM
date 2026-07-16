@@ -38,24 +38,15 @@ graph TD
     Server -->|Lead Discovery| Tavily[Tavily Search]
     Server -->|Profile Enrichment| BrightData[Bright Data Scraping]
 
-    %% Email Discovery Pipeline
-    Server -.->|Waterfall Pipeline| EmailDiscovery{Email Discovery}
-    EmailDiscovery -->|Step 1: Cache Lookup| DB
-    EmailDiscovery -->|Step 2: Scrape Batch| BrightData
-    EmailDiscovery -->|Step 3: Extract/Search| Tavily
-    EmailDiscovery -->|Step 4: Web Crawl| Crawl[Company Web Fetch]
-    EmailDiscovery -->|Step 5: MX Check| DNS[DNS MX Check]
-    EmailDiscovery -->|Step 6: Fallback| Pattern[Pattern Inference]
-
     classDef tech fill:#1e1e2e,stroke:#89b4fa,stroke-width:2px,color:#cdd6f4;
-    class Client,Server,DB,LLM,Byesu,OpenRouter,Tavily,BrightData,EmailDiscovery,Crawl,DNS,Pattern tech;
+    class Client,Server,DB,LLM,Byesu,OpenRouter,Tavily,BrightData tech;
 ```
 
 ### Core Technologies
 
 - **Frontend**: React 19, TailwindCSS 4, Framer Motion (UI Animations), Lucide React (Icons)
 - **Backend**: Express.js, TypeScript, Node.js v24
-- **Database**: `node:sqlite` (Built-in Local-first DB with WAL mode, Enrichment Cache, and Email Discovery Caching)
+- **Database**: `node:sqlite` (Built-in Local-first DB with WAL mode and profile enrichment caching)
 - **AI Gateway**: LiteLLM (Local python-based routing proxy)
 - **Integrations**: Byesu (Primary LLM), OpenRouter (Secondary Fallback LLM), Tavily (Search & Extract API), Bright Data (LinkedIn Profile & Search Scraper)
 
@@ -67,8 +58,9 @@ graph TD
 | :--- | :--- |
 | **Adaptive Lead Mining** | Auto-discover prospects via Tavily, score them, and verify them against target ICP criteria. |
 | **Selected Profile Enrichment**| Enrich only the records selected in the inventory, with clear cache and provider status. |
-| **Enrichment Cache** | Local SQLite caching layer that prevents duplicate API scraping & email discovery calls to save costs. |
-| **Free-First Email Discovery** | A robust waterfall pipeline utilizing Bright Data batching, Tavily, local crawls, DNS/MX check, and email pattern inference to discover verified emails. |
+| **Enrichment Cache** | Positive and negative SQLite caches prevent repeated profile scrapes and unnecessary provider work. |
+| **Review & Provenance** | Review status, next action, discovery query, matched criteria, uncertainties, location, and industry stay visible without duplicating prospect data. |
+| **Incidental Public Email Capture** | Profile enrichment can retain an explicitly published email from the same profile evidence without running a separate email-search pipeline. |
 | **LLM Gateway & Fallbacks**| Local LiteLLM proxy that routes to Byesu and automatically falls back to OpenRouter on failure. |
 | **CRM Pipeline** | Explicit stage transitions for the sales funnel, including terminal converted/lost states. |
 | **Outreach Studio** | AI-generated, hyper-personalized email drafts based on lead profiles and intent, saved directly to local SQLite. |
@@ -111,9 +103,6 @@ graph TD
    TAVILY_API_KEY="your_tavily_key"
    BRIGHTDATA_API_TOKEN="your_brightdata_token"
 
-   # Email Discovery Configuration
-   EMAIL_DISCOVERY_MODE="accepted_only" # "off" | "accepted_only" | "missing_only"
-   EMAIL_DISCOVERY_MAX_PER_SEARCH="10"
    ```
 
 3. **Start the Development Workspace:**
@@ -152,7 +141,7 @@ npm run build
 
 ## Privacy & Data
 
-Apex CRM is designed for **local-only** use. Your lead data is stored in `.apex-data/apex-crm.sqlite`; external providers receive only the data required for the search, enrichment, email-discovery, or LLM request you initiate. The direct company-page fetcher rejects private/local destinations, uses HTTPS only, and caps response size.
+Apex CRM is designed for **local-only** use. Your lead data is stored in `.apex-data/apex-crm.sqlite`; external providers receive only the data required for a search, profile enrichment, company-intent check, or LLM request you initiate. The direct company-page fetcher rejects private/local destinations, uses HTTPS only, and caps response size.
 
 ---
 

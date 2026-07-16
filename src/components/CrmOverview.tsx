@@ -3,155 +3,157 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { 
-  Users, 
-  Percent, 
-  Compass, 
-  TrendingUp, 
-  Award,
-  Clock,
-  Briefcase,
-  AlertTriangle
-} from 'lucide-react';
-import { Lead } from '../types';
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { useMemo } from 'react';
+import { Award, Briefcase, Clock, Percent, TrendingUp, Users } from 'lucide-react';
+import type { Lead, LeadStage } from '../types';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent } from '@/components/ui/card';
+import { PIPELINE_STAGES } from '@/lib/pipeline';
 
 interface CrmOverviewProps {
   leads: Lead[];
 }
 
+function normalizedQualificationScore(lead: Lead): number | null {
+  const score = lead.qualificationScore ?? lead.predictiveScore ?? lead.compositeScore;
+  if (typeof score !== 'number' || !Number.isFinite(score) || score <= 0) return null;
+  return score <= 10 ? score * 10 : score;
+}
+
+function scoreLabel(score: number): string {
+  if (score >= 80) return 'Top tier';
+  if (score >= 60) return 'Qualified';
+  if (score >= 40) return 'Developing';
+  return score > 0 ? 'Low priority' : 'Unrated';
+}
+
 export default function CrmOverview({ leads }: CrmOverviewProps) {
+  const analytics = useMemo(() => {
+    const stageCounts = Object.fromEntries(
+      PIPELINE_STAGES.map((stage) => [stage.id, 0]),
+    ) as Record<LeadStage, number>;
+    const industries = new Map<string, number>();
+    let qualificationTotal = 0;
+    let qualificationCount = 0;
+
+    for (const lead of leads) {
+      stageCounts[lead.stage] = (stageCounts[lead.stage] ?? 0) + 1;
+      const industry = lead.profile.industry || 'Uncategorized';
+      industries.set(industry, (industries.get(industry) ?? 0) + 1);
+
+      const score = normalizedQualificationScore(lead);
+      if (score !== null) {
+        qualificationTotal += score;
+        qualificationCount += 1;
+      }
+    }
+
+    const recentLeads = [...leads]
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+      .slice(0, 4);
+
+    return {
+      stageCounts,
+      averageQualification: qualificationCount > 0
+        ? qualificationTotal / qualificationCount
+        : 0,
+      topIndustries: [...industries.entries()]
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 4),
+      recentLeads,
+    };
+  }, [leads]);
+
   const totalLeads = leads.length;
-  
-  // Calculate pipeline distributions
-  const newlyScrapedCount = leads.filter(l => l.stage === 'SCRAPED').length;
-  const contactedCount = leads.filter(l => l.stage === 'SEQUENCE ACTIVE').length;
-  const interestedCount = leads.filter(l => l.stage === 'MEETING BOOKED' || l.stage === 'REPLIED').length;
-  const convertedCount = leads.filter(l => l.stage === 'CONVERTED').length;
-
-  // Conversion rate percentage
-  const conversionRate = totalLeads > 0 ? Math.round((convertedCount / totalLeads) * 100) : 0;
-
-  // Average qualification score rating
-  const scorableLeads = leads.filter(l => typeof l.compositeScore === 'number' && l.compositeScore > 0);
-  const avgQualificationScore = scorableLeads.length > 0 
-    ? (scorableLeads.reduce((acc, curr) => acc + (curr.compositeScore || 0), 0) / scorableLeads.length).toFixed(1)
+  const convertedCount = analytics.stageCounts.CONVERTED;
+  const conversionRate = totalLeads > 0
+    ? Math.round((convertedCount / totalLeads) * 100)
     : 0;
-
-  // Industry segmentation counts
-  const industriesMap: Record<string, number> = {};
-  leads.forEach(l => {
-    const ind = l.profile.industry || 'Tech';
-    industriesMap[ind] = (industriesMap[ind] || 0) + 1;
-  });
-  
-  const industriesSorted = Object.entries(industriesMap)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4);
-
-  // Get score label quality
-  const getScoreLabel = (score: number | string) => {
-    const num = Number(score);
-    if (isNaN(num)) return 'Unrated';
-    if (num >= 80) return 'Top Tier (Hot)';
-    if (num >= 60) return 'Qualified (Warm)';
-    if (num >= 40) return 'Developing (Cool)';
-    return 'Low Priority';
-  };
+  const averageQualification = Math.round(analytics.averageQualification * 10) / 10;
 
   return (
     <div className="space-y-6">
-      
-      {/* 4-Column Metric Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        
-        {/* Total Leads Card */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-12 w-12 bg-primary/10 text-primary rounded-xl flex items-center justify-center">
-              <Users className="w-5 h-5" />
+          <CardContent className="flex items-center gap-4 p-5">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Users className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
-              <span className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest block">Total Prospect Leads</span>
-              <h4 className="text-2xl font-extrabold text-foreground mt-1">{totalLeads}</h4>
+              <span className="block text-xs font-semibold text-muted-foreground">Total prospects</span>
+              <h3 className="mt-1 text-2xl font-bold text-foreground">{totalLeads}</h3>
             </div>
           </CardContent>
         </Card>
 
-        {/* Conversion Rate Card */}
         <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-12 w-12 bg-emerald-500/10 text-emerald-500 rounded-xl flex items-center justify-center">
-              <Percent className="w-5 h-5" />
+          <CardContent className="flex items-center gap-4 p-5">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-400">
+              <Percent className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
-              <span className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest block">Pipeline Conversion</span>
-              <h4 className="text-2xl font-extrabold text-foreground mt-1">{conversionRate}%</h4>
+              <span className="block text-xs font-semibold text-muted-foreground">Conversion rate</span>
+              <h3 className="mt-1 text-2xl font-bold text-foreground">{conversionRate}%</h3>
             </div>
           </CardContent>
         </Card>
 
-        {/* Avg Qualification Score Card */}
         <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-12 w-12 bg-blue-500/10 text-blue-500 rounded-xl flex items-center justify-center">
-              <Award className="w-5 h-5" />
+          <CardContent className="flex items-center gap-4 p-5">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400">
+              <Award className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
-              <span className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest block">Average Qualification</span>
-              <h4 className="text-2xl font-extrabold text-foreground mt-1">{avgQualificationScore || '0'}%</h4>
+              <span className="block text-xs font-semibold text-muted-foreground">Average qualification</span>
+              <h3 className="mt-1 text-2xl font-bold text-foreground">{averageQualification}%</h3>
             </div>
           </CardContent>
         </Card>
 
-        {/* Lead Velocity Trend Card */}
         <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-12 w-12 bg-cyan-500/10 text-cyan-500 rounded-xl flex items-center justify-center">
-              <TrendingUp className="w-5 h-5" />
+          <CardContent className="flex items-center gap-4 p-5">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400">
+              <TrendingUp className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
-              <span className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest block">Conversion Quality</span>
-              <Badge variant="outline" className="mt-2 text-xs font-bold">{getScoreLabel(avgQualificationScore)}</Badge>
+              <span className="block text-xs font-semibold text-muted-foreground">Lead quality</span>
+              <Badge variant="outline" className="mt-2 text-xs font-semibold">
+                {scoreLabel(averageQualification)}
+              </Badge>
             </div>
           </CardContent>
         </Card>
-
       </div>
 
-      {/* Analytics Distributions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Pipeline stage tracker graph */}
-        <Card className="flex flex-col justify-between">
-          <CardContent className="p-6 h-full flex flex-col justify-between">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <Card className="flex flex-col">
+          <CardContent className="flex h-full flex-col p-6">
             <div>
-              <h4 className="font-extrabold text-foreground text-sm flex items-center gap-2 mb-1">
-                <Clock className="w-4.5 h-4.5 text-primary" />
-                Pipeline Volume Distribution
-              </h4>
-              <p className="text-xs text-muted-foreground mb-5">Current lead allocation statuses within your outbound pipe.</p>
+              <h3 className="mb-1 flex items-center gap-2 text-sm font-bold text-foreground">
+                <Clock className="h-4 w-4 text-primary" aria-hidden="true" />
+                Pipeline distribution
+              </h3>
+              <p className="mb-5 text-sm text-muted-foreground">Every prospect, across every CRM stage.</p>
             </div>
 
-            <div className="space-y-4">
-              {[
-                { label: 'Newly Scraped Queue', count: newlyScrapedCount, color: 'bg-indigo-400' },
-                { label: 'Outreach Sent Campaign', count: contactedCount, color: 'bg-cyan-500' },
-                { label: 'In Discussion Deal', count: interestedCount, color: 'bg-blue-500' },
-                { label: 'Successfully Converted', count: convertedCount, color: 'bg-emerald-500' },
-              ].map((st, i) => {
-                const pct = totalLeads > 0 ? (st.count / totalLeads) * 100 : 0;
+            <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+              {PIPELINE_STAGES.map((stage) => {
+                const count = analytics.stageCounts[stage.id] ?? 0;
+                const percentage = totalLeads > 0 ? (count / totalLeads) * 100 : 0;
                 return (
-                  <div key={i} className="space-y-1">
-                    <div className="flex justify-between text-xs font-semibold text-foreground">
-                      <span>{st.label}</span>
-                      <span className="text-muted-foreground">{st.count} leads ({Math.round(pct)}%)</span>
+                  <div key={stage.id} className="space-y-1.5">
+                    <div className="flex justify-between gap-3 text-xs font-medium text-foreground">
+                      <span>{stage.shortLabel}</span>
+                      <span className="whitespace-nowrap text-muted-foreground">
+                        {count} ({Math.round(percentage)}%)
+                      </span>
                     </div>
-                    <div className="h-1.5 w-full bg-secondary rounded-full overflow-hidden">
-                      <div className={`h-full ${st.color} transition-all duration-500`} style={{ width: `${pct}%` }}></div>
-                     </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className={`h-full rounded-full ${stage.dotClassName} motion-reduce:transition-none`}
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
                   </div>
                 );
               })}
@@ -159,72 +161,67 @@ export default function CrmOverview({ leads }: CrmOverviewProps) {
           </CardContent>
         </Card>
 
-        {/* Key Industry Sectors Segment */}
-        <Card className="flex flex-col justify-between">
-          <CardContent className="p-6 h-full flex flex-col justify-between">
+        <Card className="flex flex-col">
+          <CardContent className="flex h-full flex-col p-6">
             <div>
-              <h4 className="font-extrabold text-foreground text-sm flex items-center gap-2 mb-1">
-                <Briefcase className="w-4.5 h-4.5 text-primary" />
-                Top Industry Segment targets
-              </h4>
-              <p className="text-xs text-muted-foreground mb-5">Leading industry fields from Tavily-backed LinkedIn search.</p>
+              <h3 className="mb-1 flex items-center gap-2 text-sm font-bold text-foreground">
+                <Briefcase className="h-4 w-4 text-primary" aria-hidden="true" />
+                Top industries
+              </h3>
+              <p className="mb-5 text-sm text-muted-foreground">The largest segments in your current prospect list.</p>
             </div>
 
-            <div className="space-y-4">
-              {leads.length === 0 ? (
-                <p className="text-xs text-muted-foreground italic text-center py-8">Gather profiles to populate industry segmentation metrics.</p>
-              ) : (
-                industriesSorted.map(([industry, count], i) => (
-                  <div key={i} className="flex items-center justify-between text-xs py-1 border-b last:border-0 pb-2">
-                    <div className="flex items-center gap-2.5">
-                      <Badge variant="outline" className="w-5 h-5 flex items-center justify-center p-0 font-bold text-[10px]">
-                        {i + 1}
-                      </Badge>
-                      <span className="font-semibold text-foreground">{industry}</span>
-                    </div>
-                    <Badge variant="secondary" className="font-bold text-[10px]">
-                      {count} profile{count > 1 ? 's' : ''}
+            <div className="space-y-3">
+              {analytics.topIndustries.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">Add prospects to see industry trends.</p>
+              ) : analytics.topIndustries.map(([industry, count], index) => (
+                <div key={industry} className="flex items-center justify-between border-b py-2 last:border-0">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Badge variant="outline" className="flex h-6 w-6 shrink-0 items-center justify-center p-0 text-xs">
+                      {index + 1}
                     </Badge>
+                    <span className="truncate text-sm font-medium text-foreground">{industry}</span>
                   </div>
-                ))
-              )}
+                  <Badge variant="secondary" className="text-xs">{count}</Badge>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
 
-        {/* Outbound Activity Log */}
-        <Card className="flex flex-col justify-between">
-          <CardContent className="p-6 h-full flex flex-col justify-between">
+        <Card className="flex flex-col">
+          <CardContent className="flex h-full flex-col p-6">
             <div>
-              <h4 className="font-extrabold text-foreground text-sm flex items-center gap-2 mb-1">
-                <Clock className="w-4.5 h-4.5 text-primary" />
-                Outbound Activity Log
-              </h4>
-              <p className="text-xs text-muted-foreground mb-5">Latest records log audits for lead harvesting and structuring activity pipelines.</p>
+              <h3 className="mb-1 flex items-center gap-2 text-sm font-bold text-foreground">
+                <Clock className="h-4 w-4 text-primary" aria-hidden="true" />
+                Recently added prospects
+              </h3>
+              <p className="mb-5 text-sm text-muted-foreground">The newest records saved to the CRM.</p>
             </div>
 
-            <div className="space-y-3.5 max-h-[170px] overflow-y-auto pr-1 custom-scrollbar">
-              {totalLeads === 0 ? (
-                <p className="text-xs text-muted-foreground italic text-center py-6">Database is empty. Log output will load upon search/scraping tasks execution.</p>
-              ) : (
-                leads.slice(0, 4).map((l, i) => (
-                  <div key={i} className="flex items-start gap-2.5 text-xs">
-                    <div className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 mt-1.5 animate-pulse" />
-                    <div>
-                      <span className="font-semibold text-foreground hover:text-primary transition-colors">Harvested {l.profile.fullName}</span>
-                      <span className="text-[10px] text-muted-foreground block mt-0.5">
-                        Structured under {l.profile.industry || 'Tech'} - {new Date(l.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
+            <div className="space-y-3.5">
+              {analytics.recentLeads.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">Your newest prospects will appear here.</p>
+              ) : analytics.recentLeads.map((lead) => (
+                <div key={lead.id} className="flex items-start gap-2.5 text-sm">
+                  <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <span className="block truncate font-medium text-foreground">{lead.profile.fullName}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {lead.profile.industry || 'Uncategorized'} - {new Date(lead.createdAt).toLocaleString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
                   </div>
-                ))
-              )}
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
-
       </div>
-
     </div>
   );
 }

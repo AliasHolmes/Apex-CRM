@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 
 const originalFetch = globalThis.fetch;
@@ -51,6 +52,7 @@ describe('LLM gateway and provider fallback', () => {
 
     const body = JSON.parse(capturedOptions.body);
     assert.equal(body.model, 'gpt-5.5');
+    assert.equal(body.stream, false);
   });
 
   it('routes through LiteLLM apex-primary when LLM_GATEWAY_MODE=litellm', async () => {
@@ -110,7 +112,10 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    const res = await llm.openAIText('test prompt');
+    const attempts: any[] = [];
+    const res = await llm.openAIText('test prompt', undefined, {
+      onProviderAttempt: (attempt: any) => attempts.push(attempt),
+    });
     assert.equal(res.text, 'direct fallback ok');
     assert.equal(res.provider, 'OpenRouter');
     assert.equal(calls.length, 2);
@@ -119,6 +124,81 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
     assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
     assert.equal(calls[1].body.model, 'openrouter-test-model');
+    assert.deepEqual(attempts.map(attempt => [attempt.providerId, attempt.status]), [
+      ['litellm', 'error'],
+      ['openrouter', 'success'],
+    ]);
+  });
+
+  it('opens the session circuit breaker after two availability failures', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('session-circuit-breaker');
+    const breaker = llm.createLLMSessionCircuitBreaker(2);
+    const calls: string[] = [];
+
+    globalThis.fetch = async (url) => {
+      calls.push(url.toString());
+      if (url.toString().startsWith('https://byesu.com/')) {
+        return new Response('primary timeout', { status: 504 });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'fallback ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    for (let call = 0; call < 3; call++) {
+      await llm.openAIText('test prompt', undefined, { circuitBreaker: breaker });
+    }
+
+    assert.equal(calls.filter(url => url.startsWith('https://byesu.com/')).length, 2);
+    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 3);
+    assert.equal(breaker.disabledProviderIds.has('primary'), true);
+  });
+
+  it('never retries an unchanged 413 payload', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.LLM_MAX_RETRIES = '3';
+    process.env.LLM_RETRY_429 = 'true';
+
+    const llm = await importLLM('payload-too-large');
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response('payload too large', { status: 413 });
+    };
+
+    await assert.rejects(() => llm.openAIText('test prompt'), /413/);
+    assert.equal(calls, 1);
+  });
+
+  it('honors Retry-After when 429 retries are explicitly enabled', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.LLM_MAX_RETRIES = '1';
+    process.env.LLM_RETRY_429 = 'true';
+
+    const llm = await importLLM('retry-after');
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) return new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } });
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const response = await llm.openAIText('test prompt');
+    assert.equal(response.text, 'ok');
+    assert.equal(calls, 2);
+  });
+
+  it('keeps LiteLLM responsible for the primary deployment only', () => {
+    const config = readFileSync(new URL('../litellm.config.yaml', import.meta.url), 'utf8');
+    assert.doesNotMatch(config, /apex-openrouter-fallback|apex-groq-fallback|\bfallbacks:/);
+    assert.match(config, /model_name:\s+apex-primary/);
+    assert.match(config, /model:\s+openai\/gpt-5\.5/);
   });
 
   it('falls back directly to OpenRouter when the primary provider fails', async () => {

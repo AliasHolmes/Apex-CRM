@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 
-import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, pruneExpiredEmailDiscoveryCache, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, reserveProviderUsage } from '../db.js';
-import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus } from '../services/llm.js';
+import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, reserveProviderUsage } from '../db.js';
+import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
@@ -11,13 +11,13 @@ import { buildFallbackQueryPlan, buildStrategistPrompt, normalizeQueryPlanItems,
 import { incrementRejection, mapBrightDataRejection, type RejectionReason } from '../leadSearch/rejections.js';
 import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
-import { applyEmailDiscoveryToLead, discoverProspectEmail } from '../leadSearch/emailDiscovery.js';
 import { enrichLeadProfile } from '../leadSearch/profileEnrichment.js';
 import { MiningTelemetryRecorder, estimateLLMCostUsd, getLLMRouteLabel, type MiningTraceEvent } from '../leadSearch/telemetry.js';
 import { buildFallbackQueryPlan as buildScoutFallbackQueryPlan, buildFallbackSearchSpec, buildRetrievalTasks, buildSearchSpecPrompt, buildStrategistPrompt as buildScoutStrategistPrompt, normalizeSearchSpec, type DiscoveryMode, type SearchSpec } from '../leadSearch/searchSpec.js';
 import { ScoutFreeTierBudget, brightDataFreeTierCapabilities, tavilyFreeTierCapabilities } from '../leadSearch/freeTier.js';
 import { fuseObservations, type ScoutObservation } from '../leadSearch/observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from '../leadSearch/scoutScoring.js';
+import { chunkEvidenceBlocksByTokenBudget, estimateTokenCount, fitOutputTokenBudget } from '../leadSearch/llmBudget.js';
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
@@ -31,6 +31,8 @@ const LLM_HEALTH_CACHE_MS = 60_000;
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 const isSafeLeadId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const leadStages = new Set(['SCRAPED', 'ENRICHED', 'SEQUENCE ACTIVE', 'REPLIED', 'MEETING BOOKED', 'NEGOTIATING', 'CONVERTED', 'LOST', 'NURTURE']);
+const reviewStatuses = new Set(['UNREVIEWED', 'KEEP', 'MAYBE', 'REJECT']);
+const nextActions = new Set(['NONE', 'OPEN_LINKEDIN', 'RESEARCH', 'CONNECT', 'MESSAGE']);
 
 const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
   if (!lead || typeof lead !== 'object' || Array.isArray(lead)) return false;
@@ -39,7 +41,9 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
     isSafeLeadId(String(value.id || '')) &&
     value.profile && typeof value.profile === 'object' && !Array.isArray(value.profile) &&
     typeof value.profile.fullName === 'string' &&
-    leadStages.has(value.stage)
+    leadStages.has(value.stage) &&
+    (value.reviewStatus === undefined || reviewStatuses.has(value.reviewStatus)) &&
+    (value.nextAction === undefined || nextActions.has(value.nextAction))
   );
 };
 
@@ -93,7 +97,9 @@ router.patch('/leads/:id', (req, res): any => {
     const previousLead = readStoredLeadById(req.params.id);
     const previousStage = previousLead?.stage;
 
-    const storedLead = upsertLead(lead);
+    const storedLead = upsertLead(lead, {
+      requireExisting: req.body?.allowCreate !== true,
+    });
 
     if (storedLead.stage && previousStage && previousStage !== storedLead.stage) {
       insertLeadActivity({
@@ -108,6 +114,9 @@ router.patch('/leads/:id', (req, res): any => {
 
     res.json({ apiVersion: 1, success: true, lead: storedLead });
   } catch (error: any) {
+    if (error instanceof LeadNotFoundError) {
+      return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_NO_LONGER_EXISTS' });
+    }
     if (error instanceof LeadRevisionConflictError) {
       return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_REVISION_CONFLICT', lead: error.currentLead });
     }
@@ -181,6 +190,7 @@ router.post('/leads/:id/merge', (req, res): any => {
         headline: mergeField(winner.profile.headline, duplicate.profile.headline),
         summary: mergeField(winner.profile.summary, duplicate.profile.summary),
         location: mergeField(winner.profile.location, duplicate.profile.location),
+        industry: mergeField(winner.profile.industry, duplicate.profile.industry),
         seniorityLevel: mergeField(winner.profile.seniorityLevel, duplicate.profile.seniorityLevel),
         companySizeEst: mergeField(winner.profile.companySizeEst, duplicate.profile.companySizeEst),
         contactDetails: {
@@ -206,7 +216,9 @@ router.post('/leads/:id/merge', (req, res): any => {
         notes: winner.notes || duplicate.notes || '',
         lastEnrichedAt: winner.lastEnrichedAt || duplicate.lastEnrichedAt,
         companyAccount: winner.companyAccount || duplicate.companyAccount,
-        evidence: winner.evidence || duplicate.evidence
+        evidence: winner.evidence || duplicate.evidence,
+        reviewStatus: mergeField(winner.reviewStatus, duplicate.reviewStatus) || 'UNREVIEWED',
+        nextAction: mergeField(winner.nextAction, duplicate.nextAction) || 'NONE'
       };
 
       upsertLead(mergedLead);
@@ -267,9 +279,14 @@ router.post('/leads/bulk', (req, res): any => {
     if (!leads || leads.length > 1_000 || !leads.every(isPersistableLead)) {
       return res.status(400).json({ error: 'Expected up to 1,000 valid lead records.' });
     }
-    const storedLeads = upsertLeads(leads);
+    const storedLeads = upsertLeads(leads, {
+      requireExisting: req.body?.requireExisting === true,
+    });
     res.json({ apiVersion: 1, success: true, count: storedLeads.length, leads: storedLeads });
   } catch (error: any) {
+    if (error instanceof LeadNotFoundError) {
+      return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_NO_LONGER_EXISTS' });
+    }
     if (error instanceof LeadRevisionConflictError) {
       return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_REVISION_CONFLICT', lead: error.currentLead });
     }
@@ -291,11 +308,6 @@ router.get('/health', (req, res) => {
     providerCapabilities: {
       tavily: { ...tavilyFreeTierCapabilities(), configured: hasTavilyKey() },
       brightData: getBrightDataCapabilities()
-    },
-    emailDiscovery: {
-      mode: process.env.EMAIL_DISCOVERY_MODE || 'accepted_only',
-      maxPerSearch: Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || 10),
-      cacheTtlDays: Number(process.env.EMAIL_DISCOVERY_CACHE_TTL_DAYS || 14)
     },
   });
 });
@@ -682,16 +694,25 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       console.warn('[find-leads] failed to write search log:', error instanceof Error ? error.message : String(error));
     }
   };
-  const estimateTokens = (value: unknown) => Math.ceil(String(value || '').length / 4);
-  const summarizeLLM = (purpose: string, promptText: string, output: unknown, latencyMs: number, parseRetries = 0) => {
+  const estimateTokens = estimateTokenCount;
+  const summarizeLLM = (
+    purpose: string,
+    promptText: string,
+    output: unknown,
+    latencyMs: number,
+    parseRetries = 0,
+    providerAttempts: LLMProviderAttempt[] = []
+  ) => {
     const route = getLLMRouteLabel();
+    const successfulAttempt = providerAttempts.find(attempt => attempt.status === 'success');
     const inputTokens = estimateTokens(promptText);
     const outputTokens = estimateTokens(typeof output === 'string' ? output : JSON.stringify(output || ''));
     return {
       purpose,
-      model: route.model,
-      route: route.route,
-      fallbackUsed: false,
+      model: successfulAttempt?.model || route.model,
+      route: successfulAttempt?.provider || route.route,
+      fallbackUsed: providerAttempts.some(attempt => attempt.status === 'error' || attempt.status === 'skipped'),
+      providerAttempts,
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
@@ -761,18 +782,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       poolTarget: 0,
       poolSize: 0,
       returned: 0
-    },
-    emailDiscovery: {
-      mode: String(req.body.emailDiscovery || 'off'),
-      attempted: 0,
-      found: 0,
-      confirmedPublic: 0,
-      companyPublic: 0,
-      patternLikely: 0,
-      domainOnly: 0,
-      notFound: 0,
-      failed: 0,
-      cachePruned: 0
     }
   };
 
@@ -870,21 +879,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     return predictive;
   };
 
-  const chunkEvidenceBlocks = (blocks: string[], maxLength = 3200) => {
-    const chunks: string[] = [];
-    let current = '';
-    for (const block of blocks) {
-      if (current.length + block.length > maxLength && current.length > 0) {
-        chunks.push(current);
-        current = block;
-      } else {
-        current += block;
-      }
-    }
-    if (current) chunks.push(current);
-    return chunks;
-  };
-
   try {
     throwIfCancelled();
     logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
@@ -978,9 +972,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     const expiredRows = pruneExpiredEnrichmentCache();
     if (expiredRows > 0) logEvent(`Pruned ${expiredRows} expired enrichment cache rows.`);
-    const expiredEmailRows = pruneExpiredEmailDiscoveryCache();
-    stats.emailDiscovery.cachePruned = expiredEmailRows;
-    if (expiredEmailRows > 0) logEvent(`Pruned ${expiredEmailRows} expired email discovery cache rows.`);
 
     const existingKeys = new Set<string>();
     const excludedValues = new Set<string>();
@@ -1019,6 +1010,14 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     let brightDataTransportRetryAfter = 0;
     const urlRetryQueue = new Set<string>();
     let previousRoundSummary: Record<string, any> = {};
+    const llmCircuitBreaker = createLLMSessionCircuitBreaker(
+      Number(process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD || 2)
+    );
+    const failedExtractionRoundsBeforeStop = Math.min(
+      Math.max(Number(process.env.LEAD_EXTRACTION_FAILURE_ROUNDS_BEFORE_STOP || 2), 1),
+      4
+    );
+    let consecutiveFailedExtractionRounds = 0;
 
     if (!brightDataReady) {
       const status = getBrightDataStatus();
@@ -1075,6 +1074,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         logEvent(`Round ${round}: target near completion (remaining: ${remaining}). Skipping LLM Strategist planning to optimize efficiency.`);
       } else {
         const strategyStarted = Date.now();
+        const strategyProviderAttempts: LLMProviderAttempt[] = [];
         try {
           recordTrace({
             phase: 'strategy',
@@ -1088,7 +1088,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             strategistPrompt,
             searchQueriesSchema,
             STRATEGIST_SYSTEM_PROMPT,
-            { maxTokens: 800, temperature: 0.1 }
+            {
+              maxTokens: 800,
+              temperature: 0.1,
+              circuitBreaker: llmCircuitBreaker,
+              onProviderAttempt: attempt => strategyProviderAttempts.push(attempt)
+            }
           );
           debugLogs.push({
             timestamp: new Date().toISOString(),
@@ -1108,7 +1113,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             round,
             latencyMs: Date.now() - strategyStarted,
             counts: { generatedQueries: planItems.length },
-            llm: summarizeLLM('strategy', strategistPrompt, queryResult, Date.now() - strategyStarted)
+            llm: summarizeLLM('strategy', strategistPrompt, queryResult, Date.now() - strategyStarted, 0, strategyProviderAttempts)
           });
         } catch (e: any) {
           recordTrace({
@@ -1119,7 +1124,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             round,
             latencyMs: Date.now() - strategyStarted,
             error: { message: e.message || String(e) },
-            llm: summarizeLLM('strategy', strategistPrompt, '', Date.now() - strategyStarted)
+            llm: summarizeLLM('strategy', strategistPrompt, '', Date.now() - strategyStarted, 0, strategyProviderAttempts)
           });
           logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
           debugLogs.push({
@@ -1520,27 +1525,76 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       }
 
       const extractionChunkChars = Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 3200), 1800), 9000);
-      const chunks = chunkEvidenceBlocks(evidenceBlocks, extractionChunkChars);
-      logEvent(`Round ${round}: extracting ${chunks.length} evidence batches in parallel.`);
+      const configuredExtractionMaxTokens = Math.min(
+        Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3000), 800),
+        6000
+      );
+      const providerTokenBudget = Math.min(
+        Math.max(Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 7200), 4000),
+        120_000
+      );
+      const tokenSafetyMargin = Math.min(
+        Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
+        2000
+      );
+      const extractionPromptPrefix = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n`;
+      const structuredPromptOverheadTokens =
+        estimateTokens(extractionPromptPrefix) +
+        estimateTokens(EXTRACTION_SYSTEM_PROMPT) +
+        estimateTokens(JSON.stringify(bulkLeadsArraySchema)) +
+        500;
+      const evidenceTokenBudget = Math.max(
+        400,
+        Math.min(
+          Math.floor(extractionChunkChars / 4),
+          providerTokenBudget - configuredExtractionMaxTokens - tokenSafetyMargin - structuredPromptOverheadTokens
+        )
+      );
+      const chunks = chunkEvidenceBlocksByTokenBudget(evidenceBlocks, evidenceTokenBudget);
+      logEvent(`Round ${round}: extracting ${chunks.length} token-budgeted evidence batches (max evidence tokens: ${evidenceTokenBudget}).`);
       recordTrace({
         phase: 'extraction',
         operation: 'chunk_evidence',
         status: 'info',
         provider: 'system',
         round,
-        counts: { chunks: chunks.length, evidenceBlocks: evidenceBlocks.length }
+        counts: { chunks: chunks.length, evidenceBlocks: evidenceBlocks.length },
+        metadata: {
+          evidenceTokenBudget,
+          providerTokenBudget,
+          configuredMaxOutputTokens: configuredExtractionMaxTokens
+        }
       });
 
+      let extractionFailuresThisRound = 0;
       const extractionTasks = chunks.map((chunk, idx) => async () => {
         const chunkIndex = idx + 1;
         const extractionStarted = Date.now();
-        const prompt = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n${chunk}`;
+        const prompt = `${extractionPromptPrefix}${chunk}`;
+        const extractionProviderAttempts: LLMProviderAttempt[] = [];
+        const estimatedStructuredInputTokens =
+          estimateTokens(prompt) +
+          estimateTokens(EXTRACTION_SYSTEM_PROMPT) +
+          estimateTokens(JSON.stringify(bulkLeadsArraySchema)) +
+          500;
+        const outputTokenBudget = fitOutputTokenBudget({
+          configuredMaxTokens: configuredExtractionMaxTokens,
+          estimatedInputTokens: estimatedStructuredInputTokens,
+          totalTokenBudget: providerTokenBudget,
+          safetyTokens: tokenSafetyMargin,
+          minimumOutputTokens: 800
+        });
         try {
           const extracted = await openAIStructured<any[]>(
             prompt,
             bulkLeadsArraySchema,
             EXTRACTION_SYSTEM_PROMPT,
-            { maxTokens: Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3000), 1500), 8000), temperature: 0.0 }
+            {
+              maxTokens: outputTokenBudget,
+              temperature: 0.0,
+              circuitBreaker: llmCircuitBreaker,
+              onProviderAttempt: attempt => extractionProviderAttempts.push(attempt)
+            }
           );
           const extractedLeads = Array.isArray(extracted) ? extracted : [];
           debugLogs.push({
@@ -1562,13 +1616,15 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             chunk: { index: chunkIndex, total: chunks.length, inputChars: chunk.length },
             latencyMs: Date.now() - extractionStarted,
             counts: { extractedProfiles: extractedLeads.length },
-            llm: summarizeLLM('extraction', prompt, extractedLeads, Date.now() - extractionStarted)
+            llm: summarizeLLM('extraction', prompt, extractedLeads, Date.now() - extractionStarted, 0, extractionProviderAttempts),
+            metadata: { estimatedStructuredInputTokens, outputTokenBudget, providerTokenBudget }
           });
           if (extractedLeads.length === 0) {
             noteRejection('llm_extraction_empty');
           }
           return extractedLeads;
         } catch (e: any) {
+          extractionFailuresThisRound++;
           recordTrace({
             phase: 'extraction',
             operation: 'llm_extract_chunk',
@@ -1578,7 +1634,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             chunk: { index: chunkIndex, total: chunks.length, inputChars: chunk.length },
             latencyMs: Date.now() - extractionStarted,
             error: { message: e.message || String(e) },
-            llm: summarizeLLM('extraction', prompt, '', Date.now() - extractionStarted)
+            llm: summarizeLLM('extraction', prompt, '', Date.now() - extractionStarted, 0, extractionProviderAttempts),
+            metadata: { estimatedStructuredInputTokens, outputTokenBudget, providerTokenBudget }
           });
           logEvent(`WARN: Extraction chunk ${chunkIndex}/${chunks.length} failed: ${e.message}`);
           debugLogs.push({
@@ -1594,6 +1651,26 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
       const extractionConcurrency = Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1), 4);
       const extractionResults = await asyncQueue(extractionTasks, extractionConcurrency);
+      if (chunks.length > 0 && extractionFailuresThisRound === chunks.length) {
+        consecutiveFailedExtractionRounds++;
+      } else {
+        consecutiveFailedExtractionRounds = 0;
+      }
+
+      if (consecutiveFailedExtractionRounds >= failedExtractionRoundsBeforeStop) {
+        stats.stopReason = 'llm_unavailable';
+        logEvent(`Stopping after ${consecutiveFailedExtractionRounds} consecutive rounds where every LLM extraction batch failed.`);
+        recordTrace({
+          phase: 'extraction',
+          operation: 'llm_circuit_breaker_stop',
+          status: 'error',
+          provider: 'system',
+          round,
+          counts: { failedRounds: consecutiveFailedExtractionRounds, failedChunks: extractionFailuresThisRound },
+          metadata: { disabledProviders: Array.from(llmCircuitBreaker.disabledProviderIds) }
+        });
+        break;
+      }
       let provisionalLeads: any[] = [];
       for (const extractedLeads of extractionResults) {
         provisionalLeads.push(...extractedLeads);
@@ -2179,121 +2256,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     stats.returned = leadsFound;
     stats.rerank.returned = leadsFound;
 
-    const emailDiscoveryMode = String(req.body.emailDiscovery || 'off').toLowerCase();
-    stats.emailDiscovery.mode = emailDiscoveryMode;
-    if (emailDiscoveryMode !== 'off') {
-      const maxEmailDiscovery = Math.min(
-        finalLeads.length,
-        Math.max(Number(process.env.EMAIL_DISCOVERY_MAX_PER_SEARCH || targetLimit), 0)
-      );
-      const profileForEmailDiscovery = (lead: any) => lead.profile || lead;
-      const leadsForEmailDiscovery = finalLeads.slice(0, maxEmailDiscovery).filter((lead: any) => {
-        const profile = profileForEmailDiscovery(lead);
-        if (emailDiscoveryMode === 'missing_only') return !profile.contactDetails?.email;
-        return true;
-      });
-      stats.emailDiscovery.attempted = leadsForEmailDiscovery.length;
-      if (leadsForEmailDiscovery.length > 0) {
-        logEvent(`Email discovery: processing ${leadsForEmailDiscovery.length} accepted leads using free-first providers.`);
-        recordTrace({
-          phase: 'email_discovery',
-          operation: 'email_discovery_batch',
-          status: 'started',
-          provider: 'email',
-          counts: { leads: leadsForEmailDiscovery.length }
-        });
-      }
-
-      const emailTasks = leadsForEmailDiscovery.map((lead: any) => async () => {
-        try {
-          const profile = profileForEmailDiscovery(lead);
-          const contactDetails = profile.contactDetails || {};
-          const companyWebsite = contactDetails.website || lead.companyAccount?.website;
-          const hasLookupInput = Boolean(
-            profile.fullName ||
-            profile.currentCompany ||
-            companyWebsite ||
-            contactDetails.linkedinUrl
-          );
-
-          if (!hasLookupInput) {
-            stats.emailDiscovery.notFound++;
-            recordTrace({
-              phase: 'email_discovery',
-              operation: 'email_lookup',
-              status: 'skipped',
-              provider: 'email',
-              email: { status: 'missing_lookup_input' }
-            });
-            debugLogs.push({
-              timestamp: new Date().toISOString(),
-              type: 'email_discovery_skipped',
-              reason: 'missing_lookup_input'
-            });
-            return;
-          }
-
-          const emailStarted = Date.now();
-          const result = await discoverProspectEmail({
-            fullName: profile.fullName,
-            currentCompany: profile.currentCompany,
-            companyWebsite,
-            linkedinUrl: contactDetails.linkedinUrl,
-            title: profile.currentTitle,
-            location: profile.location
-          });
-          Object.assign(lead, applyEmailDiscoveryToLead(lead, result));
-          debugLogs.push({
-            timestamp: new Date().toISOString(),
-            type: 'email_discovery_result',
-            lead: profile.fullName,
-            company: profile.currentCompany,
-            status: result.status,
-            bestEmail: result.bestEmail,
-            companyDomain: result.companyDomain,
-            confidence: result.confidence,
-            sourceTypes: result.sources.map(source => source.type)
-          });
-          recordTrace({
-            phase: 'email_discovery',
-            operation: 'email_lookup',
-            status: 'success',
-            provider: 'email',
-            latencyMs: Date.now() - emailStarted,
-            email: {
-              status: result.status,
-              evidenceCount: result.sources.length,
-              sourceTypes: result.sources.map(source => source.type)
-            },
-            metadata: { lead: profile.fullName, company: profile.currentCompany }
-          });
-          if (result.bestEmail) stats.emailDiscovery.found++;
-          if (result.status === 'confirmed_public') stats.emailDiscovery.confirmedPublic++;
-          else if (result.status === 'company_public') stats.emailDiscovery.companyPublic++;
-          else if (result.status === 'pattern_likely') stats.emailDiscovery.patternLikely++;
-          else if (result.status === 'domain_only') stats.emailDiscovery.domainOnly++;
-          else stats.emailDiscovery.notFound++;
-        } catch (e: any) {
-          stats.emailDiscovery.failed++;
-          recordTrace({
-            phase: 'email_discovery',
-            operation: 'email_lookup',
-            status: 'error',
-            provider: 'email',
-            error: { message: e.message || String(e) }
-          });
-          debugLogs.push({
-            timestamp: new Date().toISOString(),
-            type: 'email_discovery_error',
-            lead: profileForEmailDiscovery(lead).fullName,
-            error: e.message || String(e)
-          });
-        }
-      });
-
-      await asyncQueue(emailTasks, Math.min(profileConcurrency, 3));
-    }
-
     if (leadsFound >= targetLimit) {
       stats.stopReason = 'target_reached';
     } else if (stats.stopReason === 'not_started') {
@@ -2337,7 +2299,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         evidenceReasons: p.evidenceReasons,
         evidence: p.evidence,
         scoreBreakdown: p.scoreBreakdown,
-        emailDiscovery: p.emailDiscovery || { status: 'not_searched' },
+        reviewStatus: 'UNREVIEWED',
+        nextAction: 'NONE',
         buyingSignalsDetected: p.companyAccount?.buyingSignals?.map((signal: any) => signal.label)
       };
     });
@@ -2401,6 +2364,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
+    const cancelled = error?.name === 'AbortError';
     telemetry.finish('error', { ...stats, error: error.message || 'Failed to locate leads.' });
     const traceSummary = telemetry.getSummary();
 
@@ -2410,7 +2374,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       timestamp: new Date().toISOString(),
       prompt: promptQuery,
       generatedQueries,
-      status: 'error',
+      status: cancelled ? 'cancelled' : 'error',
       errorMessage: error.message || 'Failed to locate leads.',
       rawResultsCount,
       leadsFound: 0,
@@ -2418,7 +2382,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       debugLogs: JSON.stringify(debugLogs)
     });
 
-    const cancelled = error?.name === 'AbortError';
     upsertMiningSession({
       id: sessionId,
       status: cancelled ? 'cancelled' : 'error',
@@ -2439,59 +2402,6 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   }
 });
 
-router.post('/email-discovery', async (req, res): Promise<any> => {
-  try {
-    const profile = req.body?.profile || req.body?.lead?.profile || req.body;
-    if (!profile?.fullName && !profile?.currentCompany && !profile?.contactDetails?.website) {
-      return res.status(400).json({ error: 'Provide a profile, lead, company, or website for email discovery.' });
-    }
-
-    const result = await discoverProspectEmail({
-      fullName: profile.fullName,
-      currentCompany: profile.currentCompany,
-      companyWebsite: profile.contactDetails?.website || req.body?.companyWebsite,
-      linkedinUrl: profile.contactDetails?.linkedinUrl,
-      title: profile.currentTitle,
-      location: profile.location
-    });
-
-    res.json({ emailDiscovery: result, profile: applyEmailDiscoveryToLead(profile, result), sandboxMode: false });
-  } catch (error: any) {
-    console.error('Error in /api/email-discovery:', error);
-    res.status(500).json({ error: error.message || 'Email discovery failed.' });
-  }
-});
-
-router.post('/leads/:id/find-email', async (req, res): Promise<any> => {
-  try {
-    if (!isSafeLeadId(req.params.id)) {
-      return res.status(400).json({ error: 'Invalid lead id.' });
-    }
-    const lead = readStoredLeadById(req.params.id);
-    if (!lead) {
-      return res.status(404).json({ error: 'Lead not found.' });
-    }
-
-    const profile = lead.profile || lead;
-    const result = await discoverProspectEmail({
-      fullName: profile.fullName,
-      currentCompany: profile.currentCompany,
-      companyWebsite: profile.contactDetails?.website || lead.companyAccount?.website,
-      linkedinUrl: profile.contactDetails?.linkedinUrl,
-      title: profile.currentTitle,
-      location: profile.location
-    });
-
-    const updatedLead = applyEmailDiscoveryToLead(lead, result);
-    upsertLead(updatedLead);
-
-    res.json({ lead: updatedLead, emailDiscovery: result, sandboxMode: false });
-  } catch (error: any) {
-    console.error('Error in /api/leads/:id/find-email:', error);
-    res.status(500).json({ error: error.message || 'Email discovery failed.' });
-  }
-});
-
 router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
   try {
     if (!isSafeLeadId(req.params.id)) {
@@ -2502,52 +2412,67 @@ router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
       return res.status(404).json({ error: 'Lead not found.' });
     }
 
-    const { forceProfileScrape = false, forceEmailDiscovery = false } = req.body || {};
-    
-    let currentLead = lead;
-    let profileEnrichment = null;
-    
-    if (forceProfileScrape) {
-      const enrichRes = await enrichLeadProfile(currentLead, {
-        force: Boolean(forceProfileScrape)
-      });
-      currentLead = enrichRes.lead;
-      profileEnrichment = enrichRes.result;
+    const enrichRes = await enrichLeadProfile(lead, {
+      force: req.body?.forceRefresh === true
+    });
+    const currentLead = enrichRes.lead;
+    const profileEnrichment = enrichRes.result;
+
+    const latestLead = readStoredLeadById(req.params.id);
+    if (!latestLead) throw new LeadNotFoundError(req.params.id);
+    let storedLead = latestLead;
+    if (profileEnrichment.status !== 'error' && profileEnrichment.updatedFields.length > 0) {
+      const latestProfile = latestLead.profile || {};
+      const enrichedProfile = currentLead.profile || {};
+      const mergedLead = {
+        ...latestLead,
+        profile: {
+          ...latestProfile,
+          fullName: (!latestProfile.fullName || latestProfile.fullName === 'Unknown')
+            ? enrichedProfile.fullName || latestProfile.fullName
+            : latestProfile.fullName,
+          currentCompany: (!latestProfile.currentCompany || latestProfile.currentCompany === 'Unknown')
+            ? enrichedProfile.currentCompany || latestProfile.currentCompany
+            : latestProfile.currentCompany,
+          headline: latestProfile.headline || enrichedProfile.headline,
+          location: latestProfile.location || enrichedProfile.location,
+          industry: latestProfile.industry || enrichedProfile.industry,
+          contactDetails: {
+            ...(enrichedProfile.contactDetails || {}),
+            ...(latestProfile.contactDetails || {}),
+            email: latestProfile.contactDetails?.email || enrichedProfile.contactDetails?.email,
+          },
+        },
+        decisionMakerVerification: currentLead.decisionMakerVerification,
+        evidence: currentLead.evidence,
+        scoreBreakdown: currentLead.scoreBreakdown,
+        scoreOverride: currentLead.scoreOverride,
+        lastEnrichedAt: currentLead.lastEnrichedAt,
+      };
+      storedLead = upsertLead(mergedLead, { requireExisting: true });
     }
 
-    let emailDiscovery = null;
-    if (forceEmailDiscovery) {
-      const profile = currentLead.profile || currentLead;
-      emailDiscovery = await discoverProspectEmail({
-        fullName: profile.fullName,
-        currentCompany: profile.currentCompany,
-        companyWebsite: profile.contactDetails?.website || currentLead.companyAccount?.website,
-        linkedinUrl: profile.contactDetails?.linkedinUrl,
-        title: profile.currentTitle,
-        location: profile.location
-      });
-      currentLead = applyEmailDiscoveryToLead(currentLead, emailDiscovery);
-    }
-
-    upsertLead(currentLead);
-
-    if (profileEnrichment?.status === 'error') {
+    if (profileEnrichment.status === 'error') {
       return res.status(502).json({
         error: profileEnrichment.error || 'Profile enrichment provider failed.',
-        lead: currentLead,
+        lead: latestLead,
         profileEnrichment,
-        emailDiscovery,
         sandboxMode: false
       });
     }
 
     res.json({
-      lead: currentLead,
+      lead: storedLead,
       profileEnrichment,
-      emailDiscovery,
       sandboxMode: false
     });
   } catch (error: any) {
+    if (error instanceof LeadNotFoundError) {
+      return res.status(409).json({ error: error.message, code: 'LEAD_NO_LONGER_EXISTS' });
+    }
+    if (error instanceof LeadRevisionConflictError) {
+      return res.status(409).json({ error: error.message, code: 'LEAD_REVISION_CONFLICT', lead: error.currentLead });
+    }
     console.error('Error in /api/leads/:id/enrich-profile:', error);
     res.status(500).json({ error: error.message || 'Profile enrichment failed.' });
   }

@@ -3,38 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found' | 'not_searched';
-
-export interface EmailDiscoveryEvidence {
-  type: 'brightdata_batch' | 'brightdata_search' | 'tavily_extract' | 'tavily_search' | 'direct_fetch' | 'pattern' | 'dns' | 'cache';
-  url?: string;
-  email?: string;
-  evidence: string;
-}
-
-export interface EmailFallbackChannels {
-  contactPage?: string;
-  genericEmail?: string;
-  website?: string;
-  linkedinUrl?: string;
-}
-
-export interface EmailDiscoveryResult {
-  bestEmail?: string;
-  status: EmailDiscoveryStatus;
-  confidence: number;
-  companyDomain?: string;
-  mxValid?: boolean;
-  sources: EmailDiscoveryEvidence[];
-  fallbackChannels: EmailFallbackChannels;
-}
-
 export interface ContactDetails {
-  email?: string; // Publicly found or clearly labeled inferred outreach address.
-  emailStatus?: EmailDiscoveryStatus;
-  emailConfidence?: number;
-  emailSources?: EmailDiscoveryEvidence[];
-  fallbackChannels?: EmailFallbackChannels;
+  email?: string; // Manually entered, imported, or explicitly published in profile evidence.
   phone?: string;
   linkedinUrl?: string;
   twitter?: string;
@@ -150,13 +120,14 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   evidenceReasons?: string[];
   evidence?: LeadEvidence;
   scoreBreakdown?: ScoreBreakdown;
-  emailDiscovery?: EmailDiscoveryResult;
   scout?: ScoutEvidence;
   finalSelectionScore?: number;
   discoveryLane?: string;
 }
 
 export type LeadStage = 'SCRAPED' | 'ENRICHED' | 'SEQUENCE ACTIVE' | 'REPLIED' | 'MEETING BOOKED' | 'NEGOTIATING' | 'CONVERTED' | 'LOST' | 'NURTURE';
+export type ReviewStatus = 'UNREVIEWED' | 'KEEP' | 'MAYBE' | 'REJECT';
+export type NextAction = 'NONE' | 'OPEN_LINKEDIN' | 'RESEARCH' | 'CONNECT' | 'MESSAGE';
 
 export interface Lead {
   id: string;
@@ -169,6 +140,8 @@ export interface Lead {
   lastActive?: string;
   lastEnrichedAt?: string;
   tags?: string[];
+  reviewStatus?: ReviewStatus;
+  nextAction?: NextAction;
   
   // Analytics & Scoring from System Prompt
   icpScoreReasoning?: string; // 1-10 rating rationale
@@ -187,7 +160,6 @@ export interface Lead {
   evidenceReasons?: string[];
   evidence?: LeadEvidence;
   scoreBreakdown?: ScoreBreakdown;
-  emailDiscovery?: EmailDiscoveryResult;
   scout?: ScoutEvidence;
   finalSelectionScore?: number;
   discoveryLane?: string;
@@ -197,13 +169,13 @@ export interface ScrapingTask {
   id: string;
   type: 'url' | 'paste' | 'search';
   query: string;
-  status: 'idle' | 'processing' | 'completed' | 'failed';
+  status: 'idle' | 'processing' | 'completed' | 'failed' | 'cancelled';
   resultCount?: number;
   createdAt: string;
 }
 
-export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'email' | 'sqlite' | 'system';
-export type MiningPhase = 'session' | 'strategy' | 'search' | 'candidate_processing' | 'extraction' | 'filtering' | 'enrichment' | 'email_discovery' | 'persistence';
+export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'sqlite' | 'system';
+export type MiningPhase = 'session' | 'strategy' | 'search' | 'candidate_processing' | 'extraction' | 'filtering' | 'enrichment' | 'persistence';
 export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
 
 export interface MiningTraceEvent {
@@ -283,7 +255,7 @@ export interface SearchLog {
   timestamp: string;
   prompt: string;
   generatedQueries: string[];
-  status: 'success' | 'error' | 'running';
+  status: 'success' | 'error' | 'running' | 'cancelled';
   errorMessage?: string;
   rawResultsCount: number;
   leadsFound: number;

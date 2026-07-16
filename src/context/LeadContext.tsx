@@ -1,177 +1,18 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Lead, LinkedInProfile, QualifiedLeadProfile } from '../types';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  ReactNode,
+} from 'react';
+import { Lead, LinkedInProfile, NextAction, QualifiedLeadProfile, ReviewStatus } from '../types';
 import { predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
+import { preferNewerCanonical, rebaseLeadChanges } from '@/lib/leadMutations';
 
-/**
- * Demo leads pre-populated for UI illustration purposes.
- * These contain FABRICATED contact details (email, phone, LinkedIn URLs) and
- * should be replaced with real prospects before using the CRM in production.
- * They are tagged "Demo Data" so users can identify and remove them easily.
- */
-const seedLeads: Lead[] = [
-  {
-    id: 'seed-siskind',
-    profile: {
-      id: 'gregory-siskind',
-      fullName: 'Gregory Siskind',
-      headline: 'Award-winning Immigration Attorney, Legal AI Pioneer & Co-founder of Siskind Susser PC',
-      currentCompany: 'Siskind Susser PC / Visalaw AI',
-      currentTitle: 'Founding Partner & Chief Legal AI Innovator',
-      seniorityLevel: 'Founder',
-      companySizeEst: '51-200',
-      location: 'Memphis, TN',
-      industry: 'Legal Services',
-      summary: 'Gregory Siskind is a nationally recognized immigration lawyer, co-author of several major treatises, and a leading legal technology innovator. He co-founded Siskind Susser PC in 1994 (Tennessee\'s first legal web page) and is the vanguard of Visalaw AI, building generative AI legal tools.',
-      contactDetails: {
-        email: 'gsiskind@visalaw.com',
-        phone: '+1 (901) 682-6455',
-        linkedinUrl: 'https://www.linkedin.com/in/siskind/',
-        website: 'https://www.visalaw.com'
-      },
-      experiences: [
-        {
-          title: 'Founding Partner & Attorney',
-          company: 'Siskind Susser PC',
-          duration: '1994 - Present',
-          location: 'Memphis, TN',
-          description: 'Managing one of the largest immigration law firms in the USA. Pioneer internet legal marketing and digital workflows for visa processing and corporate compliance.'
-        },
-        {
-          title: 'Co-founder & Chief Product Officer',
-          company: 'Visalaw AI',
-          duration: '2022 - Present',
-          location: 'Memphis, TN',
-          description: 'Overseeing product strategy for GenAI-powered search grounding engines, compliance validators, and chat-based legal research assistants for immigration specialists.'
-        }
-      ],
-      education: [
-        {
-          school: 'Vanderbilt University Law School',
-          degree: 'Juris Doctor (JD)',
-          duration: '1987 - 1990'
-        },
-        {
-          school: 'The College of William & Mary',
-          degree: 'Bachelor of Arts',
-          fieldOfStudy: 'Political Science',
-          duration: '1983 - 1987'
-        }
-      ],
-      skills: ['Immigration Law', 'Legal Technology', 'Product Architecture', 'GenAI', 'Digital Marketing']
-    },
-    stage: 'ENRICHED',
-    notes: '[DEMO] Pre-loaded demonstration lead. Replace with real prospects - contact details are illustrative only.',
-    createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-    tags: ['Demo Data', 'Key Target', 'Legal AI Pioneer'],
-    fitScore: 9,
-    intentScore: 8,
-    timingScore: 7,
-    compositeScore: 8.2,
-    tier: 'TIER 1: PRIORITY'
-  },
-  {
-    id: 'seed-aris',
-    profile: {
-      id: 'aris-thompson',
-      fullName: 'Aris Thompson',
-      headline: 'Founder & CEO of Lexic AI - Generative Legal Intelligence Workspace',
-      currentCompany: 'Lexic AI',
-      currentTitle: 'Founder & CEO',
-      seniorityLevel: 'Founder',
-      companySizeEst: '11-50',
-      location: 'San Francisco, CA',
-      industry: 'Software Engineering',
-      summary: 'Aris is a software engineer and serial entrepreneur building advanced document-reasoning graphs for commercial litigation and law operations. Ex-Stripe staff architect.',
-      contactDetails: {
-        email: 'aris@lexic.ai',
-        linkedinUrl: 'https://www.linkedin.com/in/aris-thompson-mock/',
-        website: 'https://lexic.ai'
-      },
-      experiences: [
-        {
-          title: 'Founder & CEO',
-          company: 'Lexic AI',
-          duration: '2023 - Present',
-          location: 'San Francisco, CA',
-          description: 'Architecting vectors database structures and search grounding middleware to help enterprise litigators mine 100M+ corporate emails safely.'
-        },
-        {
-          title: 'Staff Software Engineer',
-          company: 'Stripe',
-          duration: '2019 - 2023',
-          location: 'San Francisco, CA',
-          description: 'Led core billing systems optimization. Built scalable ledger structures processing upwards of 2B daily transactional logs.'
-        }
-      ],
-      education: [
-        {
-          school: 'Stanford University',
-          degree: 'B.S.',
-          fieldOfStudy: 'Computer Science',
-          duration: '2015 - 2019'
-        }
-      ],
-      skills: ['Distributed Systems', 'PostgreSQL', 'LegalTech', 'Vector Databases', 'Startups']
-    },
-    stage: 'MEETING BOOKED',
-    notes: '[DEMO] Pre-loaded demonstration lead. Replace with real prospects - contact details are illustrative only.',
-    createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-    tags: ['Demo Data', 'Founder', 'Warm Intro'],
-    fitScore: 8,
-    intentScore: 9,
-    timingScore: 8,
-    compositeScore: 8.4,
-    tier: 'TIER 1: PRIORITY'
-  },
-  {
-    id: 'seed-julia',
-    profile: {
-      id: 'julia-chen',
-      fullName: 'Julia Chen',
-      headline: 'VP of Recruit & Human Talents at CloudTech Global',
-      currentCompany: 'CloudTech Global',
-      currentTitle: 'VP of Human Talents',
-      seniorityLevel: 'VP',
-      companySizeEst: '500+',
-      location: 'Austin, TX',
-      industry: 'Human Resources',
-      summary: 'Experienced executive recruiter leading talent strategy across North America and APAC markets. Focused on tech hiring scaling vectors.',
-      contactDetails: {
-        email: 'jchen@cloudtech-global.com',
-        phone: '+1 (512) 555-8832',
-        linkedinUrl: 'https://www.linkedin.com/in/julia-chen-mock/'
-      },
-      experiences: [
-        {
-          title: 'VP of Human Talents',
-          company: 'CloudTech Global',
-          duration: '2021 - Present',
-          location: 'Austin, TX',
-          description: 'Scaling engineering and go-to-market teams. Built a global recruitment structure hiring 500+ professionals annually.'
-        }
-      ],
-      education: [
-        {
-          school: 'University of Texas at Austin',
-          degree: 'B.B.A.',
-          fieldOfStudy: 'Business & Management',
-          duration: '2008 - 2012'
-        }
-      ],
-      skills: ['Executive Search', 'Org Design', 'Scaling HR', 'Sourcing Platforms']
-    },
-    stage: 'SEQUENCE ACTIVE',
-    notes: '[DEMO] Pre-loaded demonstration lead. Replace with real prospects - contact details are illustrative only.',
-    createdAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-    tags: ['Demo Data', 'Recruiting Executive', 'Outbound Pipe'],
-    fitScore: 7,
-    intentScore: 5,
-    timingScore: 4,
-    compositeScore: 5.6,
-    tier: 'TIER 3: WATCH'
-  }
-];
 const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
 
 type StoredLeadsResponse = {
@@ -193,8 +34,8 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
 }
 
 async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
-  const response = await fetch('/api/leads', {
-    method: 'PUT',
+  const response = await fetch('/api/leads/bulk', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ leads })
   });
@@ -204,23 +45,97 @@ async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
   }
 }
 
+function sanitizeLeads(loadedLeads: unknown[]): Lead[] {
+  return loadedLeads.map((lead) => {
+    const candidate = lead as Lead;
+    return {
+      ...candidate,
+      id: candidate.id || crypto.randomUUID(),
+      reviewStatus: candidate.reviewStatus || 'UNREVIEWED',
+      nextAction: candidate.nextAction || 'NONE',
+    };
+  });
+}
+
+function loadLegacyBrowserLeads(): Lead[] | null {
+  try {
+    const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
+    if (!legacyStored) return null;
+
+    const parsed: unknown = JSON.parse(legacyStored);
+    return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
+  } catch (error) {
+    console.warn('Legacy browser lead migration failed:', error);
+    return null;
+  }
+}
+
+class LeadPatchConflictError extends Error {
+  constructor(public readonly currentLead: Lead, message: string) {
+    super(message);
+    this.name = 'LeadPatchConflictError';
+  }
+}
+
+class LeadDeletedConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LeadDeletedConflictError';
+  }
+}
+
+async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<Lead> {
+  const response = await fetch(`/api/leads/${lead.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead, allowCreate }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 409 && data.lead) {
+    throw new LeadPatchConflictError(
+      data.lead as Lead,
+      data.error || 'This prospect changed while the update was being saved.',
+    );
+  }
+  if (response.status === 409 && data.code === 'LEAD_NO_LONGER_EXISTS') {
+    throw new LeadDeletedConflictError(
+      data.error || 'This prospect was removed before the update completed.',
+    );
+  }
+  if (!response.ok || !data.lead) {
+    throw new Error(data.error || `Failed to patch lead: ${response.status}`);
+  }
+  return data.lead as Lead;
+}
+
 
 interface LeadContextType {
   leads: Lead[];
   isHydrated: boolean;
   saveLeadsToStorage: (updater: Lead[] | ((prev: Lead[]) => Lead[])) => void;
-  rehydrateLeads: () => Promise<void>;
-  handleLeadAdded: (profile: LinkedInProfile) => void;
-  handleBulkLeadsAdded: (profiles: (QualifiedLeadProfile | Lead)[]) => Promise<void>;
-  handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
-  handleUpdateLeadNotes: (leadId: string, notes: string) => void;
+  rehydrateLeads: (preserveExistingOnFailure?: boolean) => Promise<boolean>;
+  handleLeadAdded: (profile: LinkedInProfile) => Promise<{ added: boolean }>;
+  handleBulkLeadsAdded: (profiles: (QualifiedLeadProfile | Lead)[]) => Promise<{ addedCount: number; skippedCount: number }>;
+  handleUpdateLeadStage: (leadId: string, stage: Lead['stage']) => Promise<void>;
+  handleUpdateLeadNotes: (leadId: string, notes: string) => Promise<void>;
+  handleUpdateLeadFields: (
+    leadId: string,
+    updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
+  ) => Promise<void>;
+  handleUpdateLeadsFields: (
+    leadIds: string[],
+    updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
+  ) => Promise<{ updatedCount: number }>;
   handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
   handleMergeLead: (updatedLead: Lead) => void;
   handleServerMergeLead: (winnerId: string, duplicateId: string) => Promise<void>;
-  handleUpdateLeadTags: (leadId: string, tags: string[]) => void;
-  handleDeleteLead: (leadId: string) => void;
+  handleUpdateLeadTags: (leadId: string, tags: string[]) => Promise<void>;
+  handleDeleteLead: (leadId: string) => Promise<void>;
   handleDeleteLeads: (leadIds: string[]) => Promise<void>;
-  handleUpdateLeadsStage: (leadIds: string[], stage: Lead['stage']) => Promise<void>;
+  handleUpdateLeadsStage: (
+    leadIds: string[],
+    stage: Lead['stage'],
+  ) => Promise<{ updatedCount: number; removedCount: number }>;
 }
 
 const LeadContext = createContext<LeadContextType | undefined>(undefined);
@@ -228,81 +143,126 @@ const LeadContext = createContext<LeadContextType | undefined>(undefined);
 export function LeadProvider({ children }: { children: ReactNode }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
+  const leadsRef = useRef<Lead[]>([]);
+  const leadPatchQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const leadPatchRollbackRef = useRef<Map<string, Lead | null>>(new Map());
 
-  const sanitizeLeads = (loadedLeads: any[]) => {
-    return loadedLeads.map(l => ({
-      ...l,
-      id: l.id || crypto.randomUUID()
-    }));
-  };
+  const saveLeadsToStorage = useCallback((updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
+    const nextLeads = typeof updater === 'function'
+      ? updater(leadsRef.current)
+      : updater;
+    leadsRef.current = nextLeads;
+    setLeads(nextLeads);
+  }, []);
 
-  const loadLegacyBrowserLeads = () => {
-    try {
-      const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
-      if (!legacyStored) return null;
+  const restoreLeadSubset = useCallback((affectedIds: ReadonlySet<string>, rollbackLeads: Lead[]) => {
+    const rollbackById = new Map(rollbackLeads.map(lead => [lead.id, lead]));
+    saveLeadsToStorage(currentLeads => {
+      const restoredIds = new Set<string>();
+      const nextLeads = currentLeads.flatMap(lead => {
+        if (!affectedIds.has(lead.id)) return [lead];
+        const rollbackLead = rollbackById.get(lead.id);
+        if (!rollbackLead) return [];
+        restoredIds.add(lead.id);
+        return [rollbackLead];
+      });
+      for (const rollbackLead of rollbackLeads) {
+        if (!restoredIds.has(rollbackLead.id)) nextLeads.unshift(rollbackLead);
+      }
+      return nextLeads;
+    });
+  }, [saveLeadsToStorage]);
 
-      const parsed = JSON.parse(legacyStored);
-      return Array.isArray(parsed) ? sanitizeLeads(parsed) : null;
-    } catch (error) {
-      console.warn('Legacy browser lead migration failed:', error);
-      return null;
-    }
-  };
-
-  const rehydrateLeads = async () => {
+  const rehydrateLeads = useCallback(async (preserveExistingOnFailure = false): Promise<boolean> => {
     try {
       const stored = await loadLeadsFromSqliteBackend();
       if (stored.initialized) {
-        setLeads(sanitizeLeads(stored.leads));
-        return;
+        saveLeadsToStorage(sanitizeLeads(stored.leads));
+        return true;
       }
 
       const initialLeads = loadLegacyBrowserLeads() || [];
-      setLeads(initialLeads);
+      saveLeadsToStorage(initialLeads);
       persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
+      return true;
     } catch (error) {
       console.error('SQLite lead load failed:', error);
-      setLeads(loadLegacyBrowserLeads() || []);
+      if (!preserveExistingOnFailure) {
+        saveLeadsToStorage(loadLegacyBrowserLeads() || []);
+      }
+      return false;
     } finally {
       setIsHydrated(true);
     }
-  };
+  }, [saveLeadsToStorage]);
 
   useEffect(() => {
-    rehydrateLeads();
-  }, []);
+    void rehydrateLeads();
+  }, [rehydrateLeads]);
 
-  const saveLeadsToStorage = (updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
-    setLeads(prev => {
-      return typeof updater === 'function' ? updater(prev) : updater;
+  const reconcileLeadPatch = useCallback((lead: Lead, rollbackLead: Lead | null, allowCreate = false): Promise<boolean> => {
+    const existingOperation = leadPatchQueuesRef.current.get(lead.id);
+    if (!existingOperation) leadPatchRollbackRef.current.set(lead.id, rollbackLead);
+    const previousOperation = existingOperation ?? Promise.resolve(true);
+    let operation: Promise<boolean>;
+
+    operation = previousOperation.then(async (previousSucceeded) => {
+      if (!previousSucceeded) return false;
+      try {
+        const stableCanonicalLead = leadPatchRollbackRef.current.get(lead.id) ?? rollbackLead;
+        const leadWithCurrentRevision = !allowCreate && stableCanonicalLead && rollbackLead
+          ? rebaseLeadChanges(stableCanonicalLead, lead, rollbackLead)
+          : stableCanonicalLead?.revision === undefined
+            ? lead
+            : { ...lead, revision: stableCanonicalLead.revision };
+        let canonicalLead: Lead;
+        try {
+          canonicalLead = await persistLeadPatch(leadWithCurrentRevision, allowCreate);
+        } catch (error) {
+          if (!(error instanceof LeadPatchConflictError) || allowCreate) throw error;
+          const rebasedLead = rebaseLeadChanges(error.currentLead, lead, rollbackLead);
+          canonicalLead = await persistLeadPatch(rebasedLead);
+        }
+        const hasNewerQueuedPatch = leadPatchQueuesRef.current.get(lead.id) !== operation;
+        canonicalLead = preferNewerCanonical(
+          canonicalLead,
+          leadPatchRollbackRef.current.get(lead.id),
+        );
+        if (hasNewerQueuedPatch) {
+          leadPatchRollbackRef.current.set(lead.id, canonicalLead);
+        }
+
+        saveLeadsToStorage(currentLeads => currentLeads.map(current => {
+          if (current.id !== canonicalLead.id) return current;
+          return hasNewerQueuedPatch
+            ? { ...canonicalLead, ...current, revision: canonicalLead.revision }
+            : canonicalLead;
+        }));
+        return true;
+      } catch (error) {
+        console.error(`Failed to sync lead ${lead.id} update to backend:`, error);
+        if (error instanceof LeadDeletedConflictError) {
+          restoreLeadSubset(new Set([lead.id]), []);
+          return false;
+        }
+        const stableLead = leadPatchRollbackRef.current.get(lead.id) ?? null;
+        restoreLeadSubset(new Set([lead.id]), stableLead ? [stableLead] : []);
+        return false;
+      }
     });
-  };
 
-  const persistLeadPatch = async (lead: Lead) => {
-    const response = await fetch(`/api/leads/${lead.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lead })
+    leadPatchQueuesRef.current.set(lead.id, operation);
+    void operation.finally(() => {
+      if (leadPatchQueuesRef.current.get(lead.id) === operation) {
+        leadPatchQueuesRef.current.delete(lead.id);
+        leadPatchRollbackRef.current.delete(lead.id);
+      }
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.lead) {
-      throw new Error(data.error || `Failed to patch lead: ${response.status}`);
-    }
-    return data.lead as Lead;
-  };
-
-  const reconcileLeadPatch = async (lead: Lead) => {
-    try {
-      const canonicalLead = await persistLeadPatch(lead);
-      setLeads(currentLeads => currentLeads.map(current => current.id === canonicalLead.id ? canonicalLead : current));
-    } catch (error) {
-      console.error(`Failed to sync lead ${lead.id} update to backend:`, error);
-      await rehydrateLeads();
-    }
-  };
+    return operation;
+  }, [restoreLeadSubset, saveLeadsToStorage]);
 
   // 3. Callback to add single scraped profile
-  const handleLeadAdded = (profile: LinkedInProfile) => {
+  const handleLeadAdded = useCallback(async (profile: LinkedInProfile): Promise<{ added: boolean }> => {
     let newLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => {
       const existingKeys = new Set<string>();
@@ -318,7 +278,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       const predictiveScore = predictiveScoreFromComposite(compositeScore);
 
       newLead = {
-        id: `lead-${Date.now()}`,
+        id: `lead-${crypto.randomUUID()}`,
         profile,
         stage: 'SCRAPED',
         notes: 'Profile automatically harvested and structured by AI Search Scraper.',
@@ -326,20 +286,28 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         tags: ['Scraped Lead', profile.industry || 'Tech'],
         compositeScore,
         predictiveScore,
-        qualificationScore: predictiveScore
+        qualificationScore: predictiveScore,
+        reviewStatus: 'UNREVIEWED',
+        nextAction: 'NONE'
       };
 
       return [newLead, ...currentLeads];
     });
 
-    if (newLead) {
-      void reconcileLeadPatch(newLead);
+    const leadToPersist = newLead as Lead | null;
+    if (!leadToPersist) {
+      return { added: false };
     }
-  };
+
+    const didPersist = await reconcileLeadPatch(leadToPersist, null, true);
+    if (!didPersist) throw new Error(`Could not save ${profile.fullName} to the CRM.`);
+    return { added: true };
+  }, [reconcileLeadPatch, saveLeadsToStorage]);
 
   // 4. Callback to handle bulk lead inputs
-  const handleBulkLeadsAdded = async (profiles: (QualifiedLeadProfile | Lead)[]) => {
-    let leadsToSaveBackend: Lead[] = [];
+  const handleBulkLeadsAdded = useCallback(async (profiles: (QualifiedLeadProfile | Lead)[]): Promise<{ addedCount: number; skippedCount: number }> => {
+    const leadsToSaveBackend: Lead[] = [];
+    let skippedCount = profiles.length;
 
     saveLeadsToStorage(currentLeads => {
       const existingKeys = new Set<string>();
@@ -359,7 +327,13 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
       const newLeads = uniqueItems.map((item, i) => {
         if ('profile' in item) {
-          return item as Lead;
+          const existingLead = {
+            ...(item as Lead),
+            reviewStatus: (item as Lead).reviewStatus || 'UNREVIEWED',
+            nextAction: (item as Lead).nextAction || 'NONE',
+          };
+          leadsToSaveBackend.push(existingLead);
+          return existingLead;
         }
 
         const p = item;
@@ -371,7 +345,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         const predictiveScore = predictiveScoreFromComposite(compositeScore, hasAccountContext);
 
         const newLead: Lead = {
-          id: `lead-bulk-${Date.now()}-${i}`,
+          id: `lead-bulk-${crypto.randomUUID()}-${i}`,
           profile: p,
           stage: 'SCRAPED' as Lead['stage'],
           notes: hasAccountContext
@@ -393,16 +367,26 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           evidenceReasons: p.evidenceReasons,
           evidence: p.evidence,
           scoreBreakdown: p.scoreBreakdown,
-          buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label)
+          buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label),
+          reviewStatus: 'UNREVIEWED',
+          nextAction: 'NONE'
         };
 
         leadsToSaveBackend.push(newLead);
         return newLead;
       });
+      skippedCount = profiles.length - newLeads.length;
       return [...newLeads, ...currentLeads];
     });
 
-    if (leadsToSaveBackend.length > 0) {
+    if (leadsToSaveBackend.length === 0) {
+      return { addedCount: 0, skippedCount };
+    }
+
+    const insertedIds = new Set(leadsToSaveBackend.map(lead => lead.id));
+    let bulkError: unknown;
+    let bulkOperation!: Promise<boolean>;
+    bulkOperation = (async () => {
       try {
         const response = await fetch('/api/leads/bulk', {
           method: 'POST',
@@ -413,20 +397,63 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         if (!response.ok) {
           throw new Error(data.error || `Failed to save bulk leads: ${response.status}`);
         }
-        if (Array.isArray(data.leads)) {
-          const serverLeads = new Map((data.leads as Lead[]).map(lead => [lead.id, lead]));
-          setLeads(currentLeads => currentLeads.map(lead => serverLeads.get(lead.id) || lead));
+        {
+          const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
+          const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
+          const canonicalLeads = leadsToSaveBackend.map(
+            lead => returnedById.get(lead.id) ?? lead,
+          );
+          const serverLeads = new Map(canonicalLeads.map(lead => [
+            lead.id,
+            preferNewerCanonical(lead, leadPatchRollbackRef.current.get(lead.id)),
+          ]));
+          for (const [leadId, canonicalLead] of serverLeads) {
+            if (leadPatchQueuesRef.current.get(leadId) !== bulkOperation) {
+              leadPatchRollbackRef.current.set(leadId, canonicalLead);
+            }
+          }
+          saveLeadsToStorage(currentLeads => currentLeads.map(lead => {
+            const canonicalLead = serverLeads.get(lead.id);
+            if (!canonicalLead) return lead;
+            return leadPatchQueuesRef.current.get(lead.id) === bulkOperation
+              ? canonicalLead
+              : { ...canonicalLead, ...lead, revision: canonicalLead.revision };
+          }));
         }
-      } catch (err) {
-        console.error('Failed to save bulk leads to backend:', err);
-        await rehydrateLeads();
-        throw err;
+        return true;
+      } catch (error) {
+        bulkError = error;
+        console.error('Failed to save bulk leads to backend:', error);
+        restoreLeadSubset(insertedIds, []);
+        return false;
       }
+    })();
+
+    for (const lead of leadsToSaveBackend) {
+      leadPatchRollbackRef.current.set(lead.id, null);
+      leadPatchQueuesRef.current.set(lead.id, bulkOperation);
     }
-  };
+    void bulkOperation.finally(() => {
+      for (const lead of leadsToSaveBackend) {
+        if (leadPatchQueuesRef.current.get(lead.id) === bulkOperation) {
+          leadPatchQueuesRef.current.delete(lead.id);
+          leadPatchRollbackRef.current.delete(lead.id);
+        }
+      }
+    });
+
+    const didPersist = await bulkOperation;
+    if (!didPersist) {
+      throw bulkError instanceof Error
+        ? bulkError
+        : new Error('Failed to save bulk leads to the CRM.');
+    }
+    return { addedCount: leadsToSaveBackend.length, skippedCount };
+  }, [restoreLeadSubset, saveLeadsToStorage]);
 
   // 5. Update pipeline stage for CRM Lead
-  const handleUpdateLeadStage = (leadId: string, stage: Lead['stage']) => {
+  const handleUpdateLeadStage = useCallback(async (leadId: string, stage: Lead['stage']) => {
+    const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
     let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
       currentLeads.map(l => {
@@ -439,12 +466,16 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      void reconcileLeadPatch(updatedLead);
+      const didPersist = await reconcileLeadPatch(updatedLead, rollbackLead);
+      if (!didPersist) {
+        throw new Error('The pipeline stage could not be saved.');
+      }
     }
-  };
+  }, [reconcileLeadPatch, saveLeadsToStorage]);
 
   // 6. Update internal notes for a lead
-  const handleUpdateLeadNotes = (leadId: string, notes: string) => {
+  const handleUpdateLeadNotes = useCallback(async (leadId: string, notes: string) => {
+    const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
     let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
       currentLeads.map(l => {
@@ -457,11 +488,39 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      void reconcileLeadPatch(updatedLead);
+      const didPersist = await reconcileLeadPatch(updatedLead, rollbackLead);
+      if (!didPersist) {
+        throw new Error('Notes could not be saved to the CRM.');
+      }
     }
-  };
+  }, [reconcileLeadPatch, saveLeadsToStorage]);
 
-  const handleUpdateLeadProfile = (leadId: string, profileUpdates: Partial<LinkedInProfile>) => {
+  const handleUpdateLeadFields = useCallback(async (
+    leadId: string,
+    updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
+  ) => {
+    const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
+    let updatedLead: Lead | null = null;
+    saveLeadsToStorage(currentLeads => currentLeads.map(lead => {
+      if (lead.id !== leadId) return lead;
+      updatedLead = { ...lead, ...updates };
+      return updatedLead;
+    }));
+    if (!updatedLead) return;
+    const didPersist = await reconcileLeadPatch(updatedLead, rollbackLead);
+    if (!didPersist) throw new Error('The prospect workflow could not be saved.');
+  }, [reconcileLeadPatch, saveLeadsToStorage]);
+
+  const handleUpdateLeadsFields = useCallback(async (
+    leadIds: string[],
+    updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
+  ) => {
+    await Promise.all(leadIds.map(leadId => handleUpdateLeadFields(leadId, updates)));
+    return { updatedCount: leadIds.length };
+  }, [handleUpdateLeadFields]);
+
+  const handleUpdateLeadProfile = useCallback((leadId: string, profileUpdates: Partial<LinkedInProfile>) => {
+    const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
     let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
       currentLeads.map(l => {
@@ -479,20 +538,40 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      void reconcileLeadPatch(updatedLead);
+      void reconcileLeadPatch(updatedLead, rollbackLead);
     }
-  };
+  }, [reconcileLeadPatch, saveLeadsToStorage]);
 
-  const handleMergeLead = (updatedLead: Lead) => {
+  const handleMergeLead = useCallback((updatedLead: Lead) => {
     if (!updatedLead || !updatedLead.id) return;
-    setLeads(currentLeads =>
-      currentLeads.map(l => (l.id === updatedLead.id ? { ...l, ...updatedLead } : l))
+    const hasPendingMutation = leadPatchQueuesRef.current.has(updatedLead.id);
+    const currentLocalLead = leadsRef.current.find(lead => lead.id === updatedLead.id);
+    const canonicalLead = preferNewerCanonical(
+      updatedLead,
+      hasPendingMutation
+        ? leadPatchRollbackRef.current.get(updatedLead.id)
+        : currentLocalLead,
     );
-  };
+    if (hasPendingMutation) {
+      leadPatchRollbackRef.current.set(updatedLead.id, canonicalLead);
+    }
+    saveLeadsToStorage(currentLeads => currentLeads.map(lead => {
+      if (lead.id !== updatedLead.id) return lead;
+      return hasPendingMutation
+        ? { ...canonicalLead, ...lead, revision: canonicalLead.revision }
+        : canonicalLead;
+    }));
+  }, [saveLeadsToStorage]);
 
-  const handleServerMergeLead = async (winnerId: string, duplicateId: string): Promise<void> => {
-    // Optimistically remove duplicate from UI immediately.
-    setLeads(currentLeads => currentLeads.filter(l => l.id !== duplicateId));
+  const handleServerMergeLead = useCallback(async (winnerId: string, duplicateId: string): Promise<void> => {
+    await Promise.all(
+      [winnerId, duplicateId]
+        .map(id => leadPatchQueuesRef.current.get(id))
+        .filter((operation): operation is Promise<boolean> => Boolean(operation)),
+    );
+    const affectedIds = new Set([winnerId, duplicateId]);
+    const rollbackLeads = leadsRef.current.filter(lead => affectedIds.has(lead.id));
+    saveLeadsToStorage(currentLeads => currentLeads.filter(l => l.id !== duplicateId));
 
     try {
       const response = await fetch(`/api/leads/${winnerId}/merge`, {
@@ -505,19 +584,20 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         throw new Error(data.error || `Merge failed: ${response.status}`);
       }
       if (data.lead) {
-        setLeads(currentLeads =>
+        saveLeadsToStorage(currentLeads =>
           currentLeads.map(l => (l.id === winnerId ? (data.lead as Lead) : l))
         );
       }
     } catch (err) {
       console.error('[App] Lead merge failed:', err);
-      await rehydrateLeads();
+      restoreLeadSubset(affectedIds, rollbackLeads);
       throw err;
     }
-  };
+  }, [restoreLeadSubset, saveLeadsToStorage]);
 
   // 7. Update custom tags for a lead
-  const handleUpdateLeadTags = (leadId: string, tags: string[]) => {
+  const handleUpdateLeadTags = useCallback(async (leadId: string, tags: string[]) => {
+    const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
     let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
       currentLeads.map(l => {
@@ -530,18 +610,21 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      void reconcileLeadPatch(updatedLead);
+      const didPersist = await reconcileLeadPatch(updatedLead, rollbackLead);
+      if (!didPersist) {
+        throw new Error('The lead tags could not be saved.');
+      }
     }
-  };
+  }, [reconcileLeadPatch, saveLeadsToStorage]);
 
   // 8. Delete lead or leads permanently
-  const handleDeleteLead = async (leadId: string) => {
+  const handleDeleteLead = useCallback(async (leadId: string) => {
+    const pendingPatch = leadPatchQueuesRef.current.get(leadId);
+    if (pendingPatch) await pendingPatch;
+    const rollbackLead = leadsRef.current.find(lead => lead.id === leadId);
     try {
-      console.log(`[App] Deleting lead ID: ${leadId}`);
       saveLeadsToStorage(currentLeads => {
-        const nextLeads = currentLeads.filter(l => l.id !== leadId);
-        console.log(`[App] Delete lead - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
-        return nextLeads;
+        return currentLeads.filter(l => l.id !== leadId);
       });
 
       const response = await fetch(`/api/leads/${leadId}`, { method: 'DELETE' });
@@ -550,18 +633,22 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       }
     } catch (e) {
       console.error(`[App] Error during lead deletion:`, e);
-      await rehydrateLeads();
+      restoreLeadSubset(new Set([leadId]), rollbackLead ? [rollbackLead] : []);
+      throw e;
     }
-  };
+  }, [restoreLeadSubset, saveLeadsToStorage]);
 
-  const handleDeleteLeads = async (leadIds: string[]) => {
+  const handleDeleteLeads = useCallback(async (leadIds: string[]) => {
+    await Promise.all(
+      leadIds
+        .map(id => leadPatchQueuesRef.current.get(id))
+        .filter((operation): operation is Promise<boolean> => Boolean(operation)),
+    );
+    const idSet = new Set(leadIds);
+    let rollbackLeads = leadsRef.current.filter(lead => idSet.has(lead.id));
     try {
-      console.log(`[App] Deleting bulk leads count: ${leadIds.length}`);
-      const idSet = new Set(leadIds);
       saveLeadsToStorage(currentLeads => {
-        const nextLeads = currentLeads.filter(l => !idSet.has(l.id));
-        console.log(`[App] Bulk delete leads - Current count: ${currentLeads.length}, Next count: ${nextLeads.length}`);
-        return nextLeads;
+        return currentLeads.filter(l => !idSet.has(l.id));
       });
 
         const response = await fetch('/api/leads', {
@@ -575,13 +662,19 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         }
     } catch (e) {
       console.error(`[App] Error during bulk lead deletion:`, e);
-      await rehydrateLeads();
+      restoreLeadSubset(idSet, rollbackLeads);
       throw e;
     }
-  };
+  }, [restoreLeadSubset, saveLeadsToStorage]);
 
-  const handleUpdateLeadsStage = async (leadIds: string[], stage: Lead['stage']) => {
+  const handleUpdateLeadsStage = useCallback(async (leadIds: string[], stage: Lead['stage']) => {
+    await Promise.all(
+      leadIds
+        .map(id => leadPatchQueuesRef.current.get(id))
+        .filter((operation): operation is Promise<boolean> => Boolean(operation)),
+    );
     const idSet = new Set(leadIds);
+    let rollbackLeads = leadsRef.current.filter(lead => idSet.has(lead.id));
     let updatedLeads: Lead[] = [];
     saveLeadsToStorage(currentLeads => {
       return currentLeads.map(l => {
@@ -594,36 +687,144 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       });
     });
 
-    if (updatedLeads.length > 0) {
+    if (updatedLeads.length === 0) return { updatedCount: 0, removedCount: 0 };
+
+    let operationError: unknown;
+    let updatedCount = updatedLeads.length;
+    let removedCount = 0;
+    let bulkStageOperation!: Promise<boolean>;
+    bulkStageOperation = (async () => {
       try {
-        const response = await fetch('/api/leads/bulk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ leads: updatedLeads })
-        });
-        const data = await response.json().catch(() => ({}));
+        const persistStageBatch = async (batch: Lead[]) => {
+          const response = await fetch('/api/leads/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ leads: batch, requireExisting: true })
+          });
+          const data = await response.json().catch(() => ({}));
+          return { response, data };
+        };
+
+        let leadsToPersist = updatedLeads;
+        let { response, data } = await persistStageBatch(leadsToPersist);
+        if (response.status === 409) {
+          const latestStore = await loadLeadsFromSqliteBackend();
+          const latestById = new Map(latestStore.leads.map(lead => [lead.id, lead]));
+          rollbackLeads = leadIds
+            .map(leadId => latestById.get(leadId))
+            .filter((lead): lead is Lead => Boolean(lead));
+          leadsToPersist = rollbackLeads.map(lead => ({ ...lead, stage }));
+          removedCount = updatedLeads.length - leadsToPersist.length;
+          if (leadsToPersist.length === 0) {
+            updatedCount = 0;
+            restoreLeadSubset(idSet, []);
+            return true;
+          }
+          ({ response, data } = await persistStageBatch(leadsToPersist));
+        }
         if (!response.ok) {
           throw new Error(data.error || `Failed to bulk update stages: ${response.status}`);
         }
-        if (Array.isArray(data.leads)) {
-          const serverLeads = new Map((data.leads as Lead[]).map(lead => [lead.id, lead]));
-          setLeads(currentLeads => currentLeads.map(lead => serverLeads.get(lead.id) || lead));
+        const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
+        const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
+        const canonicalLeads = leadsToPersist.map(
+          lead => returnedById.get(lead.id) ?? lead,
+        );
+        updatedCount = canonicalLeads.length;
+        const serverLeads = new Map(canonicalLeads.map(lead => [
+          lead.id,
+          preferNewerCanonical(lead, leadPatchRollbackRef.current.get(lead.id)),
+        ]));
+        for (const [leadId, canonicalLead] of serverLeads) {
+          if (leadPatchQueuesRef.current.get(leadId) !== bulkStageOperation) {
+            leadPatchRollbackRef.current.set(leadId, canonicalLead);
+          }
         }
-      } catch (err) {
-        console.error('Failed to sync bulk stage updates to backend:', err);
-        await rehydrateLeads();
-        throw err;
+        saveLeadsToStorage(currentLeads => currentLeads.flatMap(lead => {
+          if (idSet.has(lead.id) && !serverLeads.has(lead.id)) return [];
+          const canonicalLead = serverLeads.get(lead.id);
+          if (!canonicalLead) return [lead];
+          return [leadPatchQueuesRef.current.get(lead.id) === bulkStageOperation
+            ? canonicalLead
+            : { ...canonicalLead, ...lead, revision: canonicalLead.revision }];
+        }));
+        return true;
+      } catch (error) {
+        operationError = error;
+        console.error('Failed to sync bulk stage updates to backend:', error);
+        try {
+          const latestStore = await loadLeadsFromSqliteBackend();
+          rollbackLeads = latestStore.leads.filter(lead => idSet.has(lead.id));
+        } catch {
+          // Fall back to the last known stable subset if canonical refresh fails.
+        }
+        restoreLeadSubset(idSet, rollbackLeads);
+        return false;
       }
+    })();
+
+    for (const rollbackLead of rollbackLeads) {
+      leadPatchRollbackRef.current.set(rollbackLead.id, rollbackLead);
+      leadPatchQueuesRef.current.set(rollbackLead.id, bulkStageOperation);
     }
-  };
+    void bulkStageOperation.finally(() => {
+      for (const leadId of idSet) {
+        if (leadPatchQueuesRef.current.get(leadId) === bulkStageOperation) {
+          leadPatchQueuesRef.current.delete(leadId);
+          leadPatchRollbackRef.current.delete(leadId);
+        }
+      }
+    });
+
+    const didPersist = await bulkStageOperation;
+    if (!didPersist) {
+      throw operationError instanceof Error
+        ? operationError
+        : new Error('Failed to update selected prospect stages.');
+    }
+    return { updatedCount, removedCount };
+  }, [restoreLeadSubset, saveLeadsToStorage]);
+
+  const contextValue = useMemo<LeadContextType>(() => ({
+    leads,
+    isHydrated,
+    saveLeadsToStorage,
+    rehydrateLeads,
+    handleLeadAdded,
+    handleBulkLeadsAdded,
+    handleUpdateLeadStage,
+    handleUpdateLeadNotes,
+    handleUpdateLeadFields,
+    handleUpdateLeadsFields,
+    handleUpdateLeadProfile,
+    handleMergeLead,
+    handleServerMergeLead,
+    handleUpdateLeadTags,
+    handleDeleteLead,
+    handleDeleteLeads,
+    handleUpdateLeadsStage,
+  }), [
+    handleBulkLeadsAdded,
+    handleDeleteLead,
+    handleDeleteLeads,
+    handleLeadAdded,
+    handleMergeLead,
+    handleServerMergeLead,
+    handleUpdateLeadNotes,
+    handleUpdateLeadFields,
+    handleUpdateLeadsFields,
+    handleUpdateLeadProfile,
+    handleUpdateLeadStage,
+    handleUpdateLeadTags,
+    handleUpdateLeadsStage,
+    isHydrated,
+    leads,
+    rehydrateLeads,
+    saveLeadsToStorage,
+  ]);
 
   return (
-    <LeadContext.Provider value={{
-      leads, isHydrated, saveLeadsToStorage, rehydrateLeads,
-      handleLeadAdded, handleBulkLeadsAdded, handleUpdateLeadStage,
-      handleUpdateLeadNotes, handleUpdateLeadProfile, handleMergeLead, handleServerMergeLead, handleUpdateLeadTags,
-      handleDeleteLead, handleDeleteLeads, handleUpdateLeadsStage
-    }}>
+    <LeadContext.Provider value={contextValue}>
       {children}
     </LeadContext.Provider>
   );

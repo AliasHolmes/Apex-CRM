@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../server/services/linkedinEvidence.ts';
+import { extractLinkedInUsername, extractPublicEmail, normalizeLinkedInUrl, parseLinkedInEvidence } from '../server/services/linkedinEvidence.ts';
 
 describe('linkedinEvidence', () => {
   it('normalizes LinkedIn profile URLs and usernames', () => {
@@ -54,5 +54,27 @@ A very long recommendation that should be ignored.
     const parsed = parseLinkedInEvidence('Sign in to view Jane Doe profile on LinkedIn. Join LinkedIn today.', { title: 'Jane Doe' });
     assert.equal(parsed.quality, 'bad');
     assert.equal(parsed.rejectionReason, 'blocked_or_login_wall');
+  });
+
+  it('captures only explicitly published usable emails from profile evidence', () => {
+    const markdown = `
+# Jane Doe
+Founder at Acme Dental Growth
+Austin, TX, United States
+Industry: Dental Technology
+
+## About
+Contact me at Jane.Doe@AcmeHealth.com for partnerships.
+
+## Experience
+Founder at Acme Dental Growth
+2022 - Present
+`;
+    const parsed = parseLinkedInEvidence(markdown, { title: 'Jane Doe', url: 'https://linkedin.com/in/jane-doe' });
+    assert.equal(parsed.publicEmail, 'jane.doe@acmehealth.com');
+    assert.equal(parsed.industry, 'Dental Technology');
+    assert.match(parsed.evidenceBlock, /EMAIL: jane\.doe@acmehealth\.com/);
+    assert.equal(extractPublicEmail('Email: noreply@example.com'), undefined);
+    assert.equal(extractPublicEmail('Email pattern: first.last@domain.com'), undefined);
   });
 });

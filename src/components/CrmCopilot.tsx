@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Bot, Maximize2, MessageSquare, Minimize2, Send, Sparkles, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,6 +11,10 @@ type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
 };
+
+interface CrmCopilotProps {
+  defaultOpen?: boolean;
+}
 
 function MarkdownMessage({ content }: { content: string }) {
   return (
@@ -67,8 +71,9 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
-export default function CrmCopilot() {
-  const [isOpen, setIsOpen] = useState(false);
+export default function CrmCopilot({ defaultOpen = false }: CrmCopilotProps) {
+  const shouldReduceMotion = useReducedMotion();
+  const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isExpanded, setIsExpanded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -79,12 +84,36 @@ export default function CrmCopilot() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: shouldReduceMotion ? 'auto' : 'smooth'
+      });
     }
-  }, [messages, isLoading, isOpen]);
+  }, [messages, isLoading, isOpen, shouldReduceMotion]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [isOpen]);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      if (isOpen) messageInputRef.current?.focus();
+      else if (wasOpenRef.current) triggerRef.current?.focus();
+      wasOpenRef.current = isOpen;
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isOpen]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -125,18 +154,20 @@ export default function CrmCopilot() {
       <AnimatePresence>
         {!isOpen && (
           <motion.button
-            initial={{ scale: 0.85, opacity: 0 }}
+            ref={triggerRef}
+            type="button"
+            initial={shouldReduceMotion ? false : { scale: 0.85, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.85, opacity: 0 }}
-            whileHover={{ y: -2, scale: 1.03 }}
-            whileTap={{ scale: 0.96 }}
+            exit={shouldReduceMotion ? undefined : { scale: 0.85, opacity: 0 }}
+            whileHover={shouldReduceMotion ? undefined : { y: -2, scale: 1.03 }}
+            whileTap={shouldReduceMotion ? undefined : { scale: 0.96 }}
             onClick={() => setIsOpen(true)}
             aria-label="Open Apex Copilot"
             className="fixed bottom-5 right-5 z-50 flex h-14 w-14 cursor-pointer items-center justify-center rounded-2xl border border-indigo-300/30 bg-gradient-to-br from-indigo-500 to-violet-700 text-white shadow-[0_14px_40px_rgba(79,70,229,0.4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
           >
-            <MessageSquare className="h-6 w-6" />
+            <MessageSquare className="h-6 w-6" aria-hidden="true" />
             <span className="absolute -right-0.5 -top-0.5 flex h-3 w-3">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70 motion-reduce:animate-none" />
               <span className="relative inline-flex h-3 w-3 rounded-full border-2 border-slate-950 bg-emerald-400" />
             </span>
           </motion.button>
@@ -147,10 +178,10 @@ export default function CrmCopilot() {
         {isOpen && (
           <motion.div
             layout
-            initial={{ opacity: 0, y: 24, scale: 0.97 }}
+            initial={shouldReduceMotion ? false : { opacity: 0, y: 24, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 24, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+            exit={shouldReduceMotion ? undefined : { opacity: 0, y: 24, scale: 0.97 }}
+            transition={shouldReduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 320, damping: 28 }}
             className={`fixed z-50 flex flex-col ${
               isExpanded
                 ? 'inset-0 sm:inset-5'
@@ -158,6 +189,9 @@ export default function CrmCopilot() {
             }`}
           >
             <Card
+              role="dialog"
+              aria-labelledby="copilot-title"
+              aria-describedby="copilot-description"
               className={`relative flex h-full min-h-0 flex-col gap-0 overflow-hidden border-slate-700/80 bg-slate-900/95 py-0 shadow-[0_24px_80px_rgba(2,6,23,0.7)] ring-1 ring-white/5 backdrop-blur-2xl ${
                 isExpanded ? 'rounded-none sm:rounded-3xl' : 'rounded-3xl'
               }`}
@@ -171,11 +205,11 @@ export default function CrmCopilot() {
                     <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-slate-900 bg-emerald-400" />
                   </div>
                   <div className="min-w-0">
-                    <CardTitle className="flex items-center gap-1.5 truncate text-sm font-bold tracking-tight text-white">
+                    <CardTitle id="copilot-title" className="flex items-center gap-1.5 truncate text-sm font-bold tracking-tight text-white">
                       Apex Copilot
                       <Sparkles className="h-3.5 w-3.5 text-indigo-300" />
                     </CardTitle>
-                    <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400">Pipeline intelligence, ready to help</p>
+                    <p id="copilot-description" className="mt-0.5 truncate text-xs font-medium text-slate-400">Pipeline intelligence, ready to help</p>
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
@@ -223,7 +257,7 @@ export default function CrmCopilot() {
                         </div>
                       )}
                       <div className={`min-w-0 ${isUser ? 'max-w-[86%]' : 'max-w-[calc(100%-2.375rem)]'}`}>
-                        <p className={`mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${isUser ? 'text-right text-indigo-300/80' : 'text-slate-500'}`}>
+                        <p className={`mb-1.5 px-1 text-xs font-semibold uppercase tracking-[0.12em] ${isUser ? 'text-right text-indigo-300/80' : 'text-slate-500'}`}>
                           {isUser ? 'You' : 'Copilot'}
                         </p>
                         <div
@@ -250,12 +284,12 @@ export default function CrmCopilot() {
                       <Bot className="h-3.5 w-3.5 text-indigo-300" />
                     </div>
                     <div>
-                      <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Copilot</p>
+                      <p className="mb-1.5 px-1 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Copilot</p>
                       <div className="flex h-11 items-center gap-1.5 rounded-2xl rounded-bl-md border border-slate-700/80 bg-slate-800/75 px-4">
                         {[0, 1, 2].map((dot) => (
                           <span
                             key={dot}
-                            className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-300"
+                            className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-300 motion-reduce:animate-none"
                             style={{ animationDelay: `${dot * 140}ms` }}
                           />
                         ))}
@@ -276,6 +310,7 @@ export default function CrmCopilot() {
                   }`}
                 >
                   <Textarea
+                    ref={messageInputRef}
                     value={input}
                     onChange={(event) => setInput(event.target.value)}
                     onKeyDown={(event) => {
@@ -299,7 +334,7 @@ export default function CrmCopilot() {
                     <Send className="h-4 w-4" />
                   </Button>
                 </form>
-                <p className={`mt-2 px-1 text-[10px] text-slate-600 ${isExpanded ? 'mx-auto w-full max-w-5xl' : ''}`}>
+                <p className={`mt-2 px-1 text-xs text-slate-500 ${isExpanded ? 'mx-auto w-full max-w-5xl' : ''}`}>
                   Enter to send - Shift + Enter for a new line
                 </p>
               </div>

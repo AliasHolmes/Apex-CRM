@@ -3,38 +3,35 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { lazy, Suspense, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { LeadProvider, useLeads } from './context/LeadContext';
 import { ToastProvider, useToast } from './context/ToastContext';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 import { 
   Sparkles, 
   Layers, 
-  FolderLock, 
   TableProperties, 
-  FileBadge2, 
   Gauge, 
   Wand2, 
   Plus, 
-  ArrowRight, 
-  User, 
-  Briefcase, 
-  MapPin, 
-  Mail, 
-  Tag, 
-  X, 
   Database,
-  Search,
-  ChevronRight,
-  Check
+  MessageSquare,
+  type LucideIcon
 } from 'lucide-react';
 import { LinkedInProfile, Lead } from './types';
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  DASHBOARD_NAV_ITEMS,
+  getHashForTab,
+  getTabFromHash,
+  type DashboardTab,
+} from './lib/navigation';
+import { DEFAULT_MANUAL_INDUSTRY, MANUAL_PROSPECT_INDUSTRIES } from './lib/ui';
 
 // Large workspaces load only when the user opens their tab.
 const ScrapeWorkspace = lazy(() => import('./components/ScrapeWorkspace'));
@@ -44,14 +41,46 @@ const OutreachStudio = lazy(() => import('./components/OutreachStudio'));
 const CrmOverview = lazy(() => import('./components/CrmOverview'));
 const CrmCopilot = lazy(() => import('./components/CrmCopilot'));
 
+interface NavigationItem {
+  id: DashboardTab;
+  hash: string;
+  label: string;
+  icon: LucideIcon;
+}
+
+const NAV_ICONS: Readonly<Record<DashboardTab, LucideIcon>> = {
+  overview: Gauge,
+  workspace: Sparkles,
+  inventory: TableProperties,
+  pipeline: Layers,
+  outreach: Wand2,
+};
+
+const NAV_ITEMS: readonly NavigationItem[] = DASHBOARD_NAV_ITEMS.map(item => ({
+  ...item,
+  icon: NAV_ICONS[item.id],
+}));
+
+function normalizeComparable(value?: string) {
+  return (value ?? '').trim().toLowerCase();
+}
+
+function normalizeProfileUrl(value?: string) {
+  return normalizeComparable(value).replace(/\/+$/, '');
+}
+
 class AppErrorBoundary extends React.Component<
   React.PropsWithChildren,
   { error: Error | null }
 > {
-  state = { error: null };
+  state: { error: Error | null } = { error: null };
 
   static getDerivedStateFromError(error: Error) {
     return { error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('Apex CRM render failure:', error, errorInfo);
   }
 
   render() {
@@ -85,425 +114,331 @@ const TabLoading = () => (
   </div>
 );
 
+const AppShellLoading = () => (
+  <div className="min-h-screen bg-[#090d16] text-slate-100" aria-busy="true">
+    <header className="border-b border-slate-800 bg-slate-950/80 px-4 py-4 sm:px-6">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-6">
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-xl bg-indigo-500/20" />
+          <div className="space-y-2">
+            <div className="h-3 w-24 rounded bg-slate-700" />
+            <div className="h-2 w-16 rounded bg-slate-800" />
+          </div>
+        </div>
+        <div className="hidden gap-2 lg:flex">
+          {NAV_ITEMS.map(item => (
+            <div key={item.id} className="h-9 w-20 rounded-lg bg-slate-800/80" />
+          ))}
+        </div>
+        <div className="h-9 w-28 rounded-lg bg-indigo-500/20" />
+      </div>
+    </header>
+    <main className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8" role="status">
+      <span className="sr-only">Loading CRM data</span>
+      <div className="animate-pulse space-y-6 motion-reduce:animate-none">
+        <div className="space-y-3">
+          <div className="h-6 w-48 rounded bg-slate-700" />
+          <div className="h-3 w-full max-w-xl rounded bg-slate-800" />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="h-28 rounded-xl border border-slate-800 bg-slate-900/70" />
+          ))}
+        </div>
+        <div className="h-80 rounded-xl border border-slate-800 bg-slate-900/70" />
+      </div>
+    </main>
+  </div>
+);
+
 import { predictiveScoreFromComposite, scoreLeadDeterministically } from './utils/leadScore';
 
-/* Removed demo seed records. Real CRM state is loaded from SQLite or an explicit legacy-browser migration.
-const seedLeads: Lead[] = [
-  {
-    id: 'seed-siskind',
-    profile: {
-      id: 'gregory-siskind',
-      fullName: 'Gregory Siskind',
-      headline: 'Award-winning Immigration Attorney, Legal AI Pioneer & Co-founder of Siskind Susser PC',
-      currentCompany: 'Siskind Susser PC / Visalaw AI',
-      currentTitle: 'Founding Partner & Chief Legal AI Innovator',
-      seniorityLevel: 'Founder',
-      companySizeEst: '51-200',
-      location: 'Memphis, TN',
-      industry: 'Legal Services',
-      summary: 'Gregory Siskind is a nationally recognized immigration lawyer, co-author of several major treatises, and a leading legal technology innovator. He co-founded Siskind Susser PC in 1994 (Tennessee\'s first legal web page) and is the vanguard of Visalaw AI, building generative AI legal tools.',
-      contactDetails: {
-        email: 'gsiskind@visalaw.com',
-        phone: '+1 (901) 682-6455',
-        linkedinUrl: 'https://www.linkedin.com/in/siskind/',
-        website: 'https://www.visalaw.com'
-      },
-      experiences: [
-        {
-          title: 'Founding Partner & Attorney',
-          company: 'Siskind Susser PC',
-          duration: '1994 - Present',
-          location: 'Memphis, TN',
-          description: 'Managing one of the largest immigration law firms in the USA. Pioneer internet legal marketing and digital workflows for visa processing and corporate compliance.'
-        },
-        {
-          title: 'Co-founder & Chief Product Officer',
-          company: 'Visalaw AI',
-          duration: '2022 - Present',
-          location: 'Memphis, TN',
-          description: 'Overseeing product strategy for GenAI-powered search grounding engines, compliance validators, and chat-based legal research assistants for immigration specialists.'
-        }
-      ],
-      education: [
-        {
-          school: 'Vanderbilt University Law School',
-          degree: 'Juris Doctor (JD)',
-          duration: '1987 - 1990'
-        },
-        {
-          school: 'The College of William & Mary',
-          degree: 'Bachelor of Arts',
-          fieldOfStudy: 'Political Science',
-          duration: '1983 - 1987'
-        }
-      ],
-      skills: ['Immigration Law', 'Legal Technology', 'Product Architecture', 'GenAI', 'Digital Marketing']
-    },
-    stage: 'ENRICHED',
-    notes: 'Primary targeted lead directly matching requested lookup details. High interest sector, expert in legal LLM tooling.',
-    createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-    tags: ['Key Target', 'Legal AI Pioneer', 'Premium Account'],
-    fitScore: 9,
-    intentScore: 8,
-    timingScore: 7,
-    compositeScore: 8.2,
-    tier: 'TIER 1: PRIORITY'
-  },
-  {
-    id: 'seed-aris',
-    profile: {
-      id: 'aris-thompson',
-      fullName: 'Aris Thompson',
-      headline: 'Founder & CEO of Lexic AI - Generative Legal Intelligence Workspace',
-      currentCompany: 'Lexic AI',
-      currentTitle: 'Founder & CEO',
-      seniorityLevel: 'Founder',
-      companySizeEst: '11-50',
-      location: 'San Francisco, CA',
-      industry: 'Software Engineering',
-      summary: 'Aris is a software engineer and serial entrepreneur building advanced document-reasoning graphs for commercial litigation and law operations. Ex-Stripe staff architect.',
-      contactDetails: {
-        email: 'aris@lexic.ai',
-        linkedinUrl: 'https://www.linkedin.com/in/aris-thompson-mock/',
-        website: 'https://lexic.ai'
-      },
-      experiences: [
-        {
-          title: 'Founder & CEO',
-          company: 'Lexic AI',
-          duration: '2023 - Present',
-          location: 'San Francisco, CA',
-          description: 'Architecting vectors database structures and search grounding middleware to help enterprise litigators mine 100M+ corporate emails safely.'
-        },
-        {
-          title: 'Staff Software Engineer',
-          company: 'Stripe',
-          duration: '2019 - 2023',
-          location: 'San Francisco, CA',
-          description: 'Led core billing systems optimization. Built scalable ledger structures processing upwards of 2B daily transactional logs.'
-        }
-      ],
-      education: [
-        {
-          school: 'Stanford University',
-          degree: 'B.S.',
-          fieldOfStudy: 'Computer Science',
-          duration: '2015 - 2019'
-        }
-      ],
-      skills: ['Distributed Systems', 'PostgreSQL', 'LegalTech', 'Vector Databases', 'Startups']
-    },
-    stage: 'MEETING BOOKED',
-    notes: 'Intro schedule set for next Wednesday at 2 PM PST. They are looking to leverage our direct CSV integration models.',
-    createdAt: new Date(Date.now() - 3600000 * 48).toISOString(),
-    tags: ['Founder', 'Warm Intro', 'SF Based'],
-    fitScore: 8,
-    intentScore: 9,
-    timingScore: 8,
-    compositeScore: 8.4,
-    tier: 'TIER 1: PRIORITY'
-  },
-  {
-    id: 'seed-julia',
-    profile: {
-      id: 'julia-chen',
-      fullName: 'Julia Chen',
-      headline: 'VP of Recruit & Human Talents at CloudTech Global',
-      currentCompany: 'CloudTech Global',
-      currentTitle: 'VP of Human Talents',
-      seniorityLevel: 'VP',
-      companySizeEst: '500+',
-      location: 'Austin, TX',
-      industry: 'Human Resources',
-      summary: 'Experienced executive recruiter leading talent strategy across North America and APAC markets. Focused on tech hiring scaling vectors.',
-      contactDetails: {
-        email: 'jchen@cloudtech-global.com',
-        phone: '+1 (512) 555-8832',
-        linkedinUrl: 'https://www.linkedin.com/in/julia-chen-mock/'
-      },
-      experiences: [
-        {
-          title: 'VP of Human Talents',
-          company: 'CloudTech Global',
-          duration: '2021 - Present',
-          location: 'Austin, TX',
-          description: 'Scaling engineering and go-to-market teams. Built a global recruitment structure hiring 500+ professionals annually.'
-        }
-      ],
-      education: [
-        {
-          school: 'University of Texas at Austin',
-          degree: 'B.B.A.',
-          fieldOfStudy: 'Business & Management',
-          duration: '2008 - 2012'
-        }
-      ],
-      skills: ['Executive Search', 'Org Design', 'Scaling HR', 'Sourcing Platforms']
-    },
-    stage: 'SEQUENCE ACTIVE',
-    notes: 'Outreach campaign initiated using our Conversational Tone email pitch sequence on June 4th. Awaiting feedback loop.',
-    createdAt: new Date(Date.now() - 3600000 * 72).toISOString(),
-    tags: ['Recruiting Executive', 'Outbound Pipe'],
-    fitScore: 7,
-    intentScore: 5,
-    timingScore: 4,
-    compositeScore: 5.6,
-    tier: 'TIER 3: WATCH'
-  }
-]; */
-const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
-
-type StoredLeadsResponse = {
-  leads: Lead[];
-  initialized: boolean;
-};
-
-async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
-  const response = await fetch('/api/leads');
-  if (!response.ok) {
-    throw new Error(`Failed to load leads: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return {
-    leads: Array.isArray(data.leads) ? data.leads : [],
-    initialized: Boolean(data.initialized)
-  };
-}
-
-async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
-  const response = await fetch('/api/leads', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ leads })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to save leads: ${response.status}`);
-  }
-}
-
 function Dashboard() {
-  const { leads, saveLeadsToStorage, handleUpdateLeadStage, handleUpdateLeadNotes, handleUpdateLeadTags, handleDeleteLead } = useLeads();
+  const {
+    leads,
+    isHydrated,
+    handleBulkLeadsAdded,
+    handleUpdateLeadStage,
+    handleUpdateLeadNotes,
+    handleUpdateLeadTags,
+    handleDeleteLead
+  } = useLeads();
   const { triggerToast } = useToast();
-  const [activeTab, setActiveTab] = useState<'overview' | 'workspace' | 'pipeline' | 'inventory' | 'outreach'>('overview');
-  
+  const shouldReduceMotion = useReducedMotion();
+  const [activeTab, setActiveTab] = useState<DashboardTab>(() => getTabFromHash(window.location.hash));
+  const [mountedJobTabs, setMountedJobTabs] = useState<Set<DashboardTab>>(() => {
+    const initialTab = getTabFromHash(window.location.hash);
+    return new Set(initialTab === 'workspace' || initialTab === 'inventory' ? [initialTab] : []);
+  });
+  const [hasLoadedCopilot, setHasLoadedCopilot] = useState(false);
   const [selectedLeadForOutreach, setSelectedLeadForOutreach] = useState<Lead | null>(null);
-  // Manual Lead Creation Form states
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualName, setManualName] = useState('');
   const [manualTitle, setManualTitle] = useState('');
   const [manualCompany, setManualCompany] = useState('');
   const [manualEmail, setManualEmail] = useState('');
   const [manualUrl, setManualUrl] = useState('');
-  const [manualIndustry, setManualIndustry] = useState('Tech');
+  const [manualIndustry, setManualIndustry] = useState<(typeof MANUAL_PROSPECT_INDUSTRIES)[number]>(DEFAULT_MANUAL_INDUSTRY);
   const [manualSummary, setManualSummary] = useState('');
+  const [isSavingManualLead, setIsSavingManualLead] = useState(false);
 
-  // 9. Manual Creation Dispatch
-  const handleManualLeadSubmit = (e: React.FormEvent) => {
+  const navigateToTab = useCallback((tab: DashboardTab) => {
+    setActiveTab(tab);
+    const nextHash = getHashForTab(tab);
+    if (window.location.hash !== nextHash) {
+      window.history.pushState(null, '', nextHash);
+    }
+  }, []);
+
+  useEffect(() => {
+    const syncTabFromLocation = () => setActiveTab(getTabFromHash(window.location.hash));
+    if (!window.location.hash) {
+      window.history.replaceState(null, '', getHashForTab('overview'));
+    }
+    window.addEventListener('hashchange', syncTabFromLocation);
+    window.addEventListener('popstate', syncTabFromLocation);
+    return () => {
+      window.removeEventListener('hashchange', syncTabFromLocation);
+      window.removeEventListener('popstate', syncTabFromLocation);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'workspace' && activeTab !== 'inventory') return;
+    setMountedJobTabs((currentTabs) => {
+      if (currentTabs.has(activeTab)) return currentTabs;
+      const nextTabs = new Set(currentTabs);
+      nextTabs.add(activeTab);
+      return nextTabs;
+    });
+  }, [activeTab]);
+
+  const resetManualForm = useCallback(() => {
+    setManualName('');
+    setManualTitle('');
+    setManualCompany('');
+    setManualEmail('');
+    setManualUrl('');
+    setManualIndustry(DEFAULT_MANUAL_INDUSTRY);
+    setManualSummary('');
+  }, []);
+
+  const handleManualLeadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manualName.trim()) return;
+    const fullName = manualName.trim();
+    if (!fullName || isSavingManualLead) return;
+
+    const emailKey = normalizeComparable(manualEmail);
+    const profileUrlKey = normalizeProfileUrl(manualUrl);
+    const companyName = manualCompany.trim() || 'Independent';
+    const nameKey = normalizeComparable(fullName);
+    const companyKey = normalizeComparable(companyName);
+    const duplicateLead = leads.find(lead => {
+      const leadEmail = normalizeComparable(lead.profile.contactDetails?.email);
+      const leadUrl = normalizeProfileUrl(lead.profile.contactDetails?.linkedinUrl);
+      const samePersonAndCompany = normalizeComparable(lead.profile.fullName) === nameKey
+        && normalizeComparable(lead.profile.currentCompany) === companyKey;
+      return Boolean(
+        (emailKey && leadEmail === emailKey)
+        || (profileUrlKey && leadUrl === profileUrlKey)
+        || samePersonAndCompany
+      );
+    });
+
+    if (duplicateLead) {
+      triggerToast(`${duplicateLead.profile.fullName} is already in Prospects.`, 'info');
+      return;
+    }
 
     const newProfile: LinkedInProfile = {
-      id: `manual-p-${Date.now()}`,
-      fullName: manualName,
-      headline: manualTitle ? `${manualTitle} @ ${manualCompany || 'Independent'}` : 'Professional',
-      currentCompany: manualCompany || 'Independent',
-      currentTitle: manualTitle || 'Professional',
+      id: `manual-profile-${crypto.randomUUID()}`,
+      fullName,
+      headline: manualTitle.trim() ? `${manualTitle.trim()} @ ${companyName}` : `Professional @ ${companyName}`,
+      currentCompany: companyName,
+      currentTitle: manualTitle.trim() || 'Professional',
       location: 'Undisclosed Location',
       industry: manualIndustry,
-      summary: manualSummary || 'Manually loaded prospect details.',
+      summary: 'Manually added prospect.',
       contactDetails: {
-        email: manualEmail,
-        linkedinUrl: manualUrl || undefined
+        email: manualEmail.trim() || undefined,
+        linkedinUrl: manualUrl.trim() || undefined
       },
-      experiences: manualTitle ? [{ title: manualTitle, company: manualCompany }] : []
+      experiences: manualTitle.trim() ? [{ title: manualTitle.trim(), company: companyName }] : []
     };
 
-    saveLeadsToStorage(currentLeads => {
-      // Manual creation duplicates protection
-      const isDup = currentLeads.some(l => {
-        const e1 = l.profile.contactDetails?.email?.toLowerCase();
-        const e2 = (manualEmail || '').toLowerCase();
-        const l1 = l.profile.contactDetails?.linkedinUrl?.toLowerCase();
-        const l2 = (manualUrl || '')?.toLowerCase();
-        const n1 = (l.profile.fullName || '').toLowerCase();
-        const n2 = (manualName || '').toLowerCase();
-        const comp1 = (l.profile.currentCompany || '').toLowerCase();
-        const comp2 = (manualCompany || '').toLowerCase();
+    const compositeScore = scoreLeadDeterministically(newProfile);
+    const predictiveScore = predictiveScoreFromComposite(compositeScore);
+    const newLead: Lead = {
+      id: `lead-manual-${crypto.randomUUID()}`,
+      profile: newProfile,
+      stage: 'SCRAPED',
+      notes: manualSummary.trim() || 'Manually added contact.',
+      createdAt: new Date().toISOString(),
+      tags: ['Manual Entry', manualIndustry],
+      compositeScore,
+      predictiveScore,
+      qualificationScore: predictiveScore
+    };
 
-        return (
-          (e1 && e2 && e1 === e2) ||
-          (l1 && l2 && l1 === l2) ||
-          (n1 === n2 && comp1 === comp2)
-        );
-      });
-
-      if (isDup) {
-        console.warn(`A profile for ${manualName} already exists in your CRM.`);
-        return currentLeads;
+    setIsSavingManualLead(true);
+    try {
+      const result = await handleBulkLeadsAdded([newLead]);
+      if (result.addedCount === 0) {
+        triggerToast(`${fullName} is already in Prospects.`, 'info');
+        return;
       }
-
-      const compositeScore = scoreLeadDeterministically(newProfile);
-      const predictiveScore = predictiveScoreFromComposite(compositeScore);
-      const newLead: Lead = {
-        id: `lead-manual-${Date.now()}`,
-        profile: newProfile,
-        stage: 'SCRAPED',
-        notes: 'Manually logged contact card.',
-        createdAt: new Date().toISOString(),
-        tags: ['Manual Entry'],
-        compositeScore,
-        predictiveScore,
-        qualificationScore: predictiveScore
-      };
-
-      // Reset inputs
-      setManualName('');
-      setManualTitle('');
-      setManualCompany('');
-      setManualEmail('');
-      setManualUrl('');
-      setManualIndustry('Tech');
-      setManualSummary('');
+      resetManualForm();
       setShowManualModal(false);
-
-      return [newLead, ...currentLeads];
-    });
+      triggerToast(`${fullName} was added to Prospects.`, 'success');
+    } catch (error) {
+      console.error('Failed to add manual lead:', error);
+      triggerToast('Could not save this prospect. Please try again.', 'error');
+    } finally {
+      setIsSavingManualLead(false);
+    }
   };
 
-  // Trigger outbound writer navigation shortcut
-  const handleSelectLeadForOutreach = (lead: Lead) => {
+  const handleSelectLeadForOutreach = useCallback((lead: Lead) => {
     setSelectedLeadForOutreach(lead);
-    setActiveTab('outreach');
-  };
+    navigateToTab('outreach');
+  }, [navigateToTab]);
+
+  if (!isHydrated) {
+    return <AppShellLoading />;
+  }
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 font-sans flex flex-col justify-between selection:bg-indigo-500/30 selection:text-white">
-      
-      {/* Ambient glow grids */}
+      <a
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          document.getElementById('main-content')?.focus();
+        }}
+        className="sr-only z-[70] rounded-md bg-indigo-500 px-4 py-2 font-semibold text-white focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
+      >
+        Skip to workspace
+      </a>
+
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-primary/5 blur-[120px]" />
       </div>
 
-      {/* Dynamic Header */}
-      <header className="bg-background/80 backdrop-blur-md border-b sticky top-0 z-40 relative">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-18 flex items-center justify-between">
-          
+      <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/85 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-[72px] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 bg-primary text-primary-foreground rounded-xl flex items-center justify-center shadow">
-              <Database className="w-5 h-5 animate-pulse" />
+              <Database className="w-5 h-5" aria-hidden="true" />
             </div>
             <div>
               <h1 className="font-extrabold text-foreground text-sm tracking-tight">
                 Apex CRM
               </h1>
-              <Badge variant="secondary" className="text-[9px] mt-0.5 uppercase tracking-wider font-extrabold">
-                CRM Active
+              <Badge variant="secondary" className="mt-0.5 text-xs font-bold">
+                {leads.length} prospect{leads.length === 1 ? '' : 's'}
               </Badge>
             </div>
           </div>
 
-          {/* Navigation Controls */}
-          <nav className="hidden lg:flex items-center gap-1.5">
-            {[
-              { id: 'overview', label: 'Overview', icon: Gauge },
-              { id: 'workspace', label: 'Scraper Hub', icon: Sparkles },
-              { id: 'pipeline', label: 'Kanban Pipeline', icon: Layers },
-              { id: 'inventory', label: 'CRM Inventory', icon: TableProperties },
-              { id: 'outreach', label: 'Outreach Studio', icon: Wand2 }
-            ].map((tab) => {
-              const Icon = tab.icon;
-              const isSelected = activeTab === tab.id;
+          <nav className="hidden lg:flex items-center gap-1.5" aria-label="Primary navigation">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const isSelected = activeTab === item.id;
               return (
                 <Button
-                  key={tab.id}
+                  key={item.id}
+                  id={`nav-${item.id}`}
+                  type="button"
                   variant={isSelected ? "secondary" : "ghost"}
-                  onClick={() => setActiveTab(tab.id as any)}
+                  onClick={() => navigateToTab(item.id)}
+                  aria-current={isSelected ? 'page' : undefined}
                   className="flex items-center gap-2 h-9 px-3"
                 >
-                  <Icon className={`w-4 h-4 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
-                  {tab.label}
+                  <Icon className={`w-4 h-4 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} aria-hidden="true" />
+                  {item.label}
                 </Button>
               );
             })}
           </nav>
 
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => setShowManualModal(true)}>
-              <Plus className="w-4 h-4 mr-1.5" />
-              Manual Contact
+            <Button type="button" size="sm" onClick={() => setShowManualModal(true)}>
+              <Plus className="w-4 h-4 mr-1.5" aria-hidden="true" />
+              Add prospect
             </Button>
           </div>
         </div>
 
-        {/* Responsive Mobile Nav Selector tab */}
-        <div className="lg:hidden border-t border-slate-800/80 bg-slate-950/60 backdrop-blur-md px-4 py-2 flex gap-1.5 overflow-x-auto select-none">
-          {[
-            { id: 'overview', label: 'Overview', icon: Gauge },
-            { id: 'workspace', label: 'Miner', icon: Sparkles },
-            { id: 'pipeline', label: 'Pipeline', icon: Layers },
-            { id: 'inventory', label: 'CRM', icon: TableProperties },
-            { id: 'outreach', label: 'Outreach', icon: Wand2 }
-          ].map(tab => {
-            const Icon = tab.icon;
-            const isSelected = activeTab === tab.id;
+        <nav
+          className="lg:hidden border-t border-slate-800/80 bg-slate-950/60 backdrop-blur-md px-4 py-2 flex gap-1.5 overflow-x-auto select-none"
+          aria-label="Mobile navigation"
+        >
+          {NAV_ITEMS.map(item => {
+            const Icon = item.icon;
+            const isSelected = activeTab === item.id;
             return (
               <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`px-3 py-2 rounded-lg text-[11px] font-bold shrink-0 transition-all flex items-center gap-1.5 cursor-pointer border ${
+                key={item.id}
+                type="button"
+                onClick={() => navigateToTab(item.id)}
+                aria-current={isSelected ? 'page' : undefined}
+                className={`px-3 py-2 rounded-lg text-xs font-bold shrink-0 transition-colors flex items-center gap-1.5 cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 ${
                   isSelected
-                    ? 'bg-indigo-600 text-white border-indigo-550 shadow-md'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
                     : 'bg-slate-900/40 border-slate-800/60 text-slate-400 hover:text-white'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
-                {tab.label}
+                <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                {item.label}
               </button>
             );
           })}
-        </div>
+        </nav>
       </header>
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
-        
-        {/* Dynamic Navigation Content Layout */}
-        <div className="space-y-6">
-          {activeTab === 'workspace' && (
-            <div>
-            <div className="mb-6">
-              <h2 className="text-xl font-extrabold text-white tracking-tight">Lead Extraction Terminal</h2>
-              <p className="text-xs text-slate-400 mt-1">Acquire prospective detail schemas using direct URL mapping, raw text clipboard extraction, or general criteria discoverers.</p>
-            </div>
-              <Suspense fallback={<TabLoading />}><ScrapeWorkspace /></Suspense>
-            </div>
-          )}
-<AnimatePresence mode="wait">
+      <main id="main-content" tabIndex={-1} className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10 focus:outline-none">
+            {(activeTab === 'workspace' || mountedJobTabs.has('workspace')) && (
+              <motion.section
+                key="tab-workspace"
+                hidden={activeTab !== 'workspace'}
+                aria-labelledby="discover-heading"
+                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
+                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+              >
+                <div className="mb-6 max-w-3xl">
+                  <h2 id="discover-heading" className="text-2xl font-extrabold text-white tracking-tight">Discover prospects</h2>
+                  <p className="text-sm leading-6 text-slate-400 mt-1">Find qualified people, review the evidence, then add only the prospects you want to enrich.</p>
+                </div>
+                <Suspense fallback={<TabLoading />}><ScrapeWorkspace /></Suspense>
+              </motion.section>
+            )}
             {activeTab === 'overview' && (
-              <motion.div
+              <motion.section
                 key="tab-overview"
-                initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -15, scale: 0.98 }}
-                transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+                aria-label="CRM overview"
+                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
+                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
                 <Suspense fallback={<TabLoading />}><CrmOverview leads={leads} /></Suspense>
-              </motion.div>
+              </motion.section>
             )}
             {activeTab === 'pipeline' && (
-              <motion.div
+              <motion.section
                 key="tab-pipeline"
-                initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -15, scale: 0.98 }}
-                transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+                aria-labelledby="pipeline-heading"
+                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
+                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <div className="mb-6 flex justify-between items-center">
+                <div className="mb-6 flex justify-between items-center gap-4">
                   <div>
-                    <h2 className="text-xl font-extrabold text-white tracking-tight">Visual Pipeline Workflow</h2>
-                    <p className="text-xs text-slate-400 mt-1">Supervise outbound status stages and analyze qualification indexes.</p>
+                    <h2 id="pipeline-heading" className="text-2xl font-extrabold text-white tracking-tight">Pipeline</h2>
+                    <p className="text-sm leading-6 text-slate-400 mt-1">Move prospects through review, outreach, and follow-up without losing context.</p>
                   </div>
                 </div>
                 <Suspense fallback={<TabLoading />}><CrmPipeline
@@ -514,135 +449,172 @@ function Dashboard() {
                   onDeleteLead={handleDeleteLead}
                   onSelectLeadForOutreach={handleSelectLeadForOutreach}
                 /></Suspense>
-              </motion.div>
+              </motion.section>
             )}
 
-            {activeTab === 'inventory' && (
-              <motion.div
+            {(activeTab === 'inventory' || mountedJobTabs.has('inventory')) && (
+              <motion.section
                 key="tab-inventory"
-                initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -15, scale: 0.98 }}
-                transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+                hidden={activeTab !== 'inventory'}
+                aria-label="Prospect inventory"
+                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
+                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
                 <Suspense fallback={<TabLoading />}><LeadTable onAddManualLead={() => setShowManualModal(true)} /></Suspense>
-              </motion.div>
+              </motion.section>
             )}
 
             {activeTab === 'outreach' && (
-              <motion.div
+              <motion.section
                 key="tab-outreach"
-                initial={{ opacity: 0, y: 15, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -15, scale: 0.98 }}
-                transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
+                aria-labelledby="outreach-heading"
+                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
+                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <div className="mb-6">
-                  <h2 className="text-xl font-extrabold text-white tracking-tight">Outbound Copywriter Studio</h2>
-                  <p className="text-xs text-slate-400 mt-1">Harness advanced model synthesis to write context-aware connection pitches and sequence campaigns.</p>
+                <div className="mb-6 max-w-3xl">
+                  <h2 id="outreach-heading" className="text-2xl font-extrabold text-white tracking-tight">Outreach</h2>
+                  <p className="text-sm leading-6 text-slate-400 mt-1">Draft personalized messages from the prospect and account evidence already in your CRM.</p>
                 </div>
                 <Suspense fallback={<TabLoading />}><OutreachStudio
                   selectedLeadForOutreach={selectedLeadForOutreach}
                   leads={leads}
                 /></Suspense>
-              </motion.div>
+              </motion.section>
             )}
-          </AnimatePresence>
-        </div>
       </main>
 
-      <Suspense fallback={null}><CrmCopilot /></Suspense>
+      {hasLoadedCopilot ? (
+        <Suspense
+          fallback={(
+            <div className="fixed bottom-5 right-5 z-50 grid h-14 w-14 place-items-center rounded-2xl border border-indigo-300/30 bg-indigo-600 text-white" role="status">
+              <span className="sr-only">Loading Apex Copilot</span>
+              <MessageSquare className="h-6 w-6" aria-hidden="true" />
+            </div>
+          )}
+        >
+          <CrmCopilot defaultOpen />
+        </Suspense>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setHasLoadedCopilot(true)}
+          aria-label="Open Apex Copilot"
+          className="fixed bottom-5 right-5 z-50 flex h-14 w-14 items-center justify-center rounded-2xl border border-indigo-300/30 bg-gradient-to-br from-indigo-500 to-violet-700 text-white shadow-[0_14px_40px_rgba(79,70,229,0.4)] transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+        >
+          <MessageSquare className="h-6 w-6" aria-hidden="true" />
+        </button>
+      )}
 
-      {/* Manual log Contact Modal overlay */}
-      <Dialog open={showManualModal} onOpenChange={setShowManualModal}>
+      <Dialog
+        open={showManualModal}
+        onOpenChange={(open) => {
+          setShowManualModal(open);
+          if (!open && !isSavingManualLead) resetManualForm();
+        }}
+      >
         <DialogContent className="max-w-lg bg-slate-900 border-slate-800 text-slate-100">
           <DialogHeader className="border-b border-slate-800 pb-4">
-            <DialogTitle>Manual Add Prospect</DialogTitle>
+            <DialogTitle>Add a prospect</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Save a contact you already know. Name is required; email and LinkedIn URL improve duplicate detection.
+            </DialogDescription>
           </DialogHeader>
 
-          <form onSubmit={handleManualLeadSubmit} className="space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar pr-2 pt-2">
+          <form onSubmit={handleManualLeadSubmit} aria-busy={isSavingManualLead} className="space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar pr-2 pt-2">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label className="text-slate-400">Full Name</Label>
+                <Label htmlFor="manual-name" className="text-slate-300">Full name</Label>
                 <Input
+                  id="manual-name"
                   type="text"
                   required
+                  autoComplete="name"
                   value={manualName}
                   onChange={(e) => setManualName(e.target.value)}
                   placeholder="e.g. John Smith"
-                  className="bg-slate-950 border-slate-850"
+                  className="bg-slate-950 border-slate-800"
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-slate-400">Sector/Industry</Label>
+                <Label htmlFor="manual-industry" className="text-slate-300">Industry</Label>
                 <select
+                  id="manual-industry"
                   value={manualIndustry}
-                  onChange={(e) => setManualIndustry(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-xs text-white outline-none focus:ring-1 focus:ring-indigo-500"
+                  onChange={(e) => setManualIndustry(e.target.value as (typeof MANUAL_PROSPECT_INDUSTRIES)[number])}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-md px-3 py-2 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                 >
-                  <option value="Legal Services">Legal Services</option>
-                  <option value="Software Engineering">Software Engineering</option>
-                  <option value="Human Resources">Human Resources</option>
-                  <option value="Finance & Venture">Finance & Venture</option>
-                  <option value="Healthcare">Healthcare</option>
-                  <option value="Marketing">Marketing</option>
+                  {MANUAL_PROSPECT_INDUSTRIES.map(industry => (
+                    <option key={industry} value={industry}>{industry}</option>
+                  ))}
                 </select>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label className="text-slate-400">Current Job Title</Label>
+                <Label htmlFor="manual-title" className="text-slate-300">Current job title</Label>
                 <Input
+                  id="manual-title"
                   type="text"
+                  autoComplete="organization-title"
                   value={manualTitle}
                   onChange={(e) => setManualTitle(e.target.value)}
                   placeholder="e.g. Managing Director"
-                  className="bg-slate-950 border-slate-850"
+                  className="bg-slate-950 border-slate-800"
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-slate-400">Company Name</Label>
+                <Label htmlFor="manual-company" className="text-slate-300">Company name</Label>
                 <Input
+                  id="manual-company"
                   type="text"
+                  autoComplete="organization"
                   value={manualCompany}
                   onChange={(e) => setManualCompany(e.target.value)}
                   placeholder="e.g. Acme Corp"
-                  className="bg-slate-950 border-slate-850"
+                  className="bg-slate-950 border-slate-800"
                 />
               </div>
             </div>
 
             <div className="space-y-1">
-              <Label className="text-slate-400">Contact Email</Label>
+              <Label htmlFor="manual-email" className="text-slate-300">Contact email</Label>
               <Input
+                id="manual-email"
                 type="email"
+                autoComplete="email"
                 value={manualEmail}
                 onChange={(e) => setManualEmail(e.target.value)}
                 placeholder="e.g. jsmith@acme.com"
-                className="bg-slate-950 border-slate-850"
+                className="bg-slate-950 border-slate-800"
               />
             </div>
 
             <div className="space-y-1">
-              <Label className="text-slate-400">LinkedIn Profile URL</Label>
+              <Label htmlFor="manual-linkedin" className="text-slate-300">LinkedIn profile URL</Label>
               <Input
+                id="manual-linkedin"
                 type="url"
                 value={manualUrl}
                 onChange={(e) => setManualUrl(e.target.value)}
                 placeholder="e.g. https://linkedin.com/in/johnsmith"
-                className="bg-slate-950 border-slate-850"
+                className="bg-slate-950 border-slate-800"
               />
             </div>
 
             <div className="space-y-1">
-              <Label className="text-slate-400">Biography Summary</Label>
+              <Label htmlFor="manual-summary" className="text-slate-300">Notes</Label>
               <Textarea
+                id="manual-summary"
                 value={manualSummary}
                 onChange={(e) => setManualSummary(e.target.value)}
-                placeholder="Provide a quick bio summary or intro logs for this lead..."
+                placeholder="Add useful context for review or outreach..."
                 rows={3}
-                className="bg-slate-950 border-slate-850 resize-y"
+                className="bg-slate-950 border-slate-800 resize-y"
               />
             </div>
 
@@ -650,23 +622,26 @@ function Dashboard() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setShowManualModal(false)}
+                disabled={isSavingManualLead}
+                onClick={() => {
+                  resetManualForm();
+                  setShowManualModal(false);
+                }}
               >
                 Cancel
               </Button>
-              <Button type="submit">
-                Create Lead
+              <Button type="submit" disabled={isSavingManualLead || !manualName.trim()}>
+                {isSavingManualLead ? 'Saving...' : 'Add prospect'}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Styled Footer */}
-      <footer className="bg-slate-900/40 border-t border-indigo-500/10 text-slate-500 text-[10px] text-center py-4">
+      <footer className="bg-slate-900/40 border-t border-indigo-500/10 text-slate-500 text-xs text-center py-4">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
-          <span>LinkedIn Scraper & Lead Discovery Platform - Built on Cloud Containers</span>
-          <span className="font-semibold text-slate-400">Structured CRM Integration Suite - Active</span>
+          <span>Discover, qualify, enrich, and contact prospects from one workspace.</span>
+          <span className="font-semibold text-slate-400">Apex CRM</span>
         </div>
       </footer>
 
@@ -676,10 +651,12 @@ function Dashboard() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <LeadProvider>
-        <Dashboard />
-      </LeadProvider>
-    </ToastProvider>
+    <AppErrorBoundary>
+      <ToastProvider>
+        <LeadProvider>
+          <Dashboard />
+        </LeadProvider>
+      </ToastProvider>
+    </AppErrorBoundary>
   );
 }

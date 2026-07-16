@@ -1,40 +1,36 @@
 model_list:
   - model_name: apex-primary
     litellm_params:
-      model: hosted_vllm/gpt-5.5
+      # Byesu exposes an OpenAI-compatible endpoint. Using the OpenAI adapter
+      # avoids hosted_vllm's strict non-stream JSON parser for this gateway.
+      model: openai/gpt-5.5
       api_base: https://byesu.com/v1
       api_key: os.environ/BYESU_API_KEY
       rpm: 60
 
-  # Fallback models stay available to LiteLLM. The app requests apex-primary;
-  # LiteLLM retries/cools down that deployment first and only falls through to
-  # these models when the primary request fails.
-  - model_name: apex-openrouter-fallback
+  # Fix #4: internal LiteLLM fallback so a timed-out apex-primary does not
+  # immediately bubble up — LiteLLM retries on this model first before the
+  # app-level provider chain (Mistral → Groq) takes over.
+  - model_name: apex-fallback
     litellm_params:
-      model: openrouter/mistralai/devstral-2512
-      api_base: os.environ/OPENROUTER_BASE_URL
-      api_key: os.environ/OPENROUTER_API_KEY
-      rpm: 5
-
-  - model_name: apex-groq-fallback
-    litellm_params:
-      model: groq/qwen/qwen3.6-27b
-      api_base: os.environ/GROQ_BASE_URL
+      model: groq/llama-3.1-8b-instant
       api_key: os.environ/GROQ_API_KEY
-      rpm: 5
+
+router_settings:
+  fallbacks: [{"apex-primary": ["apex-fallback"]}]
 
 litellm_settings:
+  # LiteLLM owns only the primary deployment. Apex owns direct provider
+  # fallback so one logical call cannot hit Mistral/Groq twice.
   drop_params: true
-  request_timeout: 30
+  # Fix #1: raised from 30 → 120 so large extraction prompts on Byesu/gpt-5.5
+  # have enough wall-clock time to complete without triggering a cascade.
+  request_timeout: 120
   num_retries: 0
-  allowed_fails: 1
+  # Fix #1: raised from 1 → 2 so a single slow response doesn't immediately
+  # disable the provider for the rest of the session.
+  allowed_fails: 2
   cooldown_time: 60
-  fallbacks:
-    - apex-primary:
-        - apex-openrouter-fallback
-        - apex-groq-fallback
-    - apex-openrouter-fallback:
-        - apex-groq-fallback
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

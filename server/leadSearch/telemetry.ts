@@ -1,4 +1,4 @@
-export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'email' | 'sqlite' | 'system';
+export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'sqlite' | 'system';
 export type MiningPhase =
   | 'session'
   | 'strategy'
@@ -7,7 +7,6 @@ export type MiningPhase =
   | 'extraction'
   | 'filtering'
   | 'enrichment'
-  | 'email_discovery'
   | 'persistence';
 export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
 
@@ -38,6 +37,15 @@ export type MiningTraceEvent = {
     estimatedCostUsd?: number;
     finishReason?: string;
     parseRetries?: number;
+    providerAttempts?: Array<{
+      providerId: string;
+      provider: string;
+      model: string;
+      status: 'success' | 'error' | 'skipped';
+      statusCode?: number;
+      latencyMs: number;
+      error?: string;
+    }>;
   };
   tavily?: {
     searchDepth?: string;
@@ -120,7 +128,7 @@ export type MiningSessionTrace = MiningTraceSummary & {
 };
 
 const SCHEMA_VERSION = 1;
-const PROVIDER_KEYS: MiningProvider[] = ['llm', 'tavily', 'brightdata', 'email', 'sqlite', 'system'];
+const PROVIDER_KEYS: MiningProvider[] = ['llm', 'tavily', 'brightdata', 'sqlite', 'system'];
 
 const nowIso = () => new Date().toISOString();
 

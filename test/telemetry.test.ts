@@ -26,7 +26,17 @@ test('MiningTelemetryRecorder aggregates provider and cost summaries', () => {
     status: 'success',
     provider: 'llm',
     latencyMs: 1200,
-    llm: { inputTokens: 1000, outputTokens: 500, totalTokens: 1500, estimatedCostUsd: 0.002 }
+    llm: {
+      inputTokens: 1000,
+      outputTokens: 500,
+      totalTokens: 1500,
+      estimatedCostUsd: 0.002,
+      fallbackUsed: true,
+      providerAttempts: [
+        { providerId: 'litellm', provider: 'LiteLLM', model: 'apex-primary', status: 'error', statusCode: 504, latencyMs: 30_000 },
+        { providerId: 'openrouter', provider: 'OpenRouter', model: 'fallback-model', status: 'success', latencyMs: 900 },
+      ]
+    }
   });
   recorder.record({ phase: 'search', operation: 'tavily_search', status: 'error', provider: 'tavily', error: { message: 'Bearer secret-token failed' } });
   recorder.finish('success', { returned: 2, stopReason: 'target_reached' });
@@ -35,6 +45,7 @@ test('MiningTelemetryRecorder aggregates provider and cost summaries', () => {
   assert.equal(trace.status, 'success');
   assert.equal(trace.providerSummary.llm.calls, 1);
   assert.equal(trace.providerSummary.llm.totalTokens, 1500);
+  assert.equal(trace.providerSummary.llm.fallbackUses, 1);
   assert.equal(trace.providerSummary.tavily.failures, 1);
   assert.equal(trace.costSummary.tokensPerAcceptedLead, 750);
   assert.equal(trace.stopReason, 'target_reached');

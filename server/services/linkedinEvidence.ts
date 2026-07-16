@@ -7,6 +7,8 @@ export type ParsedLinkedInEvidence = {
   companyName?: string;
   headline?: string;
   location?: string;
+  industry?: string;
+  publicEmail?: string;
   rejectionReason?: string;
 };
 
@@ -152,6 +154,41 @@ const inferCompanyFromHeadline = (headline?: string) => {
   return founderMatch?.[1] ? cleanMarkdownLine(founderMatch[1]).slice(0, 100) : undefined;
 };
 
+const INVALID_EMAIL_DOMAINS = new Set([
+  'example.com',
+  'email.com',
+  'domain.com',
+  'test.com',
+  'linkedin.com',
+]);
+
+const normalizePublicEmail = (value: string) => {
+  const email = value.trim().replace(/^mailto:/i, '').replace(/[),.;:]+$/, '').toLowerCase();
+  if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i.test(email)) return undefined;
+  const [local, domain] = email.split('@');
+  if (!local || !domain || INVALID_EMAIL_DOMAINS.has(domain)) return undefined;
+  if (/^(?:no-?reply|do-?not-?reply|noreply|mailer-daemon)$/i.test(local)) return undefined;
+  if (/\.(?:png|jpe?g|gif|svg|webp|css|js)$/i.test(domain)) return undefined;
+  return email;
+};
+
+export function extractPublicEmail(markdown: string) {
+  const candidates: { email: string; priority: number; index: number }[] = [];
+  markdown.split(/\r?\n/).forEach((rawLine, index) => {
+    const line = cleanMarkdownLine(rawLine);
+    const matches = line.match(/[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi) || [];
+    const isMailto = /mailto:/i.test(rawLine);
+    const isContactContext = /\b(?:email|contact|reach\s+me|reach\s+out)\b/i.test(line);
+    for (const candidate of matches) {
+      const email = normalizePublicEmail(candidate);
+      if (!email) continue;
+      candidates.push({ email, priority: isMailto ? 3 : isContactContext ? 2 : 1, index });
+    }
+  });
+  candidates.sort((a, b) => b.priority - a.priority || a.index - b.index);
+  return candidates[0]?.email;
+}
+
 export function parseLinkedInEvidence(markdown: string, fallback?: { title?: string; url?: string; snippet?: string }): ParsedLinkedInEvidence {
   const sourceText = markdown || '';
   const compactSource = normalizeWhitespace(sourceText);
@@ -179,12 +216,18 @@ export function parseLinkedInEvidence(markdown: string, fallback?: { title?: str
   const headline = inferHeadline(headerLines, personName, fallback?.snippet);
   const companyName = inferCompanyFromHeadline(headline) || inferCompanyFromHeadline(experience.join(' '));
   const location = headerLines.find(line => /,\s*[A-Z]{2}\b|United States|Canada|United Kingdom|Australia|UAE|Remote/i.test(line));
+  const industry = lines
+    .map(line => line.match(/^industry\s*[:|-]\s*(.+)$/i)?.[1]?.trim())
+    .find(Boolean);
+  const publicEmail = extractPublicEmail(sourceText);
 
   const evidenceParts = [
     fallback?.url ? `LINK: ${fallback.url}` : '',
     personName ? `NAME: ${personName}` : '',
     headline ? `HEADLINE: ${headline}` : '',
     location ? `LOCATION: ${location}` : '',
+    industry ? `INDUSTRY: ${industry}` : '',
+    publicEmail ? `EMAIL: ${publicEmail}` : '',
     about.length ? `SUMMARY: ${about.join(' ')}` : '',
     experience.length ? `EXPERIENCE: ${experience.slice(0, 8).join(' | ')}` : '',
     education.length ? `EDUCATION: ${education.slice(0, 3).join(' | ')}` : '',
@@ -208,6 +251,8 @@ export function parseLinkedInEvidence(markdown: string, fallback?: { title?: str
     companyName,
     headline,
     location,
+    industry,
+    publicEmail,
     rejectionReason: quality === 'bad' ? 'missing_core_identity' : undefined
   };
 }

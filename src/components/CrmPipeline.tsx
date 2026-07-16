@@ -1,72 +1,114 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+// @license Apache-2.0
 
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Briefcase, 
-  MapPin, 
-  Mail, 
-  Phone, 
-  Link2,
-  Globe, 
-  GraduationCap, 
-  Tag, 
-  FileText, 
-  Trash2, 
-  ChevronRight, 
-  FolderLock, 
-  Filter, 
-  Search, 
-  ExternalLink,
-  ChevronLeft,
-  X,
-  Plus,
-  Compass,
-  Sparkles,
-  RefreshCw,
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import {
+  Briefcase,
   Check,
-  Wand2
+  ChevronLeft,
+  ChevronRight,
+  Compass,
+  ExternalLink,
+  FileText,
+  Filter,
+  GraduationCap,
+  Link2,
+  Mail,
+  MapPin,
+  Phone,
+  Plus,
+  RefreshCw,
+  Search,
+  Sparkles,
+  Tag,
+  Trash2,
+  Wand2,
+  X,
 } from 'lucide-react';
-import { Lead, LinkedInProfile } from '../types';
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
+import type { Lead, LinkedInProfile, NextAction, ReviewStatus } from '../types';
+import {
+  getPipelineStageDomId,
+  NEXT_PIPELINE_STAGE,
+  PIPELINE_STAGES,
+  PREVIOUS_PIPELINE_STAGE,
+} from '@/lib/pipeline';
+import { useToast } from '@/context/ToastContext';
+import { useLeads } from '@/context/LeadContext';
+import {
+  getLeadProvenance,
+  getNextAction,
+  getReviewStatus,
+  NEXT_ACTION_OPTIONS,
+  REVIEW_STATUS_OPTIONS,
+} from '@/lib/prospectWorkflow';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 
 interface CrmPipelineProps {
   leads: Lead[];
-  onUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void;
-  onUpdateLeadNotes: (leadId: string, notes: string) => void;
-  onUpdateLeadTags: (leadId: string, tags: string[]) => void;
-  onDeleteLead: (leadId: string) => void;
+  onUpdateLeadStage: (leadId: string, stage: Lead['stage']) => void | Promise<void>;
+  onUpdateLeadNotes: (leadId: string, notes: string) => void | Promise<void>;
+  onUpdateLeadTags: (leadId: string, tags: string[]) => void | Promise<void>;
+  onDeleteLead: (leadId: string) => void | Promise<void>;
   onSelectLeadForOutreach: (lead: Lead) => void;
 }
 
-const pipelineStages: { id: Lead['stage']; label: string; bg: string; text: string; dot: string }[] = [
-  { id: 'SCRAPED', label: '1. Scraped', bg: 'bg-slate-900/40', text: 'text-slate-200', dot: 'bg-indigo-400 font-extrabold animate-pulse' },
-  { id: 'ENRICHED', label: '2. Enriched', bg: 'bg-slate-900/60', text: 'text-purple-200', dot: 'bg-purple-400' },
-  { id: 'SEQUENCE ACTIVE', label: '3. Sequence Active', bg: 'bg-amber-950/20', text: 'text-amber-200', dot: 'bg-amber-400 font-bold' },
-  { id: 'REPLIED', label: '4. Replied', bg: 'bg-orange-950/20', text: 'text-orange-200', dot: 'bg-orange-400' },
-  { id: 'MEETING BOOKED', label: '5. Meeting Booked', bg: 'bg-emerald-950/20', text: 'text-emerald-200', dot: 'bg-emerald-400' },
-  { id: 'NEGOTIATING', label: '6. Negotiating', bg: 'bg-emerald-950/30', text: 'text-emerald-300', dot: 'bg-emerald-500' },
-  { id: 'CONVERTED', label: '7. Converted', bg: 'bg-emerald-900/50', text: 'text-emerald-400', dot: 'bg-emerald-500' },
-  { id: 'NURTURE', label: 'Nurture', bg: 'bg-slate-800/40', text: 'text-slate-400', dot: 'bg-slate-500' },
-  { id: 'LOST', label: 'Lost', bg: 'bg-red-950/20', text: 'text-red-300', dot: 'bg-red-500' }
-];
+type NotesSaveState = 'saved' | 'dirty' | 'saving' | 'error';
 
-const nextStageByCurrentStage: Partial<Record<Lead['stage'], Lead['stage']>> = {
-  SCRAPED: 'ENRICHED',
-  ENRICHED: 'SEQUENCE ACTIVE',
-  'SEQUENCE ACTIVE': 'REPLIED',
-  REPLIED: 'MEETING BOOKED',
-  'MEETING BOOKED': 'NEGOTIATING',
-  NEGOTIATING: 'CONVERTED',
-  NURTURE: 'SEQUENCE ACTIVE'
+const NOTES_SAVE_LABELS: Record<NotesSaveState, string> = {
+  saved: 'Saved',
+  dirty: 'Waiting to save...',
+  saving: 'Saving...',
+  error: 'Could not save. Keep typing to retry.',
 };
+
+const PIPELINE_NOTE_DRAFT_PREFIX = 'apex_crm_pipeline_note_draft:';
+
+function readRecoveredNote(leadId: string): string | null {
+  try {
+    return sessionStorage.getItem(`${PIPELINE_NOTE_DRAFT_PREFIX}${leadId}`);
+  } catch {
+    return null;
+  }
+}
+
+function cacheRecoveredNote(leadId: string, notes: string) {
+  try {
+    sessionStorage.setItem(`${PIPELINE_NOTE_DRAFT_PREFIX}${leadId}`, notes);
+  } catch {
+    // The in-memory draft remains available while this workspace is open.
+  }
+}
+
+function clearRecoveredNote(leadId: string) {
+  try {
+    sessionStorage.removeItem(`${PIPELINE_NOTE_DRAFT_PREFIX}${leadId}`);
+  } catch {
+    // Storage may be unavailable in privacy-restricted browser contexts.
+  }
+}
+
+function getIndustry(lead: Lead): string {
+  return lead.profile?.industry?.trim() || 'Tech';
+}
 
 export default function CrmPipeline({
   leads,
@@ -74,26 +116,253 @@ export default function CrmPipeline({
   onUpdateLeadNotes,
   onUpdateLeadTags,
   onDeleteLead,
-  onSelectLeadForOutreach
+  onSelectLeadForOutreach,
 }: CrmPipelineProps) {
-  // Local state for detailed view drawer
+  const { triggerToast } = useToast();
+  const { handleUpdateLeadFields } = useLeads();
+  const reduceMotion = useReducedMotion() ?? false;
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('All');
-
-  // One-Click AI Icebreaker Feature
-  const [icebreaker, setIcebreaker] = useState<string>('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const [selectedIndustry, setSelectedIndustry] = useState('All');
+  const [icebreaker, setIcebreaker] = useState('');
   const [loadingIcebreaker, setLoadingIcebreaker] = useState(false);
   const [icebreakerError, setIcebreakerError] = useState('');
   const [copiedIcebreaker, setCopiedIcebreaker] = useState(false);
+  const [notesDraft, setNotesDraft] = useState('');
+  const [notesSaveState, setNotesSaveState] =
+    useState<NotesSaveState>('saved');
+  const [deletingLeadId, setDeletingLeadId] = useState<string | null>(null);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [stageMutationIds, setStageMutationIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [tagMutationPending, setTagMutationPending] = useState(false);
+  const [tagMutationError, setTagMutationError] = useState('');
+  const [workflowMutationPending, setWorkflowMutationPending] = useState(false);
 
-  React.useEffect(() => {
+  const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notesLeadIdRef = useRef<string | null>(null);
+  const notesDraftRef = useRef('');
+  const notesSavedValueRef = useRef('');
+  const notesSaveInFlightRef = useRef<Promise<boolean> | null>(null);
+  const notesPendingKeyRef = useRef('');
+  const notesTransitionPendingRef = useRef(false);
+  const lastOpenedLeadIdRef = useRef<string | null>(null);
+  const updateNotesRef = useRef(onUpdateLeadNotes);
+  const icebreakerRequestRef = useRef<AbortController | null>(null);
+  const stageMutationIdsRef = useRef<Set<string>>(new Set());
+  const tagMutationInFlightRef = useRef(false);
+  const tagMutationRequestIdRef = useRef(0);
+
+  const selectedLead = useMemo(
+    () => leads.find((lead) => lead.id === selectedLeadId),
+    [leads, selectedLeadId],
+  );
+  const selectedLeadProvenance = useMemo(
+    () => selectedLead ? getLeadProvenance(selectedLead) : null,
+    [selectedLead],
+  );
+
+  const handleWorkflowChange = useCallback(async (
+    updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
+  ) => {
+    if (!selectedLead || workflowMutationPending) return;
+    setWorkflowMutationPending(true);
+    try {
+      await handleUpdateLeadFields(selectedLead.id, updates);
+      triggerToast('Prospect workflow saved.', 'success');
+    } catch (error) {
+      triggerToast(error instanceof Error ? error.message : 'Could not save prospect workflow.', 'error');
+    } finally {
+      setWorkflowMutationPending(false);
+    }
+  }, [handleUpdateLeadFields, selectedLead, triggerToast, workflowMutationPending]);
+
+  const industries = useMemo(() => {
+    const values = new Set<string>();
+    for (const lead of leads) values.add(getIndustry(lead));
+    return ['All', ...Array.from(values).sort((a, b) => a.localeCompare(b))];
+  }, [leads]);
+
+  const leadsByStage = useMemo(() => {
+    const grouped = Object.fromEntries(
+      PIPELINE_STAGES.map((stage) => [stage.id, [] as Lead[]]),
+    ) as Record<Lead['stage'], Lead[]>;
+    const query = deferredSearchQuery.trim().toLocaleLowerCase();
+
+    for (const lead of leads) {
+      const profile = lead.profile;
+      const matchesIndustry =
+        selectedIndustry === 'All' || getIndustry(lead) === selectedIndustry;
+      const matchesSearch =
+        query.length === 0 ||
+        [profile?.fullName, profile?.currentTitle, profile?.currentCompany]
+          .filter(Boolean)
+          .some((value) => value?.toLocaleLowerCase().includes(query));
+      if (matchesIndustry && matchesSearch) grouped[lead.stage].push(lead);
+    }
+
+    return grouped;
+  }, [deferredSearchQuery, leads, selectedIndustry]);
+
+  const clearNotesTimer = useCallback(() => {
+    if (notesTimerRef.current) {
+      clearTimeout(notesTimerRef.current);
+      notesTimerRef.current = null;
+    }
+  }, []);
+
+  const persistNotes = useCallback(
+    (leadId: string, value: string): Promise<boolean> => {
+      clearNotesTimer();
+      const pendingKey = `${leadId}\u0000${value}`;
+      if (
+        notesSaveInFlightRef.current &&
+        notesPendingKeyRef.current === pendingKey
+      ) {
+        return notesSaveInFlightRef.current;
+      }
+      if (
+        leadId === notesLeadIdRef.current &&
+        value === notesSavedValueRef.current
+      ) {
+        setNotesSaveState('saved');
+        return Promise.resolve(true);
+      }
+      if (leadId === notesLeadIdRef.current) setNotesSaveState('saving');
+
+      // Mark this exact value as pending before awaiting so drawer teardown does
+      // not submit the same note a second time while the first PATCH is in flight.
+      const previousSavedValue = notesSavedValueRef.current;
+      if (leadId === notesLeadIdRef.current) notesSavedValueRef.current = value;
+
+      let operation!: Promise<boolean>;
+      operation = (async () => {
+        try {
+          await onUpdateLeadNotes(leadId, value);
+          if (leadId === notesLeadIdRef.current) {
+            notesSavedValueRef.current = value;
+            if (notesDraftRef.current === value) clearRecoveredNote(leadId);
+            setNotesSaveState(
+              notesDraftRef.current === value ? 'saved' : 'dirty',
+            );
+          }
+          return true;
+        } catch {
+          if (leadId === notesLeadIdRef.current) {
+            cacheRecoveredNote(leadId, notesDraftRef.current);
+          }
+          if (
+            leadId === notesLeadIdRef.current &&
+            notesSavedValueRef.current === value
+          ) {
+            notesSavedValueRef.current = previousSavedValue;
+            setNotesSaveState('error');
+          }
+          return false;
+        } finally {
+          if (notesSaveInFlightRef.current === operation) {
+            notesSaveInFlightRef.current = null;
+            notesPendingKeyRef.current = '';
+          }
+        }
+      })();
+      notesPendingKeyRef.current = pendingKey;
+      notesSaveInFlightRef.current = operation;
+      return operation;
+    },
+    [clearNotesTimer, onUpdateLeadNotes],
+  );
+
+  const flushNotes = useCallback((): Promise<boolean> => {
+    clearNotesTimer();
+    const leadId = notesLeadIdRef.current;
+    if (!leadId) return Promise.resolve(true);
+    const pendingKey = `${leadId}\u0000${notesDraftRef.current}`;
+    if (
+      notesSaveInFlightRef.current &&
+      notesPendingKeyRef.current === pendingKey
+    ) return notesSaveInFlightRef.current;
+    if (notesDraftRef.current === notesSavedValueRef.current) {
+      return Promise.resolve(true);
+    }
+    return persistNotes(leadId, notesDraftRef.current);
+  }, [clearNotesTimer, persistNotes]);
+
+  const closeLeadDetails = useCallback(async () => {
+    if (notesTransitionPendingRef.current) return;
+    notesTransitionPendingRef.current = true;
+    const didSave = await flushNotes();
+    if (didSave) {
+      setSelectedLeadId(null);
+    } else {
+      triggerToast('Notes were not saved. Your draft is preserved and the details panel remains open.', 'error');
+    }
+    notesTransitionPendingRef.current = false;
+  }, [flushNotes, triggerToast]);
+
+  useEffect(() => {
+    updateNotesRef.current = onUpdateLeadNotes;
+  }, [onUpdateLeadNotes]);
+
+  useEffect(() => {
+    if (!selectedLeadId || !selectedLead) {
+      lastOpenedLeadIdRef.current = null;
+      return;
+    }
+    if (lastOpenedLeadIdRef.current === selectedLeadId) return;
+
+    clearNotesTimer();
+    const savedNotes = selectedLead.notes || '';
+    const recoveredNotes = readRecoveredNote(selectedLeadId);
+    const initialNotes = recoveredNotes ?? savedNotes;
+    lastOpenedLeadIdRef.current = selectedLeadId;
+    notesLeadIdRef.current = selectedLeadId;
+    notesDraftRef.current = initialNotes;
+    notesSavedValueRef.current = savedNotes;
+    setNotesDraft(initialNotes);
+    setNotesSaveState(initialNotes === savedNotes ? 'saved' : 'dirty');
+    setTagInput('');
+    tagMutationRequestIdRef.current += 1;
+    tagMutationInFlightRef.current = false;
+    setTagMutationPending(false);
+    setTagMutationError('');
+    icebreakerRequestRef.current?.abort();
+    icebreakerRequestRef.current = null;
     setIcebreaker('');
     setIcebreakerError('');
-  }, [selectedLeadId]);
+    setLoadingIcebreaker(false);
+    setCopiedIcebreaker(false);
+  }, [clearNotesTimer, selectedLead, selectedLeadId]);
+
+  useEffect(
+    () => () => {
+      if (notesTimerRef.current) clearTimeout(notesTimerRef.current);
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      icebreakerRequestRef.current?.abort();
+      const leadId = notesLeadIdRef.current;
+      const notes = notesDraftRef.current;
+      if (leadId && notes !== notesSavedValueRef.current) {
+        cacheRecoveredNote(leadId, notes);
+        void Promise.resolve(updateNotesRef.current(leadId, notes))
+          .then(() => clearRecoveredNote(leadId))
+          .catch(() => {
+            triggerToast('An unsaved note draft was preserved in this browser session.', 'error');
+          });
+      }
+    },
+    [triggerToast],
+  );
 
   const handleGenerateIcebreaker = async (profile: LinkedInProfile) => {
+    const leadId = selectedLeadId;
+    if (!leadId) return;
+    icebreakerRequestRef.current?.abort();
+    const controller = new AbortController();
+    icebreakerRequestRef.current = controller;
     setLoadingIcebreaker(true);
     setIcebreakerError('');
     setIcebreaker('');
@@ -101,638 +370,905 @@ export default function CrmPipeline({
       const response = await fetch('/api/generate-outbound', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           profile,
           tone: 'High-Value',
-          pitchType: 'Short 1-Sentence Intro Hook Icebreaker'
+          pitchType: 'Short 1-Sentence Intro Hook Icebreaker',
         }),
       });
       if (!response.ok) {
-        throw new Error(`Personalize database returned error status ${response.status}`);
+        throw new Error(
+          `Personalization service returned status ${response.status}`,
+        );
       }
-      const data = await response.json();
+      const data = (await response.json()) as { text?: string };
+      if (
+        icebreakerRequestRef.current !== controller ||
+        lastOpenedLeadIdRef.current !== leadId
+      ) return;
       setIcebreaker(data.text || '');
-    } catch (err: any) {
-      console.error(err);
-      setIcebreakerError(err.message || 'Personalized icebreaker failed.');
+    } catch (error: unknown) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (
+        icebreakerRequestRef.current !== controller ||
+        lastOpenedLeadIdRef.current !== leadId
+      ) return;
+      setIcebreakerError(
+        error instanceof Error
+          ? error.message
+          : 'Personalized icebreaker failed.',
+      );
     } finally {
-      setLoadingIcebreaker(false);
+      if (icebreakerRequestRef.current === controller) {
+        icebreakerRequestRef.current = null;
+        setLoadingIcebreaker(false);
+      }
     }
   };
 
-  const selectedLead = leads.find(l => l.id === selectedLeadId);
-
-  // Compute industries for filter
-  const industries = ['All', ...Array.from(new Set(leads.map(l => l.profile.industry || 'Tech').filter(Boolean)))];
-
-  // Filtering filter logic
-  const filteredLeads = leads.filter(lead => {
-    const profile = lead.profile || ({} as Partial<any>);
-    const matchesSearch = 
-      (profile.fullName || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-      (profile.currentTitle || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-      (profile.currentCompany || '').toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchesIndustry = selectedIndustry === 'All' || (profile.industry || 'Tech') === selectedIndustry;
-    
-    return matchesSearch && matchesIndustry;
-  });
-
-  const getLeadScoreColor = (score?: number) => {
-    if (!score) return 'bg-slate-800 text-slate-400';
-    if (score >= 80) return 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20';
-    if (score >= 50) return 'bg-blue-500/10 text-blue-300 border border-blue-500/20';
-    return 'bg-amber-500/10 text-amber-300 border border-amber-500/20';
-  };
-
-  const handleCopy = (text?: string, label?: string) => {
+  const handleCopy = async (text?: string, onCopied?: () => void) => {
     if (!text) return;
-    navigator.clipboard.writeText(text);
-    // Silent notification instead of iframe problematic native alerts
-  };
-
-  const handleAddTag = (leadId: string) => {
-    if (!tagInput.trim() || !selectedLead) return;
-    const currentTags = selectedLead.tags || [];
-    if (!currentTags.includes(tagInput.trim())) {
-      onUpdateLeadTags(leadId, [...currentTags, tagInput.trim()]);
+    try {
+      await navigator.clipboard.writeText(text);
+      onCopied?.();
+    } catch {
+      setIcebreakerError('Copy failed. Select the text and copy it manually.');
     }
-    setTagInput('');
   };
 
-  const handleRemoveTag = (leadId: string, tagToRemove: string) => {
-    if (!selectedLead) return;
+  const handleCopyIcebreaker = () => {
+    void handleCopy(icebreaker, () => {
+      setCopiedIcebreaker(true);
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(
+        () => setCopiedIcebreaker(false),
+        2000,
+      );
+    });
+  };
+
+  const handleAddTag = async (leadId: string) => {
+    if (!tagInput.trim() || !selectedLead || tagMutationInFlightRef.current) return;
+    const tag = tagInput.trim();
     const currentTags = selectedLead.tags || [];
-    onUpdateLeadTags(leadId, currentTags.filter(t => t !== tagToRemove));
+    if (currentTags.includes(tag)) {
+      setTagInput('');
+      return;
+    }
+    tagMutationInFlightRef.current = true;
+    const requestId = ++tagMutationRequestIdRef.current;
+    setTagMutationPending(true);
+    setTagMutationError('');
+    try {
+      await onUpdateLeadTags(leadId, [...currentTags, tag]);
+      if (
+        tagMutationRequestIdRef.current === requestId &&
+        notesLeadIdRef.current === leadId
+      ) setTagInput('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The lead tag could not be saved.';
+      if (tagMutationRequestIdRef.current === requestId) setTagMutationError(message);
+      triggerToast(message, 'error');
+    } finally {
+      if (tagMutationRequestIdRef.current === requestId) {
+        tagMutationInFlightRef.current = false;
+        setTagMutationPending(false);
+      }
+    }
+  };
+
+  const handleRemoveTag = async (leadId: string, tagToRemove: string) => {
+    if (!selectedLead || tagMutationInFlightRef.current) return;
+    tagMutationInFlightRef.current = true;
+    const requestId = ++tagMutationRequestIdRef.current;
+    setTagMutationPending(true);
+    setTagMutationError('');
+    try {
+      await onUpdateLeadTags(
+        leadId,
+        (selectedLead.tags || []).filter((tag) => tag !== tagToRemove),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The lead tag could not be removed.';
+      if (tagMutationRequestIdRef.current === requestId) setTagMutationError(message);
+      triggerToast(message, 'error');
+    } finally {
+      if (tagMutationRequestIdRef.current === requestId) {
+        tagMutationInFlightRef.current = false;
+        setTagMutationPending(false);
+      }
+    }
+  };
+
+  const handleNotesChange = (value: string) => {
+    const leadId = notesLeadIdRef.current;
+    setNotesDraft(value);
+    notesDraftRef.current = value;
+    setNotesSaveState(
+      value === notesSavedValueRef.current ? 'saved' : 'dirty',
+    );
+    if (leadId) {
+      if (value === notesSavedValueRef.current) clearRecoveredNote(leadId);
+      else cacheRecoveredNote(leadId, value);
+    }
+    clearNotesTimer();
+    if (!leadId || value === notesSavedValueRef.current) return;
+    notesTimerRef.current = setTimeout(() => {
+      void persistNotes(leadId, value);
+    }, 650);
+  };
+
+  const handleOpenOutreach = async () => {
+    if (!selectedLead || notesTransitionPendingRef.current) return;
+    notesTransitionPendingRef.current = true;
+    const didSave = await flushNotes();
+    if (didSave) {
+      onSelectLeadForOutreach(selectedLead);
+      setSelectedLeadId(null);
+    } else {
+      triggerToast('Notes were not saved. Your draft is preserved; try again before opening Outreach.', 'error');
+    }
+    notesTransitionPendingRef.current = false;
+  };
+
+  const handleDeleteSelectedLead = async () => {
+    if (!selectedLead || deletingLeadId) return;
+    clearNotesTimer();
+    const previousSavedValue = notesSavedValueRef.current;
+    notesSavedValueRef.current = notesDraftRef.current;
+    setDeletingLeadId(selectedLead.id);
+    try {
+      await onDeleteLead(selectedLead.id);
+      clearRecoveredNote(selectedLead.id);
+      setDeleteConfirmationOpen(false);
+      setSelectedLeadId(null);
+      triggerToast(`${selectedLead.profile.fullName} was removed.`, 'success');
+    } catch (error) {
+      notesSavedValueRef.current = previousSavedValue;
+      setNotesSaveState('dirty');
+      void persistNotes(selectedLead.id, notesDraftRef.current);
+      triggerToast(
+        error instanceof Error ? error.message : 'Could not remove this prospect.',
+        'error',
+      );
+    } finally {
+      setDeletingLeadId(null);
+    }
+  };
+
+  const handleStageChange = async (leadId: string, stage: Lead['stage']) => {
+    if (
+      stageMutationIdsRef.current.has(leadId) ||
+      leads.find((lead) => lead.id === leadId)?.stage === stage
+    ) return;
+    const pendingIds = new Set(stageMutationIdsRef.current);
+    pendingIds.add(leadId);
+    stageMutationIdsRef.current = pendingIds;
+    setStageMutationIds(pendingIds);
+    try {
+      await onUpdateLeadStage(leadId, stage);
+    } catch (error) {
+      triggerToast(
+        error instanceof Error ? error.message : 'The pipeline stage could not be saved.',
+        'error',
+      );
+    } finally {
+      const nextIds = new Set(stageMutationIdsRef.current);
+      nextIds.delete(leadId);
+      stageMutationIdsRef.current = nextIds;
+      setStageMutationIds(nextIds);
+    }
   };
 
   return (
     <div className="space-y-6">
-      {/* Search & Filter Bar */}
-      <Card className="shadow-lg mb-6">
-        <CardContent className="p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
+      <Card className="mb-6 shadow-lg">
+        <CardContent className="flex flex-col items-center justify-between gap-4 p-4 md:flex-row">
           <div className="relative w-full md:w-96">
-            <Search className="absolute left-3.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <label htmlFor="pipeline-search" className="sr-only">
+              Search pipeline leads
+            </label>
+            <Search
+              aria-hidden="true"
+              className="absolute left-3.5 top-2.5 h-4 w-4 text-muted-foreground"
+            />
             <Input
-              type="text"
+              id="pipeline-search"
+              type="search"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search leads name, title, or employer..."
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search by name, title, or employer"
               className="pl-10"
+              aria-busy={searchQuery !== deferredSearchQuery}
             />
           </div>
 
-          <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 scrollbar-none items-center">
-            <span className="text-muted-foreground text-xs font-bold flex items-center gap-1.5 uppercase shrink-0 py-2">
-              <Filter className="w-3.5 h-3.5" /> Industry:
+          <div
+            className="flex w-full items-center gap-2 overflow-x-auto pb-1 md:w-auto md:pb-0"
+            role="group"
+            aria-label="Filter pipeline by industry"
+          >
+            <span className="flex shrink-0 items-center gap-1.5 py-2 text-xs font-bold uppercase text-muted-foreground">
+              <Filter aria-hidden="true" className="h-3.5 w-3.5" />
+              Industry
             </span>
-            {industries.map(ind => (
+            {industries.map((industry) => (
               <Button
-                key={ind}
-                variant={selectedIndustry === ind ? "default" : "outline"}
+                key={industry}
+                variant={selectedIndustry === industry ? 'default' : 'outline'}
                 size="sm"
-                onClick={() => setSelectedIndustry(ind)}
-                className="h-8 shrink-0"
+                onClick={() => setSelectedIndustry(industry)}
+                className="h-8 shrink-0 motion-reduce:transition-none"
+                aria-pressed={selectedIndustry === industry}
               >
-                {ind}
+                {industry}
               </Button>
             ))}
           </div>
         </CardContent>
       </Card>
 
-      {/* Kanban Board Grid */}
-      <div className="flex overflow-x-auto gap-6 pb-6 snap-x w-full">
-        {pipelineStages.map(stage => {
-          const stageLeads = filteredLeads.filter(l => l.stage === stage.id);
-          
+      <div
+        className="flex w-full snap-x gap-6 overflow-x-auto pb-6"
+        aria-label="Sales pipeline board"
+        aria-busy={searchQuery !== deferredSearchQuery}
+      >
+        {PIPELINE_STAGES.map((stage) => {
+          const stageLeads = leadsByStage[stage.id];
+          const previousStage = PREVIOUS_PIPELINE_STAGE[stage.id];
+          const nextStage = NEXT_PIPELINE_STAGE[stage.id];
+          const stageHeadingId = getPipelineStageDomId(stage.id);
+
           return (
-            <div key={stage.id} className="flex flex-col bg-slate-900/25 rounded-2xl p-4 border border-slate-800/70 min-h-[500px] min-w-[280px] w-80 snap-start shrink-0">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800/50">
+            <section
+              key={stage.id}
+              aria-labelledby={stageHeadingId}
+              className="flex min-h-[500px] w-80 min-w-[280px] shrink-0 snap-start flex-col rounded-2xl border border-slate-800/70 bg-slate-900/25 p-4"
+            >
+              <div className="mb-4 flex items-center justify-between border-b border-slate-800/50 pb-2">
                 <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${stage.dot}`} />
-                  <h4 className="font-extrabold text-slate-200 text-sm whitespace-nowrap">{stage.label}</h4>
+                  <span
+                    aria-hidden="true"
+                    className={`h-2 w-2 rounded-full ${stage.dotClassName}`}
+                  />
+                  <h2
+                    id={stageHeadingId}
+                    className="whitespace-nowrap text-sm font-extrabold text-slate-200"
+                  >
+                    {stage.label}
+                  </h2>
                 </div>
-                <span className="bg-slate-950 border border-slate-800 text-slate-400 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                <span
+                  className="rounded-full border border-slate-800 bg-slate-950 px-2.5 py-0.5 text-xs font-bold text-slate-400"
+                  aria-label={`${stageLeads.length} leads`}
+                >
                   {stageLeads.length}
                 </span>
               </div>
 
-              {/* Lead Cards List */}
-              <div className="space-y-4 flex-1 overflow-y-auto max-h-[600px] pr-1 scrollbar-thin scrollbar-thumb-slate-800">
-                <AnimatePresence mode="popLayout">
+              <div className="max-h-[600px] flex-1 space-y-4 overflow-y-auto pr-1">
+                <AnimatePresence initial={!reduceMotion} mode="popLayout">
                   {stageLeads.length === 0 ? (
-                    <div className="border border-dashed border-slate-800/80 rounded-xl p-6 text-center text-xs text-slate-500 font-medium my-4">
-                      Empty
-                    </div>
+                    <p className="my-4 rounded-xl border border-dashed border-slate-800/80 p-6 text-center text-xs font-medium text-slate-500">
+                      No leads in this stage
+                    </p>
                   ) : (
-                    stageLeads.map(lead => (
-                      <motion.div
+                    stageLeads.map((lead) => (
+                      <motion.article
                         key={lead.id}
-                        layoutId={`lead-${lead.id}`}
-                        initial={{ opacity: 0, scale: 0.98 }}
+                        layout={!reduceMotion}
+                        initial={
+                          reduceMotion ? false : { opacity: 0, scale: 0.98 }
+                        }
                         animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.98 }}
-                        whileHover={{ y: -2 }}
-                        className="cursor-pointer"
-                        onClick={() => setSelectedLeadId(lead.id)}
+                        exit={
+                          reduceMotion ? undefined : { opacity: 0, scale: 0.98 }
+                        }
+                        whileHover={reduceMotion ? undefined : { y: -2 }}
                       >
-                        <Card className="p-4 shadow-md hover:border-primary/30 transition-all focus-within:ring-1 focus-within:ring-primary/20 relative">
-                          {/* Title Info */}
-                          <div>
-                            <div className="flex justify-between items-start gap-1">
-                              <h5 className="font-extrabold text-foreground text-sm hover:text-primary transition-colors">
+                        <Card className="relative overflow-hidden shadow-md transition-colors hover:border-primary/30 motion-reduce:transition-none">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedLeadId(lead.id)}
+                            className="block w-full p-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                            aria-label={`Open details for ${lead.profile.fullName}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <h3 className="text-sm font-extrabold text-foreground">
                                 {lead.profile.fullName}
-                              </h5>
-                              {lead.compositeScore && (
-                                <div className="flex flex-col gap-1 items-end">
-                                  <Badge variant={lead.compositeScore >= 80 ? "default" : lead.compositeScore >= 60 ? "secondary" : "outline"} className="text-[9px] px-1.5 py-0.5">
-                                    ICP: {lead.compositeScore}
+                              </h3>
+                              {Boolean(lead.compositeScore) && (
+                                <div className="flex shrink-0 flex-col items-end gap-1">
+                                  <Badge
+                                    variant={
+                                      lead.compositeScore! >= 80
+                                        ? 'default'
+                                        : lead.compositeScore! >= 60
+                                          ? 'secondary'
+                                          : 'outline'
+                                    }
+                                    className="px-1.5 py-0.5 text-xs"
+                                  >
+                                    ICP {lead.compositeScore}
                                   </Badge>
-                                  {(lead.qualificationScore ?? lead.predictiveScore) && (
-                                    <Badge variant="outline" className="text-[9px] px-1.5 py-0.5 border-indigo-500/30 text-indigo-400">
-                                      {lead.qualificationScore ?? lead.predictiveScore}% Qualified
+                                  {Boolean(
+                                    lead.qualificationScore ??
+                                      lead.predictiveScore,
+                                  ) && (
+                                    <Badge
+                                      variant="outline"
+                                      className="border-indigo-500/30 px-1.5 py-0.5 text-xs text-indigo-400"
+                                    >
+                                      {lead.qualificationScore ??
+                                        lead.predictiveScore}
+                                      % qualified
                                     </Badge>
                                   )}
                                 </div>
                               )}
                             </div>
-                            
-                            <p className="text-muted-foreground text-xs mt-0.5 font-bold truncate">
+                            <p className="mt-0.5 truncate text-xs font-bold text-muted-foreground">
                               {lead.profile.currentTitle || 'Professional'}
                             </p>
-                            <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] mt-2">
-                              <Briefcase className="w-3.5 h-3.5 shrink-0 opacity-60" />
-                              <span className="truncate">{lead.profile.currentCompany || 'Independent'}</span>
+                            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                              <Briefcase aria-hidden="true" className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                              <span className="truncate">
+                                {lead.profile.currentCompany || 'Independent'}
+                              </span>
                             </div>
                             {lead.companyAccount && (
-                              <div className="mt-2 flex items-center gap-1.5 text-[10px] font-bold text-emerald-300">
-                                <Compass className="w-3.5 h-3.5" />
-                                <span>{lead.companyAccount.buyingSignals.length} company signals - Pain {lead.companyAccount.operationalPainScore}</span>
+                              <div className="mt-2 flex items-center gap-1.5 text-xs font-bold text-emerald-300">
+                                <Compass aria-hidden="true" className="h-3.5 w-3.5" />
+                                <span>
+                                  {lead.companyAccount.buyingSignals.length}{' '}
+                                  company signals - pain{' '}
+                                  {lead.companyAccount.operationalPainScore}
+                                </span>
                               </div>
                             )}
                             {lead.profile.location && (
-                              <div className="flex items-center gap-1.5 text-muted-foreground text-[11px] mt-1">
-                                <MapPin className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                              <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <MapPin aria-hidden="true" className="h-3.5 w-3.5 shrink-0 opacity-60" />
                                 <span className="truncate">{lead.profile.location}</span>
                               </div>
                             )}
-                          </div>
+                            {Boolean(lead.tags?.length) && (
+                              <div className="mt-3 flex flex-wrap gap-1">
+                                {lead.tags?.slice(0, 2).map((tag) => (
+                                  <Badge key={tag} variant="outline" className="px-1.5 py-0.5 text-xs font-bold">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                                {(lead.tags?.length || 0) > 2 && (
+                                  <span className="self-center text-xs font-bold text-muted-foreground">
+                                    +{(lead.tags?.length || 0) - 2} more
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </button>
 
-                          {/* Custom Tags */}
-                          {lead.tags && lead.tags.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-3">
-                              {lead.tags.slice(0, 2).map(tag => (
-                                <Badge key={tag} variant="outline" className="text-[9px] px-1.5 py-0.5 font-bold">
-                                  {tag}
-                                </Badge>
-                              ))}
-                              {lead.tags.length > 2 && (
-                                <span className="text-[9px] text-muted-foreground self-center font-bold">
-                                  +{lead.tags.length - 2} more
-                                </span>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Outbound Quick CTA */}
-                          <div className="flex justify-between items-center mt-4 pt-3 border-t">
+                          <div className="mx-4 flex items-center justify-between border-t pb-4 pt-3">
                             <Button
                               variant="secondary"
                               size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onSelectLeadForOutreach(lead);
-                              }}
-                              className="text-[10px] h-6 px-2"
+                              onClick={() => onSelectLeadForOutreach(lead)}
+                              className="h-7 px-2 text-xs"
+                              aria-label={`Create pitch for ${lead.profile.fullName}`}
                             >
-                              Create Pitch
-                              <ChevronRight className="w-3 h-3 ml-1" />
+                              Create pitch
+                              <ChevronRight aria-hidden="true" className="ml-1 h-3 w-3" />
                             </Button>
-
-                            {/* Swap Stage buttons */}
-                            <div className="flex items-center gap-1">
-                              {stage.id !== 'SCRAPED' && (
+                            <div className="flex items-center gap-1" aria-label="Move lead between stages">
+                              {previousStage && (
                                 <Button
                                   variant="outline"
                                   size="icon"
-                                  className="w-6 h-6"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const idx = pipelineStages.findIndex(s => s.id === stage.id);
-                                    onUpdateLeadStage(lead.id, pipelineStages[idx - 1].id);
-                                  }}
-                                  title="Move Back"
+                                  className="h-7 w-7"
+                                  onClick={() => void handleStageChange(lead.id, previousStage)}
+                                  disabled={stageMutationIds.has(lead.id)}
+                                  title="Move to previous stage"
+                                  aria-label={`Move ${lead.profile.fullName} to the previous stage`}
                                 >
-                                  <ChevronLeft className="w-3 h-3" />
+                                  <ChevronLeft aria-hidden="true" className="h-3 w-3" />
                                 </Button>
                               )}
-                              {nextStageByCurrentStage[stage.id] && (
+                              {nextStage && (
                                 <Button
                                   variant="outline"
                                   size="icon"
-                                  className="w-6 h-6"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const nextStage = nextStageByCurrentStage[stage.id];
-                                    if (nextStage) onUpdateLeadStage(lead.id, nextStage);
-                                  }}
-                                  title="Advance Stage"
+                                  className="h-7 w-7"
+                                  onClick={() => void handleStageChange(lead.id, nextStage)}
+                                  disabled={stageMutationIds.has(lead.id)}
+                                  title="Advance stage"
+                                  aria-label={`Advance ${lead.profile.fullName} to the next stage`}
                                 >
-                                  <ChevronRight className="w-3 h-3" />
+                                  <ChevronRight aria-hidden="true" className="h-3 w-3" />
                                 </Button>
                               )}
                             </div>
                           </div>
                         </Card>
-                      </motion.div>
+                      </motion.article>
                     ))
                   )}
                 </AnimatePresence>
               </div>
-            </div>
+            </section>
           );
         })}
       </div>
 
-      {/* Detailed Slide-Over Drawer Modal */}
-      <AnimatePresence>
-        {selectedLeadId && selectedLead && (
-          <div className="fixed inset-0 z-50 overflow-hidden flex justify-end">
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 0.4 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSelectedLeadId(null)}
-              className="absolute inset-0 bg-black"
-            />
-
-            {/* Slide block Panel */}
-            <motion.div
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="relative w-full max-w-2xl bg-slate-950 border-l border-slate-850 h-full shadow-2xl flex flex-col justify-between"
-            >
-              {/* Header Title / Actions */}
-              <div className="p-6 border-b border-slate-850 flex items-center justify-between">
+      <Dialog
+        open={Boolean(selectedLead)}
+        onOpenChange={(open) => {
+          if (!open) void closeLeadDetails();
+        }}
+      >
+        {selectedLead && (
+          <DialogContent className="left-auto right-0 top-0 flex h-screen w-full max-w-2xl translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-y-0 border-r-0 border-l border-slate-800 bg-slate-950 p-0 shadow-2xl motion-reduce:animate-none sm:max-w-2xl sm:rounded-none">
+            <DialogHeader className="border-b border-slate-800 p-6 pr-16 text-left">
+              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
                 <div>
-                  <span className="px-2.5 py-1 text-[10px] font-bold rounded bg-indigo-500/10 text-indigo-300 border border-indigo-550/20 uppercase tracking-wide">
-                    {selectedLead.profile.industry || 'Tech Sector'} Lead
+                  <span className="inline-flex rounded border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-xs font-bold uppercase tracking-wide text-indigo-300">
+                    {selectedLead.profile.industry || 'Tech sector'} lead
                   </span>
-                  <h3 className="font-extrabold text-white text-xl mt-1.5 flex items-center gap-2">
+                  <DialogTitle className="mt-2 text-xl font-extrabold text-white">
                     {selectedLead.profile.fullName}
-                  </h3>
+                  </DialogTitle>
+                  <DialogDescription className="mt-1">
+                    Review contact intelligence, update pipeline status, and add private notes.
+                  </DialogDescription>
                 </div>
-                
-                <div className="flex items-center gap-2">
-                  <Button 
-                    onClick={() => {
-                      onSelectLeadForOutreach(selectedLead);
-                      setSelectedLeadId(null);
-                    }}
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    onClick={() => void handleOpenOutreach()}
+                    disabled={notesSaveState === 'saving'}
                     size="sm"
-                    className="flex items-center gap-1.5"
                   >
-                    AI Outreach Studio
+                    Open outreach studio
                   </Button>
                   <Button
                     variant="outline"
                     size="icon"
-                    onClick={() => {
-                      onDeleteLead(selectedLead.id);
-                      setSelectedLeadId(null);
-                    }}
-                    title="Remove Lead"
-                    className="hover:border-destructive/30 hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                    onClick={() => setDeleteConfirmationOpen(true)}
+                    disabled={deletingLeadId === selectedLead.id}
+                    title="Remove lead"
+                    aria-label={`Remove ${selectedLead.profile.fullName}`}
+                    className="text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
                   >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setSelectedLeadId(null)}
-                  >
-                    <X className="w-4 h-4" />
+                    {deletingLeadId === selectedLead.id
+                      ? <RefreshCw aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                      : <Trash2 aria-hidden="true" className="h-4 w-4" />}
                   </Button>
                 </div>
               </div>
+            </DialogHeader>
 
-              {/* Scrollable Body */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-850">
-                {/* Headline Bio */}
-                <div>
-                  <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2 mb-2">
-                    <Compass className="w-4 h-4 text-indigo-400" />
-                    Headline & Contact details
-                  </h4>
-                  <div className="bg-slate-900/60 rounded-xl p-4 border border-slate-850 space-y-3">
-                    <p className="text-slate-200 text-sm font-bold leading-snug">
-                      {selectedLead.profile.headline || 'No headline found.'}
-                    </p>
-                    <p className="text-slate-400 text-xs leading-relaxed">
-                      {selectedLead.profile.summary || 'Summary profile bio was not captured.'}
-                    </p>
-                    
-                    {/* Contact details list */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-slate-800 text-xs">
-                      {selectedLead.profile.contactDetails?.email && (
-                        <div className="flex items-center gap-2 text-slate-300">
-                          <Mail className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <span className="truncate">{selectedLead.profile.contactDetails.email}</span>
-                          <button
-                            onClick={() => handleCopy(selectedLead.profile.contactDetails?.email, 'Email')}
-                            className="ml-auto text-[10px] text-indigo-400 hover:underline cursor-pointer"
-                          >
-                            Copy
-                          </button>
-                        </div>
-                      )}
-                      {selectedLead.profile.contactDetails?.phone && (
-                        <div className="flex items-center gap-2 text-slate-300">
-                          <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          <span className="truncate">{selectedLead.profile.contactDetails.phone}</span>
-                        </div>
-                      )}
-                      {selectedLead.profile.contactDetails?.linkedinUrl && (
-                        <div className="flex items-center gap-2 text-slate-350 col-span-1 md:col-span-2">
-                          <Link2 className="w-3.5 h-3.5 text-slate-550 shrink-0" />
-                          <a
-                            href={selectedLead.profile.contactDetails.linkedinUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="truncate text-indigo-400 hover:underline flex items-center gap-1"
-                          >
-                            {selectedLead.profile.contactDetails.linkedinUrl}
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        </div>
-                      )}
-                    </div>
+            <div className="flex-1 space-y-6 overflow-y-auto p-6">
+              <section aria-labelledby="pipeline-contact-heading">
+                <h3 id="pipeline-contact-heading" className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-200">
+                  <Compass aria-hidden="true" className="h-4 w-4 text-indigo-400" />
+                  Headline and contact details
+                </h3>
+                <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                  <p className="text-sm font-bold leading-snug text-slate-200">
+                    {selectedLead.profile.headline || 'No headline found.'}
+                  </p>
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    {selectedLead.profile.summary || 'Summary profile bio was not captured.'}
+                  </p>
+                  <div className="grid grid-cols-1 gap-3 border-t border-slate-800 pt-3 text-xs md:grid-cols-2">
+                    {selectedLead.profile.contactDetails?.email && (
+                      <div className="flex items-center gap-2 text-slate-300">
+                        <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                        <span className="truncate">{selectedLead.profile.contactDetails.email}</span>
+                        <button
+                          type="button"
+                          onClick={() => void handleCopy(selectedLead.profile.contactDetails?.email)}
+                          className="ml-auto rounded text-xs text-indigo-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                          aria-label="Copy email address"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    )}
+                    {selectedLead.profile.contactDetails?.phone && (
+                      <div className="flex items-center gap-2 text-slate-300">
+                        <Phone aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                        <span className="truncate">{selectedLead.profile.contactDetails.phone}</span>
+                      </div>
+                    )}
+                    {selectedLead.profile.contactDetails?.linkedinUrl && (
+                      <div className="col-span-1 flex items-center gap-2 text-slate-300 md:col-span-2">
+                        <Link2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                        <a
+                          href={selectedLead.profile.contactDetails.linkedinUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-1 truncate text-indigo-400 hover:underline"
+                          aria-label={`Open ${selectedLead.profile.fullName}'s LinkedIn profile in a new tab`}
+                        >
+                          {selectedLead.profile.contactDetails.linkedinUrl}
+                          <ExternalLink aria-hidden="true" className="h-3 w-3" />
+                        </a>
+                      </div>
+                    )}
                   </div>
                 </div>
+              </section>
 
-                {selectedLead.companyAccount && (
-                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <h4 className="text-sm font-bold text-emerald-200 flex items-center gap-2">
-                          <Compass className="w-4 h-4 text-emerald-400" />
-                          Company Pain Qualification
-                        </h4>
-                        <p className="text-xs text-slate-400 mt-1">{selectedLead.companyAccount.painSummary}</p>
+              <section aria-labelledby="pipeline-review-heading" className="space-y-3 rounded-2xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+                <div>
+                  <h3 id="pipeline-review-heading" className="text-sm font-bold text-indigo-200">Review and provenance</h3>
+                  <p className="mt-1 text-xs text-slate-400">Workflow labels are organizational only; they do not send outreach or change the pipeline stage.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-xs font-bold text-slate-300">
+                    <span>Review status</span>
+                    <select
+                      value={getReviewStatus(selectedLead)}
+                      disabled={workflowMutationPending}
+                      onChange={(event) => void handleWorkflowChange({ reviewStatus: event.target.value as ReviewStatus })}
+                      className="h-9 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    >
+                      {REVIEW_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs font-bold text-slate-300">
+                    <span>Next action</span>
+                    <select
+                      value={getNextAction(selectedLead)}
+                      disabled={workflowMutationPending}
+                      onChange={(event) => void handleWorkflowChange({ nextAction: event.target.value as NextAction })}
+                      className="h-9 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    >
+                      {NEXT_ACTION_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3"><span className="text-slate-500">Location</span><p className="mt-1 font-semibold">{selectedLeadProvenance?.location || 'Not provided'}</p></div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3"><span className="text-slate-500">Industry</span><p className="mt-1 font-semibold">{selectedLeadProvenance?.industry || 'Not provided'}</p></div>
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-300">Discovery query</h4>
+                  <p className="mt-1 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs leading-relaxed text-slate-400">{selectedLeadProvenance?.discoveryQuery || 'No discovery query recorded.'}</p>
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-300">Matched criteria</h4>
+                  {selectedLeadProvenance?.matchedCriteria.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">{selectedLeadProvenance.matchedCriteria.map(criterion => <Badge key={criterion} variant="outline">{criterion}</Badge>)}</div>
+                  ) : <p className="mt-1 text-xs text-slate-500">No matched criteria recorded.</p>}
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-300">Uncertainties</h4>
+                  {selectedLeadProvenance?.uncertainties.length ? (
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-200">{selectedLeadProvenance.uncertainties.map(item => <li key={item}>{item}</li>)}</ul>
+                  ) : <p className="mt-1 text-xs text-slate-500">No uncertainties recorded.</p>}
+                </div>
+              </section>
+
+              {selectedLead.companyAccount && (
+                <section
+                  aria-labelledby="pipeline-company-heading"
+                  className="space-y-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 id="pipeline-company-heading" className="flex items-center gap-2 text-sm font-bold text-emerald-200">
+                        <Compass aria-hidden="true" className="h-4 w-4 text-emerald-400" />
+                        Company pain qualification
+                      </h3>
+                      <p className="mt-1 text-xs text-slate-400">{selectedLead.companyAccount.painSummary}</p>
+                    </div>
+                    <Badge variant="outline" className="shrink-0 border-emerald-500/30 text-emerald-300">
+                      Pain {selectedLead.companyAccount.operationalPainScore}
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                    {selectedLead.companyAccount.buyingSignals.map((signal, index) => (
+                      <div key={`${signal.label}-${index}`} className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                        <h4 className="text-xs font-bold text-slate-200">{signal.label}</h4>
+                        <p className="mt-1 text-xs leading-relaxed text-slate-400">{signal.evidence}</p>
                       </div>
-                      <Badge variant="outline" className="border-emerald-500/30 text-emerald-300 shrink-0">
-                        Pain {selectedLead.companyAccount.operationalPainScore}
-                      </Badge>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      {selectedLead.companyAccount.buyingSignals.map((signal, i) => (
-                        <div key={i} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3">
-                          <div className="text-[11px] font-black text-slate-200">{signal.label}</div>
-                          <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">{signal.evidence}</p>
-                        </div>
-                      ))}
-                    </div>
-                    {selectedLead.decisionMakerVerification && (
-                      <p className="text-[11px] text-emerald-300 font-semibold">
-                        {selectedLead.decisionMakerVerification.reason}
-                      </p>
-                    )}
+                    ))}
                   </div>
-                )}
-                {/* Improvement 2: AI-Powered Intro Hook Icebreaker Card */}
-                <div className="bg-gradient-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/25 rounded-2xl p-4.5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h5 className="text-xs font-extrabold text-indigo-300 uppercase tracking-widest flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-                      1-Click AI Personalization
-                    </h5>
-                    {icebreaker && (
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(icebreaker);
-                          setCopiedIcebreaker(true);
-                          setTimeout(() => setCopiedIcebreaker(false), 2000);
-                        }}
-                        className="text-[10px] font-black text-indigo-400 hover:text-indigo-300 flex items-center gap-1 bg-indigo-500/10 border border-indigo-500/15 px-2.5 py-1 rounded-md transition-all cursor-pointer"
-                      >
-                        {copiedIcebreaker ? (
-                          <>
-                            <Check className="w-3 h-3 text-emerald-450 animate-pulse" />
-                            Copied!
-                          </>
-                        ) : (
-                          'Copy Hook'
-                        )}
-                      </button>
-                    )}
-                  </div>
-
-                  {icebreaker ? (
-                    <p className="text-xs text-slate-200 leading-relaxed italic bg-slate-950/70 p-3.5 rounded-xl border border-slate-800/80 font-mono">
-                      "{icebreaker.replace(/^"|"$/g, '')}"
-                    </p>
-                  ) : icebreakerError ? (
-                    <p className="text-xs text-rose-350 bg-rose-500/10 p-3 rounded-lg border border-rose-500/20">{icebreakerError}</p>
-                  ) : (
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Leverage this profile's experiences and exact credentials to formulate a hyper-personalized CRM outbound intro line immediately.
+                  {selectedLead.decisionMakerVerification && (
+                    <p className="text-xs font-semibold text-emerald-300">
+                      {selectedLead.decisionMakerVerification.reason}
                     </p>
                   )}
+                </section>
+              )}
 
-                  <div className="flex justify-end pt-1">
+              <section
+                aria-labelledby="pipeline-personalization-heading"
+                className="space-y-3 rounded-2xl border border-indigo-500/25 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 p-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <h3 id="pipeline-personalization-heading" className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-widest text-indigo-300">
+                    <Sparkles aria-hidden="true" className="h-3.5 w-3.5 text-indigo-400 motion-safe:animate-pulse motion-reduce:animate-none" />
+                    AI personalization
+                  </h3>
+                  {icebreaker && (
                     <button
                       type="button"
-                      disabled={loadingIcebreaker}
-                      onClick={() => handleGenerateIcebreaker(selectedLead.profile)}
-                      className="bg-indigo-600/90 hover:bg-indigo-600 disabled:bg-slate-800 text-white font-bold text-[10px] px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all shadow-sm cursor-pointer border border-indigo-500/20"
+                      onClick={handleCopyIcebreaker}
+                      className="flex items-center gap-1 rounded-md border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-xs font-bold text-indigo-400 transition-colors hover:text-indigo-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary motion-reduce:transition-none"
                     >
-                      {loadingIcebreaker ? (
+                      {copiedIcebreaker ? (
                         <>
-                          <RefreshCw className="w-3 h-3 animate-spin text-indigo-300" />
-                          Formulating hook...
+                          <Check aria-hidden="true" className="h-3 w-3 text-emerald-400" />
+                          Copied
                         </>
-                      ) : (
-                        <>
-                          <Wand2 className="w-3 h-3 text-indigo-300" />
-                          Synthesize Hook Line
-                        </>
-                      )}
+                      ) : 'Copy hook'}
                     </button>
-                  </div>
-                </div>
-
-                {/* Experiences timeline */}
-                <div>
-                  <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2 mb-3">
-                    <Briefcase className="w-4 h-4 text-indigo-400" />
-                    Professional Work Experience
-                  </h4>
-                  {selectedLead.profile.experiences && selectedLead.profile.experiences.length > 0 ? (
-                    <div className="space-y-4 border-l-2 border-slate-800 pl-4 ml-2">
-                      {selectedLead.profile.experiences.map((exp, i) => (
-                        <div key={i} className="relative">
-                          {/* Chronological Dot badge */}
-                          <div className="absolute -left-[25px] top-1.5 w-3 h-3 rounded-full border-2 border-slate-950 bg-indigo-500" />
-                          <div>
-                            <div className="flex flex-wrap items-baseline gap-1.5">
-                              <h5 className="text-sm font-bold text-slate-200">{exp.title}</h5>
-                              <span className="text-xs text-slate-500 font-medium">@ {exp.company}</span>
-                            </div>
-                            <span className="text-[9px] bg-slate-900 text-indigo-300 border border-slate-800 px-1.5 py-0.5 rounded font-mono block w-fit mt-1">
-                              {exp.duration || 'Period undisclosed'}
-                            </span>
-                            {exp.description && (
-                              <p className="text-slate-400 text-xs mt-2 leading-relaxed whitespace-pre-line">
-                                {exp.description}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 bg-slate-900/40 p-4 rounded-xl border border-dashed border-slate-800">
-                      No matching experience logs found on this profile card.
-                    </p>
                   )}
                 </div>
-
-                {/* Education Section */}
-                <div>
-                  <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2 mb-3">
-                    <GraduationCap className="w-4 h-4 text-indigo-400" />
-                    Education & Credentials
-                  </h4>
-                  {selectedLead.profile.education && selectedLead.profile.education.length > 0 ? (
-                    <div className="space-y-3">
-                      {selectedLead.profile.education.map((edu, i) => (
-                        <div key={i} className="bg-slate-905 border border-slate-850 p-3 rounded-xl">
-                          <h5 className="font-extrabold text-slate-200 text-xs">{edu.school}</h5>
-                          {(edu.degree || edu.fieldOfStudy) && (
-                            <p className="text-slate-450 text-xs mt-0.5 font-bold">
-                              {edu.degree} {edu.fieldOfStudy ? `in ${edu.fieldOfStudy}` : ''}
-                            </p>
-                          )}
-                          {edu.duration && (
-                            <span className="text-[10px] text-slate-500 font-semibold block mt-1">
-                              Class: {edu.duration}
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500">Academic background not loaded.</p>
-                  )}
-                </div>
-
-                {/* Skills Cloud */}
-                {selectedLead.profile.skills && selectedLead.profile.skills.length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2 mb-2">
-                      <Tag className="w-4 h-4 text-indigo-400" />
-                      Extracted Skills Cloud
-                    </h4>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedLead.profile.skills.map(skill => (
-                        <span key={skill} className="bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 text-xs px-2.5 py-1 rounded border border-indigo-500/15 font-semibold">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
+                {icebreaker ? (
+                  <p className="rounded-xl border border-slate-800/80 bg-slate-950/70 p-3 text-xs italic leading-relaxed text-slate-200">
+                    &quot;{icebreaker.replace(/^"|"$/g, '')}&quot;
+                  </p>
+                ) : icebreakerError ? (
+                  <p role="alert" className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-3 text-xs text-rose-300">
+                    {icebreakerError}
+                  </p>
+                ) : (
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    Create a concise opening line grounded in this lead&apos;s public profile.
+                  </p>
                 )}
+                <div className="flex justify-end pt-1">
+                  <Button
+                    type="button"
+                    disabled={loadingIcebreaker}
+                    onClick={() => void handleGenerateIcebreaker(selectedLead.profile)}
+                    size="sm"
+                    className="gap-1.5"
+                  >
+                    {loadingIcebreaker ? (
+                      <>
+                        <RefreshCw aria-hidden="true" className="h-3 w-3 motion-safe:animate-spin motion-reduce:animate-none" />
+                        Creating hook...
+                      </>
+                    ) : (
+                      <>
+                        <Wand2 aria-hidden="true" className="h-3 w-3" />
+                        Create hook
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </section>
 
-                {/* Custom tags editor */}
-                <div>
-                  <h4 className="text-sm font-bold text-slate-205 flex items-center gap-2 mb-2">
-                    <Tag className="w-4 h-4 text-indigo-400" />
-                    Lead Metadata Tags
-                  </h4>
-                  <div className="flex flex-wrap gap-1.5 p-3 bg-slate-900/60 rounded-xl border border-slate-850">
-                    {selectedLead.tags?.map(tag => (
-                      <span key={tag} className="bg-slate-950 border border-slate-800 text-slate-300 text-xs pl-2.5 pr-1.5 py-1 rounded-md flex items-center gap-1 font-semibold">
-                        {tag}
-                        <button
-                          onClick={() => handleRemoveTag(selectedLead.id, tag)}
-                          className="hover:bg-slate-850 text-slate-500 hover:text-white rounded p-0.5 cursor-pointer"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
+              <section aria-labelledby="pipeline-experience-heading">
+                <h3 id="pipeline-experience-heading" className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-200">
+                  <Briefcase aria-hidden="true" className="h-4 w-4 text-indigo-400" />
+                  Professional experience
+                </h3>
+                {selectedLead.profile.experiences?.length ? (
+                  <div className="ml-2 space-y-4 border-l-2 border-slate-800 pl-4">
+                    {selectedLead.profile.experiences.map((experience, index) => (
+                      <article key={`${experience.company}-${experience.title}-${index}`} className="relative">
+                        <span aria-hidden="true" className="absolute -left-[25px] top-1.5 h-3 w-3 rounded-full border-2 border-slate-950 bg-indigo-500" />
+                        <div className="flex flex-wrap items-baseline gap-1.5">
+                          <h4 className="text-sm font-bold text-slate-200">{experience.title}</h4>
+                          <span className="text-xs font-medium text-slate-500">at {experience.company}</span>
+                        </div>
+                        <span className="mt-1 block w-fit rounded border border-slate-800 bg-slate-900 px-1.5 py-0.5 text-xs text-indigo-300">
+                          {experience.duration || 'Period undisclosed'}
+                        </span>
+                        {experience.description && (
+                          <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-slate-400">
+                            {experience.description}
+                          </p>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="rounded-xl border border-dashed border-slate-800 bg-slate-900/40 p-4 text-xs text-slate-500">
+                    No matching experience found on this profile.
+                  </p>
+                )}
+              </section>
+
+              <section aria-labelledby="pipeline-education-heading">
+                <h3 id="pipeline-education-heading" className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-200">
+                  <GraduationCap aria-hidden="true" className="h-4 w-4 text-indigo-400" />
+                  Education and credentials
+                </h3>
+                {selectedLead.profile.education?.length ? (
+                  <div className="space-y-3">
+                    {selectedLead.profile.education.map((education, index) => (
+                      <article key={`${education.school}-${index}`} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+                        <h4 className="text-xs font-extrabold text-slate-200">{education.school}</h4>
+                        {(education.degree || education.fieldOfStudy) && (
+                          <p className="mt-0.5 text-xs font-bold text-slate-400">
+                            {education.degree}{' '}
+                            {education.fieldOfStudy ? `in ${education.fieldOfStudy}` : ''}
+                          </p>
+                        )}
+                        {education.duration && (
+                          <span className="mt-1 block text-xs font-semibold text-slate-500">
+                            {education.duration}
+                          </span>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">Academic background not loaded.</p>
+                )}
+              </section>
+
+              {Boolean(selectedLead.profile.skills?.length) && (
+                <section aria-labelledby="pipeline-skills-heading">
+                  <h3 id="pipeline-skills-heading" className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-200">
+                    <Tag aria-hidden="true" className="h-4 w-4 text-indigo-400" />
+                    Skills
+                  </h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedLead.profile.skills?.map((skill) => (
+                      <span key={skill} className="rounded border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 text-xs font-semibold text-indigo-300">
+                        {skill}
                       </span>
                     ))}
-                    <div className="flex gap-1 items-center bg-muted border rounded px-2 py-1">
-                      <Input
-                        type="text"
-                        placeholder="Add tag"
-                        value={tagInput}
-                        onChange={(e) => setTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddTag(selectedLead.id);
-                          }
-                        }}
-                        className="bg-transparent border-none h-6 w-20 text-xs px-1 shadow-none focus-visible:ring-0"
-                      />
+                  </div>
+                </section>
+              )}
+
+              <section aria-labelledby="pipeline-tags-heading">
+                <h3 id="pipeline-tags-heading" className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-200">
+                  <Tag aria-hidden="true" className="h-4 w-4 text-indigo-400" />
+                  Lead tags
+                </h3>
+                <div className="flex flex-wrap gap-1.5 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                  {selectedLead.tags?.map((tag) => (
+                    <span key={tag} className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-950 py-1 pl-2.5 pr-1.5 text-xs font-semibold text-slate-300">
+                      {tag}
                       <button
-                        onClick={() => handleAddTag(selectedLead.id)}
-                        className="text-primary hover:text-primary/80 text-xs cursor-pointer"
+                        type="button"
+                        onClick={() => void handleRemoveTag(selectedLead.id, tag)}
+                        disabled={tagMutationPending}
+                        className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                        aria-label={`Remove ${tag} tag`}
                       >
-                        <Plus className="w-3.5 h-3.5" />
+                        <X aria-hidden="true" className="h-3 w-3" />
                       </button>
-                    </div>
+                    </span>
+                  ))}
+                  <div className="flex items-center gap-1 rounded border bg-muted px-2 py-1">
+                    <label htmlFor="pipeline-add-tag" className="sr-only">Add a lead tag</label>
+                    <Input
+                      id="pipeline-add-tag"
+                      type="text"
+                      placeholder="Add tag"
+                      value={tagInput}
+                      onChange={(event) => setTagInput(event.target.value)}
+                      disabled={tagMutationPending}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          void handleAddTag(selectedLead.id);
+                        }
+                      }}
+                      className="h-6 w-24 border-none bg-transparent px-1 text-xs shadow-none focus-visible:ring-0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleAddTag(selectedLead.id)}
+                      disabled={tagMutationPending || !tagInput.trim()}
+                      className="rounded text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      aria-label="Add tag"
+                    >
+                      <Plus aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </div>
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className={`mt-2 text-xs ${tagMutationError ? 'text-rose-300' : 'text-slate-500'}`}
+                >
+                  {tagMutationPending ? 'Saving tags...' : tagMutationError}
+                </p>
+              </section>
 
-                {/* Internal Pipeline Memo notes */}
-                <div>
-                  <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2 mb-2">
-                    <FileText className="w-4 h-4 text-indigo-400" />
-                    Internal CRM Notes & Logs
-                  </h4>
-                  <Textarea
-                    value={selectedLead.notes || ''}
-                    onChange={(e) => onUpdateLeadNotes(selectedLead.id, e.target.value)}
-                    placeholder="Log interactions, pricing notes, or key takeaways for this lead..."
-                    rows={4}
-                    className="w-full mt-2 resize-y"
-                  />
-                  <span className="text-[10px] text-slate-550 block mt-1.5">
-                    Saved automatically to internal browser storage.
+              <section aria-labelledby="pipeline-notes-heading">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 id="pipeline-notes-heading" className="flex items-center gap-2 text-sm font-bold text-slate-200">
+                    <FileText aria-hidden="true" className="h-4 w-4 text-indigo-400" />
+                    Internal CRM notes
+                  </h3>
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className={notesSaveState === 'error' ? 'text-xs text-rose-300' : 'text-xs text-slate-400'}
+                  >
+                    {NOTES_SAVE_LABELS[notesSaveState]}
                   </span>
                 </div>
-              </div>
+                <Textarea
+                  value={notesDraft}
+                  onChange={(event) => handleNotesChange(event.target.value)}
+                  onBlur={flushNotes}
+                  aria-label={`Internal notes for ${selectedLead.profile.fullName}`}
+                  placeholder="Log interactions, pricing notes, or key takeaways"
+                  rows={4}
+                  className="mt-2 w-full resize-y"
+                />
+              </section>
+            </div>
 
-              {/* Footer selection change */}
-              <div className="p-4 border-t border-slate-850 bg-slate-950 text-xs flex flex-wrap gap-2 justify-between items-center">
-                <span className="text-slate-500">Created: {new Date(selectedLead.createdAt).toLocaleDateString()}</span>
-                <div className="flex items-center gap-1">
-                  <span className="text-slate-400 font-bold mr-2">Lead Status:</span>
-                  {pipelineStages.map(st => (
-                    <button
-                      key={st.id}
-                      onClick={() => onUpdateLeadStage(selectedLead.id, st.id)}
-                      className={`px-2 py-1.5 text-[10px] font-bold rounded cursor-pointer transition-colors ${
-                        selectedLead.stage === st.id
-                           ? 'bg-indigo-650 text-white border border-indigo-500 shadow-sm'
-                           : 'bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {st.label.replace('Newly ', '').replace(' Leads', '')}
-                    </button>
-                  ))}
-                </div>
+            <footer className="flex flex-col gap-3 border-t border-slate-800 bg-slate-950 p-4 text-xs">
+              <span className="text-slate-500">
+                Created: {new Date(selectedLead.createdAt).toLocaleDateString()}
+              </span>
+              <div className="flex items-center gap-1 overflow-x-auto pb-1" role="group" aria-label="Lead status">
+                <span className="mr-2 shrink-0 font-bold text-slate-400">Status</span>
+                {PIPELINE_STAGES.map((stage) => (
+                  <button
+                    key={stage.id}
+                    type="button"
+                    onClick={() => void handleStageChange(selectedLead.id, stage.id)}
+                    disabled={
+                      stageMutationIds.has(selectedLead.id) ||
+                      selectedLead.stage === stage.id
+                    }
+                    className={`shrink-0 rounded border px-2 py-1.5 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary motion-reduce:transition-none ${
+                      selectedLead.stage === stage.id
+                        ? 'border-indigo-500 bg-indigo-600 text-white shadow-sm'
+                        : 'border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800'
+                    }`}
+                    aria-pressed={selectedLead.stage === stage.id}
+                  >
+                    {stage.shortLabel}
+                  </button>
+                ))}
               </div>
-            </motion.div>
-          </div>
+            </footer>
+          </DialogContent>
         )}
-      </AnimatePresence>
+      </Dialog>
+
+      <Dialog
+        open={deleteConfirmationOpen}
+        onOpenChange={(open) => {
+          if (!deletingLeadId) setDeleteConfirmationOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove this prospect?</DialogTitle>
+            <DialogDescription>
+              {selectedLead
+                ? `${selectedLead.profile.fullName} will be permanently removed from the CRM.`
+                : 'This prospect is no longer available.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeleteConfirmationOpen(false)}
+              disabled={Boolean(deletingLeadId)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleDeleteSelectedLead()}
+              disabled={!selectedLead || Boolean(deletingLeadId)}
+            >
+              {deletingLeadId ? 'Removing...' : 'Remove prospect'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -15,10 +15,13 @@
         "test:scout": "tsx --test test/scoutPipeline.test.ts",
         "test:brightdata-upgrade": "tsx --test test/brightDataUpgrade.test.ts",
         "test:key-rotation": "tsx --test test/keyRotator.test.ts test/tavilyRotation.test.ts",
-        "test:llm": "tsx --test test/llmFallback.test.ts",
+    "test:llm": "tsx --test test/llmFallback.test.ts test/llmBudget.test.ts",
         "test:telemetry": "tsx --test test/telemetry.test.ts",
         "test:glyphs": "tsx --test test/encodingHygiene.test.ts",
-        "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/scoutPipeline.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts"
+        "test:ui": "tsx --test test/uiContracts.test.ts",
+        "test:persistence": "tsx --test test/leadPersistence.test.ts",
+        "test:mutations": "tsx --test test/leadMutationContracts.test.ts",
+    "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/scoutPipeline.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/llmBudget.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts test/uiContracts.test.ts test/leadPersistence.test.ts test/leadMutationContracts.test.ts"
     },
     "dependencies": {
         "@brightdata/mcp": "^2.11.0",

@@ -31,6 +31,35 @@ export type LLMProviderSummary = Omit<LLMProvider, 'apiKey' | 'headers'> & {
   configured: boolean;
 };
 
+export type LLMProviderAttempt = {
+  providerId: LLMProvider['id'];
+  provider: string;
+  model: string;
+  status: 'success' | 'error' | 'skipped';
+  statusCode?: number;
+  latencyMs: number;
+  error?: string;
+};
+
+export type LLMSessionCircuitBreaker = {
+  failureThreshold: number;
+  failureCounts: Partial<Record<LLMProvider['id'], number>>;
+  disabledProviderIds: Set<LLMProvider['id']>;
+};
+
+type LLMExecutionOptions = {
+  onProviderAttempt?: (attempt: LLMProviderAttempt) => void;
+  circuitBreaker?: LLMSessionCircuitBreaker;
+};
+
+export function createLLMSessionCircuitBreaker(failureThreshold = 2): LLMSessionCircuitBreaker {
+  return {
+    failureThreshold: Math.max(1, Math.floor(failureThreshold)),
+    failureCounts: {},
+    disabledProviderIds: new Set<LLMProvider['id']>(),
+  };
+}
+
 const DEFAULT_PRIMARY_BASE = 'https://byesu.com/v1';
 const DEFAULT_PRIMARY_MODEL = 'gpt-5.5';
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
@@ -85,7 +114,7 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
     },
     {
       id: 'openrouter',
-      name: 'OpenRouter',
+      name: process.env.OPENROUTER_PROVIDER_NAME || 'OpenRouter',
       baseUrl: cleanBaseUrl(process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE),
       model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
       apiKey: process.env.OPENROUTER_API_KEY || '',
@@ -137,13 +166,14 @@ export function getAPIKey(): string {
 /**
  * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
  * Prevents indefinite hangs when an LLM provider is slow or overloaded.
- * Default: 45s timeout, 1 retry (waits 2s then 4s between attempts).
+ * Default: 45s timeout, no retries. Provider fallback owns recovery so the
+ * same overloaded endpoint is not repeatedly charged before failover.
  */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 45000),
-  maxRetries = Number(process.env.LLM_MAX_RETRIES || 1)
+  maxRetries = Number(process.env.LLM_MAX_RETRIES || 0)
 ): Promise<Response> {
   const retry429 = process.env.LLM_RETRY_429 === 'true';
   
@@ -164,12 +194,26 @@ async function fetchWithRetry(
       const res = await fetch(url, { ...requestOptions, signal: controller.signal });
       clearTimeout(timer);
       
-      const isRetryableStatus = 
+      // 413 is a deterministic payload-budget failure and must never be
+      // retried unchanged. A 429 is retried only when explicitly enabled.
+      const isRetryableStatus = res.status !== 413 && (
         (res.status >= 500 && res.status <= 599) || 
-        (res.status === 429 && retry429);
+        (res.status === 429 && retry429)
+      );
 
       if (isRetryableStatus && attempt < maxRetries) {
-        const waitMs = Math.pow(2, attempt) * 2000; // 2s, then 4s
+        const retryAfter = res.headers.get('retry-after');
+        const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
+        const retryAfterDateMs = retryAfter && !Number.isFinite(retryAfterSeconds)
+          ? Date.parse(retryAfter) - Date.now()
+          : Number.NaN;
+        const advertisedWaitMs = Number.isFinite(retryAfterSeconds)
+          ? retryAfterSeconds * 1000
+          : retryAfterDateMs;
+        const waitMs = Math.min(
+          Math.max(Number.isFinite(advertisedWaitMs) ? advertisedWaitMs : Math.pow(2, attempt) * 2000, 0),
+          30_000
+        );
         console.warn(`[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`);
         await new Promise(r => setTimeout(r, waitMs));
         continue;
@@ -210,8 +254,16 @@ function formatProviderFailures(errors: Error[]): string {
   return errors.map(error => error.message).join(' | ');
 }
 
+function isCircuitBreakingProviderFailure(error: Error): boolean {
+  const status = error instanceof LLMProviderError ? error.status : undefined;
+  if (status === 408 || status === 429 || status === 502 || status === 503 || status === 504) return true;
+  if (status === 500 && /empty or invalid response|unable to get json response/i.test(error.message)) return true;
+  return /timed out|timeout|connection timed out|no deployments available|cooldown/i.test(error.message);
+}
+
 async function withProviderFallback<T>(
-  operation: (provider: LLMProvider) => Promise<T>
+  operation: (provider: LLMProvider) => Promise<T>,
+  executionOptions: LLMExecutionOptions = {}
 ): Promise<T> {
   const providers = getConfiguredLLMProviders();
   if (providers.length === 0) {
@@ -220,11 +272,51 @@ async function withProviderFallback<T>(
 
   const failures: Error[] = [];
   for (const provider of providers) {
+    if (executionOptions.circuitBreaker?.disabledProviderIds.has(provider.id)) {
+      executionOptions.onProviderAttempt?.({
+        providerId: provider.id,
+        provider: provider.name,
+        model: provider.model,
+        status: 'skipped',
+        latencyMs: 0,
+        error: 'Session circuit breaker open',
+      });
+      continue;
+    }
+
+    const startedAt = Date.now();
     try {
-      return await operation(provider);
+      const result = await operation(provider);
+      executionOptions.onProviderAttempt?.({
+        providerId: provider.id,
+        provider: provider.name,
+        model: provider.model,
+        status: 'success',
+        latencyMs: Date.now() - startedAt,
+      });
+      return result;
     } catch (error: any) {
       const normalized = error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
+      executionOptions.onProviderAttempt?.({
+        providerId: provider.id,
+        provider: provider.name,
+        model: provider.model,
+        status: 'error',
+        statusCode: normalized instanceof LLMProviderError ? normalized.status : undefined,
+        latencyMs: Date.now() - startedAt,
+        error: truncateProviderError(normalized.message),
+      });
+
+      const breaker = executionOptions.circuitBreaker;
+      if (breaker && isCircuitBreakingProviderFailure(normalized)) {
+        const failuresForProvider = Number(breaker.failureCounts[provider.id] || 0) + 1;
+        breaker.failureCounts[provider.id] = failuresForProvider;
+        if (failuresForProvider >= breaker.failureThreshold) {
+          breaker.disabledProviderIds.add(provider.id);
+          console.warn(`[llm] ${provider.name} disabled for the rest of this mining session after ${failuresForProvider} availability failures.`);
+        }
+      }
       console.warn(`[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`);
     }
   }
@@ -249,6 +341,9 @@ async function sendChatCompletion(
       body: JSON.stringify({
         model: provider.model,
         messages,
+        // Some third-party OpenAI-compatible gateways default to SSE when the
+        // flag is omitted. Apex expects one JSON response for structured calls.
+        stream: false,
         temperature: options?.temperature !== undefined ? options.temperature : 0.1,
         max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000,
         ...(options?.responseFormat ? { response_format: options.responseFormat } : {}),
@@ -468,7 +563,7 @@ export async function tavilyExtract(
 export async function openAIText(
   prompt: string,
   systemInstruction?: string,
-  options?: { maxTokens?: number; temperature?: number }
+  options?: { maxTokens?: number; temperature?: number } & LLMExecutionOptions
 ): Promise<{ text: string; provider: string; model: string; baseUrl: string }> {
   const messages: ChatMessage[] = [];
   if (systemInstruction) {
@@ -481,7 +576,7 @@ export async function openAIText(
     provider: provider.name,
     model: provider.model,
     baseUrl: provider.baseUrl,
-  }));
+  }), options);
 }
 
 function stripMarkdownFence(str: string): string {
@@ -581,7 +676,7 @@ export async function openAIStructured<T>(
   prompt: string,
   schema: any,
   systemInstruction?: string,
-  options?: { maxTokens?: number; temperature?: number; retryOnParseFailure?: boolean }
+  options?: { maxTokens?: number; temperature?: number; retryOnParseFailure?: boolean } & LLMExecutionOptions
 ): Promise<T> {
   const jsonMode = process.env.LLM_JSON_MODE || 'off';
   const useJsonMode = jsonMode === 'on' || jsonMode === 'auto';
@@ -717,7 +812,7 @@ export async function openAIStructured<T>(
         throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response after retry (first_parse_error=${firstParseError?.message || 'unknown'}): ${retryText.slice(0, 300)}`);
       }
     }
-  });
+  }, options);
 }
 /** Returns true when at least one LLM provider API key is available. */
 export function hasOpenAIKey(): boolean {

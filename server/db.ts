@@ -8,12 +8,49 @@ import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 5;
+const LATEST_SCHEMA_VERSION = 6;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
 
 let leadsDb: DatabaseSync | null = null;
+
+const REVIEW_STATUSES = new Set(['UNREVIEWED', 'KEEP', 'MAYBE', 'REJECT']);
+const NEXT_ACTIONS = new Set(['NONE', 'OPEN_LINKEDIN', 'RESEARCH', 'CONNECT', 'MESSAGE']);
+
+const isUsableEmail = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const email = value.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+};
+
+function normalizeStoredLead(lead: Record<string, any>) {
+  const profile = lead.profile && typeof lead.profile === 'object' ? { ...lead.profile } : {};
+  const contactDetails = profile.contactDetails && typeof profile.contactDetails === 'object'
+    ? { ...profile.contactDetails }
+    : {};
+  const legacyEmail = lead.emailDiscovery?.bestEmail || profile.emailDiscovery?.bestEmail;
+  if (!isUsableEmail(contactDetails.email) && isUsableEmail(legacyEmail)) {
+    contactDetails.email = legacyEmail.trim().toLowerCase();
+  } else if (isUsableEmail(contactDetails.email)) {
+    contactDetails.email = contactDetails.email.trim().toLowerCase();
+  }
+
+  delete contactDetails.emailStatus;
+  delete contactDetails.emailConfidence;
+  delete contactDetails.emailSources;
+  delete contactDetails.fallbackChannels;
+  delete profile.emailDiscovery;
+
+  const normalized: Record<string, any> = {
+    ...lead,
+    profile: { ...profile, contactDetails },
+    reviewStatus: REVIEW_STATUSES.has(lead.reviewStatus) ? lead.reviewStatus : 'UNREVIEWED',
+    nextAction: NEXT_ACTIONS.has(lead.nextAction) ? lead.nextAction : 'NONE',
+  };
+  delete normalized.emailDiscovery;
+  return normalized;
+}
 
 function getTableColumns(db: DatabaseSync, tableName: string) {
   return new Set((db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]).map((column) => column.name));
@@ -86,6 +123,7 @@ function runMigrations(db: DatabaseSync) {
           linkedin_username TEXT,
           person_name TEXT,
           company_name TEXT,
+          public_email TEXT,
           evidence_block TEXT NOT NULL,
           scrape_quality TEXT NOT NULL,
           source_provider TEXT NOT NULL,
@@ -96,25 +134,6 @@ function runMigrations(db: DatabaseSync) {
         CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
         CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
         CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
-
-        CREATE TABLE IF NOT EXISTS email_discovery_cache (
-          id TEXT PRIMARY KEY,
-          normalized_url TEXT,
-          linkedin_username TEXT,
-          person_name TEXT,
-          company_name TEXT,
-          company_domain TEXT,
-          discovered_email TEXT,
-          status TEXT NOT NULL,
-          confidence INTEGER NOT NULL,
-          evidence TEXT,
-          created_at TEXT NOT NULL,
-          expires_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_email_cache_url ON email_discovery_cache(normalized_url);
-        CREATE INDEX IF NOT EXISTS idx_email_cache_username ON email_discovery_cache(linkedin_username);
-        CREATE INDEX IF NOT EXISTS idx_email_cache_person_company_domain ON email_discovery_cache(person_name, company_name, company_domain);
-        CREATE INDEX IF NOT EXISTS idx_email_cache_expires ON email_discovery_cache(expires_at);
 
         CREATE TABLE IF NOT EXISTS search_logs (
           id TEXT PRIMARY KEY,
@@ -263,6 +282,20 @@ function runMigrations(db: DatabaseSync) {
       `);
     }
 
+    if (currentVersion < 6) {
+      addColumnIfMissing(db, 'enrichment_cache', 'public_email', 'public_email TEXT');
+      const rows = db.prepare('SELECT id, payload FROM leads').all() as { id: string; payload: string }[];
+      const updatePayload = db.prepare('UPDATE leads SET payload = ? WHERE id = ?');
+      for (const row of rows) {
+        try {
+          updatePayload.run(JSON.stringify(normalizeStoredLead(JSON.parse(row.payload))), row.id);
+        } catch (error) {
+          console.warn(`Skipping legacy lead cleanup for ${row.id}:`, error);
+        }
+      }
+      db.exec('DROP TABLE IF EXISTS email_discovery_cache');
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (error) {
@@ -283,6 +316,7 @@ export type EnrichmentCacheEntry = {
   linkedinUsername?: string;
   personName?: string;
   companyName?: string;
+  publicEmail?: string;
   evidenceBlock: string;
   scrapeQuality: EnrichmentCacheQuality;
   sourceProvider: 'brightdata' | 'tavily';
@@ -295,31 +329,6 @@ export type EnrichmentCacheLookup = {
   linkedinUsername?: string;
   personName?: string;
   companyName?: string;
-};
-
-export type EmailDiscoveryStatus = 'confirmed_public' | 'company_public' | 'pattern_likely' | 'domain_only' | 'not_found' | 'not_searched';
-
-export type EmailDiscoveryCacheEntry = {
-  id?: string;
-  normalizedUrl?: string;
-  linkedinUsername?: string;
-  personName?: string;
-  companyName?: string;
-  companyDomain?: string;
-  discoveredEmail?: string;
-  status: EmailDiscoveryStatus;
-  confidence: number;
-  evidence: string;
-  createdAt?: string;
-  expiresAt?: string;
-};
-
-export type EmailDiscoveryCacheLookup = {
-  normalizedUrl?: string;
-  linkedinUsername?: string;
-  personName?: string;
-  companyName?: string;
-  companyDomain?: string;
 };
 
 export function getLeadsDb() {
@@ -358,6 +367,7 @@ export function getLeadsDb() {
         linkedin_username TEXT,
         person_name TEXT,
         company_name TEXT,
+        public_email TEXT,
         evidence_block TEXT NOT NULL,
         scrape_quality TEXT NOT NULL,
         source_provider TEXT NOT NULL,
@@ -369,26 +379,6 @@ export function getLeadsDb() {
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
-
-      CREATE TABLE IF NOT EXISTS email_discovery_cache (
-        id TEXT PRIMARY KEY,
-        normalized_url TEXT,
-        linkedin_username TEXT,
-        person_name TEXT,
-        company_name TEXT,
-        company_domain TEXT,
-        discovered_email TEXT,
-        status TEXT NOT NULL,
-        confidence INTEGER NOT NULL,
-        evidence TEXT,
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_email_cache_url ON email_discovery_cache(normalized_url);
-      CREATE INDEX IF NOT EXISTS idx_email_cache_username ON email_discovery_cache(linkedin_username);
-      CREATE INDEX IF NOT EXISTS idx_email_cache_person_company_domain ON email_discovery_cache(person_name, company_name, company_domain);
-      CREATE INDEX IF NOT EXISTS idx_email_cache_expires ON email_discovery_cache(expires_at);
 
       INSERT OR IGNORE INTO enrichment_cache (
         id,
@@ -447,7 +437,7 @@ export function normalizeIncomingLeads(input: unknown) {
 
   return input
     .filter((lead): lead is Record<string, any> => !!lead && typeof lead === 'object')
-    .map((lead) => ({
+    .map((lead) => normalizeStoredLead({
       ...lead,
       id: typeof lead.id === 'string' && lead.id.trim() ? lead.id : crypto.randomUUID(),
       createdAt: typeof lead.createdAt === 'string' && lead.createdAt ? lead.createdAt : new Date().toISOString()
@@ -462,7 +452,7 @@ export function readStoredLeads() {
   return rows
     .map((row) => {
       try {
-        return { ...JSON.parse(row.payload), revision: Number(row.revision || 1) };
+        return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) };
       } catch (error) {
         console.warn('Skipping unreadable lead record from SQLite:', error);
         return null;
@@ -478,7 +468,7 @@ export function readStoredLeadById(id: string) {
 
   if (!row) return null;
   try {
-    return { ...JSON.parse(row.payload), revision: Number(row.revision || 1) } as Record<string, any>;
+    return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) } as Record<string, any>;
   } catch (error) {
     console.warn(`Skipping unreadable lead ${id} from SQLite:`, error);
     return null;
@@ -507,7 +497,7 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
 
     for (const lead of leads) {
       const revision = Number.isInteger(lead.revision) && lead.revision > 0 ? lead.revision : 1;
-      const storedLead: Record<string, any> = { ...lead, revision };
+      const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
       insertLead.run(
         storedLead.id,
         JSON.stringify(storedLead),
@@ -541,10 +531,23 @@ export class LeadRevisionConflictError extends Error {
   }
 }
 
-export function upsertLead(lead: Record<string, any>) {
+export class LeadNotFoundError extends Error {
+  constructor(public readonly leadId: string) {
+    super('This lead was removed before the update completed.');
+    this.name = 'LeadNotFoundError';
+  }
+}
+
+export function upsertLead(
+  lead: Record<string, any>,
+  options: { requireExisting?: boolean } = {},
+) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
   const existing = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(lead.id) as { payload: string; revision: number } | undefined;
+  if (!existing && options.requireExisting) {
+    throw new LeadNotFoundError(String(lead.id || ''));
+  }
   const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
   if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
     let currentLead: Record<string, any> = { ...lead, revision: Number(existing.revision || 1) };
@@ -556,7 +559,7 @@ export function upsertLead(lead: Record<string, any>) {
     throw new LeadRevisionConflictError(currentLead);
   }
   const revision = existing ? Number(existing.revision || 1) + 1 : 1;
-  const storedLead: Record<string, any> = { ...lead, revision };
+  const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
   const stmt = db.prepare(`
     INSERT INTO leads (id, payload, created_at, updated_at, revision)
     VALUES (?, ?, ?, ?, ?)
@@ -587,7 +590,10 @@ export function deleteLead(id: string) {
   db.prepare('DELETE FROM leads WHERE id = ?').run(id);
 }
 
-export function upsertLeads(leads: Record<string, any>[]) {
+export function upsertLeads(
+  leads: Record<string, any>[],
+  options: { requireExisting?: boolean } = {},
+) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
   const stmt = db.prepare(`
@@ -605,6 +611,9 @@ export function upsertLeads(leads: Record<string, any>[]) {
   try {
     for (const lead of leads) {
       const existing = selectExisting.get(lead.id) as { payload: string; revision: number } | undefined;
+      if (!existing && options.requireExisting) {
+        throw new LeadNotFoundError(String(lead.id || ''));
+      }
       const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
       if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
         let currentLead: Record<string, any> = { ...lead, revision: Number(existing.revision || 1) };
@@ -616,7 +625,7 @@ export function upsertLeads(leads: Record<string, any>[]) {
         throw new LeadRevisionConflictError(currentLead);
       }
       const revision = existing ? Number(existing.revision || 1) + 1 : 1;
-      const storedLead: Record<string, any> = { ...lead, revision };
+      const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
       stmt.run(
         storedLead.id,
         JSON.stringify(storedLead),
@@ -656,6 +665,7 @@ const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
     linkedinUsername: row.linkedin_username || undefined,
     personName: row.person_name || undefined,
     companyName: row.company_name || undefined,
+    publicEmail: row.public_email || undefined,
     evidenceBlock: row.evidence_block,
     scrapeQuality: row.scrape_quality,
     sourceProvider: row.source_provider,
@@ -732,17 +742,19 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
       linkedin_username,
       person_name,
       company_name,
+      public_email,
       evidence_block,
       scrape_quality,
       source_provider,
       created_at,
       expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       normalized_url = excluded.normalized_url,
       linkedin_username = excluded.linkedin_username,
       person_name = excluded.person_name,
       company_name = excluded.company_name,
+      public_email = excluded.public_email,
       evidence_block = excluded.evidence_block,
       scrape_quality = excluded.scrape_quality,
       source_provider = excluded.source_provider,
@@ -754,6 +766,7 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
     linkedinUsername || null,
     personName || null,
     companyName || null,
+    isUsableEmail(entry.publicEmail) ? entry.publicEmail.trim().toLowerCase() : null,
     entry.evidenceBlock,
     entry.scrapeQuality,
     entry.sourceProvider,
@@ -797,128 +810,6 @@ export function upsertNegativeEnrichmentCacheEntry(entry: EnrichmentCacheEntry, 
     scrapeQuality: 'bad',
     sourceProvider: 'brightdata'
   }, ttlHours / 24, now);
-}
-
-const toEmailCacheRow = (row: any): EmailDiscoveryCacheEntry | null => {
-  if (!row) return null;
-  return {
-    id: row.id,
-    normalizedUrl: row.normalized_url || undefined,
-    linkedinUsername: row.linkedin_username || undefined,
-    personName: row.person_name || undefined,
-    companyName: row.company_name || undefined,
-    companyDomain: row.company_domain || undefined,
-    discoveredEmail: row.discovered_email || undefined,
-    status: row.status,
-    confidence: Number(row.confidence || 0),
-    evidence: row.evidence || '',
-    createdAt: row.created_at,
-    expiresAt: row.expires_at
-  };
-};
-
-export function pruneExpiredEmailDiscoveryCache(now = new Date()) {
-  const db = getLeadsDb();
-  const result = db.prepare('DELETE FROM email_discovery_cache WHERE datetime(expires_at) <= datetime(?)').run(now.toISOString());
-  return Number(result.changes || 0);
-}
-
-export function getEmailDiscoveryCacheEntry(lookup: EmailDiscoveryCacheLookup, now = new Date()) {
-  const db = getLeadsDb();
-  const cutoff = now.toISOString();
-  const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
-  const linkedinUsername = normalizeCacheValue(lookup.linkedinUsername);
-  const personName = normalizeCacheValue(lookup.personName);
-  const companyName = normalizeCacheValue(lookup.companyName);
-  const companyDomain = normalizeCacheValue(lookup.companyDomain);
-
-  if (normalizedUrl || linkedinUsername) {
-    const row = db.prepare(`
-      SELECT * FROM email_discovery_cache
-      WHERE datetime(expires_at) > datetime(?)
-        AND (
-          (? != '' AND normalized_url = ?)
-          OR (? != '' AND linkedin_username = ?)
-        )
-      ORDER BY datetime(created_at) DESC
-      LIMIT 1
-    `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
-    const match = toEmailCacheRow(row);
-    if (match) return match;
-  }
-
-  if (personName && (companyDomain || companyName)) {
-    const row = db.prepare(`
-      SELECT * FROM email_discovery_cache
-      WHERE datetime(expires_at) > datetime(?)
-        AND person_name = ?
-        AND ((? != '' AND company_domain = ?) OR (? != '' AND company_name = ?))
-      ORDER BY datetime(created_at) DESC
-      LIMIT 1
-    `).get(cutoff, personName, companyDomain, companyDomain, companyName, companyName);
-    return toEmailCacheRow(row);
-  }
-
-  return null;
-}
-
-export function upsertEmailDiscoveryCacheEntry(entry: EmailDiscoveryCacheEntry, ttlDays = 14, now = new Date()) {
-  const db = getLeadsDb();
-  const createdAt = entry.createdAt || now.toISOString();
-  const expiresAt = entry.expiresAt || new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
-  const normalizedUrl = normalizeCacheValue(entry.normalizedUrl);
-  const linkedinUsername = normalizeCacheValue(entry.linkedinUsername);
-  const personName = normalizeCacheValue(entry.personName);
-  const companyName = normalizeCacheValue(entry.companyName);
-  const companyDomain = normalizeCacheValue(entry.companyDomain);
-  const id = entry.id || crypto.createHash('sha256')
-    .update([normalizedUrl, linkedinUsername, personName, companyName, companyDomain].filter(Boolean).join('|') || crypto.randomUUID())
-    .digest('hex');
-
-  db.prepare(`
-    INSERT INTO email_discovery_cache (
-      id,
-      normalized_url,
-      linkedin_username,
-      person_name,
-      company_name,
-      company_domain,
-      discovered_email,
-      status,
-      confidence,
-      evidence,
-      created_at,
-      expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      normalized_url = excluded.normalized_url,
-      linkedin_username = excluded.linkedin_username,
-      person_name = excluded.person_name,
-      company_name = excluded.company_name,
-      company_domain = excluded.company_domain,
-      discovered_email = excluded.discovered_email,
-      status = excluded.status,
-      confidence = excluded.confidence,
-      evidence = excluded.evidence,
-      created_at = excluded.created_at,
-      expires_at = excluded.expires_at
-  `).run(
-    id,
-    normalizedUrl || null,
-    linkedinUsername || null,
-    personName || null,
-    companyName || null,
-    companyDomain || null,
-    entry.discoveredEmail || null,
-    entry.status,
-    Math.round(entry.confidence || 0),
-    entry.evidence || '',
-    createdAt,
-    expiresAt
-  );
-
-  pruneExpiredEmailDiscoveryCache(now);
-  return { ...entry, id, createdAt, expiresAt };
 }
 
 export function insertSearchLog(log: any) {
@@ -1308,7 +1199,7 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
 
 // -- Lead Activities ----------------------------------------------------------
 
-export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'email_discovery' | 'import' | 'merge';
+export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge';
 
 export type LeadActivityRecord = {
   id: string;

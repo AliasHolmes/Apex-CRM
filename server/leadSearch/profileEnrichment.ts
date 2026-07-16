@@ -14,6 +14,7 @@ export type ProfileEnrichmentResult = {
   evidenceQuality: EvidenceQuality;
   cacheHit: boolean;
   scraped: boolean;
+  updatedFields: string[];
   error?: string;
 };
 
@@ -31,6 +32,41 @@ export async function enrichLeadProfile(
   // Keep person fields on the profile and qualification metadata on the lead.
   const profile = lead.profile && typeof lead.profile === 'object' ? lead.profile : lead;
   const rawUrl = profile.contactDetails?.linkedinUrl || lead.evidence?.sourceUrl;
+  const updatedFields = new Set<string>();
+
+  const fillProfileFields = (values: {
+    personName?: string;
+    companyName?: string;
+    headline?: string;
+    location?: string;
+    industry?: string;
+    publicEmail?: string;
+  }) => {
+    if (values.personName && (!profile.fullName || profile.fullName === 'Unknown')) {
+      profile.fullName = values.personName;
+      updatedFields.add('fullName');
+    }
+    if (values.companyName && (!profile.currentCompany || profile.currentCompany === 'Unknown')) {
+      profile.currentCompany = values.companyName;
+      updatedFields.add('currentCompany');
+    }
+    for (const field of ['headline', 'location', 'industry'] as const) {
+      if (values[field] && !profile[field]) {
+        profile[field] = values[field];
+        updatedFields.add(field);
+      }
+    }
+    if (values.publicEmail && !profile.contactDetails?.email) {
+      profile.contactDetails = { ...(profile.contactDetails || {}), email: values.publicEmail };
+      updatedFields.add('email');
+    }
+  };
+
+  const getEvidenceValue = (evidenceBlock: string, label: string) => evidenceBlock
+    .split(/\r?\n/)
+    .find(line => line.startsWith(`${label}: `))
+    ?.slice(label.length + 2)
+    .trim();
 
   if (!rawUrl) {
     return {
@@ -40,7 +76,8 @@ export async function enrichLeadProfile(
         sourceProvider: 'cache',
         evidenceQuality: 'weak',
         cacheHit: false,
-        scraped: false
+        scraped: false,
+        updatedFields: []
       }
     };
   }
@@ -56,7 +93,8 @@ export async function enrichLeadProfile(
         sourceProvider: 'cache',
         evidenceQuality: 'weak',
         cacheHit: false,
-        scraped: false
+        scraped: false,
+        updatedFields: []
       }
     };
   }
@@ -90,12 +128,23 @@ export async function enrichLeadProfile(
     lead.scoreBreakdown = computeScoreBreakdown(lead, quality, provider, lead.decisionMakerVerification);
     lead.scoreOverride = lead.scoreBreakdown.finalScore;
     lead.lastEnrichedAt = new Date().toISOString();
+    updatedFields.add('evidence');
+    updatedFields.add('decisionMakerVerification');
+    updatedFields.add('score');
   };
 
   if (!force) {
     const positiveCache = getEnrichmentCacheEntry({ normalizedUrl, linkedinUsername: username });
     if (positiveCache) {
       const quality = positiveCache.scrapeQuality === 'good' ? 'good' : 'partial';
+      fillProfileFields({
+        personName: positiveCache.personName,
+        companyName: positiveCache.companyName,
+        headline: getEvidenceValue(positiveCache.evidenceBlock, 'HEADLINE'),
+        location: getEvidenceValue(positiveCache.evidenceBlock, 'LOCATION'),
+        industry: getEvidenceValue(positiveCache.evidenceBlock, 'INDUSTRY'),
+        publicEmail: positiveCache.publicEmail,
+      });
       refreshLeadEvidence('cache', quality, positiveCache.evidenceBlock);
       return {
         lead,
@@ -104,7 +153,8 @@ export async function enrichLeadProfile(
           sourceProvider: 'cache',
           evidenceQuality: quality,
           cacheHit: true,
-          scraped: false
+          scraped: false,
+          updatedFields: Array.from(updatedFields)
         }
       };
     }
@@ -118,7 +168,8 @@ export async function enrichLeadProfile(
           sourceProvider: 'cache',
           evidenceQuality: 'weak',
           cacheHit: true,
-          scraped: false
+          scraped: false,
+          updatedFields: []
         }
       };
     }
@@ -135,6 +186,7 @@ export async function enrichLeadProfile(
           evidenceQuality: 'weak',
           cacheHit: false,
           scraped: true,
+          updatedFields: [],
           error: 'Empty scrape response'
         }
       };
@@ -145,14 +197,14 @@ export async function enrichLeadProfile(
     const parsed = parseLinkedInEvidence(markdown, { title, url: rawUrl, snippet });
 
     if (parsed.quality === 'good' || parsed.quality === 'partial') {
-      if (parsed.personName && (!profile.fullName || profile.fullName === 'Unknown')) profile.fullName = parsed.personName;
-      if (parsed.companyName && (!profile.currentCompany || profile.currentCompany === 'Unknown')) profile.currentCompany = parsed.companyName;
+      fillProfileFields(parsed);
 
       upsertEnrichmentCacheEntry({
         normalizedUrl,
         linkedinUsername: username,
         personName: parsed.personName || profile.fullName || '',
         companyName: parsed.companyName || profile.currentCompany || '',
+        publicEmail: parsed.publicEmail,
         evidenceBlock: parsed.evidenceBlock,
         scrapeQuality: parsed.quality,
         sourceProvider: 'brightdata'
@@ -167,7 +219,8 @@ export async function enrichLeadProfile(
           sourceProvider: 'brightdata',
           evidenceQuality: parsed.quality,
           cacheHit: false,
-          scraped: true
+          scraped: true,
+          updatedFields: Array.from(updatedFields)
         }
       };
     }
@@ -189,6 +242,7 @@ export async function enrichLeadProfile(
         evidenceQuality: 'weak',
         cacheHit: false,
         scraped: true,
+        updatedFields: [],
         error: parsed.rejectionReason || 'low quality'
       }
     };
@@ -201,6 +255,7 @@ export async function enrichLeadProfile(
         evidenceQuality: 'weak',
         cacheHit: false,
         scraped: true,
+        updatedFields: [],
         error: err?.message || 'Bright Data scrape failed'
       }
     };

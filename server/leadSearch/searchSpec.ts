@@ -219,10 +219,10 @@ export const buildFallbackQueryPlan = (query: string, spec: SearchSpec): SearchQ
   const titles = spec.person.includeTitles.length ? spec.person.includeTitles : ['founder', 'owner'];
   const signal = spec.signals.include[0] || 'growth automation';
   const plans: SearchQueryPlanItem[] = [
-    { query: `${base} ${titles.join(' ')}`, family: 'persona_title', intent: 'find_decision_makers', expectedSignal: 'Decision-maker profiles', priority: 1, lane: 'person' },
-    { query: `${base} company founder owner`, family: 'company_type', intent: 'expand_surface_area', expectedSignal: 'Qualified company and leadership evidence', priority: 2, lane: 'account', providerPreference: 'corroborate' },
-    { query: `${base} ${signal}`, family: 'growth_signal', intent: 'find_buying_signal', expectedSignal: 'Recent public business signals', priority: 3, lane: 'signal', providerPreference: 'corroborate' },
-    { query: `${base} operations director`, family: 'persona_title', intent: 'expand_surface_area', expectedSignal: 'Adjacent operator decision makers', priority: 4, lane: 'person' }
+    { query: `${base} ${titles.join(' ')}`, family: 'persona_title', intent: 'find_decision_makers', expectedSignal: 'Decision-maker profiles', priority: 1, lane: 'person', providerPreference: 'tavily', searchDepth: 'basic' },
+    { query: `${base} company founder owner`, family: 'company_type', intent: 'expand_surface_area', expectedSignal: 'Qualified company and leadership evidence', priority: 2, lane: 'account', providerPreference: 'brightdata', searchDepth: 'basic' },
+    { query: `${base} ${signal}`, family: 'growth_signal', intent: 'find_buying_signal', expectedSignal: 'Recent public business signals', priority: 3, lane: 'signal', providerPreference: 'brightdata', searchDepth: 'basic' },
+    { query: `${base} operations director`, family: 'persona_title', intent: 'expand_surface_area', expectedSignal: 'Adjacent operator decision makers', priority: 4, lane: 'person', providerPreference: 'corroborate', searchDepth: 'basic' }
   ];
   return plans.filter(item => item.query.trim().length > 0);
 };
@@ -238,7 +238,33 @@ export const buildStrategistPrompt = (params: {
   previousQueries: string[];
   previousRoundSummary: Record<string, any>;
   queryPerformance?: Record<string, any>;
+  discoveryMode?: string;
 }) => {
   const previousNote = params.previousQueries.length ? `Avoid repeats: ${params.previousQueries.join(' | ')}` : 'No previous queries.';
-  return `You are a budget-aware B2B prospecting strategist.\n\nUser brief: ${params.query}\nStructured targeting spec: ${JSON.stringify(params.spec)}\n\nGenerate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.\n${previousNote}\nPrior round summary: ${JSON.stringify(params.previousRoundSummary)}\nHistorical family/provider yield: ${JSON.stringify(params.queryPerformance || {})}\n\nRules:\n- Do not write Google dorks, site:, or the word LinkedIn.\n- Use at least two lanes: person, account, signal when the brief supports them.\n- person lane finds public professional profiles; account lane finds companies and leadership evidence; signal lane finds public growth, tooling, hiring, or pain evidence.\n- Basic Tavily search is the default. Use advanced only for at most one high-value signal task.\n- Bright Data is only a capped corroborating source, never a required structured-data tool.\n- Prefer query families with stronger prior yield and avoid duplicate-heavy families.\n\nReturn query, family, intent, expectedSignal, priority, lane, providerPreference, searchDepth, topic, timeRange, and country when relevant.`;
+  const discoveryMode = params.discoveryMode || 'hybrid';
+  return `You are a dual-provider B2B prospecting strategist for Apex CRM.
+
+User brief: ${params.query}
+Structured targeting spec: ${JSON.stringify(params.spec)}
+Discovery mode: ${discoveryMode}
+
+Generate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.
+${previousNote}
+Prior round summary: ${JSON.stringify(params.previousRoundSummary)}
+Historical family/provider yield: ${JSON.stringify(params.queryPerformance || {})}
+
+Rules:
+- Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
+- Use at least two lanes: person, account, signal when the brief supports them.
+- person lane finds public professional profiles; account lane finds companies and leadership evidence; signal lane finds public growth, tooling, hiring, or pain evidence.
+- Prefer searchDepth basic. Do not use advanced unless a single signal task truly needs it.
+- providerPreference guide:
+  - tavily: AI-ranked precision person queries (domain-filtered LinkedIn).
+  - brightdata: volume Google SERP discovery and account/signal recovery (search_engine).
+  - corroborate: both providers when useful.
+- In hybrid/bd_primary modes, assign at least two tasks with providerPreference brightdata or corroborate.
+- Prefer query families with stronger prior yield and avoid duplicate-heavy families.
+- Never assume Pro-only Bright Data tools (no structured LinkedIn datasets, no browser automation).
+
+Return query, family, intent, expectedSignal, priority, lane, providerPreference, searchDepth, topic, timeRange, and country when relevant.`;
 };

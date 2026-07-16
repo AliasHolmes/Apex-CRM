@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { ScoutFreeTierBudget } from '../server/leadSearch/freeTier.ts';
+import {
+  ScoutFreeTierBudget,
+  isProviderCreditReservationEnabled
+} from '../server/leadSearch/freeTier.ts';
+import {
+  resolveDiscoveryProviderMode,
+  resolveBrightDataSearchMode,
+  shouldRunTavilyForTask,
+  shouldRunBrightDataForTask
+} from '../server/leadSearch/discoveryRouting.ts';
 import { fuseObservations } from '../server/leadSearch/observations.ts';
 import { buildFallbackQueryPlan, buildFallbackSearchSpec, buildRetrievalTasks } from '../server/leadSearch/searchSpec.ts';
 import { selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
@@ -17,15 +26,54 @@ describe('free-tier prospect scout', () => {
     assert.ok(tasks.some(task => task.lane === 'signal' && task.tavily.includeDomains?.includes('linkedin.com')));
     assert.ok(tasks.every(task => task.tavily.topic === 'general'));
     assert.ok(tasks.every(task => task.tavily.timeRange === undefined));
+    assert.ok(tasks.some(task => task.providerPreference === 'brightdata'));
   });
 
-  it('caps one scout run before it can consume unbounded free-tier credits', () => {
+  it('does not hard-cap provider calls when credit reservation is disabled (key rotation mode)', () => {
+    assert.equal(isProviderCreditReservationEnabled(), false);
     const budget = new ScoutFreeTierBudget();
 
-    assert.equal(budget.reserveTavilySearch('advanced'), true);
-    assert.equal(budget.reserveTavilySearch('advanced'), false);
-    assert.ok(budget.reserveTavilyExtract(10) <= 5);
-    assert.equal(budget.snapshot().tavilyCreditsReserved <= 6, true);
+    for (let i = 0; i < 20; i++) {
+      assert.equal(budget.reserveTavilySearch('advanced'), true);
+      assert.equal(budget.reserveBrightDataSearch(), true);
+    }
+    assert.ok(budget.reserveTavilyExtract(50) >= 50);
+    assert.equal(budget.snapshot().reservationEnabled, false);
+  });
+
+  it('hard-caps only when PROVIDER_CREDIT_RESERVATION=true', () => {
+    const previous = process.env.PROVIDER_CREDIT_RESERVATION;
+    process.env.PROVIDER_CREDIT_RESERVATION = 'true';
+    process.env.TAVILY_SCOUT_MAX_CREDITS_PER_SEARCH = '6';
+    process.env.TAVILY_SCOUT_MAX_ADVANCED_SEARCHES = '1';
+    process.env.TAVILY_SCOUT_EXTRACT_MAX_URLS = '5';
+    try {
+      const budget = new ScoutFreeTierBudget();
+      assert.equal(budget.reserveTavilySearch('advanced'), true);
+      assert.equal(budget.reserveTavilySearch('advanced'), false);
+      assert.ok(budget.reserveTavilyExtract(10) <= 5);
+      assert.equal(budget.snapshot().reservationEnabled, true);
+    } finally {
+      if (previous === undefined) delete process.env.PROVIDER_CREDIT_RESERVATION;
+      else process.env.PROVIDER_CREDIT_RESERVATION = previous;
+    }
+  });
+
+  it('routes dual-provider discovery without requiring Tavily low yield for BD primary', () => {
+    assert.equal(resolveDiscoveryProviderMode({ brightDataConfigured: true }), 'hybrid');
+    assert.equal(resolveDiscoveryProviderMode({ brightDataConfigured: false }), 'tavily_primary');
+    assert.equal(resolveBrightDataSearchMode({ discoveryMode: 'hybrid' }), 'primary');
+    assert.equal(resolveBrightDataSearchMode({ discoveryMode: 'tavily_primary' }), 'fallback');
+
+    const person = { lane: 'person' as const, providerPreference: 'tavily' as const, priority: 1 };
+    const account = { lane: 'account' as const, providerPreference: 'brightdata' as const, priority: 2 };
+
+    assert.equal(shouldRunTavilyForTask(person, 'hybrid', true), true);
+    assert.equal(shouldRunTavilyForTask(account, 'hybrid', true), false);
+    assert.equal(shouldRunTavilyForTask(person, 'bd_primary', true), true);
+    assert.equal(shouldRunBrightDataForTask(account, 'hybrid', 'primary', { brightDataReady: true, tavilyResultCount: 50 }), true);
+    assert.equal(shouldRunBrightDataForTask(person, 'tavily_primary', 'fallback', { brightDataReady: true, tavilyResultCount: 50 }), false);
+    assert.equal(shouldRunBrightDataForTask(person, 'tavily_primary', 'fallback', { brightDataReady: true, tavilyResultCount: 2 }), true);
   });
 
   it('fuses duplicated provider observations and retains corroboration', () => {

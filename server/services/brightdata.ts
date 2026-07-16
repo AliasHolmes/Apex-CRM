@@ -595,7 +595,7 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
   if (isBrightDataFreeTier()) {
     const fallbackLimit = Math.min(
       cleanUrls.length,
-      Math.max(1, Math.floor(Number(process.env.BRIGHTDATA_FREE_BATCH_FALLBACK_MAX_URLS) || 2))
+      Math.max(1, Math.floor(Number(process.env.BRIGHTDATA_FREE_BATCH_FALLBACK_MAX_URLS) || 5))
     );
     const results = await Promise.all(cleanUrls.slice(0, fallbackLimit).map(async (url) => {
       try {

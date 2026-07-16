@@ -1072,9 +1072,17 @@ export function readProviderUsage(provider?: string, period = usagePeriod()) {
     .map((row) => ({ provider: row.provider, period: row.period, units: Number(row.units || 0), updatedAt: row.updated_at }));
 }
 
-/** Reserve provider units before a chargeable free-tier operation. */
-export function reserveProviderUsage(provider: string, units: number, monthlyLimit?: number) {
+/**
+ * Record provider units after a chargeable call. Never blocks discovery -
+ * multi-key rotation handles exhausted credits.
+ */
+export function recordProviderUsage(provider: string, units: number) {
   const requested = Math.max(0, Math.floor(units || 0));
+  if (!requested) {
+    const used = Number((getLeadsDb().prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
+      .get(provider, usagePeriod()) as { units?: number } | undefined)?.units || 0);
+    return { recorded: false, used, requested };
+  }
   const period = usagePeriod();
   const db = getLeadsDb();
   db.exec('BEGIN IMMEDIATE');
@@ -1082,7 +1090,46 @@ export function reserveProviderUsage(provider: string, units: number, monthlyLim
     const current = db.prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
       .get(provider, period) as { units?: number } | undefined;
     const used = Number(current?.units || 0);
-    const allowed = !monthlyLimit || used + requested <= monthlyLimit;
+    db.prepare(`
+      INSERT INTO provider_usage (provider, period, units, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(provider, period) DO UPDATE SET
+        units = excluded.units,
+        updated_at = excluded.updated_at
+    `).run(provider, period, used + requested, new Date().toISOString());
+    db.exec('COMMIT');
+    return { recorded: true, used: used + requested, requested };
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* no-op */ }
+    throw error;
+  }
+}
+
+/**
+ * Prefer recordProviderUsage. Hard monthly caps apply only when
+ * PROVIDER_CREDIT_RESERVATION=true and monthlyLimit is set; otherwise always
+ * allows and records so multi-key rotation can run.
+ */
+export function reserveProviderUsage(provider: string, units: number, monthlyLimit?: number) {
+  const reservationEnabled = String(process.env.PROVIDER_CREDIT_RESERVATION || '').trim().toLowerCase() === 'true';
+  const requested = Math.max(0, Math.floor(units || 0));
+  if (!reservationEnabled || monthlyLimit === undefined || monthlyLimit === null) {
+    const recorded = recordProviderUsage(provider, requested);
+    return {
+      allowed: true,
+      used: recorded.used - (recorded.recorded ? requested : 0),
+      requested,
+      remaining: undefined as number | undefined
+    };
+  }
+  const period = usagePeriod();
+  const db = getLeadsDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const current = db.prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
+      .get(provider, period) as { units?: number } | undefined;
+    const used = Number(current?.units || 0);
+    const allowed = used + requested <= monthlyLimit;
     if (allowed && requested) {
       db.prepare(`
         INSERT INTO provider_usage (provider, period, units, updated_at)
@@ -1093,7 +1140,7 @@ export function reserveProviderUsage(provider: string, units: number, monthlyLim
       `).run(provider, period, used + requested, new Date().toISOString());
     }
     db.exec('COMMIT');
-    return { allowed, used, requested, remaining: monthlyLimit ? Math.max(0, monthlyLimit - used - (allowed ? requested : 0)) : undefined };
+    return { allowed, used, requested, remaining: Math.max(0, monthlyLimit - used - (allowed ? requested : 0)) };
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* no-op */ }
     throw error;

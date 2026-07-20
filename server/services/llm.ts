@@ -41,6 +41,14 @@ export type LLMProviderAttempt = {
   error?: string;
 };
 
+export type LLMUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  provider: string;
+  model: string;
+};
+
 export type LLMSessionCircuitBreaker = {
   failureThreshold: number;
   failureCounts: Partial<Record<LLMProvider['id'], number>>;
@@ -49,6 +57,8 @@ export type LLMSessionCircuitBreaker = {
 
 type LLMExecutionOptions = {
   onProviderAttempt?: (attempt: LLMProviderAttempt) => void;
+  onUsage?: (usage: LLMUsage) => void;
+  timeoutMs?: number;
   circuitBreaker?: LLMSessionCircuitBreaker;
 };
 
@@ -234,15 +244,17 @@ async function fetchWithRetry(
   throw lastError;
 }
 
-class LLMProviderError extends Error {
+export class LLMProviderError extends Error {
   provider: LLMProvider;
   status?: number;
+  isTokenLimit: boolean;
 
   constructor(provider: LLMProvider, status: number | undefined, message: string) {
     super(`[${provider.name}] ${message}`);
     this.name = 'LLMProviderError';
     this.provider = provider;
     this.status = status;
+    this.isTokenLimit = status === 413 || /413|tokens|rate_limit_exceeded|payload too large|too many tokens/i.test(message);
   }
 }
 
@@ -256,9 +268,10 @@ function formatProviderFailures(errors: Error[]): string {
 
 function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
-  if (status === 408 || status === 429 || status === 502 || status === 503 || status === 504) return true;
+  const isTokenLimit = error instanceof LLMProviderError ? error.isTokenLimit : false;
+  if (status === 408 || status === 413 || status === 429 || status === 502 || status === 503 || status === 504 || isTokenLimit) return true;
   if (status === 500 && /empty or invalid response|unable to get json response/i.test(error.message)) return true;
-  return /timed out|timeout|connection timed out|no deployments available|cooldown/i.test(error.message);
+  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|rate_limit_exceeded/i.test(error.message);
 }
 
 async function withProviderFallback<T>(
@@ -327,7 +340,7 @@ async function withProviderFallback<T>(
 async function sendChatCompletion(
   provider: LLMProvider,
   messages: ChatMessage[],
-  options?: { maxTokens?: number; temperature?: number; responseFormat?: { type: 'json_object' } }
+  options?: { maxTokens?: number; temperature?: number; responseFormat?: { type: 'json_object' } } & Pick<LLMExecutionOptions, 'onUsage' | 'timeoutMs'>
 ): Promise<string> {
   let res: Response;
   try {
@@ -348,7 +361,7 @@ async function sendChatCompletion(
         max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000,
         ...(options?.responseFormat ? { response_format: options.responseFormat } : {}),
       })
-    });
+    }, options?.timeoutMs);
   } catch (error: any) {
     throw new LLMProviderError(
       provider,
@@ -363,6 +376,19 @@ async function sendChatCompletion(
   }
 
   const data = await res.json();
+  const usage = data?.usage;
+  if (usage && typeof options?.onUsage === 'function') {
+    const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+    const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+    const suppliedTotal = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
+    options.onUsage({
+      inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
+      outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
+      totalTokens: Number.isFinite(suppliedTotal) && suppliedTotal > 0 ? suppliedTotal : Math.max(0, inputTokens) + Math.max(0, outputTokens),
+      provider: provider.name,
+      model: provider.model
+    });
+  }
   return data.choices?.[0]?.message?.content || '';
 }
 
@@ -823,6 +849,19 @@ export function hasOpenAIKey(): boolean {
 // Type Schemas for OpenAI Structure Responses
 // -----------------------------------------------------------------------------
 
+export type RawExtractedCandidate = {
+  fullName: string;
+  currentTitle?: string;
+  currentCompany?: string;
+  location?: string;
+  headline?: string;
+  seniorityLevel?: string;
+  contactDetails?: { linkedinUrl?: string; email?: string; phone?: string; website?: string };
+  experiences?: Array<{ title: string; company: string; duration?: string }>;
+  summary?: string;
+  extractionConfidence: number; // 1-10
+};
+
 export const singleProfileSchema = {
   type: Type.OBJECT,
   properties: {
@@ -878,12 +917,9 @@ export const singleProfileSchema = {
     techStackHints: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Tools/software mentioned" },
     painIndicators: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Quoted phrases or inferred needs" },
     enrichmentGaps: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List all MISSING fields that block outreach" },
-    icpScoreReasoning: { type: Type.STRING, description: "1-10 rating rationale" },
-    fitScore: { type: Type.NUMBER, description: "ICP match based on title, industry, company size (out of 10)" },
-    intentScore: { type: Type.NUMBER, description: "Buying signals (out of 10)" },
-    timingScore: { type: Type.NUMBER, description: "Recent role change, funding event (out of 10)" },
+    extractionConfidence: { type: Type.NUMBER, description: "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10)." },
   },
-  required: ["fullName"],
+  required: ["fullName", "extractionConfidence"],
 };
 
 export const APEX_SYSTEM_PROMPT = `
@@ -1023,13 +1059,19 @@ export const searchSpecSchema = {
 // on irrelevant rules (e.g. outreach golden rules during query generation).
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Lean per-task system prompts - scoped to what each call actually needs.
+// Sending the full APEX_SYSTEM_PROMPT (~530 tokens) to every call wastes tokens
+// on irrelevant rules (e.g. outreach golden rules during query generation).
+// -----------------------------------------------------------------------------
+
 /** Minimal prompt for Step 1 - query generation only. */
 export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce precise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Output only valid JSON.`;
 
 /** Focused prompt for Step 3 - initial scouting only. Deep enrichment and email
  * discovery deliberately happen after manual selection. */
 export const EXTRACTION_SYSTEM_PROMPT = `You are a B2B prospect scouting extraction engine. Extract only facts directly supported by source evidence and return valid JSON matching the schema exactly.
-Rules: Never invent data. Use empty strings for missing fields. Do not infer or generate email addresses. Do not invent employment history, company size, funding, intent, or timing. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If reasoning is visible, keep it outside the final JSON markers.`;
+Rules: Never invent data. Use empty strings for missing fields. Do not score or judge relevance. Do not infer or generate email addresses. Do not invent employment history, company size, funding, intent, or timing. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If current employment is unclear from the evidence, set extractionConfidence below 6. If reasoning is visible, keep it outside the final JSON markers.`;
 
 // -----------------------------------------------------------------------------
 // Trimmed schema for bulk extraction.
@@ -1057,13 +1099,11 @@ export const bulkSingleProfileSchema = {
         website: { type: Type.STRING, description: "Company or personal website" },
       },
     },
-    fitScore: { type: Type.NUMBER, description: "Conservative 1-10 match based only on explicit title, company, industry, and location evidence" },
-    intentScore: { type: Type.NUMBER, description: "1-10 only when a specific public signal is visible; otherwise use 5" },
-    timingScore: { type: Type.NUMBER, description: "1-10 only when a dated public trigger is visible; otherwise use 5" },
     sourceProvider: { type: Type.STRING, description: "tavily or brightdata, copied from SOURCE_PROVIDER when present" },
     evidenceReasons: { type: Type.ARRAY, items: { type: Type.STRING }, description: "1-3 short evidence-backed reasons this prospect matches the user query" },
+    extractionConfidence: { type: Type.NUMBER, description: "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10)." },
   },
-  required: ["fullName"],
+  required: ["fullName", "extractionConfidence"],
 };
 
 export const bulkLeadsArraySchema = {

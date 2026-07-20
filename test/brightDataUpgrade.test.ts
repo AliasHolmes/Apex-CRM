@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
-import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, classifyBrightDataError, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
+import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, classifyBrightDataError, executeBrightDataSearchWithRetry, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
 
 test('verifyDecisionMakerFromEvidence accepts founder', (t) => {
   const result = verifyDecisionMakerFromEvidence({
@@ -185,13 +185,60 @@ test('findCompanyWebsite rejects one-label and news-article domains that only me
   assert.strictEqual(website, 'https://cal.ai');
 });
 
-test('Bright Data classifies target gateway failures as retryable target transients', () => {
-  for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body']) {
+test('Bright Data classifies target gateway and malformed search responses as retryable target transients', () => {
+  for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body', "Unexpected non-JSON response from Bright Data for search_engine."]) {
     const classified = classifyBrightDataError(new Error(message));
     assert.strictEqual(classified.reasonCode, 'target_transient');
     assert.strictEqual(classified.retryable, true);
     assert.strictEqual(classified.providerDisabled, false);
     assert.strictEqual(classified.clearClient, false);
+  }
+});
+
+test('Bright Data search retry recovers one transient malformed response', async () => {
+  let attempts = 0;
+  const retries: number[] = [];
+  let retryNotifications = 0;
+  const result = await executeBrightDataSearchWithRetry(async attempt => {
+    attempts = attempt;
+    if (attempt === 1) throw new Error("Unexpected non-JSON response from Bright Data for search_engine.");
+    return ['recovered'];
+  }, {
+    maxRetries: 1,
+    baseDelayMs: 0,
+    jitterMs: 0,
+    sleep: async delayMs => { retries.push(delayMs); },
+    onRetry: () => { retryNotifications++; }
+  });
+
+  assert.deepStrictEqual(result, ['recovered']);
+  assert.strictEqual(attempts, 2);
+  assert.deepStrictEqual(retries, [0]);
+  assert.strictEqual(retryNotifications, 1);
+});
+
+test('Bright Data search retry stops after two physical attempts', async () => {
+  let attempts = 0;
+  await assert.rejects(
+    executeBrightDataSearchWithRetry(async attempt => {
+      attempts = attempt;
+      throw new Error("Unexpected non-JSON response from Bright Data for search_engine.");
+    }, { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} }),
+    (error: unknown) => error instanceof BrightDataError && error.reasonCode === 'target_transient'
+  );
+  assert.strictEqual(attempts, 2);
+});
+
+test('Bright Data search retry never repeats non-retryable failures', async () => {
+  for (const message of ['401 unauthorized invalid token', 'quota credits exhausted', 'HTTP 400 Request validation failed']) {
+    let attempts = 0;
+    await assert.rejects(
+      executeBrightDataSearchWithRetry(async () => {
+        attempts++;
+        throw new Error(message);
+      }, { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} })
+    );
+    assert.strictEqual(attempts, 1, message);
   }
 });
 

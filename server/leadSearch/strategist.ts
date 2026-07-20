@@ -16,6 +16,11 @@ export type QueryRunStats = {
   providerPreference?: string;
   tavilySearchDepth?: string;
   corroboratedCandidates?: number;
+  searchLatencyMs: number;
+  providerUnits: number;
+  qualifiedFinalists: number;
+  rescuedFinalists: number;
+  returnedFinalists: number;
 };
 
 export type ProviderRunStats = {
@@ -44,6 +49,9 @@ export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {
       if (item && typeof item === 'object') {
         return {
           query: typeof item.query === 'string' ? item.query : '',
+          coveredRequirementIds: Array.isArray(item.coveredRequirementIds)
+            ? item.coveredRequirementIds.filter((id: unknown) => typeof id === 'string').slice(0, 10)
+            : undefined,
           family: item.family,
           intent: item.intent,
           expectedSignal: typeof item.expectedSignal === 'string' ? item.expectedSignal : undefined,

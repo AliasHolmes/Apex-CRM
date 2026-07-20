@@ -1,4 +1,5 @@
 import { scrapeAsMarkdown } from '../services/brightdata.js';
+import type { SearchSpec } from './searchSpec.js';
 
 export type CompanyIntentEvidence = {
   websiteUrl?: string;
@@ -79,7 +80,10 @@ export async function findCompanyWebsite(input: {
   return ranked[0]?.result.url || null;
 }
 
-export async function checkCompanyIntent(websiteUrl: string): Promise<CompanyIntentEvidence | null> {
+export async function checkCompanyIntent(
+  websiteUrl: string,
+  options?: { searchSpec?: SearchSpec; companyName?: string }
+): Promise<CompanyIntentEvidence | null> {
   if (!websiteUrl || isBlockedUrl(websiteUrl)) return null;
 
   try {
@@ -96,23 +100,32 @@ export async function checkCompanyIntent(websiteUrl: string): Promise<CompanyInt
       }
     }
 
+    const targetKeywords = options?.searchSpec?.company?.keywords || [];
+    const targetMatches = targetKeywords.filter(k => k && k.length > 2 && lowerMarkdown.includes(k.toLowerCase()));
+    if (targetMatches.length > 0) {
+      buyingSignalsFound.push(...targetMatches);
+    }
+
+    const uniqueBuyingSignals = Array.from(new Set(buyingSignalsFound));
     const snippets: string[] = [];
-    if (buyingSignalsFound.length > 0) {
-      snippets.push(`Found relevant intent signals: ${buyingSignalsFound.join(', ')}`);
+    if (uniqueBuyingSignals.length > 0) {
+      snippets.push(`Found relevant intent signals: ${uniqueBuyingSignals.join(', ')}`);
     }
 
     let quality: 'weak' | 'partial' | 'good' = 'weak';
-    if (buyingSignalsFound.length >= 3) {
+    if (uniqueBuyingSignals.length >= 3) {
       quality = 'good';
-    } else if (buyingSignalsFound.length >= 1) {
+    } else if (uniqueBuyingSignals.length >= 1) {
       quality = 'partial';
     }
+
+    if (uniqueBuyingSignals.length === 0) return null;
 
     return {
       websiteUrl,
       evidenceQuality: quality,
       snippets,
-      buyingSignals: buyingSignalsFound,
+      buyingSignals: uniqueBuyingSignals,
       painSignals: painSignalsFound
     };
   } catch (error) {

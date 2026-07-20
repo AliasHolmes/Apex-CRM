@@ -4,8 +4,10 @@ export type MiningPhase =
   | 'strategy'
   | 'search'
   | 'candidate_processing'
+  | 'candidate_auditor'
   | 'extraction'
   | 'filtering'
+  | 'lead_explainer'
   | 'enrichment'
   | 'persistence';
 export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
@@ -191,7 +193,9 @@ function summarizeProviders(events: MiningTraceEvent[]): ProviderSummary {
     item.latencyMs += Number(event.latencyMs || 0);
     item.inputTokens += Number(event.llm?.inputTokens || 0);
     item.outputTokens += Number(event.llm?.outputTokens || 0);
-    item.totalTokens += Number(event.llm?.totalTokens || 0);
+    const explicitTotal = Number(event.llm?.totalTokens);
+    const inferredTotal = Number(event.llm?.inputTokens || 0) + Number(event.llm?.outputTokens || 0);
+    item.totalTokens += Number.isFinite(explicitTotal) && explicitTotal > 0 ? explicitTotal : inferredTotal;
     item.estimatedCostUsd = Number((item.estimatedCostUsd + Number(event.llm?.estimatedCostUsd || 0)).toFixed(6));
     if (event.llm?.fallbackUsed) item.fallbackUses++;
   }
@@ -238,7 +242,9 @@ export class MiningTelemetryRecorder {
     private readonly query: string,
     private readonly requested: number,
     private readonly startedAt = nowIso()
-  ) {}
+  ) {
+    setActiveTelemetryRecorder(this);
+  }
 
   record(event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) {
     const traceEvent: MiningTraceEvent = {
@@ -252,6 +258,26 @@ export class MiningTelemetryRecorder {
       metadata: event.metadata ? sanitizeMetadata(event.metadata) : undefined
     };
     this.events.push(traceEvent);
+
+    if (llmStageLogger && (traceEvent.provider === 'llm' || traceEvent.llm) && traceEvent.status !== 'started') {
+      try {
+        llmStageLogger({
+          searchLogId: this.sessionId,
+          stage: traceEvent.phase || traceEvent.operation || 'unknown',
+          round: traceEvent.round ?? 1,
+          status: traceEvent.status,
+          inputTokens: traceEvent.llm?.inputTokens ?? 0,
+          outputTokens: traceEvent.llm?.outputTokens ?? 0,
+          latencyMs: traceEvent.latencyMs ?? 0,
+          modelName: traceEvent.llm?.model || undefined,
+          provider: 'llm',
+          createdAt: traceEvent.timestamp
+        });
+      } catch (err) {
+        // ignore logger errors so search pipeline never fails from logging
+      }
+    }
+
     return traceEvent;
   }
 
@@ -335,4 +361,34 @@ function sanitizeMetadata(metadata: Record<string, any>) {
     else sanitized[key] = value;
   }
   return sanitized;
+}
+
+export type LlmStageLogEntry = {
+  searchLogId?: string;
+  stage: string;
+  round?: number;
+  status: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  latencyMs?: number;
+  modelName?: string;
+  provider?: string;
+  createdAt?: string;
+};
+
+let llmStageLogger: ((entry: LlmStageLogEntry) => void) | null = null;
+let activeTelemetryRecorder: MiningTelemetryRecorder | null = null;
+
+export function setLlmStageLogger(logger: ((entry: LlmStageLogEntry) => void) | null) {
+  llmStageLogger = logger;
+}
+
+export function setActiveTelemetryRecorder(recorder: MiningTelemetryRecorder | null) {
+  activeTelemetryRecorder = recorder;
+}
+
+export function recordTrace(event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) {
+  if (activeTelemetryRecorder) {
+    activeTelemetryRecorder.record(event);
+  }
 }

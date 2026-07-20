@@ -87,10 +87,8 @@ const parseKeyValue = (value?: string) => {
 };
 
 export function parseApiKeys(primary?: string, fallbacks: Array<string | undefined> = []) {
-  const primaryKeys = parseKeyValue(primary);
-  const sourceKeys = primaryKeys.length > 0
-    ? primaryKeys
-    : fallbacks.flatMap(value => parseKeyValue(value));
+  const sourceKeys = [primary, ...fallbacks]
+    .flatMap(value => parseKeyValue(value));
   return Array.from(new Set(sourceKeys));
 }
 

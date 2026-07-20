@@ -12,16 +12,17 @@
         "lint": "tsc --noEmit",
         "test:enrichment": "tsx --test test/enrichmentCache.test.ts test/linkedinEvidence.test.ts",
         "test:lead-search": "tsx --test test/leadSearchHelpers.test.ts",
+        "test:prospect-quality": "tsx --test test/prospectQuality.test.ts",
         "test:scout": "tsx --test test/scoutPipeline.test.ts",
         "test:brightdata-upgrade": "tsx --test test/brightDataUpgrade.test.ts",
         "test:key-rotation": "tsx --test test/keyRotator.test.ts test/tavilyRotation.test.ts",
-    "test:llm": "tsx --test test/llmFallback.test.ts test/llmBudget.test.ts",
+        "test:llm": "tsx --test test/llmFallback.test.ts test/llmBudget.test.ts",
         "test:telemetry": "tsx --test test/telemetry.test.ts",
         "test:glyphs": "tsx --test test/encodingHygiene.test.ts",
         "test:ui": "tsx --test test/uiContracts.test.ts",
         "test:persistence": "tsx --test test/leadPersistence.test.ts",
         "test:mutations": "tsx --test test/leadMutationContracts.test.ts",
-    "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/scoutPipeline.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/llmBudget.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts test/uiContracts.test.ts test/leadPersistence.test.ts test/leadMutationContracts.test.ts"
+    "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/scoutPipeline.test.ts test/adaptiveScheduler.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/llmBudget.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts test/uiContracts.test.ts test/leadPersistence.test.ts test/leadMutationContracts.test.ts"
     },
     "dependencies": {
         "@brightdata/mcp": "^2.11.0",
@@ -36,6 +37,7 @@
         "express": "^5.2.1",
         "lucide-react": "^1.24.0",
         "motion": "^12.42.2",
+        "p-queue": "^9.3.1",
         "papaparse": "^5.5.4",
         "react": "^19.2.7",
         "react-dom": "^19.2.7",

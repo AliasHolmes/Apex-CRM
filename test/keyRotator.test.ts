@@ -3,9 +3,9 @@ import { test } from 'node:test';
 
 import { ApiKeyPool, KeyRotationError, executeWithKeyRotation, parseApiKeys } from '../server/services/keyRotator.js';
 
-test('parseApiKeys supports JSON arrays, comma-separated values, dedupe, and fallback precedence', () => {
-  assert.deepEqual(parseApiKeys('["a", "b", "a", " "]', ['fallback']), ['a', 'b']);
-  assert.deepEqual(parseApiKeys(' a, b, a ,, ', ['fallback']), ['a', 'b']);
+test('parseApiKeys merges plural and singular sources with stable deduplication', () => {
+  assert.deepEqual(parseApiKeys('["a", "b", "a", " "]', ['fallback']), ['a', 'b', 'fallback']);
+  assert.deepEqual(parseApiKeys(' a, b, a ,, ', ['fallback', 'b']), ['a', 'b', 'fallback']);
   assert.deepEqual(parseApiKeys('', [' fallback-1, fallback-2 ', 'fallback-1']), ['fallback-1', 'fallback-2']);
 });
 

@@ -4,8 +4,8 @@ import { LEAD_STAGE_SET as leadStages, REVIEW_STATUS_SET as reviewStatuses, NEXT
 import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getProfileDomain, getLinkedInHandle } from '../../src/utils/leadDedupe.js';
 
 import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
-import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt } from '../services/llm.js';
-import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, isBrightDataRetryableError } from '../services/brightdata.js';
+import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt, type LLMUsage } from '../services/llm.js';
+import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
@@ -21,11 +21,18 @@ import { resolveDiscoveryProviderMode, resolveBrightDataSearchMode, shouldRunTav
 import { fuseObservations, type ScoutObservation } from '../leadSearch/observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from '../leadSearch/scoutScoring.js';
 import { chunkEvidenceBlocksByTokenBudget, estimateTokenCount, fitOutputTokenBudget } from '../leadSearch/llmBudget.js';
+import { buildDeterministicProspectContract, buildProspectContractPrompt, buildRecoveryQueryPrompt, enforceContractQueries, normalizeProspectContract, prospectContractSchema, PROSPECT_CONTRACT_POLICY_VERSION, searchSpecFromProspectContract, type ProspectContract } from '../leadSearch/prospectContract.js';
+import { FINALIST_JUDGE_SYSTEM_PROMPT, buildFinalistJudgePrompt, finalistCandidateFromLead, finalistJudgeSchema, partitionCandidatesByStrictEvidence, validateFinalistJudgments, type FinalistCandidate } from '../leadSearch/finalistJudge.js';
+import { buildRoundDiagnostics } from '../leadSearch/roundDiagnostics.js';
+import { buildCollectionCapacity } from '../leadSearch/collectionCapacity.js';
+import { scheduleAdaptiveRetrievalTasks } from '../leadSearch/adaptiveScheduler.js';
+import { runProviderQueue } from '../leadSearch/providerQueue.js';
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
 export const activeSessionEvents = new Map<string, MiningTraceEvent[]>();
 export const cancelledSessions = new Set<string>();
+export const activeSessionControllers = new Map<string, AbortController>();
 
 // Cache for /api/llm-health to avoid charging tokens on every page load.
 let _llmHealthCache: { result: Record<string, any>; expiresAt: number } | null = null;
@@ -505,6 +512,7 @@ router.post('/mining-sessions/:sessionId/cancel', (req, res): any => {
   if (!activeSessions.has(sessionId)) return res.status(404).json({ error: 'Mining session is not active.', sessionId });
 
   cancelledSessions.add(sessionId);
+  activeSessionControllers.get(sessionId)?.abort();
   const logs = activeSessions.get(sessionId) || [];
   const cancellationRequestedAt = new Date().toISOString();
   logs.push(`[${cancellationRequestedAt}] Cancellation requested by local user.`);
@@ -652,8 +660,9 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
   const sessionLogs: string[] = [];
   const debugLogs: any[] = [];
+  const sessionAbortController = new AbortController();
   const throwIfCancelled = () => {
-    if (!cancelledSessions.has(sessionId)) return;
+    if (!cancelledSessions.has(sessionId) && !sessionAbortController.signal.aborted) return;
     const error = new Error('Lead discovery was cancelled.');
     error.name = 'AbortError';
     throw error;
@@ -683,6 +692,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     requestedLimit,
     startedAt: new Date(startedAt).toISOString()
   });
+  activeSessionControllers.set(sessionId, sessionAbortController);
   const recordTrace = (event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) => {
     const recorded = telemetry.record(event);
     activeSessionEvents.set(sessionId, telemetry.getEvents().slice(-100));
@@ -712,16 +722,17 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     output: unknown,
     latencyMs: number,
     parseRetries = 0,
-    providerAttempts: LLMProviderAttempt[] = []
+    providerAttempts: LLMProviderAttempt[] = [],
+    usage?: LLMUsage
   ) => {
     const route = getLLMRouteLabel();
     const successfulAttempt = providerAttempts.find(attempt => attempt.status === 'success');
-    const inputTokens = estimateTokens(promptText);
-    const outputTokens = estimateTokens(typeof output === 'string' ? output : JSON.stringify(output || ''));
+    const inputTokens = usage ? usage.inputTokens : estimateTokens(promptText);
+    const outputTokens = usage ? usage.outputTokens : estimateTokens(typeof output === 'string' ? output : JSON.stringify(output || ''));
     return {
       purpose,
-      model: successfulAttempt?.model || route.model,
-      route: successfulAttempt?.provider || route.route,
+      model: usage?.model || successfulAttempt?.model || route.model,
+      route: usage?.provider || successfulAttempt?.provider || route.route,
       fallbackUsed: providerAttempts.some(attempt => attempt.status === 'error' || attempt.status === 'skipped'),
       providerAttempts,
       inputTokens,
@@ -740,6 +751,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     cacheHits: 0,
     searchAttempted: 0,
     searchSucceeded: 0,
+    searchRetries: 0,
+    searchRecovered: 0,
     profileScrapesAttempted: 0,
     profileScrapesSucceeded: 0,
     companyScrapesAttempted: 0,
@@ -786,12 +799,19 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       mode: 'person_first' as DiscoveryMode,
       maxPerCompany: 2,
       spec: null as SearchSpec | null,
+      contract: null as any,
       discoveryProviderMode: 'hybrid' as string,
       brightDataSearchMode: 'primary' as string,
       creditReservation: 'disabled' as string,
       freeTier: {} as Record<string, unknown>,
       lightweightEvidenceUpgrades: 0,
-      brightDataEvidenceUpgrades: 0
+      brightDataEvidenceUpgrades: 0,
+      adaptiveScheduler: null as null | {
+        active: boolean;
+        totalOutcomeRuns: number;
+        selected: string[];
+        deferred: string[];
+      }
     },
     rerank: {
       poolTarget: 0,
@@ -885,42 +905,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     });
 
     const { query, excludeList = [] } = req.body;
-    const targetLimit = stats.requested;
-    const rerankPoolMultiplier = Math.min(Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER || 3), 1), 5);
-    const rerankPoolMax = Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MAX || 30), targetLimit);
-    const rerankPoolTarget = Math.min(Math.max(targetLimit * rerankPoolMultiplier, targetLimit), rerankPoolMax);
-    stats.rerank.poolTarget = rerankPoolTarget;
-    const maxRounds = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 4), 1), 8);
-    const minScore = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MIN_SCORE || 6), 1), 10);
-    const ttlDays = Math.min(Math.max(Number(process.env.BRIGHTDATA_CACHE_TTL_DAYS || 7), 1), 30);
-    const enrichmentCap = Math.min(
-      Math.max(Number(process.env.BRIGHTDATA_ENRICHMENT_CAP || 0) || Math.max(targetLimit * 3, 20), 1),
-      500
-    );
-    const safetyTimeoutMs = Number(process.env.LEAD_SEARCH_TIMEOUT_MS || 0) || 0;
-
-    const discoveryProviderMode = resolveDiscoveryProviderMode({
-      brightDataConfigured: isBrightDataConfigured(),
-      tavilyConfigured: hasTavilyKey()
-    });
-    const brightDataSearchMode = resolveBrightDataSearchMode({ discoveryMode: discoveryProviderMode });
-    const profileConcurrency = Math.max(Number(process.env.BRIGHTDATA_PROFILE_CONCURRENCY || 1), 1);
-    const profileMaxPerSearch = Math.max(Number(process.env.BRIGHTDATA_PROFILE_MAX_PER_SEARCH || 0) || Math.max(targetLimit * 2, 10), 0);
-    const companyIntentEnabled = process.env.BRIGHTDATA_COMPANY_INTENT_ENABLED === 'true';
-    const companyIntentMinScore = Math.min(Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MIN_SCORE || 8), 1), 10);
-    const companyIntentMaxPerSearch = Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 3), 0);
-    // Default to post_filter deep unlock when Bright Data is available so scout
-    // shortlists get markdown evidence; callers may still force on_demand.
-    const profileEnrichmentStage = req.body.profileEnrichmentStage
-      || process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE
-      || (isBrightDataConfigured() ? 'post_filter' : 'on_demand');
-
     if (!query) throw new Error('Search criteria/query is required');
     if (!hasOpenAIKey()) throw new Error('OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.');
+
+    const targetLimit = stats.requested;
+    const rerankPoolMultiplier = Math.min(Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER || 3), 1), 5);
 
     const requestedMode = ['person_first', 'account_first', 'signal_first', 'local_business'].includes(req.body.discoveryMode)
       ? req.body.discoveryMode as DiscoveryMode
       : 'person_first';
+
     let searchSpec = normalizeSearchSpec(req.body.searchSpec, query);
     if (!req.body.searchSpec) {
       searchSpec = buildFallbackSearchSpec(query, requestedMode);
@@ -944,6 +938,82 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         });
       }
     }
+
+    // Build deterministic contract first as fallback.
+    const fallbackContract = buildDeterministicProspectContract(query, searchSpec);
+
+    // Compile contract using LLM if OpenAI/Byesu key is configured.
+    let contract = fallbackContract;
+    if (hasOpenAIKey()) {
+      const contractStarted = Date.now();
+      const contractPrompt = buildProspectContractPrompt(query);
+      try {
+        const compiled = await openAIStructured<any>(
+          contractPrompt,
+          prospectContractSchema,
+          `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
+          { maxTokens: 1000, temperature: 0 }
+        );
+        contract = normalizeProspectContract(compiled, query, fallbackContract);
+        const hardCount = contract.requirements.filter(req => req.importance === 'hard').length;
+        logEvent(`Compiled prospect quality contract v${contract.policyVersion} with ${hardCount} hard requirements.`);
+      } catch (err: any) {
+        logEvent(`WARN: Prospect contract compiler failed: ${err.message || String(err)}. Using deterministic contract.`);
+      }
+    }
+    stats.scout.contract = contract;
+
+    // Apply contract synonyms to searchSpec
+    searchSpec = searchSpecFromProspectContract(searchSpec, contract);
+
+    const contractHardCount = contract.requirements.filter(req => req.importance === 'hard').length;
+    let collectionCapacity = buildCollectionCapacity({
+      targetLimit,
+      poolMultiplier: rerankPoolMultiplier,
+      poolMax: Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MAX || 240), targetLimit),
+      baseRounds: Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 6),
+      contractHardReqCount: contractHardCount
+    });
+    let rerankPoolTarget = collectionCapacity.rerankPoolTarget;
+    stats.rerank.poolTarget = rerankPoolTarget;
+    let maxRounds = collectionCapacity.maxRounds;
+    if (collectionCapacity.poolCapped) {
+      logEvent(`Requested ${targetLimit} prospects exceeds the ${collectionCapacity.rerankPoolTarget}-candidate evidence-pool safety cap; continuing on a best-effort basis.`);
+    }
+
+    const minScore = Math.min(Math.max(Number(process.env.LEAD_SEARCH_MIN_SCORE || 6), 1), 10);
+    const ttlDays = Math.min(Math.max(Number(process.env.BRIGHTDATA_CACHE_TTL_DAYS || 7), 1), 30);
+    const enrichmentCap = Math.min(
+      Math.max(Number(process.env.BRIGHTDATA_ENRICHMENT_CAP || 0) || Math.max(targetLimit * 3, 20), 1),
+      500
+    );
+    const safetyTimeoutMs = Number(process.env.LEAD_SEARCH_TIMEOUT_MS || 0) || 0;
+
+    const discoveryProviderMode = resolveDiscoveryProviderMode({
+      brightDataConfigured: isBrightDataConfigured(),
+      tavilyConfigured: hasTavilyKey()
+    });
+    const brightDataSearchMode = resolveBrightDataSearchMode({ discoveryMode: discoveryProviderMode });
+    const configuredBrightDataSearchRetryMax = Number(process.env.BRIGHTDATA_SEARCH_RETRY_MAX ?? 1);
+    const brightDataSearchRetryMax = Number.isFinite(configuredBrightDataSearchRetryMax)
+      ? Math.min(Math.max(Math.floor(configuredBrightDataSearchRetryMax), 0), 2)
+      : 1;
+    const configuredBrightDataSearchRetryDelay = Number(process.env.BRIGHTDATA_SEARCH_RETRY_BASE_DELAY_MS ?? 750);
+    const brightDataSearchRetryBaseDelayMs = Number.isFinite(configuredBrightDataSearchRetryDelay)
+      ? Math.min(Math.max(Math.floor(configuredBrightDataSearchRetryDelay), 0), 10_000)
+      : 750;
+    const profileConcurrency = Math.max(Number(process.env.BRIGHTDATA_PROFILE_CONCURRENCY || 1), 1);
+    const profileMaxPerSearch = Math.max(Number(process.env.BRIGHTDATA_PROFILE_MAX_PER_SEARCH || 0) || Math.max(targetLimit * 2, 10), 0);
+    const companyIntentEnabled = process.env.BRIGHTDATA_COMPANY_INTENT_ENABLED === 'true';
+    const companyIntentMinScore = Math.min(Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MIN_SCORE || 8), 1), 10);
+    const companyIntentMaxPerSearch = Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 3), 0);
+    // Default to post_filter deep unlock when Bright Data is available so scout
+    // shortlists get markdown evidence; callers may still force on_demand.
+    const profileEnrichmentStage = req.body.profileEnrichmentStage
+      || process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE
+      || (isBrightDataConfigured() ? 'post_filter' : 'on_demand');
+
+
     const freeTierBudget = new ScoutFreeTierBudget();
     const tavilyCapabilities = tavilyFreeTierCapabilities();
     const brightDataCapabilities = brightDataFreeTierCapabilities();
@@ -952,6 +1022,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       mode: searchSpec.mode,
       maxPerCompany: searchSpec.maxPerCompany,
       spec: searchSpec,
+      contract,
       discoveryProviderMode,
       brightDataSearchMode,
       creditReservation: creditReservationEnabled ? 'enabled' : 'disabled',
@@ -961,7 +1032,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         session: freeTierBudget.snapshot()
       },
       lightweightEvidenceUpgrades: 0,
-      brightDataEvidenceUpgrades: 0
+      brightDataEvidenceUpgrades: 0,
+      adaptiveScheduler: null
     };
     logEvent(`Discovery mode=${discoveryProviderMode}, Bright Data search=${brightDataSearchMode}, creditReservation=${creditReservationEnabled ? 'enabled' : 'disabled (key rotation)'}.`);
 
@@ -996,6 +1068,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     };
     
     const acceptedLeads: any[] = [];
+    const leadQueryRuns = new WeakMap<Record<string, any>, QueryRunStats>();
     const seenCandidateKeys = new Set<string>();
     const seenQueryTexts = new Set<string>();
     const evidenceByUrl = new Map<string, EvidenceMeta>();
@@ -1020,21 +1093,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       logEvent(isBrightDataConfigured() ? 'Bright Data is temporarily unavailable. Continuing with cache/Tavily fallbacks.' : 'Bright Data token not configured. Continuing Tavily-only.');
     }
 
-    // A small concurrency helper for promises
-    const asyncQueue = async <T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> => {
-      const results: T[] = [];
-      const executing = new Set<Promise<void>>();
-      for (const task of tasks) {
-        const p = task().then(r => { results.push(r); });
-        executing.add(p);
-        p.finally(() => executing.delete(p));
-        if (executing.size >= limit) {
-          await Promise.race(executing);
-        }
-      }
-      await Promise.all(executing);
-      return results;
-    };
+    let consecutiveStalledRounds = 0;
+    let acceptedCountBeforeRound = 0;
 
     for (let round = 1; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
       if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
@@ -1043,14 +1103,22 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       }
 
       stats.rounds = round;
+      acceptedCountBeforeRound = acceptedLeads.length;
       const remaining = Math.max(rerankPoolTarget - acceptedLeads.length, 0);
-      const historicalYield = Object.fromEntries(readQueryPerformance(30).map((row: any) => [
+      const historicalPerformance = readQueryPerformance(100);
+      const historicalYield = Object.fromEntries(historicalPerformance.slice(0, 30).map((row: any) => [
         `${row.family}:${row.lane}:${row.provider}`,
         {
           runs: Number(row.runs || 0),
+          outcomeRuns: Number(row.outcome_runs || 0),
           accepted: Number(row.accepted_candidates || 0),
+          qualified: Number(row.qualified_candidates || 0),
+          rescued: Number(row.rescued_candidates || 0),
+          returned: Number(row.returned_candidates || 0),
           unique: Number(row.unique_candidates || 0),
-          duplicates: Number(row.duplicate_candidates || 0)
+          duplicates: Number(row.duplicate_candidates || 0),
+          providerUnits: Number(row.provider_units || 0),
+          searchLatencyMs: Number(row.search_latency_ms || 0)
         }
       ]));
       const strategistPrompt = buildScoutStrategistPrompt({
@@ -1138,7 +1206,30 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         logEvent(`Round ${round}: using ${planItems.length} deterministic fallback queries.`);
       }
 
-      const roundPlans = buildRetrievalTasks(planItems, searchSpec)
+      planItems = enforceContractQueries(planItems, contract);
+
+      const adaptiveSchedule = scheduleAdaptiveRetrievalTasks(
+        buildRetrievalTasks(planItems, searchSpec),
+        historicalPerformance,
+        {
+          enabled: process.env.LEAD_ADAPTIVE_SCHEDULER_ENABLED !== 'false',
+          maxTasks: Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND || 3),
+          minOutcomeRuns: Number(process.env.LEAD_ADAPTIVE_MIN_OUTCOME_RUNS || 8),
+          explorationStrength: Number(process.env.LEAD_ADAPTIVE_EXPLORATION_STRENGTH || 1.25)
+        }
+      );
+      stats.scout.adaptiveScheduler = {
+        active: adaptiveSchedule.active,
+        totalOutcomeRuns: adaptiveSchedule.totalOutcomeRuns,
+        selected: adaptiveSchedule.decisions.filter(decision => decision.selected).map(decision => decision.scopeKey),
+        deferred: adaptiveSchedule.decisions.filter(decision => !decision.selected).map(decision => decision.scopeKey)
+      };
+      if (adaptiveSchedule.active) {
+        logEvent(`Round ${round}: adaptive scheduler selected ${adaptiveSchedule.tasks.length}/${planItems.length} tasks using finalist-attributed outcomes.`);
+        debugLogs.push({ timestamp: new Date().toISOString(), type: 'adaptive_schedule', round, decisions: adaptiveSchedule.decisions });
+      }
+
+      const roundPlans = adaptiveSchedule.tasks
         .map(item => ({ item, executableQuery: item.query }))
         .filter(plan => {
           const key = plan.executableQuery.toLowerCase();
@@ -1170,7 +1261,12 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           lane: plan.item.lane,
           providerPreference: plan.item.providerPreference,
           tavilySearchDepth: plan.item.tavily.searchDepth,
-          corroboratedCandidates: 0
+          corroboratedCandidates: 0,
+          searchLatencyMs: 0,
+          providerUnits: 0,
+          qualifiedFinalists: 0,
+          rescuedFinalists: 0,
+          returnedFinalists: 0
         };
         stats.queryRuns.push(run);
         return run;
@@ -1198,7 +1294,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       logEvent(`Round ${round}: executing ${tavilyPlans.length}/${roundPlans.length} Tavily queries (mode=${discoveryProviderMode}).`);
 
       const tavilyResultsByIndex = new Map<number, { text: string; sources: any[]; items: any[] }>();
-      await Promise.all(tavilyPlans.map(async ({ plan, index }) => {
+      await runProviderQueue(tavilyPlans.map(({ plan, index }) => ({
+        id: `${sessionId}:tavily:r${round}:q${index + 1}`,
+        priority: 1_000 - plan.item.priority,
+        run: async () => {
         const searchStarted = Date.now();
         try {
           const tavilyOptions = plan.item.tavily;
@@ -1219,6 +1318,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           } else {
             recordProviderUsage('tavily', estimatedCredits);
           }
+          queryRuns[index].providerUnits += estimatedCredits;
           const res = await tavilySearch(plan.executableQuery, tavilyOptions);
           const resultsCount = res.items?.length || 0;
           recordTrace({
@@ -1263,8 +1363,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             error: e.message
           });
           tavilyResultsByIndex.set(index, { text: '', sources: [], items: [] });
+        } finally {
+          queryRuns[index].searchLatencyMs += Date.now() - searchStarted;
         }
-      }));
+        }
+      })), {
+        concurrency: Number(process.env.TAVILY_SEARCH_CONCURRENCY || 3),
+        intervalCap: Number(process.env.TAVILY_SEARCH_INTERVAL_CAP || 0),
+        intervalMs: Number(process.env.TAVILY_SEARCH_INTERVAL_MS || 1_000),
+        signal: sessionAbortController.signal
+      });
 
       let roundItems: any[] = [];
       for (const [resultIndex, result] of tavilyResultsByIndex.entries()) {
@@ -1292,68 +1400,119 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           usingBrightDataSearch = true;
           stats.sourceProvider = stats.sourceProvider === 'tavily' && roundItems.length === 0 ? 'brightdata_search' : 'mixed';
           logEvent(`Round ${round}: executing ${bdSearchPlans.length} Bright Data searches (mode: ${brightDataSearchMode}).`);
-          brightDataStats.searchAttempted += bdSearchPlans.length;
+          const bdResults = await runProviderQueue(bdSearchPlans.map(({ plan, index }) => ({
+            id: `${sessionId}:brightdata:r${round}:q${index + 1}`,
+            priority: 1_000 - plan.item.priority,
+            run: async () => {
+              const bdSearchStarted = Date.now();
+              let physicalAttempts = 0;
+              let recovered = false;
+              try {
+                const results = await executeBrightDataSearchWithRetry(async attempt => {
+                  const attemptStarted = Date.now();
+                  if (!freeTierBudget.reserveBrightDataSearch()) {
+                    brightDataStats.skipped++;
+                    logEvent(`Round ${round}: skipped Bright Data search attempt ${attempt} after local session reservation (PROVIDER_CREDIT_RESERVATION=true).`);
+                    recordTrace({
+                      phase: 'search', operation: 'brightdata_search', status: 'skipped', provider: 'brightdata', round,
+                      query: plan.executableQuery,
+                      metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, reason: 'session_credit_reservation' }
+                    });
+                    return [] as any[];
+                  }
+                  if (creditReservationEnabled) {
+                    const monthlyReservation = reserveProviderUsage('brightdata', 1, brightDataCapabilities.monthlyLimit);
+                    if (!monthlyReservation.allowed) {
+                      brightDataStats.skipped++;
+                      logEvent(`Round ${round}: skipped Bright Data search attempt ${attempt} after local monthly reservation (PROVIDER_CREDIT_RESERVATION=true).`);
+                      recordTrace({
+                        phase: 'search', operation: 'brightdata_search', status: 'skipped', provider: 'brightdata', round,
+                        query: plan.executableQuery,
+                        metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, reason: 'monthly_credit_reservation' }
+                      });
+                      return [] as any[];
+                    }
+                  } else {
+                    recordProviderUsage('brightdata', 1);
+                  }
 
-          const bdResults = await Promise.all(bdSearchPlans.map(async ({ plan, index }) => {
-            const bdSearchStarted = Date.now();
-            try {
-              if (!freeTierBudget.reserveBrightDataSearch()) {
-                logEvent(`Round ${round}: skipped Bright Data search after local session reservation (PROVIDER_CREDIT_RESERVATION=true).`);
+                  physicalAttempts++;
+                  brightDataStats.searchAttempted++;
+                  queryRuns[index].providerUnits += 1;
+                  // Google-backed search with site:linkedin.com/in for person discovery.
+                  // Account/signal lanes still use LinkedIn-oriented queries for DM recall.
+                  const linkedInQuery = toLinkedInSearchQuery(plan.item);
+                  try {
+                    const attemptResults = await brightDataSearch(linkedInQuery || plan.executableQuery);
+                    if (attempt > 1) recovered = true;
+                    recordTrace({
+                      phase: 'search',
+                      operation: 'brightdata_search',
+                      status: 'success',
+                      provider: 'brightdata',
+                      round,
+                      query: plan.executableQuery,
+                      latencyMs: Date.now() - attemptStarted,
+                      counts: { rawCandidates: attemptResults.length },
+                      brightData: getTraceBrightDataStatus(),
+                      metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, recovered: attempt > 1 }
+                    });
+                    return attemptResults;
+                  } catch (error: any) {
+                    const classified = classifyBrightDataError(error);
+                    const willRetry = classified.retryable && attempt <= brightDataSearchRetryMax;
+                    incrementCounter(brightDataStats.failureReasons, classified.reasonCode);
+                    if (classified.reasonCode === 'target_transient') brightDataStats.transientFailures++;
+                    if (classified.reasonCode === 'transport_transient') {
+                      brightDataStats.transportFailures++;
+                      brightDataStats.processRestarts++;
+                      brightDataTransportRetryAfter = Date.now() + 5_000;
+                    }
+                    if (classified.providerDisabled) {
+                      brightDataStats.providerDisabled++;
+                      brightDataProviderDisabled = true;
+                    }
+                    recordTrace({
+                      phase: 'search',
+                      operation: 'brightdata_search',
+                      status: willRetry ? 'info' : 'error',
+                      provider: 'brightdata',
+                      round,
+                      query: plan.executableQuery,
+                      latencyMs: Date.now() - attemptStarted,
+                      error: { message: classified.reasonCode + ': ' + classified.message },
+                      brightData: getTraceBrightDataStatus(),
+                      metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, retrying: willRetry }
+                    });
+                    throw classified;
+                  }
+                }, {
+                  maxRetries: brightDataSearchRetryMax,
+                  baseDelayMs: brightDataSearchRetryBaseDelayMs,
+                  onRetry: ({ error, nextAttempt, delayMs }) => {
+                    brightDataStats.searchRetries++;
+                    logEvent(`Round ${round}: Bright Data ${error.reasonCode}; retrying search attempt ${nextAttempt}/${brightDataSearchRetryMax + 1} after ${delayMs}ms.`);
+                  }
+                });
+
+                if (recovered) brightDataStats.searchRecovered++;
+                return { index, results };
+              } catch (error: any) {
+                const classified = classifyBrightDataError(error);
+                stats.brightDataFailures++;
+                brightDataStats.failed++;
+                logEvent(`WARN: Bright Data Search failed after ${physicalAttempts} physical attempt(s): ${classified.message}`);
                 return { index, results: [] as any[] };
+              } finally {
+                queryRuns[index].searchLatencyMs += Date.now() - bdSearchStarted;
               }
-              if (creditReservationEnabled) {
-                const monthlyReservation = reserveProviderUsage('brightdata', 1, brightDataCapabilities.monthlyLimit);
-                if (!monthlyReservation.allowed) {
-                  logEvent(`Round ${round}: skipped Bright Data search after local monthly reservation (PROVIDER_CREDIT_RESERVATION=true).`);
-                  return { index, results: [] as any[] };
-                }
-              } else {
-                recordProviderUsage('brightdata', 1);
-              }
-              // Google-backed search with site:linkedin.com/in for person discovery.
-              // Account/signal lanes still use LinkedIn-oriented queries for DM recall.
-              const linkedInQuery = toLinkedInSearchQuery(plan.item);
-              const results = await brightDataSearch(linkedInQuery || plan.executableQuery);
-              recordTrace({
-                phase: 'search',
-                operation: 'brightdata_search',
-                status: 'success',
-                provider: 'brightdata',
-                round,
-                query: plan.executableQuery,
-                latencyMs: Date.now() - bdSearchStarted,
-                counts: { rawCandidates: results.length },
-                brightData: getTraceBrightDataStatus()
-              });
-              return { index, results };
-            } catch (e: any) {
-              const classified = classifyBrightDataError(e);
-              incrementCounter(brightDataStats.failureReasons, classified.reasonCode);
-              if (classified.reasonCode === 'target_transient') brightDataStats.transientFailures++;
-              if (classified.reasonCode === 'transport_transient') {
-                brightDataStats.transportFailures++;
-                brightDataStats.processRestarts++;
-                brightDataTransportRetryAfter = Date.now() + 5_000;
-              }
-              if (classified.providerDisabled) {
-                brightDataStats.providerDisabled++;
-                brightDataProviderDisabled = true;
-              }
-              recordTrace({
-                phase: 'search',
-                operation: 'brightdata_search',
-                status: 'error',
-                provider: 'brightdata',
-                round,
-                query: plan.executableQuery,
-                latencyMs: Date.now() - bdSearchStarted,
-                error: { message: classified.reasonCode + ': ' + classified.message },
-                brightData: getTraceBrightDataStatus()
-              });
-              logEvent(`WARN: Bright Data Search failed: ${classified.message}`);
-              return { index, results: [] as any[] };
             }
-          }));
+          })), {
+            concurrency: Number(process.env.BRIGHTDATA_SEARCH_CONCURRENCY || 2),
+            intervalCap: Number(process.env.BRIGHTDATA_SEARCH_INTERVAL_CAP || 0),
+            intervalMs: Number(process.env.BRIGHTDATA_SEARCH_INTERVAL_MS || 1_000),
+            signal: sessionAbortController.signal
+          });
 
           for (const { index, results } of bdResults) {
             if (results.length > 0) brightDataStats.searchSucceeded++;
@@ -1742,7 +1901,14 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       });
 
       const extractionConcurrency = Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1), 4);
-      const extractionResults = await asyncQueue(extractionTasks, extractionConcurrency);
+      const extractionResults = await runProviderQueue(
+        extractionTasks.map((run, index) => ({
+          id: `${sessionId}:extraction:r${round}:chunk${index + 1}`,
+          priority: extractionTasks.length - index,
+          run
+        })),
+        { concurrency: extractionConcurrency, signal: sessionAbortController.signal }
+      );
       if (chunks.length > 0 && extractionFailuresThisRound === chunks.length) {
         consecutiveFailedExtractionRounds++;
       } else {
@@ -2233,7 +2399,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           continue;
         }
 
-        if (queryRun) { queryRun.acceptedLeads++; }
+        if (queryRun) {
+          queryRun.acceptedLeads++;
+          leadQueryRuns.set(lead, queryRun);
+        }
         addProfileKeys(lead, existingKeys);
         acceptedLeads.push(lead);
 
@@ -2308,7 +2477,13 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       }
 
       if (companyIntentTasks.length > 0) {
-        await asyncQueue(companyIntentTasks, profileConcurrency);
+        await runProviderQueue(
+          companyIntentTasks.map((run, index) => ({
+            id: `${sessionId}:company-intent:r${round}:${index + 1}`,
+            run
+          })),
+          { concurrency: profileConcurrency, signal: sessionAbortController.signal }
+        );
       }
 
       const roundRuns = stats.queryRuns.filter(run => run.round === round);
@@ -2321,16 +2496,49 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           uniqueCandidates: run.uniqueCandidates,
           extractedCandidates: run.extractedLeads,
           acceptedCandidates: run.acceptedLeads,
-          duplicateCandidates: Number(run.rejectionReasons.duplicate_existing_lead || 0)
+          duplicateCandidates: Number(run.rejectionReasons.duplicate_existing_lead || 0),
+          searchLatencyMs: run.searchLatencyMs,
+          providerUnits: run.providerUnits
         });
       }
-      previousRoundSummary = {
+      const roundDiagnosticsObj = buildRoundDiagnostics({
+        round,
         rawCandidates: roundRuns.reduce((sum, run) => sum + run.rawCandidates, 0),
+        extractedCandidates: roundRuns.reduce((sum, run) => sum + run.extractedLeads, 0),
+        leads: acceptedLeads.filter(lead => lead.evidence?.sourceRound === round),
+        contract,
+        targetLimit
+      });
+
+      previousRoundSummary = {
+        rawCandidates: roundDiagnosticsObj.rawCandidates,
         uniqueCandidates: roundRuns.reduce((sum, run) => sum + run.uniqueCandidates, 0),
-        extractedLeads: roundRuns.reduce((sum, run) => sum + run.extractedLeads, 0),
+        extractedLeads: roundDiagnosticsObj.extractedCandidates,
         acceptedLeads: roundRuns.reduce((sum, run) => sum + run.acceptedLeads, 0),
+        viableCandidates: roundDiagnosticsObj.viableCandidates,
+        shouldRecover: roundDiagnosticsObj.shouldRecover,
+        missingHardRequirementIds: roundDiagnosticsObj.missingHardRequirementIds,
         rejectionReasons: stats.rejectionReasons
       };
+
+      logEvent(`Round ${round} diagnostics: ${previousRoundSummary.viableCandidates} candidates show all hard terms; recovery=${previousRoundSummary.shouldRecover ? 'needed' : 'not needed'}.`);
+
+      const newAcceptedInRound = acceptedLeads.length - acceptedCountBeforeRound;
+      if (newAcceptedInRound === 0) {
+        consecutiveStalledRounds++;
+        if (consecutiveStalledRounds >= 2 && acceptedLeads.length > 0) {
+          logEvent(`Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Early exiting round loop with ${acceptedLeads.length} leads.`);
+          stats.stopReason = 'early_exit_stalled';
+          break;
+        }
+        if (consecutiveStalledRounds >= 3 && acceptedLeads.length === 0) {
+          logEvent(`Round ${round}: 3 consecutive rounds produced 0 candidates. Early exiting round loop to prevent endless API token burning.`);
+          stats.stopReason = 'exhausted';
+          break;
+        }
+      } else {
+        consecutiveStalledRounds = 0;
+      }
     }
 
     if (acceptedLeads.length === 0) {
@@ -2338,12 +2546,188 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     }
 
     stats.rerank.poolSize = acceptedLeads.length;
-    acceptedLeads.forEach((lead) => { lead.finalSelectionScore = rankLeadForFinalSelection(lead); });
-    acceptedLeads.sort((a, b) => {
-      const rankDelta = Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0);
-      return rankDelta !== 0 ? rankDelta : effectiveScore(b) - effectiveScore(a);
+
+    const finalistCandidates: FinalistCandidate[] = acceptedLeads.map((lead, index) => {
+      const linkedinUrl = lead.contactDetails?.linkedinUrl || '';
+      const fallbackUrl = lead.sourceUrl || '';
+      const evidence = evidenceByUrl.get(linkedinUrl) || evidenceByUrl.get(fallbackUrl);
+      return finalistCandidateFromLead(`c${index}`, lead, evidence?.evidenceBlock, contract);
     });
-    const finalLeads = selectDiversifiedLeads(acceptedLeads, targetLimit, searchSpec.maxPerCompany);
+
+    const { autoQualified, needsJudge } = partitionCandidatesByStrictEvidence(finalistCandidates, contract);
+    const maxBatchSize = Math.max(1, Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 6)));
+    const providerTokenBudget = Math.max(4_000, Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 7_200));
+    // Preserve completion headroom for the structured verdict. Measure the real
+    // prompt, because a serialized lead contains fields the judge never sees.
+    const maxBatchInputTokens = Math.min(4_200, Math.max(1_600, providerTokenBudget - 3_000));
+    const judgeBatches: FinalistCandidate[][] = [];
+    let currentBatch: FinalistCandidate[] = [];
+
+    for (const candidate of needsJudge) {
+      const proposedBatch = [...currentBatch, candidate];
+      const proposedInputTokens = estimateTokenCount(buildFinalistJudgePrompt(contract, proposedBatch));
+
+      if (currentBatch.length >= maxBatchSize || (currentBatch.length > 0 && proposedInputTokens > maxBatchInputTokens)) {
+        judgeBatches.push(currentBatch);
+        currentBatch = [candidate];
+      } else {
+        currentBatch = proposedBatch;
+      }
+    }
+    if (currentBatch.length > 0) {
+      judgeBatches.push(currentBatch);
+    }
+
+    const qualifiedLeads: any[] = autoQualified.map(({ candidate, qualification }) => {
+      candidate.lead.qualification = qualification;
+      candidate.lead.whyThisLead = qualification.reason;
+      candidate.lead.finalSelectionScore = qualification.finalScore;
+      return candidate.lead;
+    });
+    logEvent(`Finalist Judge: ${autoQualified.length} strict direct-profile qualifications; ${needsJudge.length} candidates need semantic review.`);
+    if (judgeBatches.length) {
+      logEvent(`Running evidence-validated Finalist Judge on ${needsJudge.length} candidates in ${judgeBatches.length} prompt-aware batch(es), up to ${maxBatchInputTokens} input tokens each.`);
+
+      const evaluateFinalistBatch = async (batch: FinalistCandidate[], batchIndex: number, attemptDepth = 0): Promise<any[]> => {
+        const judgeStarted = Date.now();
+        const judgeAttempts: LLMProviderAttempt[] = [];
+        let judgeUsage: LLMUsage | undefined;
+        const judgePrompt = buildFinalistJudgePrompt(contract, batch);
+        const dynamicMaxTokens = Math.min(5_000, Math.max(900, batch.length * 500));
+        const estimatedInputTokens = estimateTokenCount(judgePrompt);
+        try {
+          const judgmentResult = await openAIStructured<any>(judgePrompt, finalistJudgeSchema, FINALIST_JUDGE_SYSTEM_PROMPT, {
+            maxTokens: dynamicMaxTokens,
+            temperature: 0,
+            retryOnParseFailure: false,
+            timeoutMs: Number(process.env.LLM_FINALIST_TIMEOUT_MS || 90_000),
+            circuitBreaker: llmCircuitBreaker,
+            onProviderAttempt: attempt => judgeAttempts.push(attempt),
+            onUsage: usage => { judgeUsage = usage; }
+          });
+          const validation = validateFinalistJudgments(judgmentResult, contract, batch);
+          const minimumValid = Math.ceil(batch.length * 0.60);
+          if (validation.validJudgmentCount < minimumValid) {
+            recordTrace({
+              phase: 'candidate_processing', operation: 'finalist_judge', status: 'error', provider: 'llm', round: stats.rounds,
+              latencyMs: Date.now() - judgeStarted,
+              counts: { batchSize: batch.length, validJudgments: validation.validJudgmentCount, minimumValid },
+              error: { message: 'Finalist judge response omitted too many candidates.' },
+              llm: summarizeLLM('finalist_judge', judgePrompt, judgmentResult, Date.now() - judgeStarted, 0, judgeAttempts, judgeUsage),
+              metadata: { batch: `${batchIndex + 1}_d${attemptDepth}`, policyVersion: contract.policyVersion, estimatedInputTokens, requestedOutputTokens: dynamicMaxTokens }
+            });
+            if (batch.length > 1 && attemptDepth < 3) {
+              logEvent(`Finalist judge batch ${batchIndex + 1} omitted judgments; splitting ${batch.length} candidates.`);
+              const mid = Math.ceil(batch.length / 2);
+              const left = await evaluateFinalistBatch(batch.slice(0, mid), batchIndex, attemptDepth + 1);
+              const right = await evaluateFinalistBatch(batch.slice(mid), batchIndex, attemptDepth + 1);
+              return [...left, ...right];
+            }
+            return [] as any[];
+          }
+          const batchQualified = batch.flatMap(candidate => {
+            const qualification = validation.qualifications.get(candidate.candidateId);
+            if (!qualification) return [];
+            candidate.lead.qualification = qualification;
+            candidate.lead.whyThisLead = qualification.reason;
+            candidate.lead.finalSelectionScore = qualification.finalScore;
+            return [candidate.lead];
+          });
+          debugLogs.push({
+            timestamp: new Date().toISOString(), type: 'llm_response', label: `finalist_judge_batch_${batchIndex + 1}_d${attemptDepth}`,
+            response: JSON.parse(JSON.stringify(judgmentResult))
+          });
+          recordTrace({
+            phase: 'candidate_processing', operation: 'finalist_judge', status: 'success', provider: 'llm', round: stats.rounds,
+            latencyMs: Date.now() - judgeStarted,
+            counts: { batchSize: batch.length, validJudgments: validation.validJudgmentCount, qualified: batchQualified.length },
+            llm: summarizeLLM('finalist_judge', judgePrompt, judgmentResult, Date.now() - judgeStarted, 0, judgeAttempts, judgeUsage),
+            metadata: { batch: `${batchIndex + 1}_d${attemptDepth}`, policyVersion: contract.policyVersion, estimatedInputTokens, requestedOutputTokens: dynamicMaxTokens }
+          });
+          return batchQualified;
+        } catch (error: any) {
+          recordTrace({
+            phase: 'candidate_processing', operation: 'finalist_judge', status: 'error', provider: 'llm', round: stats.rounds,
+            latencyMs: Date.now() - judgeStarted, error: { message: error.message || String(error) },
+            llm: summarizeLLM('finalist_judge', judgePrompt, '', Date.now() - judgeStarted, 0, judgeAttempts, judgeUsage),
+            metadata: { batch: `${batchIndex + 1}_d${attemptDepth}`, policyVersion: contract.policyVersion, estimatedInputTokens, requestedOutputTokens: dynamicMaxTokens }
+          });
+          const isTokenOrSizeError = error.isTokenLimit || /413|payload too large|too many tokens|rate_limit_exceeded/i.test(error.message || '');
+          if (batch.length > 1 && (isTokenOrSizeError || attemptDepth < 2)) {
+            logEvent(`Finalist judge batch ${batchIndex + 1} failed (${error.message || String(error)}); splitting ${batch.length} candidates.`);
+            const mid = Math.ceil(batch.length / 2);
+            const left = await evaluateFinalistBatch(batch.slice(0, mid), batchIndex, attemptDepth + 1);
+            const right = await evaluateFinalistBatch(batch.slice(mid), batchIndex, attemptDepth + 1);
+            return [...left, ...right];
+          }
+          logEvent(`WARN: Finalist judge batch ${batchIndex + 1} failed completely: ${error.message || String(error)}.`);
+          return [] as any[];
+        }
+      };
+
+      const judgeResults = await runProviderQueue(
+        judgeBatches.map((batch, batchIndex) => ({
+          id: `${sessionId}:finalist:${batchIndex + 1}`,
+          priority: judgeBatches.length - batchIndex,
+          run: async () => evaluateFinalistBatch(batch, batchIndex)
+        })),
+        {
+          concurrency: Number(process.env.FINALIST_JUDGE_CONCURRENCY || 2),
+          signal: sessionAbortController.signal
+        }
+      );
+      qualifiedLeads.push(...judgeResults.flat());
+    }
+
+    // Safety net: if qualifiedLeads falls short of targetLimit, we promote acceptedLeads up to the limit
+    const qualifiedUrls = new Set<string>(qualifiedLeads.map(lead => lead.contactDetails?.linkedinUrl || lead.sourceUrl || ''));
+    let rescuedCount = 0;
+    if (qualifiedLeads.length < targetLimit) {
+      logEvent(`Safety Net: Finalist Judge qualified ${qualifiedLeads.length}/${targetLimit} leads. Rescuing top remaining accepted candidates.`);
+      acceptedLeads.forEach(lead => {
+        lead.finalSelectionScore = rankLeadForFinalSelection(lead);
+      });
+      acceptedLeads.sort((a, b) => {
+        const rankDelta = Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0);
+        return rankDelta !== 0 ? rankDelta : effectiveScore(b) - effectiveScore(a);
+      });
+      for (const lead of acceptedLeads) {
+        if (qualifiedLeads.length >= targetLimit) break;
+        const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || '';
+        if (!qualifiedUrls.has(url)) {
+          lead.qualification = { verdict: 'rescued', reason: 'Promoted via Safety Net to satisfy target count', finalScore: lead.finalSelectionScore };
+          lead.whyThisLead = 'Promoted via Safety Net to satisfy target count';
+          qualifiedLeads.push(lead);
+          qualifiedUrls.add(url);
+          rescuedCount++;
+        }
+      }
+      logEvent(`Safety Net: Promoted ${rescuedCount} candidates to reach target.`);
+    }
+
+    const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
+    for (const lead of qualifiedLeads) {
+      const queryRun = leadQueryRuns.get(lead);
+      if (!queryRun) continue;
+      if (lead.qualification?.verdict === 'rescued') queryRun.rescuedFinalists++;
+      else queryRun.qualifiedFinalists++;
+    }
+    for (const lead of finalLeads) {
+      const queryRun = leadQueryRuns.get(lead);
+      if (queryRun) queryRun.returnedFinalists++;
+    }
+    for (const run of stats.queryRuns) {
+      recordQueryPerformance({
+        family: run.family || 'general',
+        lane: run.lane || 'person',
+        provider: run.providerPreference || 'tavily',
+        runs: 0,
+        outcomeRuns: 1,
+        qualifiedCandidates: run.qualifiedFinalists,
+        rescuedCandidates: run.rescuedFinalists,
+        returnedCandidates: run.returnedFinalists
+      });
+    }
     leadsFound = finalLeads.length;
     stats.returned = leadsFound;
     stats.rerank.returned = leadsFound;
@@ -2490,6 +2874,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     activeSessions.delete(sessionId);
     activeSessionEvents.delete(sessionId);
     cancelledSessions.delete(sessionId);
+    activeSessionControllers.delete(sessionId);
     await closeBrightDataClient({ onlyIfIdle: true, onlyIfUnhealthy: true, reason: 'find-leads-complete' });
   }
 });

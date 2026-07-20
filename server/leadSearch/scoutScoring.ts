@@ -17,7 +17,9 @@ const clamp10 = (value: number) => Math.min(10, Math.max(1, Number(value.toFixed
 
 const haystackForLead = (lead: Record<string, any>) => normalized([
   lead.fullName,
+  lead.currentTitle,
   lead.jobTitle,
+  lead.currentCompany,
   lead.company,
   lead.location,
   lead.summary,
@@ -66,7 +68,7 @@ export function buildScoutEvidence(
   const evidenceCoverageScore = clamp10(2 + Math.min(evidenceText.length / 180, 1) * 5 + (matchedCriteria.length ? 2 : 0));
   const uncertainties = unique([
     lead.evidence?.evidenceQuality === 'weak' ? 'Search result has limited supporting detail.' : '',
-    !lead.company || !lead.jobTitle ? 'Company or role is incomplete in the public result.' : '',
+    !(lead.currentCompany || lead.company) || !(lead.currentTitle || lead.jobTitle) ? 'Company or role is incomplete in the public result.' : '',
     sourceProviders.length < 2 ? 'Not independently corroborated yet.' : ''
   ]);
 
@@ -92,7 +94,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   const selected: T[] = [];
   const ordered = [...candidates].sort((a, b) => Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0));
   for (const candidate of ordered) {
-    const companyKey = normalized(candidate.company || candidate.companyAccount?.name) || `unknown:${candidate.id || candidate.fullName}`;
+    const companyKey = normalized(candidate.currentCompany || candidate.company || candidate.companyAccount?.name) || `unknown:${candidate.id || candidate.fullName}`;
     const currentCount = perCompany.get(companyKey) || 0;
     if (currentCount >= maxPerCompany) continue;
     selected.push(candidate);

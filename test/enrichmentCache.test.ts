@@ -11,11 +11,15 @@ const { enrichLeadProfile } = await import('../server/leadSearch/profileEnrichme
 describe('enrichment cache', () => {
   it('initializes a versioned database schema', () => {
     const version = db.getLeadsDb().prepare('PRAGMA user_version').get() as { user_version: number };
-    assert.equal(version.user_version, 6);
+    assert.equal(version.user_version, 9);
     const emailCache = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'email_discovery_cache'").get();
     assert.equal(emailCache, undefined);
     const cacheColumns = db.getLeadsDb().prepare('PRAGMA table_info(enrichment_cache)').all() as { name: string }[];
     assert.ok(cacheColumns.some(column => column.name === 'public_email'));
+    const performanceColumns = db.getLeadsDb().prepare('PRAGMA table_info(query_performance)').all() as { name: string }[];
+    for (const column of ['outcome_runs', 'qualified_candidates', 'rescued_candidates', 'returned_candidates', 'search_latency_ms', 'provider_units']) {
+      assert.ok(performanceColumns.some(candidate => candidate.name === column));
+    }
   });
 
   it('increments lead revisions and rejects stale writes', () => {

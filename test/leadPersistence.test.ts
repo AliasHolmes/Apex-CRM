@@ -13,6 +13,8 @@ const {
   LeadNotFoundError,
   LeadRevisionConflictError,
   readStoredLeadById,
+  readQueryPerformance,
+  recordQueryPerformance,
   upsertLead,
   upsertLeads,
 } = await import('../server/db.ts');
@@ -78,4 +80,26 @@ test('existing-only bulk writes roll back atomically when any lead is missing', 
   assert.equal(unchanged?.revision, 1);
   assert.equal(unchanged?.stage, 'SCRAPED');
   assert.equal(readStoredLeadById(missing.id), null);
+});
+
+test('query performance stores provisional work separately from finalist outcomes', () => {
+  recordQueryPerformance({
+    family: 'persona_title', lane: 'person', provider: 'tavily',
+    rawCandidates: 10, uniqueCandidates: 6, acceptedCandidates: 3,
+    searchLatencyMs: 900, providerUnits: 1
+  });
+  recordQueryPerformance({
+    family: 'persona_title', lane: 'person', provider: 'tavily',
+    runs: 0, outcomeRuns: 1, qualifiedCandidates: 2, rescuedCandidates: 1, returnedCandidates: 2
+  });
+
+  const row = readQueryPerformance().find(row => row.scope_key === 'persona_title|person|tavily');
+  assert.equal(row.runs, 1);
+  assert.equal(row.outcome_runs, 1);
+  assert.equal(row.accepted_candidates, 3);
+  assert.equal(row.qualified_candidates, 2);
+  assert.equal(row.rescued_candidates, 1);
+  assert.equal(row.returned_candidates, 2);
+  assert.equal(row.search_latency_ms, 900);
+  assert.equal(row.provider_units, 1);
 });

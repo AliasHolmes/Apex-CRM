@@ -1,5 +1,5 @@
 export type DiscoveryMode = 'person_first' | 'account_first' | 'signal_first' | 'local_business';
-export type QueryLane = 'person' | 'account' | 'signal';
+export type QueryLane = 'person' | 'account' | 'signal' | 'archetype';
 export type ProviderPreference = 'tavily' | 'brightdata' | 'corroborate';
 export type TavilySearchDepth = 'basic' | 'fast' | 'ultra-fast' | 'advanced';
 
@@ -36,7 +36,8 @@ export type QueryFamily =
   | 'growth_signal'
   | 'tooling_signal'
   | 'local_market'
-  | 'company_type';
+  | 'company_type'
+  | 'archetype_exploration';
 
 export type QueryIntent =
   | 'find_decision_makers'
@@ -47,6 +48,8 @@ export type QueryIntent =
 
 export type SearchQueryPlanItem = {
   query: string;
+  /** Contract ids this query is deliberately preserving. */
+  coveredRequirementIds?: string[];
   family?: QueryFamily;
   intent?: QueryIntent;
   expectedSignal?: string;
@@ -62,6 +65,7 @@ export type SearchQueryPlanItem = {
 export type RetrievalTask = {
   id: string;
   query: string;
+  coveredRequirementIds?: string[];
   lane: QueryLane;
   providerPreference: ProviderPreference;
   family?: SearchQueryPlanItem['family'];
@@ -152,6 +156,7 @@ const familyFor = (item: SearchQueryPlanItem, spec: SearchSpec) => item.family |
 const laneFor = (item: SearchQueryPlanItem, spec: SearchSpec): QueryLane => {
   if (item.lane) return item.lane;
   const family = familyFor(item, spec);
+  if (family === 'archetype_exploration') return 'archetype';
   if (family === 'pain_signal' || family === 'growth_signal' || family === 'tooling_signal') return 'signal';
   if (family === 'company_type' || family === 'industry_vertical' || family === 'local_market') return 'account';
   return spec.mode === 'account_first' ? 'account' : 'person';
@@ -165,7 +170,8 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
     .slice()
     .sort((a, b) => (a.priority || 99) - (b.priority || 99))
     .map((item, index) => {
-      const lane = laneFor(item, spec);
+      const rawLane = laneFor(item, spec);
+      const lane: QueryLane = rawLane === 'archetype' ? 'person' : rawLane;
       const family = familyFor(item, spec);
       const isSignal = lane === 'signal';
       const isPerson = lane === 'person';
@@ -183,6 +189,7 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
       const task: RetrievalTask = {
         id: `q-${index + 1}-${family}`,
         query: clean(item.query),
+        coveredRequirementIds: item.coveredRequirementIds,
         lane,
         providerPreference,
         family,
@@ -263,7 +270,9 @@ Rules:
   - brightdata: volume Google SERP discovery and account/signal recovery (search_engine).
   - corroborate: both providers when useful.
 - In hybrid/bd_primary modes, assign at least two tasks with providerPreference brightdata or corroborate.
-- Prefer query families with stronger prior yield and avoid duplicate-heavy families.
+- Treat qualified and returned finalist counts as the primary historical signal. Accepted counts are provisional only.
+- Prefer families that produce qualified/returned finalists; penalize rescue-heavy, duplicate-heavy, slow, or credit-heavy families.
+- Preserve some exploration of under-tested families instead of permanently locking onto one query pattern.
 - Never assume Pro-only Bright Data tools (no structured LinkedIn datasets, no browser automation).
 
 Return query, family, intent, expectedSignal, priority, lane, providerPreference, searchDepth, topic, timeRange, and country when relevant.`;

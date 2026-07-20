@@ -157,7 +157,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   if (/connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'transport_transient', retryable: true, clearClient: true, statusCode });
   }
-  if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content/.test(lower)) {
+  if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content|unexpected non-json response from bright data/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'target_transient', retryable: true, statusCode });
   }
   if (/captcha|login wall|blocked|privacy checkpoint|sign in to view|authwall/.test(lower)) {
@@ -169,6 +169,42 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
 export const isBrightDataRetryableError = (error: unknown) => classifyBrightDataError(error).retryable;
 export const isBrightDataProviderDisabledError = (error: unknown) => classifyBrightDataError(error).providerDisabled;
 export const isBrightDataTransientTargetError = (error: unknown) => classifyBrightDataError(error).reasonCode === 'target_transient';
+
+export type BrightDataSearchRetryOptions = {
+  maxRetries?: number;
+  baseDelayMs?: number;
+  jitterMs?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+  random?: () => number;
+  onRetry?: (context: { error: BrightDataError; attempt: number; nextAttempt: number; delayMs: number }) => void | Promise<void>;
+};
+
+export async function executeBrightDataSearchWithRetry<T>(
+  operation: (attempt: number) => Promise<T>,
+  options: BrightDataSearchRetryOptions = {}
+): Promise<T> {
+  const maxRetries = Math.min(Math.max(Math.floor(Number(options.maxRetries ?? 1)) || 0, 0), 2);
+  const baseDelayMs = Math.min(Math.max(Math.floor(Number(options.baseDelayMs ?? 750)) || 0, 0), 10_000);
+  const jitterMs = Math.min(Math.max(Math.floor(Number(options.jitterMs ?? 250)) || 0, 0), 2_000);
+  const sleep = options.sleep || ((delayMs: number) => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
+  const random = options.random || Math.random;
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      const classified = classifyBrightDataError(error);
+      if (!classified.retryable || attempt > maxRetries) throw classified;
+
+      const retryBaseDelayMs = classified.reasonCode === 'transport_transient'
+        ? Math.max(baseDelayMs, 5_000)
+        : baseDelayMs;
+      const delayMs = retryBaseDelayMs * (2 ** (attempt - 1)) + Math.floor(random() * (jitterMs + 1));
+      await options.onRetry?.({ error: classified, attempt, nextAttempt: attempt + 1, delayMs });
+      await sleep(delayMs);
+    }
+  }
+}
 
 const keyFailureKindForBrightData = (classified: BrightDataError): ApiKeyFailureKind => {
   if (classified.reasonCode === 'provider_auth' || classified.reasonCode === 'provider_quota') return 'exhausted';

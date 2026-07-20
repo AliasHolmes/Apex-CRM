@@ -3,13 +3,13 @@ import path from 'path';
 import crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import dotenv from 'dotenv';
-import { clampSearchLogRetentionLimit } from './leadSearch/telemetry.js';
+import { clampSearchLogRetentionLimit, setLlmStageLogger, type LlmStageLogEntry } from './leadSearch/telemetry.js';
 import { REVIEW_STATUS_SET as REVIEW_STATUSES, NEXT_ACTION_SET as NEXT_ACTIONS } from '../src/types.js';
 
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 6;
+const LATEST_SCHEMA_VERSION = 9;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -295,6 +295,52 @@ function runMigrations(db: DatabaseSync) {
       db.exec('DROP TABLE IF EXISTS email_discovery_cache');
     }
 
+    if (currentVersion < 7) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS llm_stage_logs (
+          id TEXT PRIMARY KEY,
+          search_log_id TEXT,
+          stage TEXT NOT NULL,
+          round INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          latency_ms INTEGER NOT NULL DEFAULT 0,
+          model_name TEXT,
+          provider TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_stage_logs_search
+          ON llm_stage_logs(search_log_id);
+        CREATE INDEX IF NOT EXISTS idx_llm_stage_logs_stage
+          ON llm_stage_logs(stage);
+      `);
+    }
+
+    if (currentVersion < 8) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS prospect_contract_cache (
+          cache_key TEXT PRIMARY KEY,
+          raw_brief TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          contract_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prospect_contract_cache_expires
+          ON prospect_contract_cache(expires_at);
+      `);
+    }
+
+    if (currentVersion < 9) {
+      addColumnIfMissing(db, 'query_performance', 'outcome_runs', 'outcome_runs INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'query_performance', 'qualified_candidates', 'qualified_candidates INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'query_performance', 'rescued_candidates', 'rescued_candidates INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'query_performance', 'returned_candidates', 'returned_candidates INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'query_performance', 'search_latency_ms', 'search_latency_ms INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'query_performance', 'provider_units', 'provider_units INTEGER NOT NULL DEFAULT 0');
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (error) {
@@ -422,10 +468,50 @@ export function getLeadsDb() {
         phase_timeline TEXT,
         schema_version INTEGER
       );
+
+      CREATE TABLE IF NOT EXISTS llm_stage_logs (
+        id TEXT PRIMARY KEY,
+        search_log_id TEXT,
+        stage TEXT NOT NULL,
+        round INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        model_name TEXT,
+        provider TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_stage_logs_search
+        ON llm_stage_logs(search_log_id);
+      CREATE INDEX IF NOT EXISTS idx_llm_stage_logs_stage
+        ON llm_stage_logs(stage);
+
+      CREATE TABLE IF NOT EXISTS icp_hypothesis_cache (
+        query_hash TEXT PRIMARY KEY,
+        raw_query TEXT NOT NULL,
+        hypothesis_json TEXT NOT NULL,
+        synthesized_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_icp_hypothesis_expires
+        ON icp_hypothesis_cache(expires_at);
+
+      CREATE TABLE IF NOT EXISTS prospect_contract_cache (
+        cache_key TEXT PRIMARY KEY,
+        raw_brief TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        contract_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_prospect_contract_cache_expires
+        ON prospect_contract_cache(expires_at);
     `);
     runMigrations(leadsDb);
   }
 
+  setLlmStageLogger(insertLlmStageLog);
   return leadsDb;
 }
 
@@ -923,6 +1009,130 @@ export function readSearchLogById(id: string) {
   return row ? toSearchLogRecord(row) : null;
 }
 
+export function insertLlmStageLog(entry: LlmStageLogEntry) {
+  try {
+    const db = getLeadsDb();
+    const insertStmt = db.prepare(`
+      INSERT INTO llm_stage_logs (
+        id, search_log_id, stage, round, status,
+        input_tokens, output_tokens, latency_ms, model_name, provider, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertStmt.run(
+      crypto.randomUUID(),
+      entry.searchLogId || null,
+      entry.stage || 'unknown',
+      Number(entry.round || 1),
+      entry.status || 'unknown',
+      Number(entry.inputTokens || 0),
+      Number(entry.outputTokens || 0),
+      Number(entry.latencyMs || 0),
+      entry.modelName || null,
+      entry.provider || 'llm',
+      entry.createdAt || new Date().toISOString()
+    );
+  } catch (error) {
+    console.warn('Failed to insert llm_stage_log:', error);
+  }
+}
+
+export function readLlmStageLogs(searchLogId?: string): LlmStageLogEntry[] {
+  const db = getLeadsDb();
+  if (searchLogId) {
+    const rows = db.prepare('SELECT * FROM llm_stage_logs WHERE search_log_id = ? ORDER BY created_at ASC').all(searchLogId) as any[];
+    return rows.map(mapLlmStageLogRow);
+  }
+  const rows = db.prepare('SELECT * FROM llm_stage_logs ORDER BY created_at DESC LIMIT 500').all() as any[];
+  return rows.map(mapLlmStageLogRow);
+}
+
+function mapLlmStageLogRow(row: any): LlmStageLogEntry {
+  return {
+    searchLogId: row.search_log_id || undefined,
+    stage: row.stage,
+    round: Number(row.round || 1),
+    status: row.status,
+    inputTokens: Number(row.input_tokens || 0),
+    outputTokens: Number(row.output_tokens || 0),
+    latencyMs: Number(row.latency_ms || 0),
+    modelName: row.model_name || undefined,
+    provider: row.provider || undefined,
+    createdAt: row.created_at
+  };
+}
+
+export function getIcpHypothesisCache(query: string): any | null {
+  try {
+    const db = getLeadsDb();
+    const queryHash = crypto.createHash('sha256').update(query.trim().toLowerCase()).digest('hex');
+    const now = new Date().toISOString();
+    const row = db.prepare('SELECT hypothesis_json FROM icp_hypothesis_cache WHERE query_hash = ? AND expires_at > ?').get(queryHash, now) as any | undefined;
+    if (!row) return null;
+    return JSON.parse(row.hypothesis_json);
+  } catch (err) {
+    return null;
+  }
+}
+
+export function upsertIcpHypothesisCache(query: string, hypothesis: any, ttlDays = 7) {
+  try {
+    const db = getLeadsDb();
+    const queryHash = crypto.createHash('sha256').update(query.trim().toLowerCase()).digest('hex');
+    const now = new Date();
+    const expires = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO icp_hypothesis_cache (query_hash, raw_query, hypothesis_json, synthesized_at, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(query_hash) DO UPDATE SET
+        raw_query = excluded.raw_query,
+        hypothesis_json = excluded.hypothesis_json,
+        synthesized_at = excluded.synthesized_at,
+        expires_at = excluded.expires_at
+    `).run(
+      queryHash,
+      query.trim(),
+      JSON.stringify(hypothesis),
+      now.toISOString(),
+      expires
+    );
+  } catch (err) {
+    console.warn('Failed to cache ICP hypothesis:', err);
+  }
+}
+
+export function getProspectContractCache(cacheKey: string, policyVersion: string): any | null {
+  try {
+    const db = getLeadsDb();
+    const row = db.prepare(`
+      SELECT contract_json FROM prospect_contract_cache
+      WHERE cache_key = ? AND policy_version = ? AND expires_at > ?
+    `).get(cacheKey, policyVersion, new Date().toISOString()) as { contract_json?: string } | undefined;
+    return row?.contract_json ? JSON.parse(row.contract_json) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+export function upsertProspectContractCache(cacheKey: string, rawBrief: string, policyVersion: string, contract: any, ttlDays = 7) {
+  try {
+    const db = getLeadsDb();
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + Math.min(Math.max(ttlDays, 1), 30) * 24 * 60 * 60 * 1000);
+    db.prepare(`
+      INSERT INTO prospect_contract_cache (cache_key, raw_brief, policy_version, contract_json, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        raw_brief = excluded.raw_brief,
+        policy_version = excluded.policy_version,
+        contract_json = excluded.contract_json,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+    `).run(cacheKey, rawBrief.slice(0, 2000), policyVersion, JSON.stringify(contract), createdAt.toISOString(), expiresAt.toISOString());
+  } catch (error) {
+    console.warn('[db] Failed to cache prospect contract:', error);
+  }
+}
+
 export type SavedSearchRecord = {
   id: string;
   name: string;
@@ -1015,11 +1225,18 @@ export type QueryPerformanceUpdate = {
   family: string;
   lane: string;
   provider: string;
+  runs?: number;
+  outcomeRuns?: number;
   rawCandidates?: number;
   uniqueCandidates?: number;
   extractedCandidates?: number;
   acceptedCandidates?: number;
   duplicateCandidates?: number;
+  qualifiedCandidates?: number;
+  rescuedCandidates?: number;
+  returnedCandidates?: number;
+  searchLatencyMs?: number;
+  providerUnits?: number;
 };
 
 export function recordQueryPerformance(update: QueryPerformanceUpdate) {
@@ -1030,26 +1247,41 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
   getLeadsDb().prepare(`
     INSERT INTO query_performance (
       scope_key, family, lane, provider, runs, raw_candidates, unique_candidates,
-      extracted_candidates, accepted_candidates, duplicate_candidates, updated_at
-    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      extracted_candidates, accepted_candidates, duplicate_candidates, outcome_runs,
+      qualified_candidates, rescued_candidates, returned_candidates, search_latency_ms,
+      provider_units, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_key) DO UPDATE SET
-      runs = query_performance.runs + 1,
+      runs = query_performance.runs + excluded.runs,
       raw_candidates = query_performance.raw_candidates + excluded.raw_candidates,
       unique_candidates = query_performance.unique_candidates + excluded.unique_candidates,
       extracted_candidates = query_performance.extracted_candidates + excluded.extracted_candidates,
       accepted_candidates = query_performance.accepted_candidates + excluded.accepted_candidates,
       duplicate_candidates = query_performance.duplicate_candidates + excluded.duplicate_candidates,
+      outcome_runs = query_performance.outcome_runs + excluded.outcome_runs,
+      qualified_candidates = query_performance.qualified_candidates + excluded.qualified_candidates,
+      rescued_candidates = query_performance.rescued_candidates + excluded.rescued_candidates,
+      returned_candidates = query_performance.returned_candidates + excluded.returned_candidates,
+      search_latency_ms = query_performance.search_latency_ms + excluded.search_latency_ms,
+      provider_units = query_performance.provider_units + excluded.provider_units,
       updated_at = excluded.updated_at
   `).run(
     scopeKey,
     family,
     lane,
     provider,
+    Math.max(0, Math.floor(update.runs ?? 1)),
     Math.max(0, Math.floor(update.rawCandidates || 0)),
     Math.max(0, Math.floor(update.uniqueCandidates || 0)),
     Math.max(0, Math.floor(update.extractedCandidates || 0)),
     Math.max(0, Math.floor(update.acceptedCandidates || 0)),
     Math.max(0, Math.floor(update.duplicateCandidates || 0)),
+    Math.max(0, Math.floor(update.outcomeRuns || 0)),
+    Math.max(0, Math.floor(update.qualifiedCandidates || 0)),
+    Math.max(0, Math.floor(update.rescuedCandidates || 0)),
+    Math.max(0, Math.floor(update.returnedCandidates || 0)),
+    Math.max(0, Math.floor(update.searchLatencyMs || 0)),
+    Math.max(0, Math.floor(update.providerUnits || 0)),
     new Date().toISOString()
   );
 }

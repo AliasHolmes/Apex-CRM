@@ -55,14 +55,50 @@ const companyIntentScore = (lead: Record<string, any>) => {
   return 5;
 };
 
+export type AuditSummary = {
+  identityConfidence?: number;
+  employmentConfidence?: number;
+  functionalRelevance?: number;
+  authorityConfidence?: number;
+  verdict?: 'auto_accept' | 'accept' | 'reject' | 'auto_reject';
+};
+
+function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: AuditSummary): number {
+  const audit = auditInput || lead.audit;
+  let capped = score;
+
+  if (audit) {
+    if (audit.verdict === 'reject' || audit.verdict === 'auto_reject') {
+      return Math.min(capped, 3.0);
+    }
+    if ((audit.identityConfidence !== undefined && audit.identityConfidence < 6) ||
+        (audit.employmentConfidence !== undefined && audit.employmentConfidence < 6)) {
+      capped = Math.min(capped, 6.0);
+    }
+  }
+
+  const email = lead.profile?.contactDetails?.email || lead.emailDiscovery?.bestEmail || lead.publicEmail;
+  const quality = lead.evidence?.evidenceQuality || lead.evidenceQuality;
+  if (!email && (quality === 'weak' || quality === 'bad')) {
+    capped = Math.min(capped, 7.5);
+  }
+
+  return Math.min(Math.max(capped, 1), 10);
+}
+
 export function rankLeadForFinalSelection(lead: Record<string, any>): number {
-  const authorityScore = clampScore(lead.decisionMakerVerification?.confidence, 5);
+  const qualificationScore = Number(lead.qualification?.finalScore);
+  if (lead.qualification?.verdict === 'qualified' && Number.isFinite(qualificationScore)) {
+    return Number(Math.min(Math.max(qualificationScore, 0), 10).toFixed(2));
+  }
+  const audit: AuditSummary | undefined = lead.audit;
+  const authorityScore = clampScore(lead.decisionMakerVerification?.confidence ?? audit?.authorityConfidence, 5);
   const companyScore = companyIntentScore(lead);
   const evidenceScore = evidenceQualityScore(evidenceQualityForLead(lead));
   const criteriaCoverageScore = clampScore(lead.scout?.criteriaCoverageScore, 5);
   const corroborationScore = clampScore(lead.scout?.corroborationScore, 4);
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
-  const baseScore = clampScore(lead.scoreBreakdown?.finalScore || lead.scoreOverride || lead.fitScore, 5);
+  const baseScore = clampScore(lead.scoreBreakdown?.finalScore || lead.scoreOverride || lead.fitScore || audit?.functionalRelevance, 5);
 
   const rank = (
     authorityScore * 0.30 +
@@ -74,7 +110,8 @@ export function rankLeadForFinalSelection(lead: Record<string, any>): number {
     baseScore * 0.02
   );
 
-  return Number(Math.min(Math.max(rank, 1), 10).toFixed(2));
+  const capped = applyHardCaps(rank, lead, audit);
+  return Number(capped.toFixed(2));
 }
 
 export function computeScoreBreakdown(
@@ -84,9 +121,11 @@ export function computeScoreBreakdown(
   decisionMakerVerification?: {
     confidence: number;
     ignoredTitle: boolean;
-  }
+  },
+  audit?: AuditSummary
 ): ScoreBreakdown {
-  const fitScore = scoreOrDefault(lead.fitScore, 5);
+  const activeAudit = audit || lead.audit;
+  const fitScore = scoreOrDefault(activeAudit?.functionalRelevance ?? lead.fitScore, 5);
   const intentScore = scoreOrDefault(lead.intentScore, 5);
   const timingScore = scoreOrDefault(lead.timingScore, 5);
   const eqScore = evidenceQualityScore(quality);
@@ -102,21 +141,23 @@ export function computeScoreBreakdown(
 
   let decisionMakerBonus = 0;
   let ignoredTitlePenalty = 0;
+  const dmConf = decisionMakerVerification?.confidence ?? activeAudit?.authorityConfidence;
+  const dmIgnored = decisionMakerVerification?.ignoredTitle ?? false;
 
-  if (decisionMakerVerification) {
-    if (decisionMakerVerification.confidence >= 8) {
+  if (dmConf !== undefined) {
+    if (dmConf >= 8) {
       decisionMakerBonus = 0.7;
-    } else if (decisionMakerVerification.confidence >= 6) {
+    } else if (dmConf >= 6) {
       decisionMakerBonus = 0.3;
     }
 
-    if (decisionMakerVerification.ignoredTitle) {
+    if (dmIgnored) {
       ignoredTitlePenalty = 1.5;
     }
   }
 
   let finalScore = baseScore + decisionMakerBonus - ignoredTitlePenalty;
-  finalScore = Math.min(Math.max(finalScore, 1), 10); // clamp 1-10
+  finalScore = applyHardCaps(finalScore, lead, activeAudit);
 
   return {
     fitScore,

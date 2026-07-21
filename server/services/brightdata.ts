@@ -646,6 +646,18 @@ export type BrightDataBatchResult = {
   sourceProvider: 'brightdata_batch';
 };
 
+/**
+ * Keeps callers on Bright Data's hard five-URL tool contract without silently
+ * dropping the remainder of a larger enrichment set.
+ */
+export function chunkBrightDataBatchItems<T>(items: T[]): T[][] {
+  const batches: T[][] = [];
+  for (let index = 0; index < items.length; index += BRIGHTDATA_SCRAPE_BATCH_MAX_URLS) {
+    batches.push(items.slice(index, index + BRIGHTDATA_SCRAPE_BATCH_MAX_URLS));
+  }
+  return batches;
+}
+
 export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTimeoutMs()): Promise<BrightDataBatchResult[]> {
   const cleanUrls = Array.from(new Set(urls.map(url => {
     try {
@@ -724,29 +736,42 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
       }
     }
 
-    // Per-child partial-failure retry
-    const retries: Promise<BrightDataBatchResult | null>[] = [];
+    // A provider can omit a URL entirely, rather than returning it with an
+    // empty body. Match on canonical request URLs so both cases receive the
+    // same single-page recovery attempt.
+    const itemByUrl = new Map<string, BrightDataBatchResult>();
     for (const item of parsedItems) {
-      if (!item.content || item.content.trim().length === 0) {
-        retries.push(
-          scrapeAsMarkdown(item.url, timeoutMs)
-            .then(md => md ? { url: item.url, content: md, sourceProvider: 'brightdata_batch' as const } : null)
-            .catch(() => null)
-        );
+      try {
+        const canonicalUrl = normalizeBrightDataUrl(item.url);
+        const existing = itemByUrl.get(canonicalUrl);
+        if (!existing || (!existing.content.trim() && item.content.trim())) {
+          itemByUrl.set(canonicalUrl, item);
+        }
+      } catch {
+        // Ignore malformed child results; the corresponding requested URL is
+        // still retried below if it has no usable batch response.
       }
     }
+
+    const retryUrls = cleanUrls.filter(url => !itemByUrl.get(url)?.content.trim());
+    const retries: Promise<BrightDataBatchResult | null>[] = retryUrls.map(url =>
+      scrapeAsMarkdown(url, timeoutMs)
+        .then(content => content ? { url, content, sourceProvider: 'brightdata_batch' as const } : null)
+        .catch(() => null)
+    );
     const retryResults = await Promise.all(retries);
     const retryMap = new Map(retryResults.filter((r): r is BrightDataBatchResult => Boolean(r)).map(r => [r.url, r]));
 
-    const finalItems = parsedItems.map(item => {
-      if ((!item.content || item.content.trim().length === 0) && retryMap.has(item.url)) {
-        return retryMap.get(item.url)!;
+    const finalItems = cleanUrls.map(url => {
+      const batchItem = itemByUrl.get(url);
+      if (batchItem?.content.trim()) {
+        return batchItem;
       }
-      return item;
-    }).filter(item => item.content && item.content.trim().length > 0);
+      return retryMap.get(url) || null;
+    }).filter((item): item is BrightDataBatchResult => Boolean(item?.content.trim()));
 
-    const initialSuccessCount = parsedItems.filter(item => item.content && item.content.trim().length > 0).length;
-    const initialFailureCount = parsedItems.length - initialSuccessCount;
+    const initialSuccessCount = cleanUrls.length - retryUrls.length;
+    const initialFailureCount = retryUrls.length;
     const retrySuccessCount = retryResults.filter(Boolean).length;
 
     batchToolState.partialSuccesses += initialSuccessCount + retrySuccessCount;

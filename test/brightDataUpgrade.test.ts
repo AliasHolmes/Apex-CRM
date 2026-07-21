@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
-import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, classifyBrightDataError, executeBrightDataSearchWithRetry, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
+import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, chunkBrightDataBatchItems, classifyBrightDataError, executeBrightDataSearchWithRetry, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { brightDataFreeTierCapabilities } from '../server/leadSearch/freeTier.js';
 
@@ -315,6 +315,14 @@ test('Bright Data URL normalization encodes LinkedIn unicode slugs before MCP va
   assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 5);
 });
 
+test('Bright Data evidence batching keeps every target within the five-URL tool contract', () => {
+  const urls = Array.from({ length: 11 }, (_, index) => `https://example.com/${index + 1}`);
+  const batches = chunkBrightDataBatchItems(urls);
+
+  assert.deepStrictEqual(batches.map(batch => batch.length), [5, 5, 1]);
+  assert.deepStrictEqual(batches.flat(), urls);
+});
+
 test('Bright Data search arguments match the installed MCP search_engine schema', () => {
   assert.strictEqual(normalizeBrightDataGeoLocation('US'), 'us');
   assert.strictEqual(normalizeBrightDataGeoLocation('United States'), '');
@@ -473,6 +481,42 @@ test('Per-child partial-failure retry in batch scrape path', async (t) => {
   assert.strictEqual(results[0].content, 'valid content');
   assert.strictEqual(results[1].url, 'https://example.com/2');
   assert.strictEqual(results[1].content, 'retried single page content');
+
+  const status = bd.getBrightDataStatus();
+  assert.strictEqual(status.batchTool.partialFailures, 1);
+  assert.strictEqual(status.batchTool.partialSuccesses, 2);
+});
+
+test('Batch scraping retries a requested URL that the provider omits entirely', async (t) => {
+  t.after(restoreMocks);
+  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
+  process.env.BRIGHTDATA_PLAN = 'free';
+  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }]
+  });
+
+  const toolCalls: string[] = [];
+  Client.prototype.callTool = async (params) => {
+    toolCalls.push(params.name);
+    if (params.name === 'scrape_batch') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify([
+          { url: 'https://example.com/1', markdown: 'valid content' }
+        ]) }]
+      } as any;
+    }
+    return { content: [{ type: 'text', text: 'recovered omitted page' }] } as any;
+  };
+
+  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-omitted-retry`);
+  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1', 'https://example.com/2']);
+
+  assert.deepStrictEqual(toolCalls, ['scrape_batch', 'scrape_as_markdown']);
+  assert.deepStrictEqual(results.map((result: { url: string }) => result.url), ['https://example.com/1', 'https://example.com/2']);
+  assert.strictEqual(results[1].content, 'recovered omitted page');
 
   const status = bd.getBrightDataStatus();
   assert.strictEqual(status.batchTool.partialFailures, 1);

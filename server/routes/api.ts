@@ -5,7 +5,7 @@ import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getP
 
 import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt, type LLMUsage } from '../services/llm.js';
-import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
+import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, chunkBrightDataBatchItems, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { computeScoreBreakdown, rankLeadForFinalSelection, type EvidenceQuality, type LeadSourceProvider } from '../leadSearch/scoring.js';
 import { createLeadEvidence, inferTavilyEvidenceQuality } from '../leadSearch/evidence.js';
@@ -1641,21 +1641,41 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         const upgradeUrls = upgradeTargets.map((item: any) => String(item.url || '')).filter(Boolean);
         remainingForTavilyExtract = [];
         let upgraded = 0;
+        let batchRequests = 0;
+        let attemptedUpgradeTargets = 0;
         try {
           freeTierBudget.reserveBrightDataScrape(upgradeUrls.length);
           if (!creditReservationEnabled) recordProviderUsage('brightdata', upgradeUrls.length);
-          const batchResults = await scrapeBatchAsMarkdown(upgradeUrls);
-          const contentByUrl = new Map(batchResults.map(r => [r.url, r.content]));
-          for (const item of upgradeTargets) {
-            const markdown = contentByUrl.get(String(item.url || ''));
-            if (markdown && markdown.trim().length > 80) {
-              item.raw_content = [item.raw_content, markdown].filter(Boolean).join('\n');
-              item.content = [item.content, markdown.slice(0, 1800)].filter(Boolean).join('\n');
-              upgraded++;
-              stats.scout.brightDataEvidenceUpgrades = (stats.scout.brightDataEvidenceUpgrades || 0) + 1;
-            } else {
-              remainingForTavilyExtract.push(item);
+          for (const batchTargets of chunkBrightDataBatchItems(upgradeTargets)) {
+            if (brightDataProviderDisabled) break;
+            attemptedUpgradeTargets += batchTargets.length;
+            batchRequests++;
+            try {
+              const batchUrls = batchTargets.map((item: any) => String(item.url || '')).filter(Boolean);
+              const batchResults = await scrapeBatchAsMarkdown(batchUrls);
+              const contentByUrl = new Map(batchResults.map(r => [normalizeDedupeValue(r.url), r.content]));
+              for (const item of batchTargets) {
+                const markdown = contentByUrl.get(normalizeDedupeValue(String(item.url || '')));
+                if (markdown && markdown.trim().length > 80) {
+                  item.raw_content = [item.raw_content, markdown].filter(Boolean).join('\n');
+                  item.content = [item.content, markdown.slice(0, 1800)].filter(Boolean).join('\n');
+                  upgraded++;
+                  stats.scout.brightDataEvidenceUpgrades = (stats.scout.brightDataEvidenceUpgrades || 0) + 1;
+                } else {
+                  remainingForTavilyExtract.push(item);
+                }
+              }
+            } catch (error: any) {
+              const classified = classifyBrightDataError(error);
+              if (classified.providerDisabled) {
+                brightDataProviderDisabled = true;
+                brightDataStats.providerDisabled++;
+              }
+              remainingForTavilyExtract.push(...batchTargets);
             }
+          }
+          if (attemptedUpgradeTargets < upgradeTargets.length) {
+            remainingForTavilyExtract.push(...upgradeTargets.slice(attemptedUpgradeTargets));
           }
         } catch (error: any) {
           const classified = classifyBrightDataError(error);
@@ -1672,7 +1692,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           provider: 'brightdata',
           round,
           latencyMs: Date.now() - bdUpgradeStarted,
-          counts: { requestedUrls: upgradeUrls.length, upgradedUrls: upgraded, fallbackToTavily: remainingForTavilyExtract.length },
+          counts: { requestedUrls: upgradeUrls.length, batchRequests, upgradedUrls: upgraded, fallbackToTavily: remainingForTavilyExtract.length },
           brightData: getTraceBrightDataStatus()
         });
         if (upgraded > 0) logEvent(`Round ${round}: Bright Data batch-upgraded evidence for ${upgraded}/${upgradeUrls.length} thin pages.`);

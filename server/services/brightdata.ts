@@ -67,6 +67,24 @@ let cooldownLogMutedUntil = 0;
 let scrapeBatchToolAvailable: boolean | null = null;
 let searchToolAvailable: boolean | null = null;
 
+export type BatchToolState = {
+  documented: boolean;
+  detected: boolean | null;
+  runtimeVerified: boolean;
+  fallbackMode: 'none' | 'single_page_parallel';
+  partialSuccesses: number;
+  partialFailures: number;
+};
+
+let batchToolState: BatchToolState = {
+  documented: true,
+  detected: null,
+  runtimeVerified: false,
+  fallbackMode: 'none',
+  partialSuccesses: 0,
+  partialFailures: 0
+};
+
 const brightDataKeyPool = new ApiKeyPool('Bright Data', () => parseApiKeys(
   process.env.BRIGHTDATA_API_TOKENS,
   [process.env.BRIGHTDATA_API_TOKEN, process.env.API_TOKEN]
@@ -118,6 +136,14 @@ const withHardTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label:
 const resetToolAvailability = () => {
   scrapeBatchToolAvailable = null;
   searchToolAvailable = null;
+  batchToolState = {
+    documented: true,
+    detected: null,
+    runtimeVerified: false,
+    fallbackMode: 'none',
+    partialSuccesses: 0,
+    partialFailures: 0
+  };
 };
 
 const cooldownMsForFailure = () => {
@@ -365,7 +391,8 @@ export function getBrightDataStatus() {
     retryable: lastRetryable,
     baseTimeoutSeconds: baseTimeoutSeconds(),
     baseMaxRetries: baseMaxRetries(),
-    clientHot
+    clientHot,
+    batchTool: { ...batchToolState }
   };
 }
 
@@ -394,11 +421,15 @@ async function connectLocalClient(apiToken: string, generation: number) {
   const serverPath = path.join(process.cwd(), 'node_modules', '@brightdata', 'mcp', 'server.js');
   const timeoutSeconds = String(baseTimeoutSeconds());
   const maxRetries = String(baseMaxRetries());
+  const safeEnv = { ...process.env };
+  delete (safeEnv as any)['PRO_MODE'];
+  delete (safeEnv as any)['GROUPS'];
+  delete (safeEnv as any)['TOOLS'];
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
     env: {
-      ...process.env,
+      ...safeEnv,
       API_TOKEN: apiToken,
       BRIGHTDATA_API_TOKEN: apiToken,
       BASE_TIMEOUT: timeoutSeconds,
@@ -628,33 +659,27 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
   // `scrape_batch` is not exposed by Bright Data's Rapid/free MCP. Keep the
   // explicit deep-enrichment stage functional without probing an unavailable
   // tool, and keep the fallback intentionally small.
-  if (isBrightDataFreeTier()) {
-    const fallbackLimit = Math.min(
-      cleanUrls.length,
-      Math.max(1, Math.floor(Number(process.env.BRIGHTDATA_FREE_BATCH_FALLBACK_MAX_URLS) || 5))
-    );
-    const results = await Promise.all(cleanUrls.slice(0, fallbackLimit).map(async (url) => {
-      try {
-        const content = await scrapeAsMarkdown(url, timeoutMs);
-        return content ? { url, content, sourceProvider: 'brightdata_batch' as const } : null;
-      } catch {
-        return null;
-      }
-    }));
-    return results.filter((item): item is BrightDataBatchResult => Boolean(item));
-  }
-
   const result = await withBrightDataClient('scrape_batch', async (client) => {
     if (scrapeBatchToolAvailable === null) {
       const tools = await client.listTools();
       scrapeBatchToolAvailable = tools.tools.some(t => t.name === 'scrape_batch');
+      batchToolState.detected = scrapeBatchToolAvailable;
     }
 
     if (!scrapeBatchToolAvailable) {
-      throw new BrightDataError('scrape_batch tool unavailable in Bright Data MCP', {
-        reasonCode: 'provider_config',
-        providerDisabled: true
-      });
+      batchToolState.fallbackMode = 'single_page_parallel';
+      console.warn('[brightdata:tool_fallback] scrape_batch not in listTools(); falling back to parallel scrape_as_markdown');
+      const fallbackResults = await Promise.all(
+        cleanUrls.map(async (url) => {
+          try {
+            const content = await scrapeAsMarkdown(url, timeoutMs);
+            return content ? { url, content, sourceProvider: 'brightdata_batch' as const } : null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      return fallbackResults.filter((item): item is BrightDataBatchResult => Boolean(item));
     }
 
     const toolResult = await withHardTimeout(client.callTool(
@@ -674,27 +699,64 @@ export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTime
         ? structured
         : null;
 
+    let parsedItems: BrightDataBatchResult[] = [];
+
     if (candidates) {
-      return candidates.map((item: any) => ({
+      parsedItems = candidates.map((item: any) => ({
         url: item.url || item.source_url || '',
         content: item.markdown || item.content || item.text || '',
         sourceProvider: 'brightdata_batch' as const
-      })).filter((item: BrightDataBatchResult) => item.url && item.content);
+      })).filter((item: BrightDataBatchResult) => item.url);
+    } else {
+      const textResult = textFromToolResult(toolResult);
+      if (textResult) {
+        try {
+          const parsed = JSON.parse(textResult);
+          const items = Array.isArray(parsed) ? parsed : (parsed.results || []);
+          parsedItems = items.map((item: any) => ({
+            url: item.url || item.source_url || '',
+            content: item.markdown || item.content || item.text || '',
+            sourceProvider: 'brightdata_batch' as const
+          })).filter((item: BrightDataBatchResult) => item.url);
+        } catch {
+          parsedItems = cleanUrls.map(url => ({ url, content: textResult, sourceProvider: 'brightdata_batch' as const }));
+        }
+      }
     }
 
-    const textResult = textFromToolResult(toolResult);
-    if (!textResult) return [];
-    try {
-      const parsed = JSON.parse(textResult);
-      const items = Array.isArray(parsed) ? parsed : (parsed.results || []);
-      return items.map((item: any) => ({
-        url: item.url || item.source_url || '',
-        content: item.markdown || item.content || item.text || '',
-        sourceProvider: 'brightdata_batch' as const
-      })).filter((item: BrightDataBatchResult) => item.url && item.content);
-    } catch {
-      return cleanUrls.map(url => ({ url, content: textResult, sourceProvider: 'brightdata_batch' as const }));
+    // Per-child partial-failure retry
+    const retries: Promise<BrightDataBatchResult | null>[] = [];
+    for (const item of parsedItems) {
+      if (!item.content || item.content.trim().length === 0) {
+        retries.push(
+          scrapeAsMarkdown(item.url, timeoutMs)
+            .then(md => md ? { url: item.url, content: md, sourceProvider: 'brightdata_batch' as const } : null)
+            .catch(() => null)
+        );
+      }
     }
+    const retryResults = await Promise.all(retries);
+    const retryMap = new Map(retryResults.filter((r): r is BrightDataBatchResult => Boolean(r)).map(r => [r.url, r]));
+
+    const finalItems = parsedItems.map(item => {
+      if ((!item.content || item.content.trim().length === 0) && retryMap.has(item.url)) {
+        return retryMap.get(item.url)!;
+      }
+      return item;
+    }).filter(item => item.content && item.content.trim().length > 0);
+
+    const initialSuccessCount = parsedItems.filter(item => item.content && item.content.trim().length > 0).length;
+    const initialFailureCount = parsedItems.length - initialSuccessCount;
+    const retrySuccessCount = retryResults.filter(Boolean).length;
+
+    batchToolState.partialSuccesses += initialSuccessCount + retrySuccessCount;
+    batchToolState.partialFailures += initialFailureCount;
+
+    if (finalItems.length > 0) {
+      batchToolState.runtimeVerified = true;
+    }
+
+    return finalItems;
   }, { throwOnUnavailable: true, throwOnFailure: true });
 
   return result || [];

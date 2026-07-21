@@ -543,7 +543,8 @@ router.get('/provider-capabilities', (req, res): any => {
       brightData: {
         ...getBrightDataCapabilities(),
         usage: readProviderUsage('brightdata'),
-        status: getBrightDataStatus()
+        status: getBrightDataStatus(),
+        batchTool: getBrightDataStatus().batchTool
       }
     });
   } catch (error: any) {
@@ -1636,50 +1637,45 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
       if (remainingForTavilyExtract.length > 0 && brightDataReady && !brightDataProviderDisabled) {
         const bdUpgradeStarted = Date.now();
-        let upgraded = 0;
-        const concurrency = Math.min(Math.max(Number(process.env.BRIGHTDATA_PROFILE_CONCURRENCY || 1), 1), 3);
-        const targets = remainingForTavilyExtract.slice();
+        const upgradeTargets = remainingForTavilyExtract.slice();
+        const upgradeUrls = upgradeTargets.map((item: any) => String(item.url || '')).filter(Boolean);
         remainingForTavilyExtract = [];
-        const queue = targets.slice();
-        const workers = Array.from({ length: Math.min(concurrency, targets.length) }, async () => {
-          while (queue.length > 0 && !brightDataProviderDisabled) {
-            const item = queue.shift();
-            if (!item) break;
-            const url = String(item.url || '');
-            try {
-              freeTierBudget.reserveBrightDataScrape(1);
-              if (!creditReservationEnabled) recordProviderUsage('brightdata', 1);
-              const markdown = await scrapeAsMarkdown(url);
-              if (markdown && markdown.trim().length > 80) {
-                item.raw_content = [item.raw_content, markdown].filter(Boolean).join('\n');
-                item.content = [item.content, markdown.slice(0, 1800)].filter(Boolean).join('\n');
-                upgraded++;
-                stats.scout.brightDataEvidenceUpgrades = (stats.scout.brightDataEvidenceUpgrades || 0) + 1;
-              } else {
-                remainingForTavilyExtract.push(item);
-              }
-            } catch (error: any) {
-              const classified = classifyBrightDataError(error);
-              if (classified.providerDisabled) {
-                brightDataProviderDisabled = true;
-                brightDataStats.providerDisabled++;
-              }
+        let upgraded = 0;
+        try {
+          freeTierBudget.reserveBrightDataScrape(upgradeUrls.length);
+          if (!creditReservationEnabled) recordProviderUsage('brightdata', upgradeUrls.length);
+          const batchResults = await scrapeBatchAsMarkdown(upgradeUrls);
+          const contentByUrl = new Map(batchResults.map(r => [r.url, r.content]));
+          for (const item of upgradeTargets) {
+            const markdown = contentByUrl.get(String(item.url || ''));
+            if (markdown && markdown.trim().length > 80) {
+              item.raw_content = [item.raw_content, markdown].filter(Boolean).join('\n');
+              item.content = [item.content, markdown.slice(0, 1800)].filter(Boolean).join('\n');
+              upgraded++;
+              stats.scout.brightDataEvidenceUpgrades = (stats.scout.brightDataEvidenceUpgrades || 0) + 1;
+            } else {
               remainingForTavilyExtract.push(item);
             }
           }
-        });
-        await Promise.all(workers);
+        } catch (error: any) {
+          const classified = classifyBrightDataError(error);
+          if (classified.providerDisabled) {
+            brightDataProviderDisabled = true;
+            brightDataStats.providerDisabled++;
+          }
+          remainingForTavilyExtract.push(...upgradeTargets);
+        }
         recordTrace({
           phase: 'search',
-          operation: 'brightdata_lightweight_scrape',
+          operation: 'brightdata_batch_evidence_upgrade',
           status: upgraded > 0 ? 'success' : 'skipped',
           provider: 'brightdata',
           round,
           latencyMs: Date.now() - bdUpgradeStarted,
-          counts: { requestedUrls: targets.length, upgradedUrls: upgraded, fallbackToTavily: remainingForTavilyExtract.length },
+          counts: { requestedUrls: upgradeUrls.length, upgradedUrls: upgraded, fallbackToTavily: remainingForTavilyExtract.length },
           brightData: getTraceBrightDataStatus()
         });
-        if (upgraded > 0) logEvent(`Round ${round}: Bright Data upgraded evidence for ${upgraded}/${targets.length} thin pages.`);
+        if (upgraded > 0) logEvent(`Round ${round}: Bright Data batch-upgraded evidence for ${upgraded}/${upgradeUrls.length} thin pages.`);
       }
 
       const acceptedUpgradeCount = freeTierBudget.reserveTavilyExtract(remainingForTavilyExtract.length);

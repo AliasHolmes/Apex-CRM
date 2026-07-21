@@ -45,6 +45,26 @@ export type CollectionCapacity = {
   poolCapped: boolean;
 };
 
+/**
+ * A stalled round is not evidence that the search is exhausted. Keep using the
+ * bounded collection budget while the evidence pool is still short; the route
+ * loop remains responsible for cancellation, timeout, duplicate-query, and
+ * maximum-round exits.
+ */
+export function shouldKeepCollectingAfterStall(input: {
+  completedRound: number;
+  maxRounds: number;
+  acceptedLeads: number;
+  rerankPoolTarget: number;
+}): boolean {
+  const completedRound = Math.max(0, Math.floor(Number(input.completedRound) || 0));
+  const maxRounds = Math.max(0, Math.floor(Number(input.maxRounds) || 0));
+  const acceptedLeads = Math.max(0, Math.floor(Number(input.acceptedLeads) || 0));
+  const rerankPoolTarget = Math.max(0, Math.floor(Number(input.rerankPoolTarget) || 0));
+
+  return completedRound < maxRounds && acceptedLeads < rerankPoolTarget;
+}
+
 export function buildCollectionCapacity(input: {
   targetLimit: number;
   poolMultiplier?: number;

@@ -4,6 +4,8 @@ import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verificati
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
 import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, classifyBrightDataError, executeBrightDataSearchWithRetry, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { brightDataFreeTierCapabilities } from '../server/leadSearch/freeTier.js';
 
 test('verifyDecisionMakerFromEvidence accepts founder', (t) => {
   const result = verifyDecisionMakerFromEvidence({
@@ -320,4 +322,165 @@ test('Bright Data search arguments match the installed MCP search_engine schema'
     buildBrightDataSearchArguments('AI founders', { country: 'US', cursor: 'next-page' }),
     { query: 'AI founders', engine: 'google', cursor: 'next-page', geo_location: 'us' }
   );
+});
+
+const originalConnect = Client.prototype.connect;
+const originalCallTool = Client.prototype.callTool;
+const originalListTools = Client.prototype.listTools;
+const originalEnv = { ...process.env };
+
+function restoreMocks() {
+  Client.prototype.connect = originalConnect;
+  Client.prototype.callTool = originalCallTool;
+  Client.prototype.listTools = originalListTools;
+  for (const key of Object.keys(process.env)) {
+    delete process.env[key];
+  }
+  Object.assign(process.env, originalEnv);
+}
+
+test('scrape_batch actually invoked on free tier when listTools() advertises it', async (t) => {
+  t.after(restoreMocks);
+  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
+  process.env.BRIGHTDATA_PLAN = 'free';
+  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => {
+    return { tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }] };
+  };
+
+  let callToolName = '';
+  let callToolArgs: any = null;
+  Client.prototype.callTool = async (params) => {
+    callToolName = params.name;
+    callToolArgs = params.arguments;
+    return {
+      content: [{ type: 'text', text: JSON.stringify([{ url: 'https://example.com/1', markdown: 'content 1' }]) }]
+    } as any;
+  };
+
+  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-batch-success`);
+  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1']);
+
+  assert.strictEqual(callToolName, 'scrape_batch');
+  assert.deepStrictEqual(callToolArgs, { urls: ['https://example.com/1'] });
+  assert.strictEqual(results.length, 1);
+  assert.strictEqual(results[0].url, 'https://example.com/1');
+  assert.strictEqual(results[0].content, 'content 1');
+
+  const status = bd.getBrightDataStatus();
+  assert.strictEqual(status.batchTool.detected, true);
+  assert.strictEqual(status.batchTool.runtimeVerified, true);
+});
+
+test('Free-mode isBrightDataFreeTier guard no longer short-circuits batch scraping', async (t) => {
+  t.after(restoreMocks);
+  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
+  process.env.BRIGHTDATA_PLAN = 'free';
+  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+
+  let listToolsCalled = false;
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => {
+    listToolsCalled = true;
+    return { tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }] };
+  };
+  Client.prototype.callTool = async () => {
+    return {
+      content: [{ type: 'text', text: JSON.stringify([{ url: 'https://example.com/1', markdown: 'content 1' }]) }]
+    } as any;
+  };
+
+  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-batch-no-short-circuit`);
+  await bd.scrapeBatchAsMarkdown(['https://example.com/1']);
+
+  assert.strictEqual(listToolsCalled, true);
+});
+
+test('scrape_batch falls back to parallel single-page when scrape_batch is NOT advertised', async (t) => {
+  t.after(restoreMocks);
+  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
+  process.env.BRIGHTDATA_PLAN = 'free';
+  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => {
+    return { tools: [{ name: 'scrape_as_markdown', description: 'Scrape single URL', inputSchema: {} as any }] };
+  };
+
+  const toolCalls: string[] = [];
+  Client.prototype.callTool = async (params) => {
+    toolCalls.push(params.name);
+    return {
+      content: [{ type: 'text', text: 'single page content' }]
+    } as any;
+  };
+
+  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-batch-fallback`);
+  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1', 'https://example.com/2']);
+
+  assert.ok(toolCalls.includes('scrape_as_markdown'));
+  assert.strictEqual(toolCalls.includes('scrape_batch'), false);
+  assert.strictEqual(results.length, 2);
+  assert.strictEqual(results[0].content, 'single page content');
+  
+  const status = bd.getBrightDataStatus();
+  assert.strictEqual(status.batchTool.detected, false);
+  assert.strictEqual(status.batchTool.fallbackMode, 'single_page_parallel');
+});
+
+test('Per-child partial-failure retry in batch scrape path', async (t) => {
+  t.after(restoreMocks);
+  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
+  process.env.BRIGHTDATA_PLAN = 'free';
+  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => {
+    return { tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }] };
+  };
+
+  const toolCalls: string[] = [];
+  Client.prototype.callTool = async (params) => {
+    toolCalls.push(params.name);
+    if (params.name === 'scrape_batch') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify([
+            { url: 'https://example.com/1', markdown: 'valid content' },
+            { url: 'https://example.com/2', markdown: '' } // failed/empty child
+          ])
+        }]
+      } as any;
+    }
+    if (params.name === 'scrape_as_markdown') {
+      return {
+        content: [{ type: 'text', text: 'retried single page content' }]
+      } as any;
+    }
+    return { content: [] } as any;
+  };
+
+  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-partial-retry`);
+  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1', 'https://example.com/2']);
+
+  assert.ok(toolCalls.includes('scrape_batch'));
+  assert.ok(toolCalls.includes('scrape_as_markdown'));
+  assert.strictEqual(results.length, 2);
+  assert.strictEqual(results[0].url, 'https://example.com/1');
+  assert.strictEqual(results[0].content, 'valid content');
+  assert.strictEqual(results[1].url, 'https://example.com/2');
+  assert.strictEqual(results[1].content, 'retried single page content');
+
+  const status = bd.getBrightDataStatus();
+  assert.strictEqual(status.batchTool.partialFailures, 1);
+  assert.strictEqual(status.batchTool.partialSuccesses, 2);
+});
+
+test('brightDataFreeTierCapabilities unavailable no longer lists scrape_batch', () => {
+  const cap = brightDataFreeTierCapabilities();
+  assert.strictEqual(cap.unavailable.includes('scrape_batch'), false);
+  assert.strictEqual(cap.supported.includes('scrape_batch'), true);
 });

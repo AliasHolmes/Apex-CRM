@@ -14,7 +14,7 @@ import {
   validateFinalistJudgments
 } from '../server/leadSearch/finalistJudge.ts';
 import { buildScoutEvidence } from '../server/leadSearch/scoutScoring.ts';
-import { buildCollectionCapacity, collectionRefinementForRound } from '../server/leadSearch/collectionCapacity.ts';
+import { buildCollectionCapacity, collectionRefinementForRound, shouldKeepCollectingAfterStall } from '../server/leadSearch/collectionCapacity.ts';
 
 const spec: any = {
   version: 1,
@@ -90,6 +90,32 @@ describe('evidence-grounded prospect quality', () => {
     assert.equal(capacity.poolCapped, false);
     const refinements = new Set(Array.from({ length: capacity.maxRounds - 2 }, (_, index) => collectionRefinementForRound(index + 3)));
     assert.equal(refinements.size, capacity.maxRounds - 2);
+  });
+
+  it('uses the full bounded recovery budget when a 20-prospect search stalls below target', () => {
+    const capacity = buildCollectionCapacity({
+      targetLimit: 20,
+      poolMultiplier: 4,
+      poolMax: 240,
+      baseRounds: 6,
+      contractHardReqCount: 2
+    });
+
+    assert.equal(capacity.rerankPoolTarget, 80);
+    assert.equal(capacity.requiredRounds, 7);
+    assert.equal(capacity.maxRounds, 9);
+    assert.equal(shouldKeepCollectingAfterStall({
+      completedRound: 7,
+      maxRounds: capacity.maxRounds,
+      acceptedLeads: 5,
+      rerankPoolTarget: capacity.rerankPoolTarget
+    }), true);
+    assert.equal(shouldKeepCollectingAfterStall({
+      completedRound: 9,
+      maxRounds: capacity.maxRounds,
+      acceptedLeads: 5,
+      rerankPoolTarget: capacity.rerankPoolTarget
+    }), false);
   });
 
   it('continues a 200-prospect request on a clear best-effort evidence budget', () => {

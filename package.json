@@ -22,7 +22,7 @@
         "test:ui": "tsx --test test/uiContracts.test.ts",
         "test:persistence": "tsx --test test/leadPersistence.test.ts",
         "test:mutations": "tsx --test test/leadMutationContracts.test.ts",
-    "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/scoutPipeline.test.ts test/adaptiveScheduler.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/llmBudget.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts test/uiContracts.test.ts test/leadPersistence.test.ts test/leadMutationContracts.test.ts"
+    "test:lead-engine": "tsx --test test/leadSearchHelpers.test.ts test/targetFulfillment.test.ts test/targetFulfillmentReplay.test.ts test/scoutPipeline.test.ts test/adaptiveScheduler.test.ts test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/brightDataUpgrade.test.ts test/keyRotator.test.ts test/tavilyRotation.test.ts test/llmFallback.test.ts test/llmBudget.test.ts test/telemetry.test.ts test/encodingHygiene.test.ts test/uiContracts.test.ts test/leadPersistence.test.ts test/leadMutationContracts.test.ts"
     },
     "dependencies": {
         "@brightdata/mcp": "^2.11.0",

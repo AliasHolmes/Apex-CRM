@@ -80,6 +80,16 @@ export const finalistJudgeSchema = {
   required: ['judgments']
 };
 
+export type FinalistOutcomeStatus = 'qualified' | 'hard_fail' | 'unknown' | 'unjudged';
+
+export type CandidateOutcome = {
+  candidateId: string;
+  status: FinalistOutcomeStatus;
+  qualification?: Qualification;
+  requirements?: RequirementAssessment[];
+  reason?: string;
+};
+
 export const FINALIST_JUDGE_SYSTEM_PROMPT = `You are a senior B2B sales intelligence evaluator. Assess each candidate's fit for the role described in the prospect contract.
 
 CORE RULES:
@@ -88,16 +98,18 @@ CORE RULES:
    - Any city, state, metro area, or region that is physically inside the target country = PASS
    - "San Francisco CA", "New York", "Boston", "United States", "US", "U.S.", "America" all satisfy "USA"
    - UK / United Kingdom / England / Scotland / London all satisfy "UK"
-3. ROLE & OWNERSHIP equivalence (always apply):
-   - "Founder", "Co-Founder", "Co-founder & CEO", "Managing Partner", "Principal", "President", "Owner" all satisfy an ownership/agency-owner requirement.
-   - A person who founded and leads their own company = agency owner
-4. COMPANY TYPE equivalence (always apply):
-   - "AI marketing agency", "AI consultancy", "AI services firm", "AI studio", "AI-powered agency", "agentic AI company" all satisfy "AI agency".
-   - Use the business model, not the exact label.
+3. ROLE & OWNERSHIP equivalence:
+   - "Founder", "Co-Founder", "Proprietor", "Owner" satisfy an ownership requirement.
+   - "Partner" satisfies ownership ONLY when actual partnership/managing partner evidence exists.
+   - "Director", "President", "VP", or hired C-Suite titles do NOT automatically satisfy an ownership requirement without explicit founder/ownership evidence.
+4. COMPANY TYPE equivalence:
+   - "AI agency", "AI consultancy", "AI services firm", "AI studio", "AI marketing agency" satisfy an AI agency requirement.
+   - A generic AI software product company or tech vendor does NOT satisfy an AI agency requirement without client-service model evidence.
 5. EVIDENCE rules:
    - A requirement status is enough when the shown evidence is clear. Include an evidence id, quote, or explanation only when it resolves real ambiguity.
-   - "unknown" is only valid when there is genuinely zero relevant evidence - not when evidence exists but uses different phrasing.
-6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement, OR the candidate's title/company/location is semantically equivalent per the rules above.`;
+   - "unknown" is used when evidence is insufficient or ambiguous.
+   - "fail" is used when evidence explicitly contradicts a hard requirement.
+6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.`;
 
 export function buildFinalistJudgePrompt(contract: ProspectContract, candidates: FinalistCandidate[]) {
   const requirementText = contract.requirements.map(requirement =>
@@ -129,61 +141,102 @@ const normalizeAssessment = (raw: any, candidate: FinalistCandidate, requirement
 };
 
 /**
- * Treat malformed output as uncertainty. The model cannot manufacture a
- * qualification by skipping a requirement, changing an id, or citing text it
- * was not shown.
+ * Validate judgments and assign precise outcome statuses:
+ * - Any valid failed hard requirement -> hard_fail
+ * - Insufficient evidence for a hard requirement -> unknown
+ * - Omitted or malformed candidate result -> unjudged
+ * - Every hard requirement validly passes -> qualified
  */
 export function validateFinalistJudgments(
   raw: unknown,
   contract: ProspectContract,
   candidates: FinalistCandidate[]
-): { qualifications: Map<string, Qualification>; validJudgmentCount: number; expectedJudgmentCount: number } {
+): {
+  qualifications: Map<string, Qualification>;
+  outcomes: Map<string, CandidateOutcome>;
+  validJudgmentCount: number;
+  expectedJudgmentCount: number;
+  counts: { qualified: number; hardFail: number; unknown: number; unjudged: number };
+} {
   const byCandidate = new Map(candidates.map(candidate => [candidate.candidateId, candidate]));
   const rawJudgments = Array.isArray((raw as any)?.judgments) ? (raw as any).judgments : [];
   const qualifications = new Map<string, Qualification>();
+  const outcomes = new Map<string, CandidateOutcome>();
   let validJudgmentCount = 0;
+  const counts = { qualified: 0, hardFail: 0, unknown: 0, unjudged: 0 };
+
+  const hardRequirements = contract.requirements.filter(req => req.importance === 'hard');
+  const hardCount = hardRequirements.length;
+
+  for (const candidate of candidates) {
+    outcomes.set(candidate.candidateId, { candidateId: candidate.candidateId, status: 'unjudged' });
+  }
+
   for (const judgment of rawJudgments) {
-    const candidate = byCandidate.get(clean(judgment?.candidateId, 180));
+    const candidateId = clean(judgment?.candidateId, 180);
+    const candidate = byCandidate.get(candidateId);
     if (!candidate || !Array.isArray(judgment?.requirements)) continue;
+
     const assessmentById = new Map(judgment.requirements
       .filter((item: any) => item && typeof item.requirementId === 'string')
       .map((item: any) => [item.requirementId, item]));
     const requirements = contract.requirements.map(requirement => normalizeAssessment(assessmentById.get(requirement.id), candidate, requirement));
     validJudgmentCount++;
 
-    const hardPasses = requirements.filter(requirement => {
-      const contractRequirement = contract.requirements.find(item => item.id === requirement.requirementId);
-      return contractRequirement?.importance === 'hard' && requirement.status === 'pass';
+    const hardFails = requirements.filter(req => {
+      const contractReq = contract.requirements.find(item => item.id === req.requirementId);
+      return contractReq?.importance === 'hard' && req.status === 'fail';
     }).length;
-    const hardCount = contract.requirements.filter(requirement => requirement.importance === 'hard').length;
+
+    const hardPasses = requirements.filter(req => {
+      const contractReq = contract.requirements.find(item => item.id === req.requirementId);
+      return contractReq?.importance === 'hard' && req.status === 'pass';
+    }).length;
 
     const semanticFit = bounded(judgment.semanticFit);
     const authorityFit = bounded(judgment.authorityFit);
     const evidenceConfidence = bounded(judgment.evidenceConfidence);
-    const verdict = clean(judgment.verdict || '');
+    const reason = clean(judgment.reason, 500) || 'Matches the prospect contract with cited public evidence.';
 
-    // Require all hard requirements to pass for qualification
-    const qualifies = (hardPasses === hardCount);
+    let status: FinalistOutcomeStatus = 'unknown';
+    if (hardFails > 0) {
+      status = 'hard_fail';
+      counts.hardFail++;
+    } else if (hardPasses === hardCount) {
+      status = 'qualified';
+      counts.qualified++;
+    } else {
+      status = 'unknown';
+      counts.unknown++;
+    }
 
-    if (!qualifies) continue;
+    if (status === 'qualified') {
+      const corroboration = bounded(candidate.lead.scout?.corroborationScore ?? (candidate.evidence.length > 1 ? 7 : 4));
+      const weighted = contract.authorityRequired
+        ? semanticFit * 0.50 + evidenceConfidence * 0.25 + authorityFit * 0.15 + corroboration * 0.10
+        : semanticFit * 0.65 + evidenceConfidence * 0.25 + corroboration * 0.10;
 
-    const corroboration = bounded(candidate.lead.scout?.corroborationScore ?? (candidate.evidence.length > 1 ? 7 : 4));
-    const weighted = contract.authorityRequired
-      ? semanticFit * 0.50 + evidenceConfidence * 0.25 + authorityFit * 0.15 + corroboration * 0.10
-      : semanticFit * 0.65 + evidenceConfidence * 0.25 + corroboration * 0.10;
-    qualifications.set(candidate.candidateId, {
-      policyVersion: contract.policyVersion,
-      verdict: 'qualified',
-      qualificationSource: 'llm',
-      finalScore: Number(weighted.toFixed(2)),
-      requirements,
-      reason: clean(judgment.reason, 500) || 'Matches the prospect contract with cited public evidence.',
-      semanticFit,
-      evidenceConfidence,
-      authorityFit
-    });
+      const qual: Qualification = {
+        policyVersion: contract.policyVersion,
+        verdict: 'qualified',
+        qualificationSource: 'llm',
+        finalScore: Number(weighted.toFixed(2)),
+        requirements,
+        reason,
+        semanticFit,
+        evidenceConfidence,
+        authorityFit
+      };
+      qualifications.set(candidate.candidateId, qual);
+      outcomes.set(candidate.candidateId, { candidateId, status: 'qualified', qualification: qual, requirements, reason });
+    } else {
+      outcomes.set(candidate.candidateId, { candidateId, status, requirements, reason });
+    }
   }
-  return { qualifications, validJudgmentCount, expectedJudgmentCount: candidates.length };
+
+  counts.unjudged = candidates.length - validJudgmentCount;
+
+  return { qualifications, outcomes, validJudgmentCount, expectedJudgmentCount: candidates.length, counts };
 }
 
 export function finalistCandidateFromLead(

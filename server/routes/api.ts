@@ -27,6 +27,7 @@ import { buildRoundDiagnostics } from '../leadSearch/roundDiagnostics.js';
 import { buildCollectionCapacity } from '../leadSearch/collectionCapacity.js';
 import { scheduleAdaptiveRetrievalTasks } from '../leadSearch/adaptiveScheduler.js';
 import { runProviderQueue } from '../leadSearch/providerQueue.js';
+import { executeTargetFulfillmentSession } from '../leadSearch/targetFulfillment.js';
 
 const router = Router();
 export const activeSessions = new Map<string, string[]>();
@@ -34,9 +35,13 @@ export const activeSessionEvents = new Map<string, MiningTraceEvent[]>();
 export const cancelledSessions = new Set<string>();
 export const activeSessionControllers = new Map<string, AbortController>();
 
-// Cache for /api/llm-health to avoid charging tokens on every page load.
 let _llmHealthCache: { result: Record<string, any>; expiresAt: number } | null = null;
 const LLM_HEALTH_CACHE_MS = 60_000;
+
+const getTraceBrightDataStatus = () => {
+  const status = getBrightDataStatus();
+  return { ...status, transport: status.transport || undefined };
+};
 
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 const isSafeLeadId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -52,11 +57,6 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
     (value.reviewStatus === undefined || reviewStatuses.has(value.reviewStatus)) &&
     (value.nextAction === undefined || nextActions.has(value.nextAction))
   );
-};
-
-const getTraceBrightDataStatus = () => {
-  const status = getBrightDataStatus();
-  return { ...status, transport: status.transport || undefined };
 };
 
 router.get('/leads', (req, res): any => {

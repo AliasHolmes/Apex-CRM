@@ -242,6 +242,34 @@ export interface CostSummary {
   tokensPerAcceptedLead?: number;
 }
 
+export interface TargetEffortStats {
+  mode: 'exhaustive_bounded';
+  requested: number;
+  selectableQualified: number;
+  shortfall: number;
+  waves: number;
+  queryExecutions: number;
+  maxQueryExecutions: number;
+  acceptedCandidates: number;
+  candidateCeiling: number;
+  emptyWaves: number;
+  estimatedQualificationYield: number;
+  terminationReason: string;
+}
+
+export interface FinalistJudgeStats {
+  autoQualified: number;
+  reviewed: number;
+  qualified: number;
+  hardFailed: number;
+  unknown: number;
+  unjudged: number;
+  batchesRun: number;
+  batchesSkipped: number;
+  retries: number;
+  rescued: number;
+}
+
 export interface PhaseTimelineItem {
   phase: MiningPhase;
   startedAt?: string;
@@ -265,6 +293,8 @@ export interface MiningTraceSummary {
   providerSummary: ProviderSummary;
   costSummary: CostSummary;
   phaseTimeline: PhaseTimelineItem[];
+  targetEffort?: TargetEffortStats;
+  finalistJudge?: FinalistJudgeStats;
   schemaVersion?: number;
 }
 export interface SearchLog {

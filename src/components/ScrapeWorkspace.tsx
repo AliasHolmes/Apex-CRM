@@ -643,28 +643,33 @@ export default function ScrapeWorkspace() {
       const fetchedLeads = data.leads || [];
 
       if (fetchedLeads.length === 0) {
-        throw new Error('Search did not yield any new public leads. Try different criteria or industries.');
+        const zeroMsg = data.shortfallReason || 'Search completed: 0 verified prospects found after exhausting available search queries.';
+        setSuccessMsg(zeroMsg);
+        updateTaskStatus(taskId, 'completed', 0);
+        return;
       }
 
       const { addedCount, skippedCount } = await handleBulkLeadsAdded(fetchedLeads);
       updateTaskStatus(taskId, 'completed', addedCount);
       const stats = data.stats;
-      const tavilyCalls = stats?.queryRuns?.length || stats?.rounds || 0;
+      const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;
       const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
                               (stats?.brightData?.profileScrapesAttempted || 0) + 
                               (stats?.brightData?.companyScrapesAttempted || 0) + 
                               (stats?.brightData?.batchScrapesAttempted || 0) + 
                               (stats?.enriched || 0);
       const cacheHits = stats?.cacheHits || 0;
-      const metricsInfo = stats ? ` (Tavily calls: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
+      const metricsInfo = stats ? ` (Queries: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
 
       const skippedInfo = skippedCount > 0 ? ` ${skippedCount} duplicate${skippedCount === 1 ? ' was' : 's were'} skipped.` : '';
-      if (addedCount === 0) {
+      if (data.shortfall > 0 || data.shortfallReason) {
+        setSuccessMsg(`${data.shortfallReason || `Found ${fetchedLeads.length}/${leadLimit} verified matches after exhausting search queries.`}${skippedInfo}${metricsInfo}`);
+      } else if (addedCount === 0) {
         setSuccessMsg(`Discovery completed, but every returned prospect was already saved.${metricsInfo}`);
       } else if (stats?.stopReason === 'target_reached') {
-        setSuccessMsg(`Target reached: ${addedCount}/${leadLimit} qualified prospects added.${skippedInfo}${metricsInfo} Prospects are ready for review and manual AI enrichment.`);
+        setSuccessMsg(`Target reached: ${addedCount}/${leadLimit} qualified prospects added.${skippedInfo}${metricsInfo} Prospects are ready for review.`);
       } else if (stats) {
-        setSuccessMsg(`Discovery finished with ${addedCount}/${leadLimit} new qualified prospects (stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}).${skippedInfo}${metricsInfo} Prospects are ready for review and manual AI enrichment.`);
+        setSuccessMsg(`Discovery finished with ${addedCount}/${leadLimit} qualified prospects (stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
       } else {
         setSuccessMsg(`Discovery complete: ${addedCount} LinkedIn-indexed profile${addedCount === 1 ? '' : 's'} added.${skippedInfo}`);
       }

@@ -43,7 +43,19 @@ export type CollectionCapacity = {
   requiredRounds: number;
   maxRounds: number;
   poolCapped: boolean;
+  candidateCeiling: number;
+  queryExecutionCeiling: number;
 };
+
+export function getRecoveryCandidateCeiling(targetLimit: number): number {
+  const target = clampInteger(targetLimit, 1, 200);
+  return Math.min(1600, Math.max(24, target * 8));
+}
+
+export function getQueryExecutionCeiling(targetLimit: number): number {
+  const target = clampInteger(targetLimit, 1, 200);
+  return Math.min(240, Math.max(32, target * 2));
+}
 
 /**
  * A stalled round is not evidence that the search is exhausted. Keep using the
@@ -104,7 +116,9 @@ export function buildCollectionCapacity(input: {
     requestedJudgePool: rerankPoolTarget,
     requiredRounds,
     maxRounds,
-    poolCapped: desiredPool > poolMax
+    poolCapped: desiredPool > poolMax,
+    candidateCeiling: getRecoveryCandidateCeiling(targetLimit),
+    queryExecutionCeiling: getQueryExecutionCeiling(targetLimit)
   };
 }
 

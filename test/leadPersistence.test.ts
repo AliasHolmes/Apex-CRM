@@ -16,12 +16,20 @@ const {
   readQueryPerformance,
   recordQueryPerformance,
   upsertLead,
+  upsertLeadWithIdentity,
   upsertLeads,
+  upsertLeadsWithIdentity,
 } = await import('../server/db.ts');
 
-const createLead = (id: string) => ({
+const createLead = (id: string, linkedinUrl?: string) => ({
   id,
-  profile: { id: `profile-${id}`, fullName: 'Persistence Test' },
+  profile: {
+    id: `profile-${id}`,
+    fullName: 'Persistence Test',
+    currentTitle: 'Founder',
+    currentCompany: 'Acme',
+    contactDetails: linkedinUrl ? { linkedinUrl } : {},
+  },
   stage: 'SCRAPED',
   notes: '',
   tags: [],
@@ -80,6 +88,54 @@ test('existing-only bulk writes roll back atomically when any lead is missing', 
   assert.equal(unchanged?.revision, 1);
   assert.equal(unchanged?.stage, 'SCRAPED');
   assert.equal(readStoredLeadById(missing.id), null);
+});
+
+test('LinkedIn identity write guard returns the original lead instead of creating a second ID', () => {
+  const first = upsertLeadWithIdentity(createLead('identity-first', 'https://www.linkedin.com/in/identity-person/'));
+  const second = upsertLeadWithIdentity({
+    ...createLead('identity-second', 'linkedin.com/in/IDENTITY-person?trk=public_profile'),
+    profile: {
+      ...createLead('identity-second', 'linkedin.com/in/IDENTITY-person?trk=public_profile').profile,
+      fullName: 'Identity Person, Updated Title',
+      currentTitle: 'Chief Executive Officer',
+    },
+  });
+
+  assert.equal(first.disposition, 'created');
+  assert.equal(second.disposition, 'duplicate');
+  assert.equal(second.lead.id, 'identity-first');
+  assert.equal(readStoredLeadById('identity-second'), null);
+});
+
+test('bulk writes dedupe candidates within the same transaction', () => {
+  const results = upsertLeadsWithIdentity([
+    createLead('identity-bulk-one', 'https://linkedin.com/in/bulk-person'),
+    createLead('identity-bulk-two', 'https://www.linkedin.com/in/BULK-person/?source=share'),
+  ]);
+
+  assert.deepEqual(results.map(result => result.disposition), ['created', 'duplicate']);
+  assert.equal(results[1].lead.id, 'identity-bulk-one');
+  assert.equal(readStoredLeadById('identity-bulk-two'), null);
+});
+
+test('an update cannot take another lead LinkedIn identity, and deleting releases it', () => {
+  const owner = upsertLeadWithIdentity(createLead('identity-owner', 'https://linkedin.com/in/identity-owner'));
+  const other = upsertLeadWithIdentity(createLead('identity-other', 'https://linkedin.com/in/identity-other'));
+  const collision = upsertLeadWithIdentity({
+    ...other.lead,
+    profile: {
+      ...other.lead.profile,
+      contactDetails: { linkedinUrl: 'https://linkedin.com/in/identity-owner/' },
+    },
+  }, { requireExisting: true });
+
+  assert.equal(collision.disposition, 'duplicate');
+  assert.equal(collision.lead.id, owner.lead.id);
+  assert.equal(readStoredLeadById(other.lead.id)?.profile.contactDetails?.linkedinUrl, 'https://linkedin.com/in/identity-other');
+
+  deleteLead(owner.lead.id);
+  const replacement = upsertLeadWithIdentity(createLead('identity-replacement', 'https://linkedin.com/in/identity-owner'));
+  assert.equal(replacement.disposition, 'created');
 });
 
 test('query performance stores provisional work separately from finalist outcomes', () => {

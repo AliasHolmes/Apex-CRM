@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { LEAD_STAGE_SET as leadStages, REVIEW_STATUS_SET as reviewStatuses, NEXT_ACTION_SET as nextActions } from '../../src/types.js';
 import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getProfileDomain, getLinkedInHandle } from '../../src/utils/leadDedupe.js';
 
-import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLead, deleteLead, upsertLeads, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
+import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt, type LLMUsage } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, chunkBrightDataBatchItems, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -104,11 +104,12 @@ router.patch('/leads/:id', (req, res): any => {
     const previousLead = readStoredLeadById(req.params.id);
     const previousStage = previousLead?.stage;
 
-    const storedLead = upsertLead(lead, {
+    const writeResult = upsertLeadWithIdentity(lead, {
       requireExisting: req.body?.allowCreate !== true,
     });
+    const storedLead = writeResult.lead;
 
-    if (storedLead.stage && previousStage && previousStage !== storedLead.stage) {
+    if (writeResult.disposition !== 'duplicate' && storedLead.stage && previousStage && previousStage !== storedLead.stage) {
       insertLeadActivity({
         leadId: storedLead.id,
         type: 'stage_change',
@@ -119,7 +120,7 @@ router.patch('/leads/:id', (req, res): any => {
       });
     }
 
-    res.json({ apiVersion: 1, success: true, lead: storedLead });
+    res.json({ apiVersion: 1, success: true, disposition: writeResult.disposition, lead: storedLead });
   } catch (error: any) {
     if (error instanceof LeadNotFoundError) {
       return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_NO_LONGER_EXISTS' });
@@ -228,7 +229,11 @@ router.post('/leads/:id/merge', (req, res): any => {
         nextAction: mergeField(winner.nextAction, duplicate.nextAction) || 'NONE'
       };
 
-      upsertLead(mergedLead);
+      const mergedWrite = upsertLeadInExistingTransaction(db, mergedLead, { requireExisting: true });
+      if (mergedWrite.disposition === 'duplicate' && mergedWrite.lead.id !== winner.id) {
+        throw new Error('Cannot merge because the winner LinkedIn identity belongs to another prospect.');
+      }
+      transferLeadIdentities(db, duplicateId, winner.id);
       db.prepare('DELETE FROM leads WHERE id = ?').run(duplicateId);
 
       // Log the merge activity.
@@ -286,10 +291,29 @@ router.post('/leads/bulk', (req, res): any => {
     if (!leads || leads.length > 1_000 || !leads.every(isPersistableLead)) {
       return res.status(400).json({ error: 'Expected up to 1,000 valid lead records.' });
     }
-    const storedLeads = upsertLeads(leads, {
+    const writeResults = upsertLeadsWithIdentity(leads, {
       requireExisting: req.body?.requireExisting === true,
     });
-    res.json({ apiVersion: 1, success: true, count: storedLeads.length, leads: storedLeads });
+    const duplicates = writeResults
+      .filter((result) => result.disposition === 'duplicate')
+      .map((result) => ({
+        incomingId: result.incomingLeadId,
+        existingLeadId: result.lead.id,
+        identityKey: result.identityKey,
+        lead: result.lead,
+      }));
+    const createdCount = writeResults.filter((result) => result.disposition === 'created').length;
+    const updatedCount = writeResults.filter((result) => result.disposition === 'updated').length;
+    res.json({
+      apiVersion: 1,
+      success: true,
+      count: writeResults.length,
+      leads: writeResults.map((result) => result.lead),
+      createdCount,
+      updatedCount,
+      duplicateCount: duplicates.length,
+      duplicates,
+    });
   } catch (error: any) {
     if (error instanceof LeadNotFoundError) {
       return res.status(409).json({ apiVersion: 1, error: error.message, code: 'LEAD_NO_LONGER_EXISTS' });
@@ -1804,7 +1828,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
         2000
       );
-      const extractionPromptPrefix = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Preserve LINK as contactDetails.linkedinUrl.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n`;
+      const extractionPromptPrefix = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Set contactDetails.linkedinUrl ONLY to the exact LINK value from the same source block. Never copy external website URLs found in text snippets.\n- If LINK is not a linkedin.com/in/ URL or is missing, leave contactDetails.linkedinUrl empty.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${query}\n\nEvidence:\n`;
       const structuredPromptOverheadTokens =
         estimateTokens(extractionPromptPrefix) +
         estimateTokens(EXTRACTION_SYSTEM_PROMPT) +
@@ -1962,6 +1986,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       // 3. Filtering & Decision Maker Verification
       let postFilterLeads: any[] = [];
       for (const lead of provisionalLeads) {
+        const rawUrl = lead.contactDetails?.linkedinUrl;
+        if (rawUrl && !extractLinkedInUsername(rawUrl)) {
+          if (lead.contactDetails) lead.contactDetails.linkedinUrl = '';
+        }
         const normalizedLeadUrl = normalizeLinkedInUrl(lead.contactDetails?.linkedinUrl);
         const evidenceMeta = evidenceByUrl.get(normalizedLeadUrl || normalizeDedupeValue(lead.contactDetails?.linkedinUrl)) || fallbackEvidenceForLead(lead);
         const queryRun = evidenceMeta.queryRun;
@@ -2797,18 +2825,25 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       };
     });
 
+    let persistence = { createdCount: 0, updatedCount: 0, duplicateCount: 0 };
     const persistStarted = Date.now();
     try {
-      const persistedLeads = upsertLeads(mappedLeads);
+      const writeResults = upsertLeadsWithIdentity(mappedLeads);
+      const persistedLeads = writeResults.map((result) => result.lead);
+      persistence = {
+        createdCount: writeResults.filter((result) => result.disposition === 'created').length,
+        updatedCount: writeResults.filter((result) => result.disposition === 'updated').length,
+        duplicateCount: writeResults.filter((result) => result.disposition === 'duplicate').length,
+      };
       recordTrace({
         phase: 'persistence',
         operation: 'upsert_leads',
         status: 'success',
         provider: 'sqlite',
         latencyMs: Date.now() - persistStarted,
-        counts: { leads: mappedLeads.length }
+        counts: { leads: mappedLeads.length, ...persistence }
       });
-      logEvent(`Successfully auto-persisted ${persistedLeads.length} leads on the backend.`);
+      logEvent(`Successfully auto-persisted ${persistence.createdCount} new leads; ${persistence.duplicateCount} LinkedIn duplicates returned existing prospects.`);
       mappedLeads.splice(0, mappedLeads.length, ...persistedLeads);
     } catch (e: any) {
       console.error('Failed to auto-persist leads on backend:', e);
@@ -2852,7 +2887,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       markSavedSearchRun(req.body.savedSearchId);
     }
 
-    res.json({ apiVersion: 1, leads: mappedLeads, stats, traceSummary, sandboxMode: false, sessionId });
+    res.json({ apiVersion: 1, leads: mappedLeads, persistence, stats, traceSummary, sandboxMode: false, sessionId });
 
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
@@ -2942,7 +2977,7 @@ router.post('/leads/:id/enrich-profile', async (req, res): Promise<any> => {
         scoreOverride: currentLead.scoreOverride,
         lastEnrichedAt: currentLead.lastEnrichedAt,
       };
-      storedLead = upsertLead(mergedLead, { requireExisting: true });
+      storedLead = upsertLeadWithIdentity(mergedLead, { requireExisting: true }).lead;
     }
 
     if (profileEnrichment.status === 'error') {

@@ -6,6 +6,8 @@ describe('linkedinEvidence', () => {
   it('normalizes LinkedIn profile URLs and usernames', () => {
     assert.equal(normalizeLinkedInUrl('https://www.linkedin.com/in/Jane-Doe/?trk=public_profile'), 'linkedin.com/in/jane-doe');
     assert.equal(extractLinkedInUsername('https://linkedin.com/in/Jane-Doe/'), 'jane-doe');
+    assert.equal(normalizeLinkedInUrl('https://crunchbase.com/person/jane-doe'), '');
+    assert.equal(extractLinkedInUsername('https://crunchbase.com/person/jane-doe'), '');
   });
 
   it('extracts compact CRM evidence from useful markdown', () => {

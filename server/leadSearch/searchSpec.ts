@@ -96,12 +96,17 @@ const asArray = (value: unknown, max = 20) => Array.isArray(value)
 
 const clean = (value: unknown) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 
-export const normalizeSearchSpec = (input: unknown, query: string): SearchSpec => {
+export const normalizeSearchSpec = (
+  input: unknown,
+  query: string,
+  forcedMode?: DiscoveryMode
+): SearchSpec => {
   const source = input && typeof input === 'object' ? input as Record<string, any> : {};
   const requestedMode = clean(source.mode) as DiscoveryMode;
-  const mode: DiscoveryMode = ['person_first', 'account_first', 'signal_first', 'local_business'].includes(requestedMode)
-    ? requestedMode
-    : 'person_first';
+  const mode: DiscoveryMode = forcedMode
+    || (['person_first', 'account_first', 'signal_first', 'local_business'].includes(requestedMode)
+      ? requestedMode
+      : 'person_first');
   const employeeRange = source.company?.employeeRange && typeof source.company.employeeRange === 'object'
     ? {
       min: boundedNumber(source.company.employeeRange.min, 0, 0, 1_000_000),
@@ -182,10 +187,9 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
       // the documented, operator-controlled value from .env is the only
       // country boost that reaches the API.
       const country = configuredCountry ? configuredCountry.toLowerCase() : undefined;
-      // Tavily's include_domains contract accepts domains, not URL paths. Keep
-      // the provider filter to the LinkedIn domain and enforce the stricter
-      // /in/ profile requirement after retrieval in the route.
-      const includeDomains = ['linkedin.com'];
+      // Person/account lanes collect LinkedIn identity anchors. Signal lanes
+      // search the open web and are retained only as company evidence.
+      const includeDomains = isSignal ? undefined : ['linkedin.com'];
       const task: RetrievalTask = {
         id: `q-${index + 1}-${family}`,
         query: clean(item.query),
@@ -200,12 +204,8 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
           includeDomains,
           excludeDomains: spec.exclusions.domains,
           searchDepth: requestedDepth,
-          // A LinkedIn-profile-only collection pass cannot use Tavily's news
-          // topic: it returns news articles rather than public /in/ profiles.
-          // Preserve the signal terms in the query, but search the documented
-          // general topic so country boosting and profile retrieval work.
-          topic: 'general',
-          timeRange: undefined,
+          topic: isSignal ? (item.topic || 'general') : 'general',
+          timeRange: isSignal ? item.timeRange : undefined,
           country,
           maxResults: isPerson ? maxResults : Math.min(maxResults, 8),
           minimumScore: isPerson ? 0.35 : 0.25

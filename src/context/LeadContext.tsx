@@ -84,7 +84,7 @@ class LeadDeletedConflictError extends Error {
   }
 }
 
-async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<Lead> {
+async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<{ lead: Lead; disposition?: string }> {
   const response = await fetch(`/api/leads/${lead.id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -105,7 +105,7 @@ async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<Lead> 
   if (!response.ok || !data.lead) {
     throw new Error(data.error || `Failed to patch lead: ${response.status}`);
   }
-  return data.lead as Lead;
+  return { lead: data.lead as Lead, disposition: typeof data.disposition === 'string' ? data.disposition : undefined };
 }
 
 
@@ -215,14 +215,15 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           : stableCanonicalLead?.revision === undefined
             ? lead
             : { ...lead, revision: stableCanonicalLead.revision };
-        let canonicalLead: Lead;
+        let writeResult: { lead: Lead; disposition?: string };
         try {
-          canonicalLead = await persistLeadPatch(leadWithCurrentRevision, allowCreate);
+          writeResult = await persistLeadPatch(leadWithCurrentRevision, allowCreate);
         } catch (error) {
           if (!(error instanceof LeadPatchConflictError) || allowCreate) throw error;
           const rebasedLead = rebaseLeadChanges(error.currentLead, lead, rollbackLead);
-          canonicalLead = await persistLeadPatch(rebasedLead);
+          writeResult = await persistLeadPatch(rebasedLead);
         }
+        let canonicalLead = writeResult.lead;
         const hasNewerQueuedPatch = leadPatchQueuesRef.current.get(lead.id) !== operation;
         canonicalLead = preferNewerCanonical(
           canonicalLead,
@@ -232,12 +233,23 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           leadPatchRollbackRef.current.set(lead.id, canonicalLead);
         }
 
-        saveLeadsToStorage(currentLeads => currentLeads.map(current => {
+        saveLeadsToStorage(currentLeads => {
+          if (writeResult.disposition === 'duplicate' && canonicalLead.id !== lead.id) {
+            const withoutIncoming = currentLeads.filter(current => current.id !== lead.id);
+            const existingIndex = withoutIncoming.findIndex(current => current.id === canonicalLead.id);
+            if (existingIndex >= 0) {
+              withoutIncoming[existingIndex] = canonicalLead;
+              return withoutIncoming;
+            }
+            return [canonicalLead, ...withoutIncoming];
+          }
+          return currentLeads.map(current => {
           if (current.id !== canonicalLead.id) return current;
           return hasNewerQueuedPatch
             ? { ...canonicalLead, ...current, revision: canonicalLead.revision }
             : canonicalLead;
-        }));
+          });
+        });
         return true;
       } catch (error) {
         console.error(`Failed to sync lead ${lead.id} update to backend:`, error);
@@ -385,6 +397,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
     const insertedIds = new Set(leadsToSaveBackend.map(lead => lead.id));
     let bulkError: unknown;
+    let persistedCreatedCount = leadsToSaveBackend.length;
+    let serverDuplicateCount = 0;
     let bulkOperation!: Promise<boolean>;
     bulkOperation = (async () => {
       try {
@@ -397,28 +411,49 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         if (!response.ok) {
           throw new Error(data.error || `Failed to save bulk leads: ${response.status}`);
         }
+        persistedCreatedCount = Number.isFinite(Number(data.createdCount))
+          ? Number(data.createdCount)
+          : leadsToSaveBackend.length;
+        serverDuplicateCount = Number.isFinite(Number(data.duplicateCount))
+          ? Number(data.duplicateCount)
+          : 0;
         {
           const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
           const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
+          const duplicates = Array.isArray(data.duplicates) ? data.duplicates as Array<{ incomingId?: string; lead?: Lead }> : [];
+          const duplicateByIncomingId = new Map(
+            duplicates
+              .filter((duplicate): duplicate is { incomingId: string; lead: Lead } => Boolean(duplicate?.incomingId && duplicate?.lead))
+              .map(duplicate => [duplicate.incomingId, duplicate.lead]),
+          );
+          const duplicateIncomingIds = new Set(duplicateByIncomingId.keys());
           const canonicalLeads = leadsToSaveBackend.map(
-            lead => returnedById.get(lead.id) ?? lead,
+            lead => duplicateByIncomingId.get(lead.id) ?? returnedById.get(lead.id) ?? lead,
           );
           const serverLeads = new Map(canonicalLeads.map(lead => [
             lead.id,
             preferNewerCanonical(lead, leadPatchRollbackRef.current.get(lead.id)),
           ]));
           for (const [leadId, canonicalLead] of serverLeads) {
+            if (!insertedIds.has(leadId)) continue;
             if (leadPatchQueuesRef.current.get(leadId) !== bulkOperation) {
               leadPatchRollbackRef.current.set(leadId, canonicalLead);
             }
           }
-          saveLeadsToStorage(currentLeads => currentLeads.map(lead => {
-            const canonicalLead = serverLeads.get(lead.id);
-            if (!canonicalLead) return lead;
-            return leadPatchQueuesRef.current.get(lead.id) === bulkOperation
-              ? canonicalLead
-              : { ...canonicalLead, ...lead, revision: canonicalLead.revision };
-          }));
+          saveLeadsToStorage(currentLeads => {
+            const nextLeads = currentLeads.filter(lead => !duplicateIncomingIds.has(lead.id)).map(lead => {
+              const canonicalLead = serverLeads.get(lead.id);
+              if (!canonicalLead) return lead;
+              return leadPatchQueuesRef.current.get(lead.id) === bulkOperation
+                ? canonicalLead
+                : { ...canonicalLead, ...lead, revision: canonicalLead.revision };
+            });
+            const knownIds = new Set(nextLeads.map(lead => lead.id));
+            for (const canonicalLead of serverLeads.values()) {
+              if (!knownIds.has(canonicalLead.id)) nextLeads.unshift(canonicalLead);
+            }
+            return nextLeads;
+          });
         }
         return true;
       } catch (error) {
@@ -448,7 +483,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         ? bulkError
         : new Error('Failed to save bulk leads to the CRM.');
     }
-    return { addedCount: leadsToSaveBackend.length, skippedCount };
+    return {
+      addedCount: persistedCreatedCount,
+      skippedCount: skippedCount + serverDuplicateCount,
+    };
   }, [restoreLeadSubset, saveLeadsToStorage]);
 
   // 5. Update pipeline stage for CRM Lead

@@ -82,7 +82,8 @@ export function buildFallbackQueryPlan(query: string): SearchQueryPlanItem[] {
 }
 export function toLinkedInSearchQuery(item: SearchQueryPlanItem) {
   const query = sanitizeQueryText(item.query);
-  return query ? `site:linkedin.com/in/ ${query}` : '';
+  if (!query) return '';
+  return item.lane === 'signal' ? query : `site:linkedin.com/in/ ${query}`;
 }
 
 export function buildStrategistPrompt(params: {

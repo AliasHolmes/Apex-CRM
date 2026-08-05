@@ -70,7 +70,15 @@ import { computeScoreBreakdown, type EvidenceQuality } from './scoring.js';
 import { verifyDecisionMakerFromEvidence } from './verification.js';
 import { resolveDiscoveryProviderMode, resolveBrightDataSearchMode } from './discoveryRouting.js';
 import { ScoutFreeTierBudget } from './freeTier.js';
-import { fuseObservations, type ScoutObservation } from './observations.js';
+import {
+  extractCompanyHintDeterministic,
+  extractCompanyHintFromProfile,
+  extractCompanyHintFromSignal,
+  fuseObservations,
+  isSignalObservation,
+  type ScoutObservation
+} from './observations.js';
+import { SignalStore } from './signalStore.js';
 import { chunkEvidenceBlocksByTokenBudget, estimateTokenCount } from './llmBudget.js';
 import { runProviderQueue } from './providerQueue.js';
 import { selectDiversifiedLeads } from './scoutScoring.js';
@@ -110,7 +118,7 @@ export function candidateStableId(lead: Record<string, any>, rawUrl?: string): s
   const username = extractLinkedInUsername(url);
   if (username) return `linkedin:${username.toLowerCase()}`;
   const normalizedUrl = normalizeLinkedInUrl(url);
-  if (normalizedUrl) return `url:${normalizedUrl.toLowerCase()}`;
+  if (normalizedUrl && normalizedUrl.includes('linkedin.com/in/')) return `url:${normalizedUrl.toLowerCase()}`;
   const name = normalizeDedupeValue(lead.fullName || lead.profile?.fullName);
   const company = normalizeDedupeValue(lead.currentCompany || lead.company || lead.profile?.currentCompany);
   if (name && company) return `text:${name}@${company}`;
@@ -252,6 +260,19 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
       poolTarget: 0,
       poolSize: 0,
       returned: 0
+    },
+    signalMatching: {
+      observations: 0,
+      storedBlocks: 0,
+      duplicateBlocks: 0,
+      unresolvedCompanies: 0,
+      llmFallbackAttempts: 0,
+      llmFallbackResolved: 0,
+      candidatesChecked: 0,
+      candidatesMatched: 0,
+      missingCandidateCompany: 0,
+      noCompanyMatch: 0,
+      blocksAttached: 0
     }
   };
 
@@ -367,6 +388,8 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
   const isTargetFulfilled = () => getSelectableQualified().length >= target;
 
   const evidenceByUrl = new Map<string, any>();
+  const signalStore = new SignalStore();
+  const signalCompanyLlmFallbackLimit = 3;
   let currentRound = 0;
   let previousRoundSummary: Record<string, any> = {};
   let consecutiveEmptyQueryWaves = 0;
@@ -532,7 +555,47 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
     const fused = fuseObservations(roundObservations);
     logEvent(`Round ${currentRound}: ${roundObservations.length} raw observations fused into ${fused.length} unique candidates.`);
 
+    // Pass 1: collect non-LinkedIn signal observations into signalStore
     for (const obs of fused) {
+      if (!isSignalObservation(obs)) continue;
+      if (!obs.content || obs.content.length < 60) continue;
+      stats.signalMatching.observations++;
+
+      let companyHint = extractCompanyHintDeterministic(obs);
+      if (
+        !companyHint
+        && hasOpenAIKey()
+        && stats.signalMatching.llmFallbackAttempts < signalCompanyLlmFallbackLimit
+      ) {
+        stats.signalMatching.llmFallbackAttempts++;
+        companyHint = await extractCompanyHintFromSignal(
+          obs,
+          (p, s, sys, opt) => openAIStructured(p, s, sys, opt)
+        );
+        if (companyHint) stats.signalMatching.llmFallbackResolved++;
+      }
+      if (!companyHint) {
+        stats.signalMatching.unresolvedCompanies++;
+        continue;
+      }
+
+      const previousSize = signalStore.size;
+      signalStore.add({
+        companyName: companyHint,
+        text: obs.content.slice(0, 800),
+        url: obs.url,
+        query: obs.query,
+        lane: obs.lane || 'signal',
+        round: currentRound,
+        provider: obs.provider
+      });
+      if (signalStore.size > previousSize) stats.signalMatching.storedBlocks++;
+      else stats.signalMatching.duplicateBlocks++;
+    }
+
+    // Pass 2: admit LinkedIn candidates as identity anchors
+    for (const obs of fused) {
+      if (isSignalObservation(obs)) continue;
       const username = extractLinkedInUsername(obs.url);
       const normalizedUrl = normalizeLinkedInUrl(obs.url);
       if (!username || !normalizedUrl) continue;
@@ -568,7 +631,9 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
         sourceProviders: obs.sourceProviders,
         sourceCount: obs.sourceCount,
         lanes: obs.lanes,
-        corroborated: obs.corroborated
+        corroborated: obs.corroborated,
+        candidateCompanyHint: extractCompanyHintFromProfile(obs),
+        signalBlocks: []
       };
 
       evidenceByUrl.set(normalizedUrl, evidenceMeta);
@@ -577,12 +642,25 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
 
     if (deferredCandidateQueue.length > 0) {
       const extractionBatch = deferredCandidateQueue.splice(0, deferredCandidateQueue.length);
-      const evidenceBlocks = extractionBatch.map(item => `--- PROFILE CANDIDATE ---\nLINK: ${item.lead.url}\n${item.evidenceMeta.evidenceBlock}\n\n`);
+      const evidenceBlocks = extractionBatch.map(
+        item => `--- PROFILE CANDIDATE ---\nLINK: ${item.lead.url}\n${item.evidenceMeta.evidenceBlock}\n\n`
+      );
       const chunks = chunkEvidenceBlocksByTokenBudget(evidenceBlocks, 1800);
 
       const extractionResults: any[] = [];
       for (const chunk of chunks) {
-        const prompt = `Extract distinct B2B prospects from the source-labeled evidence below.\n\nUser search criteria:\n${promptQuery}\n\nEvidence:\n${chunk}`;
+        const prompt = `Extract distinct B2B prospects from the source-labeled evidence below.
+
+Rules:
+- Set contactDetails.linkedinUrl ONLY to the exact LINK value from the same "--- PROFILE CANDIDATE ---" block. Never copy an external website or third-party URL found inside snippet text.
+- If the LINK value is not a linkedin.com/in/ URL or is missing, leave contactDetails.linkedinUrl empty.
+- Do not invent or hallucinate URLs.
+
+User search criteria:
+${promptQuery}
+
+Evidence:
+${chunk}`;
         try {
           const extracted = await openAIStructured<any[]>(
             prompt,
@@ -598,11 +676,60 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
 
       for (const extractedLead of extractionResults) {
         if (!extractedLead || !extractedLead.fullName) continue;
+
+        // Post-extraction URL sanitization fence:
+        const rawExtractedUrl = extractedLead.contactDetails?.linkedinUrl;
+        let validExtractedUrl = (rawExtractedUrl && extractLinkedInUsername(rawExtractedUrl)) ? rawExtractedUrl : '';
+
+        // Backfill from batch anchor if URL is missing/invalid and chunk had a single candidate anchor
+        if (!validExtractedUrl && extractionBatch.length === 1) {
+          const batchUrl = extractionBatch[0].lead.url;
+          if (batchUrl && extractLinkedInUsername(batchUrl)) {
+            validExtractedUrl = batchUrl;
+          }
+        }
+
+        if (extractedLead.contactDetails) {
+          extractedLead.contactDetails.linkedinUrl = validExtractedUrl;
+        } else if (validExtractedUrl) {
+          extractedLead.contactDetails = { linkedinUrl: validExtractedUrl };
+        }
+
         if (matchesExcludeList(extractedLead) || hasDuplicateProfile(extractedLead, existingKeys)) continue;
 
         const stableId = candidateStableId(extractedLead);
         if (processedCandidateKeys.has(stableId)) continue;
         processedCandidateKeys.add(stableId);
+
+        const normalizedLeadUrl = normalizeLinkedInUrl(extractedLead.contactDetails?.linkedinUrl || extractedLead.sourceUrl || '');
+        let matchingMeta = evidenceByUrl.get(normalizedLeadUrl || '');
+        if (!matchingMeta && extractionBatch.length === 1) {
+          matchingMeta = extractionBatch[0].evidenceMeta;
+        }
+        stats.signalMatching.candidatesChecked++;
+        const signalMatch = signalStore.getForCandidates([
+          extractedLead.currentCompany,
+          matchingMeta?.candidateCompanyHint
+        ]);
+        if (!signalMatch.companyName) {
+          stats.signalMatching.missingCandidateCompany++;
+        } else if (signalMatch.blocks.length === 0) {
+          stats.signalMatching.noCompanyMatch++;
+        } else {
+          stats.signalMatching.candidatesMatched++;
+          stats.signalMatching.blocksAttached += signalMatch.blocks.length;
+          if (matchingMeta) {
+            matchingMeta.evidenceQuality = 'partial';
+            matchingMeta.corroborated = true;
+            matchingMeta.signalBlocks = signalMatch.blocks;
+          }
+        }
+        const signalText = Array.isArray(matchingMeta?.signalBlocks)
+          ? matchingMeta.signalBlocks
+            .map((block: any) => `[OPEN-WEB SIGNAL: ${block.url || 'source'}]\n${block.text || ''}`)
+            .join('\n\n')
+          : '';
+        const mergedEvidenceText = [matchingMeta?.evidenceBlock, signalText].filter(Boolean).join('\n\n') || extractedLead.summary || undefined;
 
         const dmVerification = verifyDecisionMakerFromEvidence({
           query: promptQuery,
@@ -611,14 +738,20 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
           currentCompany: extractedLead.currentCompany,
           headline: extractedLead.headline,
           seniorityLevel: extractedLead.seniorityLevel,
-          evidenceText: extractedLead.summary || ''
+          evidenceText: mergedEvidenceText || extractedLead.summary || ''
         });
 
         extractedLead.decisionMakerVerification = dmVerification;
-        extractedLead.scoreBreakdown = computeScoreBreakdown(extractedLead, 'weak', 'tavily', dmVerification);
+        const scoreProvider = matchingMeta?.sourceProvider === 'brightdata' ? 'brightdata' : 'tavily';
+        extractedLead.scoreBreakdown = computeScoreBreakdown(
+          extractedLead,
+          matchingMeta?.evidenceQuality || 'weak',
+          scoreProvider,
+          dmVerification
+        );
         extractedLead.scoreOverride = extractedLead.scoreBreakdown.finalScore;
 
-        const finalistCandidate = finalistCandidateFromLead(stableId, extractedLead, undefined, contract);
+        const finalistCandidate = finalistCandidateFromLead(stableId, extractedLead, mergedEvidenceText, contract);
         const { autoQualified, needsJudge } = partitionCandidatesByStrictEvidence([finalistCandidate], contract);
 
         if (autoQualified.length > 0) {
@@ -722,6 +855,20 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
     rescued: 0
   };
 
+  logEvent(
+    `Signal matching summary: stored=${stats.signalMatching.storedBlocks}, `
+    + `matchedCandidates=${stats.signalMatching.candidatesMatched}, `
+    + `attachedBlocks=${stats.signalMatching.blocksAttached}, `
+    + `unresolvedSignals=${stats.signalMatching.unresolvedCompanies}.`
+  );
+  recordTrace({
+    phase: 'filtering',
+    operation: 'signal_matching_summary',
+    status: stats.signalMatching.storedBlocks > 0 ? 'success' : 'skipped',
+    provider: 'system',
+    counts: { ...stats.signalMatching }
+  });
+
   telemetry.finish(returnedLeads.length > 0 ? 'success' : 'error', {
     returned: returnedLeads.length,
     stopReason: terminationReason
@@ -734,7 +881,11 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
     requestedLimit: target,
     startedAt: new Date(startedAt).toISOString(),
     completedAt: new Date().toISOString(),
-    stats: { targetEffort: targetEffortStats, finalistJudge: finalistJudgeStats },
+    stats: {
+      targetEffort: targetEffortStats,
+      finalistJudge: finalistJudgeStats,
+      signalMatching: stats.signalMatching
+    },
     traceSummary: telemetry.getSummary()
   });
 

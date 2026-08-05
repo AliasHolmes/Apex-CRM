@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
 import { isDiscoveryProviderConfigured } from '@/lib/ui';
+import { canonicalLinkedInIdentity } from '@/utils/leadDedupe';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { 
   Globe, 
@@ -138,7 +139,7 @@ export default function ScrapeWorkspace() {
   } | null>(null);
   const previewRequestRef = useRef<{ controller: AbortController; requestId: number } | null>(null);
   const previewRequestIdRef = useRef(0);
-  const { leads, handleLeadAdded, handleBulkLeadsAdded } = useLeads();
+  const { leads, handleLeadAdded, rehydrateLeads } = useLeads();
   const { triggerToast } = useToast();
   const [activeTab, setActiveTab] = useState<'url' | 'paste' | 'find'>('url');
   const [providerStatus, setProviderStatus] = useState<'checking' | 'ready' | 'missing' | 'offline'>('checking');
@@ -393,33 +394,17 @@ export default function ScrapeWorkspace() {
   const checkIsDuplicate = (input: string) => {
     if (!input || !leads) return false;
     const cleanInput = input.trim().toLowerCase();
-    
-    // We clean up common URL parts to match handle segments accurately
-    const getLinkedinHandle = (url: string) => {
-      try {
-        const parts = url.toLowerCase().replace(/\/$/, "").split("/in/");
-        if (parts.length > 1) {
-          return parts[1].split(/[?#]/)[0].trim();
-        }
-      } catch {}
-      return url.trim();
-    };
-    
-    const inputHandle = input.includes("linkedin.com/in/") ? getLinkedinHandle(cleanInput) : null;
+    const inputIdentity = canonicalLinkedInIdentity(input);
 
     return leads.some(lead => {
       const email = lead.profile.contactDetails?.email?.toLowerCase() || '';
-      const linkedin = lead.profile.contactDetails?.linkedinUrl?.toLowerCase() || '';
+      const linkedinIdentity = canonicalLinkedInIdentity(lead.profile.contactDetails?.linkedinUrl);
       const name = (lead.profile.fullName || '').toLowerCase();
-      
-      const leadHandle = linkedin ? getLinkedinHandle(linkedin) : '';
 
       return (
         (email && email === cleanInput) ||
-        (linkedin && linkedin === cleanInput) ||
-        (linkedin && linkedin.includes(cleanInput)) ||
-        (inputHandle && leadHandle && inputHandle === leadHandle) ||
-        (name === cleanInput)
+        (inputIdentity && linkedinIdentity === inputIdentity) ||
+        (!inputIdentity && name === cleanInput)
       );
     });
   };
@@ -649,7 +634,11 @@ export default function ScrapeWorkspace() {
         return;
       }
 
-      const { addedCount, skippedCount } = await handleBulkLeadsAdded(fetchedLeads);
+      // /find-leads is the authoritative persistence path. Rehydrating here
+      // avoids sending the same candidates through a second bulk write.
+      await rehydrateLeads(true);
+      const addedCount = Number(data.persistence?.createdCount || 0);
+      const skippedCount = Number(data.persistence?.duplicateCount || 0);
       updateTaskStatus(taskId, 'completed', addedCount);
       const stats = data.stats;
       const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;

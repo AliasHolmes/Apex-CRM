@@ -12,18 +12,33 @@ import {
   shouldRunBrightDataForTask
 } from '../server/leadSearch/discoveryRouting.ts';
 import { fuseObservations } from '../server/leadSearch/observations.ts';
-import { buildFallbackQueryPlan, buildFallbackSearchSpec, buildRetrievalTasks } from '../server/leadSearch/searchSpec.ts';
+import {
+  buildFallbackQueryPlan,
+  buildFallbackSearchSpec,
+  buildRetrievalTasks,
+  normalizeSearchSpec
+} from '../server/leadSearch/searchSpec.ts';
 import { selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
 import { rankLeadForFinalSelection } from '../server/leadSearch/scoring.ts';
 
 describe('free-tier prospect scout', () => {
-  it('keeps every retrieval lane LinkedIn-first while varying the query intent', () => {
+  it('preserves an explicitly requested discovery mode over a compiled spec', () => {
+    const spec = normalizeSearchSpec(
+      { mode: 'person_first', company: { keywords: ['Instig8'] } },
+      'Instig8 hiring automation developers',
+      'signal_first'
+    );
+
+    assert.equal(spec.mode, 'signal_first');
+  });
+
+  it('keeps identity lanes LinkedIn-first while signal lanes search the open web', () => {
     const spec = buildFallbackSearchSpec('dental clinics in Austin hiring and expanding');
     const tasks = buildRetrievalTasks(buildFallbackQueryPlan('dental clinics in Austin hiring and expanding', spec), spec);
 
     assert.ok(tasks.some(task => task.lane === 'person' && task.tavily.includeDomains?.includes('linkedin.com')));
     assert.ok(tasks.some(task => task.lane === 'account' && task.tavily.includeDomains?.includes('linkedin.com')));
-    assert.ok(tasks.some(task => task.lane === 'signal' && task.tavily.includeDomains?.includes('linkedin.com')));
+    assert.ok(tasks.some(task => task.lane === 'signal' && task.tavily.includeDomains === undefined));
     assert.ok(tasks.every(task => task.tavily.topic === 'general'));
     assert.ok(tasks.every(task => task.tavily.timeRange === undefined));
     assert.ok(tasks.some(task => task.providerPreference === 'brightdata'));

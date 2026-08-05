@@ -58,12 +58,12 @@ export function normalizeLinkedInUrl(url?: string) {
   try {
     const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
     const match = parsed.pathname.match(/\/in\/([^/?#]+)/i);
-    if (!match?.[1]) return url.toLowerCase().replace(/\/$/, '').trim();
+    if (!match?.[1]) return '';
     return `linkedin.com/in/${match[1].toLowerCase()}`;
   } catch {
     const lowered = url.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '').trim();
     const match = lowered.match(/linkedin\.com\/in\/([^/?#]+)/i);
-    return match?.[1] ? `linkedin.com/in/${match[1].toLowerCase()}` : lowered;
+    return match?.[1] ? `linkedin.com/in/${match[1].toLowerCase()}` : '';
   }
 }
 

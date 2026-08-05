@@ -34,9 +34,16 @@ describe('Target Fulfillment Engine Mechanics', () => {
       currentCompany: 'Beta LLC'
     };
 
+    const lead4 = {
+      contactDetails: { linkedinUrl: 'https://crunchbase.com/person/john-doe' },
+      fullName: 'John Doe',
+      currentCompany: 'Acme Corp'
+    };
+
     assert.equal(candidateStableId(lead1), 'linkedin:john-doe-123');
     assert.equal(candidateStableId(lead2), 'linkedin:john-doe-123');
     assert.equal(candidateStableId(lead3), 'text:jane smith@beta llc');
+    assert.equal(candidateStableId(lead4), 'text:john doe@acme corp');
   });
 
   it('prevents rescued promotions when candidates fail hard requirements', () => {

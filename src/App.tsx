@@ -32,6 +32,7 @@ import {
   type DashboardTab,
 } from './lib/navigation';
 import { DEFAULT_MANUAL_INDUSTRY, MANUAL_PROSPECT_INDUSTRIES } from './lib/ui';
+import { canonicalLinkedInIdentity } from './utils/leadDedupe';
 
 // Large workspaces load only when the user opens their tab.
 const ScrapeWorkspace = lazy(() => import('./components/ScrapeWorkspace'));
@@ -63,10 +64,6 @@ const NAV_ITEMS: readonly NavigationItem[] = DASHBOARD_NAV_ITEMS.map(item => ({
 
 function normalizeComparable(value?: string) {
   return (value ?? '').trim().toLowerCase();
-}
-
-function normalizeProfileUrl(value?: string) {
-  return normalizeComparable(value).replace(/\/+$/, '');
 }
 
 class AppErrorBoundary extends React.Component<
@@ -229,18 +226,19 @@ function Dashboard() {
     if (!fullName || isSavingManualLead) return;
 
     const emailKey = normalizeComparable(manualEmail);
-    const profileUrlKey = normalizeProfileUrl(manualUrl);
+    const profileIdentity = canonicalLinkedInIdentity(manualUrl);
     const companyName = manualCompany.trim() || 'Independent';
     const nameKey = normalizeComparable(fullName);
     const companyKey = normalizeComparable(companyName);
     const duplicateLead = leads.find(lead => {
       const leadEmail = normalizeComparable(lead.profile.contactDetails?.email);
-      const leadUrl = normalizeProfileUrl(lead.profile.contactDetails?.linkedinUrl);
-      const samePersonAndCompany = normalizeComparable(lead.profile.fullName) === nameKey
+      const leadIdentity = canonicalLinkedInIdentity(lead.profile.contactDetails?.linkedinUrl);
+      const samePersonAndCompany = !profileIdentity && !leadIdentity
+        && normalizeComparable(lead.profile.fullName) === nameKey
         && normalizeComparable(lead.profile.currentCompany) === companyKey;
       return Boolean(
         (emailKey && leadEmail === emailKey)
-        || (profileUrlKey && leadUrl === profileUrlKey)
+        || (profileIdentity && leadIdentity === profileIdentity)
         || samePersonAndCompany
       );
     });

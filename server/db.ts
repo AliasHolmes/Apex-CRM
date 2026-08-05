@@ -5,11 +5,12 @@ import { DatabaseSync } from 'node:sqlite';
 import dotenv from 'dotenv';
 import { clampSearchLogRetentionLimit, setLlmStageLogger, type LlmStageLogEntry } from './leadSearch/telemetry.js';
 import { REVIEW_STATUS_SET as REVIEW_STATUSES, NEXT_ACTION_SET as NEXT_ACTIONS } from '../src/types.js';
+import { canonicalLinkedInIdentity } from '../src/utils/leadDedupe.js';
 
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 10;
+const LATEST_SCHEMA_VERSION = 11;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -347,6 +348,58 @@ function runMigrations(db: DatabaseSync) {
       addColumnIfMissing(db, 'query_performance', 'unknown_candidates', 'unknown_candidates INTEGER NOT NULL DEFAULT 0');
     }
 
+    if (currentVersion < 11) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lead_identities (
+          identity_key TEXT PRIMARY KEY,
+          lead_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_identities_lead_id ON lead_identities(lead_id);
+
+        CREATE TABLE IF NOT EXISTS lead_identity_conflicts (
+          identity_key TEXT NOT NULL,
+          canonical_lead_id TEXT NOT NULL,
+          duplicate_lead_id TEXT NOT NULL,
+          detected_at TEXT NOT NULL,
+          PRIMARY KEY (identity_key, duplicate_lead_id)
+        );
+      `);
+
+      const rows = db.prepare(`
+        SELECT id, payload, created_at
+        FROM leads
+        ORDER BY datetime(COALESCE(created_at, '9999-12-31T23:59:59.999Z')) ASC, id ASC
+      `).all() as { id: string; payload: string; created_at?: string }[];
+      const insertIdentity = db.prepare(`
+        INSERT OR IGNORE INTO lead_identities (identity_key, lead_id, created_at)
+        VALUES (?, ?, ?)
+      `);
+      const findIdentity = db.prepare('SELECT lead_id FROM lead_identities WHERE identity_key = ?');
+      const recordConflict = db.prepare(`
+        INSERT OR IGNORE INTO lead_identity_conflicts
+          (identity_key, canonical_lead_id, duplicate_lead_id, detected_at)
+        VALUES (?, ?, ?, ?)
+      `);
+      const detectedAt = new Date().toISOString();
+
+      for (const row of rows) {
+        try {
+          const lead = JSON.parse(row.payload) as Record<string, any>;
+          const identityKey = canonicalLinkedInIdentity(lead?.profile?.contactDetails?.linkedinUrl);
+          if (!identityKey) continue;
+          insertIdentity.run(identityKey, row.id, row.created_at || detectedAt);
+          const mapped = findIdentity.get(identityKey) as { lead_id?: string } | undefined;
+          if (mapped?.lead_id && mapped.lead_id !== row.id) {
+            recordConflict.run(identityKey, mapped.lead_id, row.id, detectedAt);
+          }
+        } catch (error) {
+          console.warn(`Skipping unreadable lead while backfilling identities (${row.id}):`, error);
+        }
+      }
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (error) {
@@ -585,6 +638,18 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare('DELETE FROM leads').run();
+    db.prepare('DELETE FROM lead_identity_conflicts').run();
+
+    const claimIdentity = db.prepare(`
+      INSERT OR IGNORE INTO lead_identities (identity_key, lead_id, created_at)
+      VALUES (?, ?, ?)
+    `);
+    const findIdentity = db.prepare('SELECT lead_id FROM lead_identities WHERE identity_key = ?');
+    const recordConflict = db.prepare(`
+      INSERT OR IGNORE INTO lead_identity_conflicts
+        (identity_key, canonical_lead_id, duplicate_lead_id, detected_at)
+      VALUES (?, ?, ?, ?)
+    `);
 
     for (const lead of leads) {
       const revision = Number.isInteger(lead.revision) && lead.revision > 0 ? lead.revision : 1;
@@ -596,6 +661,14 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
         now,
         revision
       );
+      const identityKey = leadIdentityKey(storedLead);
+      if (identityKey) {
+        claimIdentity.run(identityKey, storedLead.id, typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now);
+        const mapped = findIdentity.get(identityKey) as { lead_id?: string } | undefined;
+        if (mapped?.lead_id && mapped.lead_id !== storedLead.id) {
+          recordConflict.run(identityKey, mapped.lead_id, storedLead.id, now);
+        }
+      }
     }
 
     db.prepare(`
@@ -629,38 +702,77 @@ export class LeadNotFoundError extends Error {
   }
 }
 
-export function upsertLead(
-  lead: Record<string, any>,
-  options: { requireExisting?: boolean } = {},
-) {
-  const db = getLeadsDb();
-  const now = new Date().toISOString();
-  const existing = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(lead.id) as { payload: string; revision: number } | undefined;
-  if (!existing && options.requireExisting) {
-    throw new LeadNotFoundError(String(lead.id || ''));
+export type LeadWriteDisposition = 'created' | 'updated' | 'duplicate';
+
+export type LeadWriteResult = {
+  disposition: LeadWriteDisposition;
+  lead: Record<string, any>;
+  incomingLeadId: string;
+  identityKey?: string;
+};
+
+type LeadWriteOptions = { requireExisting?: boolean };
+
+const leadIdentityKey = (lead: Record<string, any>) =>
+  canonicalLinkedInIdentity(lead?.profile?.contactDetails?.linkedinUrl);
+
+const readLeadFromRow = (row: { payload: string; revision: number } | undefined) => {
+  if (!row) return null;
+  try {
+    return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) } as Record<string, any>;
+  } catch (error) {
+    console.warn('Skipping unreadable canonical lead record from SQLite:', error);
+    return null;
   }
+};
+
+export function upsertLeadInExistingTransaction(
+  db: DatabaseSync,
+  lead: Record<string, any>,
+  options: LeadWriteOptions = {},
+): LeadWriteResult {
+  const now = new Date().toISOString();
+  const incomingLeadId = String(lead.id || '');
+  const existing = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(incomingLeadId) as { payload: string; revision: number } | undefined;
+  if (!existing && options.requireExisting) {
+    throw new LeadNotFoundError(incomingLeadId);
+  }
+
+  const identityKey = leadIdentityKey(lead);
+  if (identityKey) {
+    const identity = db.prepare('SELECT lead_id FROM lead_identities WHERE identity_key = ?').get(identityKey) as { lead_id?: string } | undefined;
+    if (identity?.lead_id && identity.lead_id !== incomingLeadId) {
+      const canonicalRow = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(identity.lead_id) as { payload: string; revision: number } | undefined;
+      const canonicalLead = readLeadFromRow(canonicalRow);
+      if (canonicalLead) {
+        return {
+          disposition: 'duplicate',
+          lead: canonicalLead,
+          incomingLeadId,
+          identityKey,
+        };
+      }
+      // A stale mapping should never survive a normal delete, but recovering it
+      // here keeps a corrupted legacy database from blocking the valid lead.
+      db.prepare('DELETE FROM lead_identities WHERE identity_key = ?').run(identityKey);
+    }
+  }
+
   const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
   if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
-    let currentLead: Record<string, any> = { ...lead, revision: Number(existing.revision || 1) };
-    try {
-      currentLead = { ...JSON.parse(existing.payload), revision: Number(existing.revision || 1) };
-    } catch {
-      // Preserve a useful conflict payload even when a legacy payload is malformed.
-    }
-    throw new LeadRevisionConflictError(currentLead);
+    throw new LeadRevisionConflictError(readLeadFromRow(existing) || { ...lead, revision: Number(existing.revision || 1) });
   }
+
   const revision = existing ? Number(existing.revision || 1) + 1 : 1;
   const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
-  const stmt = db.prepare(`
+  db.prepare(`
     INSERT INTO leads (id, payload, created_at, updated_at, revision)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       payload = excluded.payload,
       updated_at = excluded.updated_at,
       revision = excluded.revision
-  `);
-
-  stmt.run(
+  `).run(
     storedLead.id,
     JSON.stringify(storedLead),
     typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
@@ -668,12 +780,48 @@ export function upsertLead(
     revision
   );
 
+  db.prepare('DELETE FROM lead_identities WHERE lead_id = ? AND identity_key <> ?')
+    .run(storedLead.id, identityKey || '');
+  if (identityKey) {
+    db.prepare(`
+      INSERT INTO lead_identities (identity_key, lead_id, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(identity_key) DO UPDATE SET lead_id = excluded.lead_id
+    `).run(identityKey, storedLead.id, now);
+  }
+
   db.prepare(`
     INSERT INTO app_meta (key, value, updated_at)
     VALUES ('leads_initialized', 'true', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(now);
-  return storedLead;
+
+  return {
+    disposition: existing ? 'updated' : 'created',
+    lead: storedLead,
+    incomingLeadId,
+    identityKey: identityKey || undefined,
+  };
+}
+
+export function upsertLeadWithIdentity(
+  lead: Record<string, any>,
+  options: LeadWriteOptions = {},
+): LeadWriteResult {
+  const db = getLeadsDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = upsertLeadInExistingTransaction(db, lead, options);
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* ignore rollback failure */ }
+    throw error;
+  }
+}
+
+export function upsertLead(lead: Record<string, any>, options: LeadWriteOptions = {}) {
+  return upsertLeadWithIdentity(lead, options).lead;
 }
 
 export function deleteLead(id: string) {
@@ -681,60 +829,24 @@ export function deleteLead(id: string) {
   db.prepare('DELETE FROM leads WHERE id = ?').run(id);
 }
 
-export function upsertLeads(
+export function transferLeadIdentities(db: DatabaseSync, fromLeadId: string, toLeadId: string) {
+  db.prepare('UPDATE lead_identities SET lead_id = ? WHERE lead_id = ?').run(toLeadId, fromLeadId);
+}
+
+export function upsertLeadsWithIdentity(
   leads: Record<string, any>[],
-  options: { requireExisting?: boolean } = {},
-) {
+  options: LeadWriteOptions = {},
+): LeadWriteResult[] {
   const db = getLeadsDb();
-  const now = new Date().toISOString();
-  const stmt = db.prepare(`
-    INSERT INTO leads (id, payload, created_at, updated_at, revision)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      payload = excluded.payload,
-      updated_at = excluded.updated_at,
-      revision = excluded.revision
-  `);
-  const selectExisting = db.prepare('SELECT payload, revision FROM leads WHERE id = ?');
-  const storedLeads: Record<string, any>[] = [];
+  const results: LeadWriteResult[] = [];
 
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const lead of leads) {
-      const existing = selectExisting.get(lead.id) as { payload: string; revision: number } | undefined;
-      if (!existing && options.requireExisting) {
-        throw new LeadNotFoundError(String(lead.id || ''));
-      }
-      const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
-      if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
-        let currentLead: Record<string, any> = { ...lead, revision: Number(existing.revision || 1) };
-        try {
-          currentLead = { ...JSON.parse(existing.payload), revision: Number(existing.revision || 1) };
-        } catch {
-          // The caller still receives a conflict response for legacy malformed data.
-        }
-        throw new LeadRevisionConflictError(currentLead);
-      }
-      const revision = existing ? Number(existing.revision || 1) + 1 : 1;
-      const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
-      stmt.run(
-        storedLead.id,
-        JSON.stringify(storedLead),
-        typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
-        now,
-        revision
-      );
-      storedLeads.push(storedLead);
+      results.push(upsertLeadInExistingTransaction(db, lead, options));
     }
-
-    db.prepare(`
-      INSERT INTO app_meta (key, value, updated_at)
-      VALUES ('leads_initialized', 'true', ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(now);
-
     db.exec('COMMIT');
-    return storedLeads;
+    return results;
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -743,6 +855,10 @@ export function upsertLeads(
     }
     throw error;
   }
+}
+
+export function upsertLeads(leads: Record<string, any>[], options: LeadWriteOptions = {}) {
+  return upsertLeadsWithIdentity(leads, options).map((result) => result.lead);
 }
 
 

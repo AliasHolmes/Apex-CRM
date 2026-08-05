@@ -16,6 +16,18 @@ export const getLinkedInHandle = (url?: string) => {
   return '';
 };
 
+/**
+ * The stable identity used for a real LinkedIn public profile. This is
+ * deliberately narrower than getLinkedInHandle(): a bare string may be useful
+ * for search inputs, but it must never become a persisted identity key.
+ */
+export const canonicalLinkedInIdentity = (url?: string) => {
+  const normalized = normalizeDedupeValue(url);
+  if (!/linkedin\.com\/in\//i.test(normalized)) return '';
+  const handle = getLinkedInHandle(normalized);
+  return handle ? `linkedin:${handle}` : '';
+};
+
 export const getProfileDomain = (profile?: Partial<LinkedInProfile> | Record<string, any>) => {
   if (!profile || typeof profile !== 'object') return '';
   const website = profile.contactDetails?.website;
@@ -29,15 +41,17 @@ export const buildProfileDedupeKeys = (profile?: Partial<LinkedInProfile> | Reco
   if (!profile || typeof profile !== 'object') return new Set<string>();
   const keys = new Set<string>();
   const email = normalizeDedupeValue(profile.contactDetails?.email);
-  const linkedinHandle = getLinkedInHandle(profile.contactDetails?.linkedinUrl);
+  const linkedinIdentity = canonicalLinkedInIdentity(profile.contactDetails?.linkedinUrl);
   const name = normalizeDedupeValue(profile.fullName);
   const company = normalizeDedupeValue(profile.currentCompany);
   const domain = getProfileDomain(profile);
 
   if (email) keys.add(`email:${email}`);
-  if (linkedinHandle) keys.add(`linkedin:${linkedinHandle}`);
-  if (name && company) keys.add(`name_company:${name}::${company}`);
-  if (name && domain) keys.add(`name_domain:${name}::${domain}`);
+  if (linkedinIdentity) keys.add(linkedinIdentity);
+  // A real LinkedIn profile is the authoritative person identity. Name and
+  // company fallbacks are only for profiles without that stable identifier.
+  if (!linkedinIdentity && name && company) keys.add(`name_company:${name}::${company}`);
+  if (!linkedinIdentity && name && domain) keys.add(`name_domain:${name}::${domain}`);
   return keys;
 };
 

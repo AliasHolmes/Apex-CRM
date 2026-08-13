@@ -83,7 +83,7 @@ import {
 import { SignalStore } from './signalStore.js';
 import { chunkEvidenceBlocksByTokenBudget, estimateTokenCount } from './llmBudget.js';
 import { runProviderQueue } from './providerQueue.js';
-import { selectDiversifiedLeads } from './scoutScoring.js';
+import { selectDiversifiedLeads, buildScoutEvidence } from './scoutScoring.js';
 import { scheduleAdaptiveRetrievalTasks } from './adaptiveScheduler.js';
 
 const addProfileKeys = (profile: any, existingKeys: Set<string>) => {
@@ -773,6 +773,23 @@ ${chunk}`;
             .join('\n\n')
           : '';
         const mergedEvidenceText = [matchingMeta?.evidenceBlock, signalText].filter(Boolean).join('\n\n') || extractedLead.summary || undefined;
+
+        if (matchingMeta) {
+          extractedLead.evidence = {
+            sourceUrl: matchingMeta.sourceUrl,
+            sourceProvider: matchingMeta.sourceProvider,
+            sourceQuery: matchingMeta.sourceQuery,
+            sourceRound: matchingMeta.sourceRound,
+            evidenceQuality: matchingMeta.evidenceQuality,
+            snippets: [mergedEvidenceText || extractedLead.summary || ''].filter(Boolean),
+            whyThisLead: extractedLead.whyThisLead || extractedLead.summary
+          };
+          extractedLead.scout = buildScoutEvidence(extractedLead, searchSpec, {
+            sourceProviders: matchingMeta.sourceProviders,
+            lanes: matchingMeta.lanes,
+            sourceCount: matchingMeta.sourceCount
+          });
+        }
 
         const dmVerification = verifyDecisionMakerFromEvidence({
           query: promptQuery,

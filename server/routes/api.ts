@@ -2787,7 +2787,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     const now = new Date().toISOString();
     const mappedLeads: Record<string, any>[] = finalLeads.map((p: any, i: number) => {
       const hasAccountContext = !!p.companyAccount;
-      const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+      const backendFinalScore = Number(p.finalSelectionScore || p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
       const compositeScore = backendFinalScore > 0
         ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
         : Math.round(Math.min(Math.max(Number(p.companyAccount?.operationalPainScore || 0), 0), 10) * 10);

@@ -122,17 +122,20 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               signalCorpus.registerOccurrences(intentData.buyingSignals);
             }
             const cacheAgeDays = (cachedEntry as any).updatedAt ? Math.max(0, (Date.now() - new Date((cachedEntry as any).updatedAt).getTime()) / 86400000) : 0;
+            let sampleScore = 0;
             for (const lead of group.leads) {
               lead.companyIntentEvidence = intentData;
               const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
               lead.finalSelectionScore = newScore;
               if (lead.qualification) lead.qualification.finalScore = newScore;
+              sampleScore = newScore;
             }
             if (intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial') {
               stats.succeeded++;
             } else {
               stats.noSignal++;
             }
+            logEvent(`[Phase 4 Cache Hit] ${group.companyName}: quality=${intentData.evidenceQuality}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)}, age=${cacheAgeDays.toFixed(1)}d -> updated score=${sampleScore.toFixed(2)}`);
           } catch {
             // cache parse error, fallback to live search
           }
@@ -148,10 +151,14 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             brightDataSearch,
             tavilySearchFallback
           }) || '';
+          if (websiteUrl) {
+            logEvent(`[Phase 4 Domain Discovery] Resolved website for ${group.companyName} -> ${websiteUrl}`);
+          }
         }
 
         if (!websiteUrl) {
           stats.noSite++;
+          logEvent(`[Phase 4 No Website] Could not find official website for ${group.companyName}.`);
           return;
         }
 
@@ -166,17 +173,20 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               signalCorpus.registerOccurrences(intentData.buyingSignals);
             }
             const cacheAgeDays = (cachedEntry as any).updatedAt ? Math.max(0, (Date.now() - new Date((cachedEntry as any).updatedAt).getTime()) / 86400000) : 0;
+            let sampleScore = 0;
             for (const lead of group.leads) {
               lead.companyIntentEvidence = intentData;
               const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
               lead.finalSelectionScore = newScore;
               if (lead.qualification) lead.qualification.finalScore = newScore;
+              sampleScore = newScore;
             }
             if (intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial') {
               stats.succeeded++;
             } else {
               stats.noSignal++;
             }
+            logEvent(`[Phase 4 Cache Hit] ${group.companyName}: quality=${intentData.evidenceQuality}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)}, age=${cacheAgeDays.toFixed(1)}d -> updated score=${sampleScore.toFixed(2)}`);
             return;
           } catch {
             // parse error
@@ -193,6 +203,7 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
 
           if (!intentData) {
             stats.failed++;
+            logEvent(`[Phase 4 Failed] Intent scrape returned empty for ${group.companyName} (${websiteUrl}).`);
             return;
           }
 
@@ -202,11 +213,13 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             stats.noSignal++;
           }
 
+          let sampleScore = 0;
           for (const lead of group.leads) {
             lead.companyIntentEvidence = intentData;
             const newScore = applyIntentEnrichmentDelta(lead);
             lead.finalSelectionScore = newScore;
             if (lead.qualification) lead.qualification.finalScore = newScore;
+            sampleScore = newScore;
           }
 
           upsertIntentCacheEntry({
@@ -218,10 +231,10 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             intentFingerprint: fingerprint
           }, ttlDays);
 
-          logEvent(`Enriched intent for ${group.companyName}: quality=${intentData.evidenceQuality}, dynamicMatches=${intentData.dynamicSignals?.length || 0}`);
+          logEvent(`[Phase 4 Enriched] ${group.companyName} (${websiteUrl}): quality=${intentData.evidenceQuality}, signals=${intentData.buyingSignals?.length || 0}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)} -> updated score=${sampleScore.toFixed(2)}`);
         } catch (err: any) {
           stats.failed++;
-          logEvent(`WARN: Intent check failed for ${group.companyName}: ${err.message || String(err)}`);
+          logEvent(`[Phase 4 WARN] Intent check failed for ${group.companyName}: ${err.message || String(err)}`);
         }
       }
     });

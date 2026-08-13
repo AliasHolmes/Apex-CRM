@@ -427,7 +427,7 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
   let judgeWaveCount = 0;
   let terminationReason = 'query_space_exhausted';
 
-  const getSelectableQualified = () => selectDiversifiedLeads(Array.from(qualifiedLeadsMap.values()), target, searchSpec.maxPerCompany);
+  const getSelectableQualified = () => selectDiversifiedLeads(Array.from(qualifiedLeadsMap.values()), target, searchSpec.maxPerCompany, logEvent);
   const isTargetFulfilled = () => getSelectableQualified().length >= target;
 
   const evidenceByUrl = new Map<string, any>();

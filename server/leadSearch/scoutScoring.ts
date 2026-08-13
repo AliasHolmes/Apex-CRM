@@ -90,13 +90,19 @@ import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool }
 export function selectDiversifiedLeads<T extends Record<string, any>>(
   candidates: T[],
   limit: number,
-  maxPerCompany: number
+  maxPerCompany: number,
+  logEvent?: (msg: string) => void
 ) {
   // --- Step 1: Shannon Entropy Normalization ---
   // Widen score distribution when candidates cluster tightly (low entropy),
   // so MMR and Sigmoid can meaningfully differentiate them.
   const rawScores = candidates.map(c => Number((c as any).finalSelectionScore ?? 0));
   const entropyNormalizedScores = normalizeScorePool(rawScores);
+  if (logEvent && rawScores.length >= 2) {
+    const rawAvg = (rawScores.reduce((a, b) => a + b, 0) / rawScores.length).toFixed(2);
+    const normAvg = (entropyNormalizedScores.reduce((a, b) => a + b, 0) / entropyNormalizedScores.length).toFixed(2);
+    logEvent(`[Shannon Entropy] Normalized ${rawScores.length} candidate scores: mean raw=${rawAvg} -> mean normalized=${normAvg}`);
+  }
   const scoredCandidates = candidates.map((c, i) => {
     const normalized_score = entropyNormalizedScores[i];
     return normalized_score > 0 ? { ...c, finalSelectionScore: normalized_score } : c;
@@ -118,5 +124,9 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   }
 
   // --- Step 3: MMR Diversity Selection ---
-  return computeMMRDiversitySelection(filtered, limit, 0.75);
+  const finalSelected = computeMMRDiversitySelection(filtered, limit, 0.75);
+  if (logEvent) {
+    logEvent(`[MMR Selection] Selected ${finalSelected.length}/${candidates.length} candidates using MMR diversity (lambda=0.75, maxPerCompany=${maxPerCompany}).`);
+  }
+  return finalSelected;
 }

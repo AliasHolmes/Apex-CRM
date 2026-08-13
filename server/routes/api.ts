@@ -2826,7 +2826,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         scoreBreakdown: p.scoreBreakdown,
         reviewStatus: 'UNREVIEWED',
         nextAction: 'NONE',
-        buyingSignalsDetected: p.companyAccount?.buyingSignals?.map((signal: any) => signal.label)
+        buyingSignalsDetected: Array.from(new Set([
+          ...(p.companyAccount?.buyingSignals?.map((signal: any) => signal.label) || []),
+          ...(p.companyIntentEvidence?.buyingSignals || [])
+        ].filter(Boolean)))
       };
     });
 

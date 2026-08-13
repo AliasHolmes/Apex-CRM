@@ -116,7 +116,7 @@ export type TargetFulfillmentOptions = {
 };
 
 export function candidateStableId(lead: Record<string, any>, rawUrl?: string): string {
-  const url = rawUrl || lead.contactDetails?.linkedinUrl || lead.sourceUrl || '';
+  const url = rawUrl || lead.contactDetails?.linkedinUrl || lead.profile?.contactDetails?.linkedinUrl || lead.sourceUrl || lead.profile?.sourceUrl || lead.url || '';
   const username = extractLinkedInUsername(url);
   if (username) return `linkedin:${username.toLowerCase()}`;
   const normalizedUrl = normalizeLinkedInUrl(url);

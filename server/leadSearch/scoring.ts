@@ -47,8 +47,9 @@ const evidenceQualityForLead = (lead: Record<string, any>): EvidenceQuality => {
 const companyIntentScore = (lead: Record<string, any>) => {
   const companyIntent = lead.companyIntentEvidence;
   if (!companyIntent) return 5;
-  if (companyIntent.evidenceQuality === 'good') return 9;
-  if (companyIntent.evidenceQuality === 'partial') return 7;
+  const tfidfBonus = typeof companyIntent.tfidfWeightedScore === 'number' ? companyIntent.tfidfWeightedScore * 2 : 0;
+  if (companyIntent.evidenceQuality === 'good') return Math.min(10, Number((9 + tfidfBonus).toFixed(2)));
+  if (companyIntent.evidenceQuality === 'partial') return Math.min(10, Number((7 + tfidfBonus).toFixed(2)));
   if (Array.isArray(companyIntent.buyingSignals) && companyIntent.buyingSignals.length >= 4) return 6;
   const accountScore = Number(lead.companyAccount?.operationalPainScore);
   if (Number.isFinite(accountScore) && accountScore > 0) {

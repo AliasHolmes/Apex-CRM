@@ -129,6 +129,11 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
               lead.finalSelectionScore = newScore;
               if (lead.qualification) lead.qualification.finalScore = newScore;
+              if (lead.scoreBreakdown) {
+                lead.scoreBreakdown.finalScore = newScore;
+                if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
+                else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
+              }
               if (isCorroborated) {
                 lead.corroborated = true;
                 if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
@@ -186,6 +191,11 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
               lead.finalSelectionScore = newScore;
               if (lead.qualification) lead.qualification.finalScore = newScore;
+              if (lead.scoreBreakdown) {
+                lead.scoreBreakdown.finalScore = newScore;
+                if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
+                else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
+              }
               if (isCorroborated) {
                 lead.corroborated = true;
                 if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
@@ -232,6 +242,11 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             const newScore = applyIntentEnrichmentDelta(lead);
             lead.finalSelectionScore = newScore;
             if (lead.qualification) lead.qualification.finalScore = newScore;
+            if (lead.scoreBreakdown) {
+              lead.scoreBreakdown.finalScore = newScore;
+              if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
+              else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
+            }
             if (isCorroborated) {
               lead.corroborated = true;
               if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];

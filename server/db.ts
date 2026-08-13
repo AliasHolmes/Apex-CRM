@@ -10,7 +10,7 @@ import { canonicalLinkedInIdentity } from '../src/utils/leadDedupe.js';
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 11;
+const LATEST_SCHEMA_VERSION = 12;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -395,9 +395,13 @@ function runMigrations(db: DatabaseSync) {
             recordConflict.run(identityKey, mapped.lead_id, row.id, detectedAt);
           }
         } catch (error) {
-          console.warn(`Skipping unreadable lead while backfilling identities (${row.id}):`, error);
         }
       }
+    }
+
+    if (currentVersion < 12) {
+      addColumnIfMissing(db, 'enrichment_cache', 'intent_fingerprint', 'intent_fingerprint TEXT');
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_enrichment_cache_intent ON enrichment_cache(normalized_url, intent_fingerprint) WHERE intent_fingerprint IS NOT NULL;`);
     }
 
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
@@ -412,7 +416,7 @@ function runMigrations(db: DatabaseSync) {
   }
 }
 
-export type EnrichmentCacheQuality = 'good' | 'partial' | 'bad';
+export type EnrichmentCacheQuality = 'good' | 'partial' | 'weak' | 'bad';
 
 export type EnrichmentCacheEntry = {
   id?: string;
@@ -424,6 +428,7 @@ export type EnrichmentCacheEntry = {
   evidenceBlock: string;
   scrapeQuality: EnrichmentCacheQuality;
   sourceProvider: 'brightdata' | 'tavily';
+  intentFingerprint?: string;
   createdAt?: string;
   expiresAt?: string;
 };
@@ -861,7 +866,6 @@ export function upsertLeads(leads: Record<string, any>[], options: LeadWriteOpti
   return upsertLeadsWithIdentity(leads, options).map((result) => result.lead);
 }
 
-
 const normalizeCacheValue = (value?: string) => (value || '').trim().toLowerCase();
 
 const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
@@ -876,6 +880,7 @@ const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
     evidenceBlock: row.evidence_block,
     scrapeQuality: row.scrape_quality,
     sourceProvider: row.source_provider,
+    intentFingerprint: row.intent_fingerprint || undefined,
     createdAt: row.created_at,
     expiresAt: row.expires_at
   };
@@ -938,8 +943,9 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
   const linkedinUsername = normalizeCacheValue(entry.linkedinUsername);
   const personName = normalizeCacheValue(entry.personName);
   const companyName = normalizeCacheValue(entry.companyName);
+  const intentFingerprint = entry.intentFingerprint ? entry.intentFingerprint.trim() : null;
   const id = entry.id || crypto.createHash('sha256')
-    .update([normalizedUrl, linkedinUsername, personName, companyName].filter(Boolean).join('|') || crypto.randomUUID())
+    .update([normalizedUrl, linkedinUsername, personName, companyName, intentFingerprint].filter(Boolean).join('|') || crypto.randomUUID())
     .digest('hex');
 
   db.prepare(`
@@ -953,9 +959,10 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
       evidence_block,
       scrape_quality,
       source_provider,
+      intent_fingerprint,
       created_at,
       expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       normalized_url = excluded.normalized_url,
       linkedin_username = excluded.linkedin_username,
@@ -965,6 +972,7 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
       evidence_block = excluded.evidence_block,
       scrape_quality = excluded.scrape_quality,
       source_provider = excluded.source_provider,
+      intent_fingerprint = excluded.intent_fingerprint,
       created_at = excluded.created_at,
       expires_at = excluded.expires_at
   `).run(
@@ -977,12 +985,45 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
     entry.evidenceBlock,
     entry.scrapeQuality,
     entry.sourceProvider,
+    intentFingerprint,
     createdAt,
     expiresAt
   );
 
   pruneExpiredEnrichmentCache(now);
   return { ...entry, id, createdAt, expiresAt };
+}
+
+export function getIntentCacheEntry(
+  normalizedUrl: string,
+  intentFingerprint: string,
+  now = new Date()
+): EnrichmentCacheEntry | null {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const cleanUrl = normalizeCacheValue(normalizedUrl);
+  const cleanFp = (intentFingerprint || '').trim();
+
+  if (!cleanUrl || !cleanFp) return null;
+
+  const row = db.prepare(`
+    SELECT * FROM enrichment_cache
+    WHERE datetime(expires_at) > datetime(?)
+      AND normalized_url = ?
+      AND intent_fingerprint = ?
+    ORDER BY datetime(created_at) DESC
+    LIMIT 1
+  `).get(cutoff, cleanUrl, cleanFp);
+
+  return toCacheRow(row);
+}
+
+export function upsertIntentCacheEntry(
+  entry: EnrichmentCacheEntry & { intentFingerprint: string },
+  ttlDays = 7,
+  now = new Date()
+) {
+  return upsertEnrichmentCacheEntry(entry, ttlDays, now);
 }
 
 export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date()) {

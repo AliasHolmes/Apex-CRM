@@ -1,5 +1,6 @@
 import { Type } from '../services/llm.js';
 import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
+import type { IntentSignalSpec } from './intentSignals.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
@@ -32,6 +33,7 @@ export type ProspectContract = {
   requirements: ProspectRequirement[];
   exclusions: string[];
   initialQueries: SearchQueryPlanItem[];
+  intentSignals?: IntentSignalSpec;
 };
 
 const clean = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -202,12 +204,12 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
 }
 
 const queryTermsFor = (requirements: ProspectRequirement[]) => requirements
-  .filter(item => item.importance === 'hard' && item.queryable)
+  .filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal')
   .map(item => item.acceptableTerms[0] || item.sourcePhrase)
   .filter(Boolean);
 
 export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
-  const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable);
+  const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal');
   const variants = [0, 1, 2, 3].map(index => hardRequirements
     .map(requirement => requirement.acceptableTerms[index % Math.max(requirement.acceptableTerms.length, 1)] || requirement.sourcePhrase)
     .filter(Boolean)
@@ -355,7 +357,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   const rawItems = Array.isArray(input) ? input : [];
   const exclusions = contract.exclusions.map(lower).filter(Boolean);
   const seen = new Set<string>();
-  const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable);
+  const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal');
   const normalized: SearchQueryPlanItem[] = [];
   for (const raw of rawItems.slice(0, 6)) {
     const candidate = typeof raw === 'string' ? { query: raw } : raw && typeof raw === 'object' ? raw as Record<string, any> : {};

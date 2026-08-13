@@ -46,14 +46,188 @@ const evidenceQualityForLead = (lead: Record<string, any>): EvidenceQuality => {
 
 const companyIntentScore = (lead: Record<string, any>) => {
   const companyIntent = lead.companyIntentEvidence;
-  if (companyIntent?.evidenceQuality === 'good') return 9;
-  if (companyIntent?.evidenceQuality === 'partial') return 7;
+  if (!companyIntent) return 5;
+  if (companyIntent.evidenceQuality === 'good') return 9;
+  if (companyIntent.evidenceQuality === 'partial') return 7;
+  if (Array.isArray(companyIntent.buyingSignals) && companyIntent.buyingSignals.length >= 4) return 6;
   const accountScore = Number(lead.companyAccount?.operationalPainScore);
   if (Number.isFinite(accountScore) && accountScore > 0) {
     return accountScore > 10 ? Math.min(accountScore / 10, 10) : Math.min(accountScore, 10);
   }
   return 5;
 };
+
+export function computeBayesianIntentDelta(intent: Record<string, any>, cacheAgeDays = 0): number {
+  if (!intent) return 0;
+
+  const dynamicMatches = Array.isArray(intent.dynamicSignals) ? intent.dynamicSignals.length : 0;
+  const universalMatches = Array.isArray(intent.universalSignals) ? intent.universalSignals.length : 0;
+  const pagesMatched = Number(intent.pagesMatched) || 1;
+
+  if (dynamicMatches === 0 && universalMatches === 0 && intent.evidenceQuality !== 'good' && intent.evidenceQuality !== 'partial') {
+    return 0;
+  }
+
+  // Prior probability P0 = 0.25; likelihood factor scales with signal density & multi-page hits
+  const prior = 0.25;
+  const signalDensity = (dynamicMatches * 1.8) + (universalMatches * 0.4);
+  const likelihoodFactor = Math.max(0.5, signalDensity * Math.min(pagesMatched, 3));
+  
+  // Bayesian update: P(Intent | Evidence) = (prior * L) / (prior * L + (1 - prior))
+  const posterior = (prior * likelihoodFactor) / (prior * likelihoodFactor + (1 - prior));
+
+  const baseDelta = intent.evidenceQuality === 'good'
+    ? Math.max(0.80, posterior * 1.20)
+    : intent.evidenceQuality === 'partial'
+      ? Math.max(0.40, posterior * 0.70)
+      : posterior * 0.30;
+
+  // Exponential recency time-decay (14-day half-life: lambda = 0.05)
+  const decayFactor = Math.exp(-0.05 * Math.max(0, cacheAgeDays));
+
+  return Number((baseDelta * decayFactor).toFixed(2));
+}
+
+export function applySigmoidScaling(rawScore: number, midpoint = 5.5, steepness = 0.45): number {
+  const clamped = Math.min(Math.max(rawScore, 1), 10);
+  const sigmoid = 1 / (1 + Math.exp(-steepness * (clamped - midpoint)));
+  const minSigmoid = 1 / (1 + Math.exp(-steepness * (1 - midpoint)));
+  const maxSigmoid = 1 / (1 + Math.exp(-steepness * (10 - midpoint)));
+  const scaled = 1 + 9 * ((sigmoid - minSigmoid) / (maxSigmoid - minSigmoid));
+  return Number(scaled.toFixed(2));
+}
+
+/**
+ * Kalman filter for fusing sequential score observations of the same lead.
+ * Merges a new observed score (newObservation) into an existing estimate
+ * (priorEstimate) using provider reliability (processNoise) and observation
+ * noise (observationNoise) to compute an optimal Kalman-weighted blend.
+ *
+ * K = P / (P + R)   ->   estimate = prior + K * (obs - prior)
+ */
+export function computeKalmanFusedScore(
+  priorEstimate: number,
+  newObservation: number,
+  processNoise = 1.0,
+  observationNoise = 2.0
+): number {
+  const kalmanGain = processNoise / (processNoise + observationNoise);
+  const fused = priorEstimate + kalmanGain * (newObservation - priorEstimate);
+  return Number(Math.min(Math.max(fused, 1), 10).toFixed(2));
+}
+
+/**
+ * Shannon entropy normalization for a session-wide pool of scores.
+ * Widens the score distribution when it is tightly clustered (low entropy)
+ * and leaves it untouched when it is already diverse (high entropy).
+ *
+ * H = -Sum(p_i * log2(p_i)),  p_i = S_i / Sum(S_j)
+ * adjustment = alpha * (H_max - H) / H_max,  alpha = 0.15
+ */
+export function normalizeScorePool(scores: number[], alpha = 0.15): number[] {
+  if (scores.length < 2) return scores;
+  const total = scores.reduce((s, v) => s + v, 0);
+  if (total === 0) return scores;
+
+  const probs = scores.map(s => s / total);
+  const entropy = -probs.reduce((h, p) => h + (p > 0 ? p * Math.log2(p) : 0), 0);
+  const maxEntropy = Math.log2(scores.length);
+  if (maxEntropy === 0) return scores;
+
+  // Low entropy -> tightly clustered -> amplify spread
+  const spreadFactor = 1 + alpha * ((maxEntropy - entropy) / maxEntropy);
+
+  const mean = total / scores.length;
+  const normalized = scores.map(s => {
+    const adjusted = mean + (s - mean) * spreadFactor;
+    return Number(Math.min(Math.max(adjusted, 1), 10).toFixed(2));
+  });
+  return normalized;
+}
+
+/**
+ * TF-IDF weight for a single intent signal term across a corpus of scraped pages.
+ * signalCount  = occurrences of the term in this company's scraped text (TF proxy).
+ * totalDocs    = total companies scraped this session.
+ * docsWithTerm = how many companies contained this term (DF).
+ *
+ * weight = signalCount * log(totalDocs / (1 + docsWithTerm))
+ */
+export function computeTfIdfSignalWeight(
+  signalCount: number,
+  totalDocs: number,
+  docsWithTerm: number
+): number {
+  if (signalCount <= 0 || totalDocs <= 0) return 0;
+  const idf = Math.log(totalDocs / (1 + docsWithTerm));
+  return Number(Math.max(0, signalCount * idf).toFixed(4));
+}
+
+export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDays = 0): number {
+  const base = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? rankLeadForFinalSelection(lead));
+  const intent = lead.companyIntentEvidence;
+  if (!intent) return base;
+
+  const delta = computeBayesianIntentDelta(intent, cacheAgeDays);
+  const rawEnriched = applyHardCaps(base + delta, lead);
+
+  // Kalman fusion: if this lead was already scored in a prior round (priorObservedScore),
+  // fuse the current enriched score with the earlier observation rather than discarding it.
+  // processNoise=1.0, observationNoise=2.0 -> Kalman gain ~= 0.33 (conservatively trusts prior)
+  const priorObservedScore = Number(lead._priorScore);
+  const finalScore = Number.isFinite(priorObservedScore) && priorObservedScore > 0
+    ? computeKalmanFusedScore(priorObservedScore, rawEnriched, 1.0, 2.0)
+    : rawEnriched;
+
+  return Number(finalScore.toFixed(2));
+}
+
+export function computeMMRDiversitySelection<T extends Record<string, any>>(
+  candidates: T[],
+  targetCount: number,
+  lambda = 0.70
+): T[] {
+  if (candidates.length <= targetCount) return candidates;
+
+  const selected: T[] = [];
+  const pool = [...candidates].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
+
+  selected.push(pool.shift()!);
+
+  while (selected.length < targetCount && pool.length > 0) {
+    let bestIdx = 0;
+    let bestMMR = -Infinity;
+
+    for (let i = 0; i < pool.length; i++) {
+      const candidate = pool[i];
+      const score = rankLeadForFinalSelection(candidate) / 10;
+
+      let maxSim = 0;
+      for (const sel of selected) {
+        let sim = 0;
+        const candCompany = (candidate.currentCompany || candidate.company || '').toLowerCase();
+        const selCompany = (sel.currentCompany || sel.company || '').toLowerCase();
+        if (candCompany && selCompany && candCompany === selCompany) sim += 0.8;
+
+        const candLoc = (candidate.location || '').toLowerCase();
+        const selLoc = (sel.location || '').toLowerCase();
+        if (candLoc && selLoc && candLoc === selLoc) sim += 0.2;
+
+        if (sim > maxSim) maxSim = sim;
+      }
+
+      const mmr = lambda * score - (1 - lambda) * maxSim;
+      if (mmr > bestMMR) {
+        bestMMR = mmr;
+        bestIdx = i;
+      }
+    }
+
+    selected.push(pool.splice(bestIdx, 1)[0]);
+  }
+
+  return selected;
+}
 
 export type AuditSummary = {
   identityConfidence?: number;
@@ -87,8 +261,8 @@ function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: Au
 }
 
 export function rankLeadForFinalSelection(lead: Record<string, any>): number {
-  const qualificationScore = Number(lead.qualification?.finalScore);
-  if (lead.qualification?.verdict === 'qualified' && Number.isFinite(qualificationScore)) {
+  const qualificationScore = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore);
+  if ((lead.qualification?.verdict === 'qualified' || Number.isFinite(lead.finalSelectionScore)) && Number.isFinite(qualificationScore)) {
     return Number(Math.min(Math.max(qualificationScore, 0), 10).toFixed(2));
   }
   const audit: AuditSummary | undefined = lead.audit;

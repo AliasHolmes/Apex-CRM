@@ -618,6 +618,31 @@ const textFromToolResult = (result: any) => {
 
 export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs()) {
   const scrapeUrl = normalizeBrightDataUrl(url);
+
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
+    try {
+      const response = await fetch(scrapeUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        },
+        signal: AbortSignal.timeout(Math.min(timeoutMs, 12000))
+      });
+      if (response.ok) {
+        const html = await response.text();
+        const textContent = html
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
+          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (textContent.length > 50) return textContent;
+      }
+    } catch {
+      // Fallback fetch failed
+    }
+  }
+
   return withBrightDataClient('scrape_as_markdown', async (client) => {
     const result = await withHardTimeout(client.callTool(
       { name: 'scrape_as_markdown', arguments: { url: scrapeUrl } },

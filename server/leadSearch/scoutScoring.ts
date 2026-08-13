@@ -84,22 +84,39 @@ export function buildScoutEvidence(
   };
 }
 
-/** Select high-quality prospects while preventing one account from consuming a run. */
+import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool } from './scoring.js';
+
+/** Select high-quality prospects while preventing one account from consuming a run and balancing portfolio diversity via MMR. */
 export function selectDiversifiedLeads<T extends Record<string, any>>(
   candidates: T[],
   limit: number,
   maxPerCompany: number
 ) {
+  // --- Step 1: Shannon Entropy Normalization ---
+  // Widen score distribution when candidates cluster tightly (low entropy),
+  // so MMR and Sigmoid can meaningfully differentiate them.
+  const rawScores = candidates.map(c => Number((c as any).finalSelectionScore ?? 0));
+  const entropyNormalizedScores = normalizeScorePool(rawScores);
+  const scoredCandidates = candidates.map((c, i) => {
+    const normalized_score = entropyNormalizedScores[i];
+    return normalized_score > 0 ? { ...c, finalSelectionScore: normalized_score } : c;
+  }) as T[];
+
+  // --- Step 2: Per-company cap + Sigmoid scaling ---
   const perCompany = new Map<string, number>();
-  const selected: T[] = [];
-  const ordered = [...candidates].sort((a, b) => Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0));
+  const filtered: T[] = [];
+  const ordered = [...scoredCandidates].sort((a, b) => Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0));
   for (const candidate of ordered) {
+    if ((candidate as any).finalSelectionScore !== undefined) {
+      (candidate as any).finalSelectionScore = applySigmoidScaling(Number((candidate as any).finalSelectionScore));
+    }
     const companyKey = normalized(candidate.currentCompany || candidate.company || candidate.companyAccount?.name) || `unknown:${candidate.id || candidate.fullName}`;
     const currentCount = perCompany.get(companyKey) || 0;
     if (currentCount >= maxPerCompany) continue;
-    selected.push(candidate);
+    filtered.push(candidate);
     perCompany.set(companyKey, currentCount + 1);
-    if (selected.length >= limit) break;
   }
-  return selected;
+
+  // --- Step 3: MMR Diversity Selection ---
+  return computeMMRDiversitySelection(filtered, limit, 0.75);
 }

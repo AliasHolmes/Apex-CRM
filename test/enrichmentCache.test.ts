@@ -11,17 +11,37 @@ const { enrichLeadProfile } = await import('../server/leadSearch/profileEnrichme
 describe('enrichment cache', () => {
   it('initializes a versioned database schema', () => {
     const version = db.getLeadsDb().prepare('PRAGMA user_version').get() as { user_version: number };
-    assert.equal(version.user_version, 11);
+    assert.equal(version.user_version, 12);
     const emailCache = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'email_discovery_cache'").get();
     assert.equal(emailCache, undefined);
     const cacheColumns = db.getLeadsDb().prepare('PRAGMA table_info(enrichment_cache)').all() as { name: string }[];
     assert.ok(cacheColumns.some(column => column.name === 'public_email'));
+    assert.ok(cacheColumns.some(column => column.name === 'intent_fingerprint'));
     const performanceColumns = db.getLeadsDb().prepare('PRAGMA table_info(query_performance)').all() as { name: string }[];
     for (const column of ['outcome_runs', 'qualified_candidates', 'rescued_candidates', 'returned_candidates', 'search_latency_ms', 'provider_units', 'judged_candidates', 'hard_failed_candidates', 'unknown_candidates']) {
       assert.ok(performanceColumns.some(candidate => candidate.name === column));
     }
     const identityTable = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'lead_identities'").get();
     assert.ok(identityTable);
+  });
+
+  it('persists and retrieves intent cache entries by website and intent_fingerprint', () => {
+    const now = new Date('2026-08-01T00:00:00.000Z');
+    db.upsertIntentCacheEntry({
+      normalizedUrl: 'https://phemeai.io',
+      companyName: 'Pheme AI',
+      evidenceBlock: JSON.stringify({ websiteUrl: 'https://phemeai.io', evidenceQuality: 'good', buyingSignals: ['white label'] }),
+      scrapeQuality: 'good',
+      sourceProvider: 'brightdata',
+      intentFingerprint: 'fingerprint-abc-123'
+    }, 7, now);
+
+    const hit = db.getIntentCacheEntry('https://phemeai.io', 'fingerprint-abc-123', new Date('2026-08-02T00:00:00.000Z'));
+    assert.ok(hit);
+    assert.equal(hit?.intentFingerprint, 'fingerprint-abc-123');
+
+    const missWrongFingerprint = db.getIntentCacheEntry('https://phemeai.io', 'fingerprint-different-xyz', new Date('2026-08-02T00:00:00.000Z'));
+    assert.equal(missWrongFingerprint, null);
   });
 
   it('increments lead revisions and rejects stale writes', () => {

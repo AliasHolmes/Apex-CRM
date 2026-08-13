@@ -150,9 +150,65 @@ export default function ScrapeWorkspace() {
   const [pastedText, setPastedText] = useState('');
   // Find Leads inputs
   const [findQuery, setFindQuery] = useState('');
-  const [leadLimit, setLeadLimit] = useState<number>(5);
+  const [leadLimit, setLeadLimit] = useState<number>(20);
+  const [leadLimitInput, setLeadLimitInput] = useState<string>('20');
   const [discoveryMode, setDiscoveryMode] = useState<'person_first' | 'account_first' | 'signal_first' | 'local_business'>('person_first');
   const [maxPerCompany, setMaxPerCompany] = useState(2);
+  const [maxPerCompanyInput, setMaxPerCompanyInput] = useState<string>('2');
+
+  const updateLeadLimit = (value: number) => {
+    const clamped = Math.max(1, Math.min(200, value));
+    setLeadLimit(clamped);
+    setLeadLimitInput(String(clamped));
+  };
+
+  const handleLeadLimitInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = event.target.value;
+    setLeadLimitInput(raw);
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isNaN(parsed) && parsed >= 1) {
+      setLeadLimit(Math.min(200, parsed));
+    }
+  };
+
+  const handleLeadLimitInputBlur = () => {
+    const parsed = Number.parseInt(leadLimitInput, 10);
+    if (Number.isNaN(parsed) || parsed < 1) {
+      updateLeadLimit(1);
+    } else if (parsed > 200) {
+      updateLeadLimit(200);
+    } else {
+      updateLeadLimit(parsed);
+    }
+  };
+
+  const updateMaxPerCompany = (value: number) => {
+    const clamped = Math.max(1, Math.min(5, value));
+    setMaxPerCompany(clamped);
+    setMaxPerCompanyInput(String(clamped));
+  };
+
+  const handleMaxPerCompanyChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    cancelPreviewRequest();
+    const raw = event.target.value;
+    setMaxPerCompanyInput(raw);
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isNaN(parsed) && parsed >= 1) {
+      setMaxPerCompany(Math.min(5, parsed));
+    }
+    setSearchPreview(null);
+  };
+
+  const handleMaxPerCompanyBlur = () => {
+    const parsed = Number.parseInt(maxPerCompanyInput, 10);
+    if (Number.isNaN(parsed) || parsed < 1) {
+      updateMaxPerCompany(1);
+    } else if (parsed > 5) {
+      updateMaxPerCompany(5);
+    } else {
+      updateMaxPerCompany(parsed);
+    }
+  };
   const [searchSpec, setSearchSpec] = useState<any>(null);
   const [searchPreview, setSearchPreview] = useState<any>(null);
   const [providerCapabilities, setProviderCapabilities] = useState<any>(null);
@@ -320,7 +376,7 @@ export default function ScrapeWorkspace() {
       setSearchPreview(data);
       setSearchSpec(data.spec);
       setDiscoveryMode(data.spec?.mode || discoveryMode);
-      setMaxPerCompany(data.spec?.maxPerCompany || maxPerCompany);
+      updateMaxPerCompany(data.spec?.maxPerCompany || maxPerCompany);
     } catch (error: any) {
       if (error?.name === 'AbortError' || previewRequestIdRef.current !== requestId) return;
       setErrorCode(error.message || 'Could not plan this scout search.');
@@ -360,7 +416,7 @@ export default function ScrapeWorkspace() {
     setFindQuery(saved.query || '');
     setSearchSpec(saved.spec || null);
     setDiscoveryMode(saved.mode || saved.spec?.mode || 'person_first');
-    setMaxPerCompany(saved.maxPerCompany || saved.spec?.maxPerCompany || 2);
+    updateMaxPerCompany(saved.maxPerCompany || saved.spec?.maxPerCompany || 2);
     setSavedSearchName(saved.name || '');
     setSearchPreview(null);
   };
@@ -821,23 +877,48 @@ export default function ScrapeWorkspace() {
                   </p>
                 </div>
 
-                <div className="flex flex-col gap-3 rounded-xl border bg-muted/40 p-4 sm:flex-row sm:items-end sm:justify-between">
-                  <div className="w-full sm:max-w-40">
-                    <label htmlFor="prospect-count" className="mb-2 block text-sm font-medium text-foreground">Prospects to find</label>
-                    <Input
-                      id="prospect-count"
-                      type="number"
-                      inputMode="numeric"
-                      min={1}
-                      max={200}
-                      value={leadLimit}
-                      onChange={(event) => setLeadLimit(Math.max(1, Math.min(200, Number.parseInt(event.target.value, 10) || 1)))}
-                      disabled={loading}
-                      aria-describedby="prospect-count-help"
-                    />
-                    <p id="prospect-count-help" className="mt-1 text-xs text-muted-foreground">1-200; smaller searches finish sooner.</p>
+                <div className="flex flex-col gap-4 rounded-xl border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex-1 space-y-2">
+                    <label htmlFor="prospect-count" className="block text-sm font-medium text-foreground">
+                      Prospects to find
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        id="prospect-count"
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={200}
+                        value={leadLimitInput}
+                        onChange={handleLeadLimitInputChange}
+                        onBlur={handleLeadLimitInputBlur}
+                        disabled={loading}
+                        aria-describedby="prospect-count-help"
+                        className="w-24 text-base font-semibold"
+                      />
+                      <div className="flex items-center gap-1.5" role="group" aria-label="Quick select target count">
+                        {[10, 20, 50, 100].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => updateLeadLimit(preset)}
+                            disabled={loading}
+                            className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+                              leadLimit === preset
+                                ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-500'
+                                : 'bg-background hover:bg-muted text-muted-foreground border border-input'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <p id="prospect-count-help" className="text-xs text-muted-foreground">
+                      Type any target (1-200) or click a quick preset.
+                    </p>
                   </div>
-                  <Button type="submit" disabled={loading || !findQuery.trim()} className="sm:min-w-44">
+                  <Button type="submit" disabled={loading || !findQuery.trim()} className="sm:min-w-44 h-11">
                     {loading ? (
                       <RefreshCw className="w-4 h-4 mr-2 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                     ) : (
@@ -889,7 +970,17 @@ export default function ScrapeWorkspace() {
                         </div>
                         <div>
                           <label htmlFor="max-per-company" className="mb-1.5 block text-sm font-medium">People per company</label>
-                          <Input id="max-per-company" type="number" inputMode="numeric" min={1} max={5} value={maxPerCompany} onChange={(event) => { cancelPreviewRequest(); setMaxPerCompany(Math.max(1, Math.min(5, Number(event.target.value) || 1))); setSearchPreview(null); }} disabled={loading} />
+                          <Input
+                            id="max-per-company"
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            max={5}
+                            value={maxPerCompanyInput}
+                            onChange={handleMaxPerCompanyChange}
+                            onBlur={handleMaxPerCompanyBlur}
+                            disabled={loading}
+                          />
                         </div>
                       </div>
 

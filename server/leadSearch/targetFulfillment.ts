@@ -32,6 +32,8 @@ import {
   readQueryPerformance,
   upsertMiningSession
 } from '../db.js';
+import { compileIntentSignals, buildFallbackIntentSignals } from './intentSignals.js';
+import { runIntentEnrichment } from './intentEnrichment.js';
 import {
   normalizeSearchSpec,
   buildFallbackSearchSpec,
@@ -363,6 +365,47 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
   const llmCircuitBreaker = createLLMSessionCircuitBreaker(Number(process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD || 2));
   let brightDataReady = shouldAttemptBrightData();
   let brightDataProviderDisabled = !brightDataReady;
+
+  const companyIntentEnabled = process.env.BRIGHTDATA_COMPANY_INTENT_ENABLED === 'true';
+  const envIntentCapRaw = process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH;
+  const envIntentCap = Number.isFinite(Number(envIntentCapRaw))
+    ? Math.max(Math.floor(Number(envIntentCapRaw)), 0)
+    : 30;
+  // Dynamically scale intent enrichment cap to cover at least the requested target prospect count
+  const companyIntentMaxPerSearch = envIntentCapRaw === '0' ? 0 : Math.max(target, envIntentCap);
+  const companyIntentConcurrency = Number.isFinite(Number(process.env.BRIGHTDATA_COMPANY_INTENT_CONCURRENCY))
+    ? Math.max(Math.floor(Number(process.env.BRIGHTDATA_COMPANY_INTENT_CONCURRENCY)), 1)
+    : 2;
+  const ttlDays = Math.min(Math.max(Number(process.env.BRIGHTDATA_CACHE_TTL_DAYS || 7), 1), 30);
+
+  if (companyIntentEnabled && hasOpenAIKey()) {
+    const signalStarted = Date.now();
+    try {
+      contract.intentSignals = await compileIntentSignals(promptQuery, contract, llmCircuitBreaker);
+      recordTrace({
+        phase: 'strategy',
+        operation: 'intent_signals_compiled',
+        status: 'success',
+        provider: 'llm',
+        latencyMs: Date.now() - signalStarted,
+        counts: { dynamic: contract.intentSignals.dynamic.length, universal: contract.intentSignals.universal.length }
+      });
+      logEvent(`Intent signals compiled: ${contract.intentSignals.dynamic.length} dynamic, ${contract.intentSignals.universal.length} universal.`);
+    } catch (err: any) {
+      contract.intentSignals = buildFallbackIntentSignals();
+      recordTrace({
+        phase: 'strategy',
+        operation: 'intent_signals_compiled',
+        status: 'error',
+        provider: 'llm',
+        latencyMs: Date.now() - signalStarted,
+        error: { message: err?.message || String(err) }
+      });
+      logEvent(`WARN: Intent signal compilation failed: ${err?.message || String(err)}. Using universal fallback.`);
+    }
+  } else {
+    contract.intentSignals = buildFallbackIntentSignals();
+  }
 
   const discoveredCandidateKeys = new Set<string>();
   const processedCandidateKeys = new Set<string>();
@@ -760,6 +803,9 @@ ${chunk}`;
           qualifiedLead.qualification = autoQualified[0].qualification;
           qualifiedLead.whyThisLead = autoQualified[0].qualification.reason;
           qualifiedLead.finalSelectionScore = autoQualified[0].qualification.finalScore;
+          // Preserve prior score for Kalman fusion on next enrichment round
+          const existingEntry = qualifiedLeadsMap.get(stableId);
+          if (existingEntry?.finalSelectionScore) qualifiedLead._priorScore = existingEntry.finalSelectionScore;
           qualifiedLeadsMap.set(stableId, qualifiedLead);
           addProfileKeys(qualifiedLead, existingKeys);
           logEvent(`Auto-qualified candidate: ${qualifiedLead.fullName} (${qualifiedLead.currentTitle} at ${qualifiedLead.currentCompany})`);
@@ -791,6 +837,9 @@ ${chunk}`;
               lead.qualification = outcome.qualification;
               lead.whyThisLead = outcome.qualification.reason;
               lead.finalSelectionScore = outcome.qualification.finalScore;
+              // Preserve prior score for Kalman fusion on next enrichment round
+              const existingJudgeEntry = qualifiedLeadsMap.get(candidateToJudge.candidateId);
+              if (existingJudgeEntry?.finalSelectionScore) lead._priorScore = existingJudgeEntry.finalSelectionScore;
               qualifiedLeadsMap.set(candidateToJudge.candidateId, lead);
               addProfileKeys(lead, existingKeys);
               logEvent(`Finalist Judge QUALIFIED candidate: ${lead.fullName}`);
@@ -814,9 +863,39 @@ ${chunk}`;
     }
   }
 
+  // === PHASE 4: POST-COLLECTION INTENT ENRICHMENT ===
+  if (companyIntentEnabled && companyIntentMaxPerSearch > 0 && qualifiedLeadsMap.size > 0) {
+    logEvent(`Phase 4: intent enrichment starting. Pool: ${qualifiedLeadsMap.size} qualified leads. Cap: ${companyIntentMaxPerSearch}. Concurrency: ${companyIntentConcurrency}.`);
+    const intentStats = await runIntentEnrichment({
+      qualifiedLeads: qualifiedLeadsMap,
+      contract,
+      companyIntentMaxPerSearch,
+      companyIntentConcurrency,
+      ttlDays,
+      brightDataSearch,
+      tavilySearchFallback: async (query: string) => {
+        if (!hasTavilyKey()) return [];
+        const res: any = await tavilySearch(query).catch(() => null);
+        const items = res?.results || res?.items || [];
+        return items.map((item: any) => ({
+          title: item.title || '',
+          url: item.url || item.uri || '',
+          content: item.snippet || item.content || ''
+        }));
+      },
+      sessionAbortSignal: sessionAbortController.signal,
+      logEvent,
+      recordTrace
+    });
+    (stats as any).intentEnrichment = intentStats;
+    logEvent(`Phase 4 complete: ${intentStats.succeeded} enriched, ${intentStats.cacheHits} cache hits, ${intentStats.noSite} no-site, ${intentStats.noSignal} no-signal, ${intentStats.failed} failed.`);
+  }
+  // === END PHASE 4 ===
+
   const selectedQualified = getSelectableQualified();
   const returnedLeads = selectedQualified.map(lead => {
     delete lead.audit;
+    delete lead._priorScore;
     return lead;
   });
 

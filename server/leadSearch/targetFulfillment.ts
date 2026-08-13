@@ -972,7 +972,7 @@ ${chunk}`;
 
   upsertMiningSession({
     id: sessionId,
-    status: returnedLeads.length > 0 ? 'success' : 'error',
+    status: terminationReason === 'cancelled' ? 'cancelled' : (returnedLeads.length > 0 ? 'success' : 'error'),
     prompt: promptQuery,
     requestedLimit: target,
     startedAt: new Date(startedAt).toISOString(),

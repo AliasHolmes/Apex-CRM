@@ -105,7 +105,9 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   }
   const scoredCandidates = candidates.map((c, i) => {
     const normalized_score = entropyNormalizedScores[i];
-    return normalized_score > 0 ? { ...c, finalSelectionScore: normalized_score } : c;
+    return typeof normalized_score === 'number' && Number.isFinite(normalized_score)
+      ? { ...c, finalSelectionScore: normalized_score }
+      : c;
   }) as T[];
 
   // --- Step 2: Per-company cap + Sigmoid scaling ---

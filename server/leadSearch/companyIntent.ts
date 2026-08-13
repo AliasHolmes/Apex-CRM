@@ -166,9 +166,13 @@ export async function checkCompanyIntent(
 
     const targetKeywords = options?.searchSpec?.company?.keywords || [];
     for (const k of targetKeywords) {
-      if (k && k.length > 2 && lowerMarkdown.includes(k.toLowerCase())) {
-        if (!dynamicSignalsFound.includes(k) && !universalSignalsFound.includes(k)) {
-          dynamicSignalsFound.push(k);
+      if (k && k.length > 2) {
+        const count = countOccurrences(k);
+        if (count > 0) {
+          signalCounts.set(k.toLowerCase(), (signalCounts.get(k.toLowerCase()) ?? 0) + count);
+          if (!dynamicSignalsFound.includes(k) && !universalSignalsFound.includes(k)) {
+            dynamicSignalsFound.push(k);
+          }
         }
       }
     }

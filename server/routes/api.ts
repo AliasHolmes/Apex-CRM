@@ -2802,9 +2802,14 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Review profile and advance to outreach.'}`
           : 'Discovered via Tavily LinkedIn-indexed search.',
         createdAt: now,
-        tags: hasAccountContext
-          ? ['LinkedIn Indexed', 'Account Context', p.industry || 'Tech']
-          : ['LinkedIn Indexed', p.industry || 'Tech'],
+        tags: Array.from(new Set([
+          'LinkedIn Indexed',
+          ...(hasAccountContext ? ['Account Context'] : []),
+          p.industry || 'Tech',
+          ...(Array.isArray(p.tags) ? p.tags : []),
+          ...(p.corroborated || p.companyIntentEvidence?.evidenceQuality === 'good' || p.companyIntentEvidence?.evidenceQuality === 'partial' ? ['Intent Corroborated'] : []),
+          ...(p.evidence?.corroborated || (p.scout?.sourceCount && p.scout.sourceCount > 1) ? ['Corroborated'] : [])
+        ].filter(Boolean))),
         fitScore: p.scoreBreakdown?.fitScore,
         intentScore: p.scoreBreakdown?.intentScore,
         timingScore: p.scoreBreakdown?.timingScore,

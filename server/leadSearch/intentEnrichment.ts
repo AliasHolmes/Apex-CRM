@@ -123,14 +123,20 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             }
             const cacheAgeDays = (cachedEntry as any).updatedAt ? Math.max(0, (Date.now() - new Date((cachedEntry as any).updatedAt).getTime()) / 86400000) : 0;
             let sampleScore = 0;
+            const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
             for (const lead of group.leads) {
               lead.companyIntentEvidence = intentData;
               const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
               lead.finalSelectionScore = newScore;
               if (lead.qualification) lead.qualification.finalScore = newScore;
+              if (isCorroborated) {
+                lead.corroborated = true;
+                if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
+                if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
+              }
               sampleScore = newScore;
             }
-            if (intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial') {
+            if (isCorroborated) {
               stats.succeeded++;
             } else {
               stats.noSignal++;
@@ -174,14 +180,20 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             }
             const cacheAgeDays = (cachedEntry as any).updatedAt ? Math.max(0, (Date.now() - new Date((cachedEntry as any).updatedAt).getTime()) / 86400000) : 0;
             let sampleScore = 0;
+            const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
             for (const lead of group.leads) {
               lead.companyIntentEvidence = intentData;
               const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
               lead.finalSelectionScore = newScore;
               if (lead.qualification) lead.qualification.finalScore = newScore;
+              if (isCorroborated) {
+                lead.corroborated = true;
+                if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
+                if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
+              }
               sampleScore = newScore;
             }
-            if (intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial') {
+            if (isCorroborated) {
               stats.succeeded++;
             } else {
               stats.noSignal++;
@@ -207,7 +219,8 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             return;
           }
 
-          if (intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial') {
+          const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
+          if (isCorroborated) {
             stats.succeeded++;
           } else {
             stats.noSignal++;
@@ -219,6 +232,11 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             const newScore = applyIntentEnrichmentDelta(lead);
             lead.finalSelectionScore = newScore;
             if (lead.qualification) lead.qualification.finalScore = newScore;
+            if (isCorroborated) {
+              lead.corroborated = true;
+              if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
+              if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
+            }
             sampleScore = newScore;
           }
 

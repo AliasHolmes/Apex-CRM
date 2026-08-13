@@ -79,6 +79,7 @@ function backupDatabaseBeforeMigration(previousVersion: number) {
   // always produces a complete, self-contained snapshot regardless of WAL state.
   try {
     const srcDb = new DatabaseSync(LEADS_DB_PATH, { open: true });
+    srcDb.exec('PRAGMA busy_timeout = 10000;');
     srcDb.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
     srcDb.close();
     console.log(`WAL-safe database backup created before migration: ${backupPath}`);

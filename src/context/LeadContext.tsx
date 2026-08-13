@@ -286,8 +286,12 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return currentLeads;
       }
 
-      const compositeScore = scoreLeadDeterministically(profile);
-      const predictiveScore = predictiveScoreFromComposite(compositeScore);
+      const qualified = profile as QualifiedLeadProfile;
+      const serverScore = qualified.finalSelectionScore ?? qualified.scoreOverride ?? qualified.scoreBreakdown?.finalScore;
+      const compositeScore = typeof serverScore === 'number'
+        ? Math.round(serverScore <= 10 ? serverScore * 10 : serverScore)
+        : scoreLeadDeterministically(profile);
+      const predictiveScore = predictiveScoreFromComposite(compositeScore, !!qualified.companyAccount);
 
       newLead = {
         id: `lead-${crypto.randomUUID()}`,

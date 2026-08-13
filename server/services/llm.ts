@@ -198,10 +198,23 @@ async function fetchWithRetry(
 
   let lastError: Error = new Error('Unknown fetch error');
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const callerSignal = requestOptions.signal;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let compositeSignal = controller.signal;
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        clearTimeout(timer);
+        throw new Error('LLM request cancelled');
+      }
+      if (typeof AbortSignal.any === 'function') {
+        compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
+      } else {
+        callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
     try {
-      const res = await fetch(url, { ...requestOptions, signal: controller.signal });
+      const res = await fetch(url, { ...requestOptions, signal: compositeSignal });
       clearTimeout(timer);
       
       // 413 is a deterministic payload-budget failure and must never be

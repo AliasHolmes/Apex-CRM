@@ -19,7 +19,7 @@ export type FinalistJudgment = {
   semanticFit: number;
   authorityFit: number;
   evidenceConfidence: number;
-  verdict: 'qualified' | 'not_qualified';
+  verdict: 'qualified' | 'qualified_partial' | 'not_qualified';
   reason: string;
 };
 
@@ -31,7 +31,7 @@ export type FinalistCandidate = {
 
 export type Qualification = {
   policyVersion: string;
-  verdict: 'qualified';
+  verdict: 'qualified' | 'qualified_partial';
   qualificationSource: 'llm' | 'deterministic';
   finalScore: number;
   requirements: RequirementAssessment[];
@@ -43,7 +43,13 @@ export type Qualification = {
 
 const clean = (value: unknown, max = 900) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 const bounded = (value: unknown) => Math.min(10, Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0));
-
+const normalizeScoreTo10 = (value: unknown, defaultVal = 7): number => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return defaultVal;
+  // If the score was returned on a 0.0 - 1.0 probability/unit scale, scale it to 0 - 10
+  if (num <= 1.0 && num > 0) return Math.min(10, Math.max(0, Number((num * 10).toFixed(2))));
+  return Math.min(10, Math.max(0, Number(num.toFixed(2))));
+};
 export const finalistJudgeSchema = {
   type: Type.OBJECT,
   properties: {
@@ -67,9 +73,9 @@ export const finalistJudgeSchema = {
               required: ['requirementId', 'status']
             }
           },
-          semanticFit: { type: Type.NUMBER },
-          authorityFit: { type: Type.NUMBER },
-          evidenceConfidence: { type: Type.NUMBER },
+          semanticFit: { type: Type.NUMBER, description: 'Semantic fit score from 1 to 10 evaluating how well the candidate matches the contract role and requirements.' },
+          authorityFit: { type: Type.NUMBER, description: 'Authority fit score from 1 to 10 evaluating seniority and decision-making power.' },
+          evidenceConfidence: { type: Type.NUMBER, description: 'Evidence confidence score from 1 to 10 evaluating proof clarity and certainty.' },
           verdict: { type: Type.STRING },
           reason: { type: Type.STRING }
         },
@@ -80,7 +86,7 @@ export const finalistJudgeSchema = {
   required: ['judgments']
 };
 
-export type FinalistOutcomeStatus = 'qualified' | 'hard_fail' | 'unknown' | 'unjudged';
+export type FinalistOutcomeStatus = 'qualified' | 'qualified_partial' | 'hard_fail' | 'unknown' | 'unjudged';
 
 export type CandidateOutcome = {
   candidateId: string;
@@ -109,7 +115,9 @@ CORE RULES:
    - A requirement status is enough when the shown evidence is clear. Include an evidence id, quote, or explanation only when it resolves real ambiguity.
    - "unknown" is used when evidence is insufficient or ambiguous.
    - "fail" is used when evidence explicitly contradicts a hard requirement.
-6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.`;
+6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
+7. SIGNAL REQUIREMENTS: If a requirement represents a dynamic buying signal (e.g. hiring triggers, funding events, tooling/tech stack signals), assign status "unknown" -- never "fail" -- when the candidate's evidence packet lacks job postings or open-web signal snippets. Only assign "fail" if the evidence explicitly contradicts the requirement (e.g. business is defunct). Never reject a verified decision-maker solely because an open-web signal could not be corroborated from their profile bio.
+8. SCORING SCALE: For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).`;
 
 export function buildFinalistJudgePrompt(contract: ProspectContract, candidates: FinalistCandidate[]) {
   const requirementText = contract.requirements.map(requirement =>
@@ -142,10 +150,11 @@ const normalizeAssessment = (raw: any, candidate: FinalistCandidate, requirement
 
 /**
  * Validate judgments and assign precise outcome statuses:
- * - Any valid failed hard requirement -> hard_fail
- * - Insufficient evidence for a hard requirement -> unknown
+ * - Any valid failed hard profile requirement -> hard_fail
+ * - All hard profile requirements pass + all hard signal requirements pass -> qualified
+ * - All hard profile requirements pass + hard signal requirements unknown -> qualified_partial
+ * - Insufficient evidence for a hard profile requirement -> unknown
  * - Omitted or malformed candidate result -> unjudged
- * - Every hard requirement validly passes -> qualified
  */
 export function validateFinalistJudgments(
   raw: unknown,
@@ -166,7 +175,8 @@ export function validateFinalistJudgments(
   const counts = { qualified: 0, hardFail: 0, unknown: 0, unjudged: 0 };
 
   const hardRequirements = contract.requirements.filter(req => req.importance === 'hard');
-  const hardCount = hardRequirements.length;
+  const profileHardReqs = hardRequirements.filter(r => (r.evidenceModality || (r.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) !== 'open_web_signal');
+  const signalHardReqs = hardRequirements.filter(r => (r.evidenceModality || (r.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal');
 
   for (const candidate of candidates) {
     outcomes.set(candidate.candidateId, { candidateId: candidate.candidateId, status: 'unjudged' });
@@ -183,52 +193,70 @@ export function validateFinalistJudgments(
     const requirements = contract.requirements.map(requirement => normalizeAssessment(assessmentById.get(requirement.id), candidate, requirement));
     validJudgmentCount++;
 
-    const hardFails = requirements.filter(req => {
+    const profileFails = requirements.filter(req => {
       const contractReq = contract.requirements.find(item => item.id === req.requirementId);
-      return contractReq?.importance === 'hard' && req.status === 'fail';
+      const isSignal = (contractReq?.evidenceModality || (contractReq?.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
+      return contractReq?.importance === 'hard' && !isSignal && req.status === 'fail';
     }).length;
 
-    const hardPasses = requirements.filter(req => {
+    const profilePasses = requirements.filter(req => {
       const contractReq = contract.requirements.find(item => item.id === req.requirementId);
-      return contractReq?.importance === 'hard' && req.status === 'pass';
+      const isSignal = (contractReq?.evidenceModality || (contractReq?.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
+      return contractReq?.importance === 'hard' && !isSignal && req.status === 'pass';
     }).length;
 
-    const semanticFit = bounded(judgment.semanticFit);
-    const authorityFit = bounded(judgment.authorityFit);
-    const evidenceConfidence = bounded(judgment.evidenceConfidence);
+    const signalPasses = requirements.filter(req => {
+      const contractReq = contract.requirements.find(item => item.id === req.requirementId);
+      const isSignal = (contractReq?.evidenceModality || (contractReq?.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
+      return contractReq?.importance === 'hard' && isSignal && req.status === 'pass';
+    }).length;
+
+    const semanticFit = normalizeScoreTo10(judgment.semanticFit, 7);
+    const authorityFit = normalizeScoreTo10(judgment.authorityFit, 7);
+    const evidenceConfidence = normalizeScoreTo10(judgment.evidenceConfidence, 7);
     const reason = clean(judgment.reason, 500) || 'Matches the prospect contract with cited public evidence.';
 
     let status: FinalistOutcomeStatus = 'unknown';
-    if (hardFails > 0) {
+    if (profileFails > 0) {
       status = 'hard_fail';
       counts.hardFail++;
-    } else if (hardPasses === hardCount) {
+    } else if (profilePasses === profileHardReqs.length && (signalHardReqs.length === 0 || signalPasses === signalHardReqs.length)) {
       status = 'qualified';
+      counts.qualified++;
+    } else if (profilePasses === profileHardReqs.length) {
+      // Identity and role fully verified; signal uncorroborated but candidate is genuine
+      status = 'qualified_partial';
       counts.qualified++;
     } else {
       status = 'unknown';
       counts.unknown++;
     }
 
-    if (status === 'qualified') {
-      const corroboration = bounded(candidate.lead.scout?.corroborationScore ?? (candidate.evidence.length > 1 ? 7 : 4));
+    if (status === 'qualified' || status === 'qualified_partial') {
+      const corroboration = normalizeScoreTo10(candidate.lead.scout?.corroborationScore ?? (candidate.evidence.length > 1 ? 7 : 4), 5);
       const weighted = contract.authorityRequired
         ? semanticFit * 0.50 + evidenceConfidence * 0.25 + authorityFit * 0.15 + corroboration * 0.10
         : semanticFit * 0.65 + evidenceConfidence * 0.25 + corroboration * 0.10;
 
+      // Partial qualification applies a modest 15% discount because dynamic signal was not corroborated
+      const scoreMultiplier = status === 'qualified_partial' ? 0.85 : 1.0;
+      const finalScore = Number((weighted * scoreMultiplier).toFixed(2));
+
       const qual: Qualification = {
         policyVersion: contract.policyVersion,
-        verdict: 'qualified',
+        verdict: status,
         qualificationSource: 'llm',
-        finalScore: Number(weighted.toFixed(2)),
+        finalScore,
         requirements,
-        reason,
+        reason: status === 'qualified_partial'
+          ? `${reason} (Decision maker verified; signal requirement uncorroborated)`
+          : reason,
         semanticFit,
         evidenceConfidence,
         authorityFit
       };
       qualifications.set(candidate.candidateId, qual);
-      outcomes.set(candidate.candidateId, { candidateId, status: 'qualified', qualification: qual, requirements, reason });
+      outcomes.set(candidate.candidateId, { candidateId, status, qualification: qual, requirements, reason: qual.reason });
     } else {
       outcomes.set(candidate.candidateId, { candidateId, status, requirements, reason });
     }
@@ -276,12 +304,23 @@ export function partitionCandidatesByStrictEvidence(
   candidates: FinalistCandidate[],
   contract: ProspectContract
 ): { autoQualified: DeterministicFinalist[]; needsJudge: FinalistCandidate[] } {
-  const hardRequirements = contract.requirements.filter(requirement => requirement.importance === 'hard');
+  // Auto-qualify gate uses only structured_profile hard requirements.
+  // Signal requirements (open_web_signal) are always passed to the semantic judge.
+  const hardRequirements = contract.requirements.filter(requirement =>
+    requirement.importance === 'hard' &&
+    (requirement.evidenceModality || (requirement.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) !== 'open_web_signal'
+  );
+  const hasOpenWebSignalHardReqs = contract.requirements.some(r =>
+    r.importance === 'hard' &&
+    (r.evidenceModality || (r.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal'
+  );
+
   const autoQualified: DeterministicFinalist[] = [];
   const needsJudge: FinalistCandidate[] = [];
 
   for (const candidate of candidates) {
-    if (!hardRequirements.length || !hardRequirements.every(requirement => hasStrictStructuredMatch(candidate.lead, requirement))) {
+    // If there are open_web_signal hard requirements, always send to the judge so signals are evaluated
+    if (hasOpenWebSignalHardReqs || !hardRequirements.length || !hardRequirements.every(requirement => hasStrictStructuredMatch(candidate.lead, requirement))) {
       needsJudge.push(candidate);
       continue;
     }

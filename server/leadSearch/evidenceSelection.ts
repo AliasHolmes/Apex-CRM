@@ -109,8 +109,22 @@ export function selectEvidenceForFinalist(
 ): SelectedEvidence {
   const profile = structuredProfileEvidence(lead);
   const hardRequirements = contract.requirements.filter(requirement => requirement.importance === 'hard');
+  const signalHardReqs = hardRequirements.filter(r =>
+    (r.evidenceModality || (r.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal'
+  );
+
   const budgetChars = evidenceBudgetFor(lead, hardRequirements.length, profile.length);
   let remaining = Math.max(0, budgetChars - profile.length);
+
+  // --- Signal evidence reservation ---
+  // Extract [OPEN-WEB SIGNAL: ...] blocks before general sentence scoring.
+  // These are pinned into their own evidence slot and never evicted by the budget.
+  const allPieces = sourceEvidencePieces(lead, evidenceText);
+  const signalPieces = signalHardReqs.length > 0
+    ? allPieces.filter(piece => piece.includes('[OPEN-WEB SIGNAL:'))
+    : [];
+  const signalEvidenceText = signalPieces.map(p => clean(p, 600)).join('\n').slice(0, 600);
+
   const sentences = toSentences(sourceEvidencePieces(lead, evidenceText));
   const scored = sentences.map((text, index) => {
     const matchedRequirementIds = contract.requirements
@@ -157,6 +171,15 @@ export function selectEvidenceForFinalist(
 
   const evidence = [{ id: 'e0', text: profile || 'No structured profile fields were retrieved.' }];
   if (evidenceLines.length) evidence.push({ id: 'e1', text: evidenceLines.join('\n') });
+  if (signalEvidenceText) {
+    evidence.push({ id: 'e2', text: signalEvidenceText });
+    for (const req of signalHardReqs) {
+      if (matchingTerms(signalEvidenceText, req).length > 0) {
+        coveredHardRequirementIds.add(req.id);
+      }
+    }
+  }
+
   const totalChars = evidence.reduce((sum, item) => sum + item.text.length, 0);
   return { evidence, budgetChars, totalChars, coveredHardRequirementIds: [...coveredHardRequirementIds] };
 }

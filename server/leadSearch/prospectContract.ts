@@ -4,7 +4,7 @@ import type { IntentSignalSpec } from './intentSignals.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v3';
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v4';
 
 export type RequirementScope =
   | 'person_role'
@@ -14,10 +14,13 @@ export type RequirementScope =
   | 'company_size'
   | 'signal';
 
+export type EvidenceModality = 'structured_profile' | 'open_web_signal' | 'inferred';
+
 export type ProspectRequirement = {
   id: string;
   scope: RequirementScope;
   importance: 'hard' | 'soft';
+  evidenceModality: EvidenceModality;
   description: string;
   /** Exact phrase from the user's brief. This prevents invented constraints. */
   sourcePhrase: string;
@@ -102,6 +105,7 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
       id: requirementId(scope, requirements.filter(item => item.scope === scope).length),
       scope,
       importance,
+      evidenceModality: scope === 'signal' ? 'open_web_signal' : scope === 'company_size' ? 'inferred' : 'structured_profile',
       description: accepted.slice(0, 3).join(' or '),
       sourcePhrase: accepted[0],
       acceptableTerms: accepted,
@@ -121,6 +125,7 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
       id: requirementId(scope, requirements.filter(item => item.scope === scope).length),
       scope,
       importance,
+      evidenceModality: scope === 'signal' ? 'open_web_signal' : scope === 'company_size' ? 'inferred' : 'structured_profile',
       description: sourcePhrase,
       sourcePhrase,
       acceptableTerms: accepted,
@@ -158,6 +163,7 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
       id: 'brief-1',
       scope: 'company_type',
       importance: 'hard',
+      evidenceModality: 'structured_profile',
       description: clean(brief),
       sourcePhrase: clean(brief),
       acceptableTerms: [clean(brief)],
@@ -204,29 +210,50 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
 }
 
 const queryTermsFor = (requirements: ProspectRequirement[]) => requirements
-  .filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal')
+  .filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal')
   .map(item => item.acceptableTerms[0] || item.sourcePhrase)
   .filter(Boolean);
 
+export function buildSignalLaneQueries(
+  requirements: ProspectRequirement[]
+): SearchQueryPlanItem[] {
+  return requirements
+    .filter(r => (r.evidenceModality === 'open_web_signal' || r.scope === 'signal') && r.queryable)
+    .map((r, i) => ({
+      query: r.acceptableTerms.slice(0, 3).join(' OR ') || r.sourcePhrase,
+      family: 'pain_signal' as const,
+      intent: 'find_buying_signal' as const,
+      expectedSignal: `Open-web evidence corroborating: ${r.description}`,
+      priority: i + 1,
+      lane: 'signal' as const,
+      providerPreference: 'tavily' as const,
+      searchDepth: 'basic' as const,
+      coveredRequirementIds: [r.id],
+      topic: 'general' as const
+    }));
+}
+
 export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
-  const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal');
+  const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
   const variants = [0, 1, 2, 3].map(index => hardRequirements
     .map(requirement => requirement.acceptableTerms[index % Math.max(requirement.acceptableTerms.length, 1)] || requirement.sourcePhrase)
     .filter(Boolean)
     .join(' '));
   const base = queryTermsFor(requirements).join(' ') || clean(brief);
   const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
-  return unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
+  const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
     query,
-    family: 'persona_title',
-    intent: 'find_decision_makers',
+    family: 'persona_title' as const,
+    intent: 'find_decision_makers' as const,
     expectedSignal: 'Public profile evidence for every hard requirement',
     priority: index + 1,
-    lane: 'person',
-    providerPreference: index === 0 ? 'tavily' : 'corroborate',
-    searchDepth: 'basic',
+    lane: 'person' as const,
+    providerPreference: index === 0 ? 'tavily' as const : 'corroborate' as const,
+    searchDepth: 'basic' as const,
     coveredRequirementIds: requirements.filter(item => item.importance === 'hard').map(item => item.id)
   }));
+  const signalQueries = buildSignalLaneQueries(requirements);
+  return [...personQueries, ...signalQueries];
 }
 
 export const prospectContractSchema = {
@@ -242,6 +269,7 @@ export const prospectContractSchema = {
           id: { type: Type.STRING },
           scope: { type: Type.STRING },
           importance: { type: Type.STRING },
+          evidenceModality: { type: Type.STRING },
           description: { type: Type.STRING },
           sourcePhrase: { type: Type.STRING },
           acceptableTerms: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -271,7 +299,7 @@ export const prospectContractSchema = {
   required: ['authorityRequired', 'requirements', 'exclusions', 'initialQueries']
 };
 
-export const buildProspectContractPrompt = (brief: string, suppliedSpec?: unknown) => `You compile a strict prospecting contract and first retrieval plan.\n\nUser brief:\n${clean(brief)}\n\n${suppliedSpec ? `User-supplied editable search spec (these are immutable constraints):\n${JSON.stringify(suppliedSpec)}\n\n` : ''}Rules:\n- A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.\n- Never invent adjacent personas, firm sizes, industries, buying intent, locations, or signals.\n- At most 5 hard and 5 soft requirements. A person role, profession, company type, or location explicitly requested is hard.\n- acceptableTerms are short alternatives for the same stated requirement, never broader personas.\n- Generate exactly four distinct concise profile-retrieval queries. Every query must include the canonical terms for every queryable hard requirement.\n- Do not use Google dorks, site:, or the word LinkedIn.\n- coveredRequirementIds may reference only the returned requirement ids.\nReturn only the requested JSON.`;
+export const buildProspectContractPrompt = (brief: string, suppliedSpec?: unknown) => `You compile a strict prospecting contract and first retrieval plan.\n\nUser brief:\n${clean(brief)}\n\n${suppliedSpec ? `User-supplied editable search spec (these are immutable constraints):\n${JSON.stringify(suppliedSpec)}\n\n` : ''}Rules:\n- A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.\n- Never invent adjacent personas, firm sizes, industries, buying intent, locations, or signals.\n- At most 5 hard and 5 soft requirements. A person role, profession, company type, or location explicitly requested is hard.\n- For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.\n- acceptableTerms are short alternatives for the same stated requirement, never broader personas.\n- Generate concise profile-retrieval queries and signal-retrieval queries for any open_web_signal hard requirements.\n- Do not use Google dorks, site:, or the word LinkedIn.\n- coveredRequirementIds may reference only the returned requirement ids.\nReturn only the requested JSON.`;
 
 export const buildRecoveryQueryPrompt = (contract: ProspectContract, diagnostics: { missingHardRequirementIds: string[]; viableCandidates: number }) => `Generate exactly four distinct recovery retrieval queries for this immutable prospect contract.\n\nContract: ${JSON.stringify({ requirements: contract.requirements, exclusions: contract.exclusions })}\n\nRound evidence: ${JSON.stringify(diagnostics)}\n\nRules:\n- Preserve every hard requirement in every query.\n- Recover only the missing hard requirements; do not widen personas, geography, firmographics, or intent.\n- Use only contract terms. Do not use Google dorks, site:, or the word LinkedIn.\n- Vary only the contract's acceptable terms and retrieval phrasing such as public profile or professional profile.\n- Return exactly four query objects.`;
 
@@ -295,10 +323,15 @@ export function normalizeProspectContract(
     if (!terms.length || !sourcePhrase) continue;
     const count = scopeCounts.get(scope) || 0;
     scopeCounts.set(scope, count + 1);
+    const rawModality = clean(item?.evidenceModality);
+    const evidenceModality: EvidenceModality = rawModality === 'open_web_signal' || rawModality === 'inferred' || rawModality === 'structured_profile'
+      ? rawModality
+      : (scope === 'signal' ? 'open_web_signal' : scope === 'company_size' ? 'inferred' : 'structured_profile');
     requirements.push({
       id: clean(item?.id) || requirementId(scope, count),
       scope,
       importance,
+      evidenceModality,
       description: clean(item?.description) || sourcePhrase,
       sourcePhrase,
       acceptableTerms: terms,
@@ -357,15 +390,18 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   const rawItems = Array.isArray(input) ? input : [];
   const exclusions = contract.exclusions.map(lower).filter(Boolean);
   const seen = new Set<string>();
-  const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal');
+  const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
   const normalized: SearchQueryPlanItem[] = [];
   for (const raw of rawItems.slice(0, 6)) {
     const candidate = typeof raw === 'string' ? { query: raw } : raw && typeof raw === 'object' ? raw as Record<string, any> : {};
     let query = clean(candidate.query).replace(/\bsite:[^\s]+/gi, '').replace(/\blinkedin\b/gi, '').trim();
     if (!query || query.length > 240 || exclusions.some(term => term && lower(query).includes(term))) continue;
-    for (const requirement of hardRequirements) {
-      if (!includesAny(query, requirement.acceptableTerms)) {
-        query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
+    const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
+    if (!isSignalLane) {
+      for (const requirement of hardRequirements) {
+        if (!includesAny(query, requirement.acceptableTerms)) {
+          query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
+        }
       }
     }
     const key = lower(query);
@@ -380,7 +416,9 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       lane: candidate.lane === 'account' || candidate.lane === 'signal' || candidate.lane === 'person' ? candidate.lane : 'person',
       providerPreference: ['tavily', 'brightdata', 'corroborate'].includes(candidate.providerPreference) ? candidate.providerPreference : 'tavily',
       searchDepth: ['basic', 'fast', 'ultra-fast', 'advanced'].includes(candidate.searchDepth) ? candidate.searchDepth : 'basic',
-      coveredRequirementIds: hardRequirements.map(requirement => requirement.id)
+      coveredRequirementIds: isSignalLane
+        ? contract.requirements.filter(r => r.importance === 'hard' && (r.evidenceModality === 'open_web_signal' || r.scope === 'signal')).map(r => r.id)
+        : hardRequirements.map(requirement => requirement.id)
     });
   }
   // Recovery models sometimes emit a single broad query. Fill that gap with
@@ -395,7 +433,16 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       normalized.push(fallback);
     }
   }
-  return normalized.slice(0, 4);
+  // Also guarantee any hard open_web_signal requirements have their signal queries present
+  const signalFallbacks = buildSignalLaneQueries(contract.requirements);
+  for (const sigFallback of signalFallbacks) {
+    const key = lower(sigFallback.query);
+    if (!seen.has(key)) {
+      seen.add(key);
+      normalized.push(sigFallback);
+    }
+  }
+  return normalized;
 }
 
 export function searchSpecFromProspectContract(base: SearchSpec, contract: ProspectContract): SearchSpec {

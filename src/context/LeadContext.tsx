@@ -287,7 +287,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       }
 
       const qualified = profile as QualifiedLeadProfile;
-      const serverScore = qualified.finalSelectionScore ?? qualified.scoreOverride ?? qualified.scoreBreakdown?.finalScore;
+      const rawServerScore = qualified.finalSelectionScore ?? qualified.scoreOverride ?? qualified.scoreBreakdown?.finalScore;
+      const serverScore = typeof rawServerScore === 'number' && rawServerScore <= 1.0 && rawServerScore > 0
+        ? rawServerScore * 10
+        : rawServerScore;
       const compositeScore = typeof serverScore === 'number'
         ? Math.round(serverScore <= 10 ? serverScore * 10 : serverScore)
         : scoreLeadDeterministically(profile);
@@ -368,7 +371,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
         const p = item;
         const hasAccountContext = !!p.companyAccount;
-        const backendFinalScore = Number(p.finalSelectionScore ?? p.scoreOverride ?? p.scoreBreakdown?.finalScore ?? 0);
+        const rawBackendScore = Number(p.finalSelectionScore ?? p.scoreOverride ?? p.scoreBreakdown?.finalScore ?? 0);
+        const backendFinalScore = rawBackendScore <= 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
         const compositeScore = backendFinalScore > 0
           ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
           : scoreLeadDeterministically(p, p.companyAccount);

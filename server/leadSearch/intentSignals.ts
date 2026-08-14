@@ -10,9 +10,8 @@ export type IntentSignalSpec = {
 };
 
 export const UNIVERSAL_SIGNALS: string[] = [
-  'hiring', 'expanding', 'launched', 'opening', 'growing', 'locations',
-  'booking', 'scheduling', 'automation', 'crm', 'intake', 'patient acquisition',
-  'lead generation', 'operations', 'workflow', 'follow-up', 'no-show', 'conversion'
+  'hiring', 'expanding', 'launched', 'growing', 'automation',
+  'operations', 'workflow', 'lead generation', 'conversion'
 ];
 
 const cleanSignalToken = (value: unknown): string => {
@@ -111,6 +110,7 @@ Return JSON with "dynamic_signals": array of strings.`;
       fingerprint
     };
   } catch (error) {
+    console.warn('[intentSignals] compileIntentSignals failed, using fallback:', error instanceof Error ? error.message : String(error));
     return buildFallbackIntentSignals();
   }
 }

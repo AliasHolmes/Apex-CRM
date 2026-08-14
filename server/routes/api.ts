@@ -1155,7 +1155,10 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         previousQueries: generatedQueries,
         previousRoundSummary,
         queryPerformance: historicalYield,
-        discoveryMode: discoveryProviderMode
+        discoveryMode: discoveryProviderMode,
+        contract,
+        missingRequirementIds: previousRoundSummary?.missingHardRequirementIds,
+        logEvent
       });
 
       let planItems: SearchQueryPlanItem[] = [];
@@ -2551,7 +2554,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         extractedCandidates: roundRuns.reduce((sum, run) => sum + run.extractedLeads, 0),
         leads: acceptedLeads.filter(lead => lead.evidence?.sourceRound === round),
         contract,
-        targetLimit
+        targetLimit,
+        alreadyQualified: acceptedCountBeforeRound
       });
 
       previousRoundSummary = {
@@ -2675,6 +2679,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
             candidate.lead.qualification = qualification;
             candidate.lead.whyThisLead = qualification.reason;
             candidate.lead.finalSelectionScore = qualification.finalScore;
+            if (candidate.lead.scoreBreakdown) candidate.lead.scoreBreakdown.finalScore = qualification.finalScore;
+            candidate.lead.scoreOverride = qualification.finalScore;
             return [candidate.lead];
           });
           debugLogs.push({
@@ -2739,8 +2745,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         if (qualifiedLeads.length >= targetLimit) break;
         const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || '';
         if (!qualifiedUrls.has(url)) {
-          lead.qualification = { verdict: 'rescued', reason: 'Promoted via Safety Net to satisfy target count', finalScore: lead.finalSelectionScore };
-          lead.whyThisLead = 'Promoted via Safety Net to satisfy target count';
+          lead.qualification = { verdict: 'rescued', reason: 'Safety Net: identity-verified, signal evidence unavailable', finalScore: lead.finalSelectionScore };
+          lead.whyThisLead = 'Safety Net: identity verified, buying signal not confirmed';
           qualifiedLeads.push(lead);
           qualifiedUrls.add(url);
           rescuedCount++;
@@ -2787,7 +2793,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     const now = new Date().toISOString();
     const mappedLeads: Record<string, any>[] = finalLeads.map((p: any, i: number) => {
       const hasAccountContext = !!p.companyAccount;
-      const backendFinalScore = Number(p.finalSelectionScore || p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+      const rawBackendScore = Number(p.finalSelectionScore || p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+      const backendFinalScore = rawBackendScore <= 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
       const compositeScore = backendFinalScore > 0
         ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
         : Math.round(Math.min(Math.max(Number(p.companyAccount?.operationalPainScore || 0), 0), 10) * 10);
@@ -2808,6 +2815,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
           p.industry || 'Tech',
           ...(Array.isArray(p.tags) ? p.tags : []),
           ...(p.corroborated || p.companyIntentEvidence?.evidenceQuality === 'good' || p.companyIntentEvidence?.evidenceQuality === 'partial' ? ['Intent Corroborated'] : []),
+          ...(p.qualification?.verdict === 'qualified_partial' ? ['Signal Unverified'] : []),
           ...(p.evidence?.corroborated || (p.scout?.sourceCount && p.scout.sourceCount > 1) ? ['Corroborated'] : [])
         ].filter(Boolean))),
         fitScore: p.scoreBreakdown?.fitScore,

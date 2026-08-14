@@ -86,6 +86,21 @@ export function buildScoutEvidence(
 
 import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool, computeParetoFrontier } from './scoring.js';
 
+const candidateKey = (c: any): string => {
+  return String(
+    c?.id ||
+    c?.stableId ||
+    c?.candidateId ||
+    c?.fullName ||
+    c?.profile?.fullName ||
+    c?.contactDetails?.linkedinUrl ||
+    c?.profile?.contactDetails?.linkedinUrl ||
+    c?.sourceUrl ||
+    c?.evidence?.sourceUrl ||
+    Math.random()
+  );
+};
+
 /** Select high-quality prospects while preventing one account from consuming a run and balancing portfolio diversity via MMR. */
 export function selectDiversifiedLeads<T extends Record<string, any>>(
   candidates: T[],
@@ -101,10 +116,18 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
     logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, intent, and evidence quality.`);
   }
 
+  // Reserve up to 30% of slots for top Pareto non-dominated candidates
+  const paretoReservation = Math.max(0, Math.ceil(limit * 0.30));
+  const paretoGuaranteed = skyline.slice(0, paretoReservation);
+  const paretoIds = new Set(paretoGuaranteed.map(candidateKey));
+
   // --- Step 1: Shannon Entropy Normalization ---
   // Widen score distribution when candidates cluster tightly (low entropy),
   // so MMR and Sigmoid can meaningfully differentiate them.
-  const rawScores = candidates.map(c => Number((c as any).finalSelectionScore ?? 0));
+  const rawScores = candidates.map(c => {
+    const raw = Number((c as any).finalSelectionScore ?? (c as any).profile?.finalSelectionScore ?? (c as any).qualification?.finalScore ?? (c as any).profile?.qualification?.finalScore ?? 0);
+    return raw <= 1.0 && raw > 0 ? raw * 10 : raw;
+  });
   const entropyNormalizedScores = normalizeScorePool(rawScores);
   if (logEvent && rawScores.length >= 2) {
     const rawAvg = (rawScores.reduce((a, b) => a + b, 0) / rawScores.length).toFixed(2);
@@ -121,12 +144,19 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   // --- Step 2: Per-company cap + Sigmoid scaling ---
   const perCompany = new Map<string, number>();
   const filtered: T[] = [];
-  const ordered = [...scoredCandidates].sort((a, b) => Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0));
+  const ordered = [...scoredCandidates].sort((a, b) => Number((b as any).finalSelectionScore || 0) - Number((a as any).finalSelectionScore || 0));
   for (const candidate of ordered) {
     if ((candidate as any).finalSelectionScore !== undefined) {
       (candidate as any).finalSelectionScore = applySigmoidScaling(Number((candidate as any).finalSelectionScore));
     }
-    const companyKey = normalized(candidate.currentCompany || candidate.company || candidate.companyAccount?.name) || `unknown:${candidate.id || candidate.fullName}`;
+    const cKey = candidateKey(candidate);
+    const companyKey = normalized(
+      candidate.currentCompany ||
+      candidate.company ||
+      candidate.profile?.currentCompany ||
+      candidate.profile?.company ||
+      candidate.companyAccount?.name
+    ) || `unknown:${cKey}`;
     const currentCount = perCompany.get(companyKey) || 0;
     if (currentCount >= maxPerCompany) continue;
     filtered.push(candidate);
@@ -134,9 +164,13 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   }
 
   // --- Step 3: MMR Diversity Selection ---
-  const finalSelected = computeMMRDiversitySelection(filtered, limit, 0.75);
+  const mmrPool = filtered.filter((c: any) => !paretoIds.has(candidateKey(c)));
+  const mmrLimit = Math.max(0, limit - paretoGuaranteed.length);
+  const mmrSelected = computeMMRDiversitySelection(mmrPool, mmrLimit, 0.75);
+  const finalSelected = [...paretoGuaranteed, ...mmrSelected].slice(0, limit);
+
   if (logEvent) {
-    logEvent(`[MMR Selection] Selected ${finalSelected.length}/${candidates.length} candidates using MMR diversity (lambda=0.75, maxPerCompany=${maxPerCompany}).`);
+    logEvent(`[MMR Selection] Selected ${finalSelected.length}/${candidates.length} candidates using MMR diversity (lambda=0.75, maxPerCompany=${maxPerCompany}, paretoGuaranteed=${paretoGuaranteed.length}).`);
   }
   return finalSelected;
 }

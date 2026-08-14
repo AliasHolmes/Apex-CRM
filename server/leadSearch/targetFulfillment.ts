@@ -55,6 +55,7 @@ import {
   searchSpecFromProspectContract,
   type ProspectContract
 } from './prospectContract.js';
+import { buildRoundDiagnostics } from './roundDiagnostics.js';
 import {
   getRecoveryCandidateCeiling,
   getQueryExecutionCeiling
@@ -478,6 +479,16 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
       const neededCandidatesTranche = Math.max(12, Math.ceil(currentShortfall / estimatedYield * 1.25));
       logEvent(`Round ${currentRound}: target shortfall=${currentShortfall}, yieldEst=${(estimatedYield * 100).toFixed(1)}%, target candidate tranche=${neededCandidatesTranche}.`);
 
+      const roundDiag = buildRoundDiagnostics({
+        round: currentRound,
+        rawCandidates: 0,
+        extractedCandidates: 0,
+        leads: Array.from(qualifiedLeadsMap.values()),
+        contract,
+        targetLimit: target,
+        alreadyQualified: qualifiedLeadsMap.size
+      });
+
       const strategistPrompt = buildStrategistPrompt({
         query: promptQuery,
         spec: searchSpec,
@@ -486,7 +497,10 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
         remaining: currentShortfall,
         previousQueries: Array.from(seenQueriesWithProvider),
         previousRoundSummary,
-        discoveryMode: discoveryProviderMode
+        discoveryMode: discoveryProviderMode,
+        contract,
+        missingRequirementIds: roundDiag.missingHardRequirementIds,
+        logEvent
       });
 
       try {
@@ -821,6 +835,8 @@ ${chunk}`;
           qualifiedLead.qualification = autoQualified[0].qualification;
           qualifiedLead.whyThisLead = autoQualified[0].qualification.reason;
           qualifiedLead.finalSelectionScore = autoQualified[0].qualification.finalScore;
+          if (qualifiedLead.scoreBreakdown) qualifiedLead.scoreBreakdown.finalScore = qualifiedLead.finalSelectionScore;
+          qualifiedLead.scoreOverride = qualifiedLead.finalSelectionScore;
           // Preserve prior score for Kalman fusion on next enrichment round
           const existingEntry = qualifiedLeadsMap.get(stableId);
           if (existingEntry?.finalSelectionScore) qualifiedLead._priorScore = existingEntry.finalSelectionScore;
@@ -850,17 +866,19 @@ ${chunk}`;
             judgeUnjudgedCount += validation.counts.unjudged;
 
             const outcome = validation.outcomes.get(candidateToJudge.candidateId);
-            if (outcome && outcome.status === 'qualified' && outcome.qualification) {
+            if (outcome && (outcome.status === 'qualified' || outcome.status === 'qualified_partial') && outcome.qualification) {
               const lead = candidateToJudge.lead;
               lead.qualification = outcome.qualification;
               lead.whyThisLead = outcome.qualification.reason;
               lead.finalSelectionScore = outcome.qualification.finalScore;
+              if (lead.scoreBreakdown) lead.scoreBreakdown.finalScore = lead.finalSelectionScore;
+              lead.scoreOverride = lead.finalSelectionScore;
               // Preserve prior score for Kalman fusion on next enrichment round
               const existingJudgeEntry = qualifiedLeadsMap.get(candidateToJudge.candidateId);
               if (existingJudgeEntry?.finalSelectionScore) lead._priorScore = existingJudgeEntry.finalSelectionScore;
               qualifiedLeadsMap.set(candidateToJudge.candidateId, lead);
               addProfileKeys(lead, existingKeys);
-              logEvent(`Finalist Judge QUALIFIED candidate: ${lead.fullName}`);
+              logEvent(`Finalist Judge QUALIFIED candidate (${outcome.status}): ${lead.fullName}`);
             }
           } catch (err: any) {
             logEvent(`WARN: Finalist Judge failed for candidate ${candidateToJudge.candidateId}: ${err.message}`);
@@ -1001,6 +1019,7 @@ ${chunk}`;
 
   activeSessions.delete(sessionId);
   activeSessionControllers.delete(sessionId);
+  activeSessionEvents.delete(sessionId);
 
   return res.status(200).json({
     leads: returnedLeads,

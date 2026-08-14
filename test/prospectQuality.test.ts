@@ -13,8 +13,13 @@ import {
   partitionCandidatesByStrictEvidence,
   validateFinalistJudgments
 } from '../server/leadSearch/finalistJudge.ts';
-import { buildScoutEvidence } from '../server/leadSearch/scoutScoring.ts';
+import { buildScoutEvidence, selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
 import { buildCollectionCapacity, collectionRefinementForRound, shouldKeepCollectingAfterStall } from '../server/leadSearch/collectionCapacity.ts';
+import { buildStrategistPrompt } from '../server/leadSearch/searchSpec.ts';
+import { buildRoundDiagnostics } from '../server/leadSearch/roundDiagnostics.ts';
+import { selectEvidenceForFinalist } from '../server/leadSearch/evidenceSelection.ts';
+import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.ts';
+import { computeMMRDiversitySelection } from '../server/leadSearch/scoring.ts';
 
 const spec: any = {
   version: 1,
@@ -141,9 +146,9 @@ describe('evidence-grounded prospect quality', () => {
       exclusions: [],
       initialQueries: [],
       requirements: [
-        { id: 'role', scope: 'person_role', importance: 'hard', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner'], queryable: true },
-        { id: 'company', scope: 'company_type', importance: 'hard', description: 'AI agency', sourcePhrase: 'AI agency', acceptableTerms: ['AI agency'], queryable: true },
-        { id: 'location', scope: 'person_location', importance: 'hard', description: 'New York', sourcePhrase: 'New York', acceptableTerms: ['New York'], queryable: true }
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner'], queryable: true },
+        { id: 'company', scope: 'company_type', importance: 'hard', evidenceModality: 'structured_profile', description: 'AI agency', sourcePhrase: 'AI agency', acceptableTerms: ['AI agency'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'New York', sourcePhrase: 'New York', acceptableTerms: ['New York'], queryable: true }
       ]
     };
     const evidence = 'Ada is Owner of Pixel AI agency in New York.';
@@ -187,10 +192,10 @@ describe('evidence-grounded prospect quality', () => {
       exclusions: [],
       initialQueries: [],
       requirements: [
-        { id: 'role', scope: 'person_role', importance: 'hard', description: 'VP Engineering', sourcePhrase: 'VP Engineering', acceptableTerms: ['VP Engineering', 'Vice President Engineering'], queryable: true },
-        { id: 'industry', scope: 'company_industry', importance: 'hard', description: 'fintech', sourcePhrase: 'fintech', acceptableTerms: ['fintech', 'financial technology'], queryable: true },
-        { id: 'location', scope: 'person_location', importance: 'hard', description: 'London', sourcePhrase: 'London', acceptableTerms: ['London'], queryable: true },
-        { id: 'funding', scope: 'signal', importance: 'hard', description: 'Series B funding', sourcePhrase: 'Series B funding', acceptableTerms: ['Series B', 'Series B funding'], queryable: true }
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'VP Engineering', sourcePhrase: 'VP Engineering', acceptableTerms: ['VP Engineering', 'Vice President Engineering'], queryable: true },
+        { id: 'industry', scope: 'company_industry', importance: 'hard', evidenceModality: 'structured_profile', description: 'fintech', sourcePhrase: 'fintech', acceptableTerms: ['fintech', 'financial technology'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'London', sourcePhrase: 'London', acceptableTerms: ['London'], queryable: true },
+        { id: 'funding', scope: 'signal', importance: 'hard', evidenceModality: 'open_web_signal', description: 'Series B funding', sourcePhrase: 'Series B funding', acceptableTerms: ['Series B', 'Series B funding'], queryable: true }
       ]
     };
     const rawEvidence = [
@@ -222,9 +227,9 @@ describe('evidence-grounded prospect quality', () => {
       exclusions: [],
       initialQueries: [],
       requirements: [
-        { id: 'role', scope: 'person_role', importance: 'hard', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner'], queryable: true },
-        { id: 'industry', scope: 'company_industry', importance: 'hard', description: 'healthcare', sourcePhrase: 'healthcare', acceptableTerms: ['healthcare'], queryable: true },
-        { id: 'location', scope: 'person_location', importance: 'hard', description: 'Toronto', sourcePhrase: 'Toronto', acceptableTerms: ['Toronto'], queryable: true }
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner'], queryable: true },
+        { id: 'industry', scope: 'company_industry', importance: 'hard', evidenceModality: 'structured_profile', description: 'healthcare', sourcePhrase: 'healthcare', acceptableTerms: ['healthcare'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'Toronto', sourcePhrase: 'Toronto', acceptableTerms: ['Toronto'], queryable: true }
       ]
     };
     const misleading = finalistCandidateFromLead('director', {
@@ -239,7 +244,7 @@ describe('evidence-grounded prospect quality', () => {
       ...ownerContract,
       brief: 'CISO at a healthcare company in Toronto',
       requirements: [
-        { id: 'role', scope: 'person_role', importance: 'hard', description: 'CISO', sourcePhrase: 'CISO', acceptableTerms: ['CISO', 'Chief Information Security Officer'], queryable: true },
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'CISO', sourcePhrase: 'CISO', acceptableTerms: ['CISO', 'Chief Information Security Officer'], queryable: true },
         ...ownerContract.requirements.slice(1)
       ]
     };
@@ -251,5 +256,294 @@ describe('evidence-grounded prospect quality', () => {
     assert.equal(strictCisoResult.autoQualified.length, 1);
     assert.equal(strictCisoResult.autoQualified[0].qualification.qualificationSource, 'deterministic');
     assert.equal(strictCisoResult.needsJudge.length, 0);
+  });
+
+  it('generates signal-lane queries for hard open_web_signal requirements and attaches them to initial queries', () => {
+    const brief = 'AI agency owners in London hiring n8n engineers';
+    const contract = buildDeterministicProspectContract(brief, {
+      ...spec,
+      signals: { include: ['hiring n8n engineers'] }
+    });
+
+    const signalReq = contract.requirements.find(r => r.scope === 'signal');
+    assert.ok(signalReq, 'Signal requirement should exist');
+    assert.equal(signalReq?.evidenceModality, 'open_web_signal');
+
+    // The signal lane queries should be included in initialQueries
+    const signalQueries = contract.initialQueries.filter(q => q.lane === 'signal');
+    assert.ok(signalQueries.length >= 1, 'At least 1 signal-lane query should be generated');
+    assert.equal(signalQueries[0].family, 'pain_signal');
+    assert.equal(signalQueries[0].intent, 'find_buying_signal');
+  });
+
+  it('assigns qualified_partial when profile requirements pass but open_web_signal is unknown, applying a 15% discount', () => {
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+      brief: 'AI agency owner in New York hiring n8n developers',
+      authorityRequired: true,
+      exclusions: [],
+      initialQueries: [],
+      requirements: [
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner'], queryable: true },
+        { id: 'company', scope: 'company_type', importance: 'hard', evidenceModality: 'structured_profile', description: 'AI agency', sourcePhrase: 'AI agency', acceptableTerms: ['AI agency'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'New York', sourcePhrase: 'New York', acceptableTerms: ['New York'], queryable: true },
+        { id: 'signal', scope: 'signal', importance: 'hard', evidenceModality: 'open_web_signal', description: 'hiring n8n developers', sourcePhrase: 'hiring n8n developers', acceptableTerms: ['hiring n8n', 'n8n developers'], queryable: true }
+      ]
+    };
+    const evidence = 'Marcus is Founder & Owner at Neural Spark, an AI agency in New York.';
+    const candidate = finalistCandidateFromLead('marcus', {
+      fullName: 'Marcus Vance', currentTitle: 'Owner', currentCompany: 'Neural Spark', location: 'New York'
+    }, evidence, contract);
+
+    // LLM validates role, company, location as pass; signal is unknown because LinkedIn bio lacks job post
+    const judgmentRaw = [{
+      candidateId: 'marcus',
+      semanticFit: 9.0,
+      authorityFit: 9.0,
+      evidenceConfidence: 8.0,
+      verdict: 'qualified',
+      reason: 'Owner of verified AI agency in New York.',
+      requirements: [
+        { requirementId: 'role', status: 'pass', evidenceId: 'e0' },
+        { requirementId: 'company', status: 'pass', evidenceId: 'e0' },
+        { requirementId: 'location', status: 'pass', evidenceId: 'e0' },
+        { requirementId: 'signal', status: 'unknown' }
+      ]
+    }];
+
+    const validation = validateFinalistJudgments({ judgments: judgmentRaw }, contract, [candidate]);
+    assert.equal(validation.counts.qualified, 1);
+    assert.equal(validation.counts.hardFail, 0);
+
+    const outcome = validation.outcomes.get('marcus');
+    assert.equal(outcome?.status, 'qualified_partial');
+    assert.ok(outcome?.qualification);
+    assert.equal(outcome?.qualification?.verdict, 'qualified_partial');
+
+    // Baseline weighted: 9*0.50 + 8*0.25 + 9*0.15 + 7*0.10 = 4.5 + 2.0 + 1.35 + 0.70 = 8.55
+    // With 15% discount: 8.55 * 0.85 = 7.2675 -> 7.27
+    assert.ok(outcome.qualification.finalScore < 8.55);
+    assert.equal(outcome.qualification.finalScore, 7.27);
+
+    // Verify that if LLM returns 0.0 - 1.0 probability floats, it scales them to 0-10 identically
+    const floatJudgmentRaw = [{
+      ...judgmentRaw[0],
+      semanticFit: 0.90,
+      authorityFit: 0.90,
+      evidenceConfidence: 0.80
+    }];
+    const floatValidation = validateFinalistJudgments({ judgments: floatJudgmentRaw }, contract, [candidate]);
+    const floatOutcome = floatValidation.outcomes.get('marcus');
+    assert.equal(floatOutcome?.qualification?.finalScore, 7.27);
+  });
+
+  it('hard-fails a candidate when a structured_profile hard requirement fails, even if signal passes', () => {
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+      brief: 'AI agency owner in New York hiring n8n developers',
+      authorityRequired: true,
+      exclusions: [],
+      initialQueries: [],
+      requirements: [
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'New York', sourcePhrase: 'New York', acceptableTerms: ['New York'], queryable: true },
+        { id: 'signal', scope: 'signal', importance: 'hard', evidenceModality: 'open_web_signal', description: 'hiring n8n developers', sourcePhrase: 'hiring n8n developers', acceptableTerms: ['hiring n8n'], queryable: true }
+      ]
+    };
+    const evidence = 'Junior Dev in London at a startup hiring n8n developers.';
+    const candidate = finalistCandidateFromLead('junior', {
+      fullName: 'Dev Junior', currentTitle: 'Junior Developer', currentCompany: 'Startup Ltd', location: 'London'
+    }, evidence, contract);
+
+    const judgmentRaw = [{
+      candidateId: 'junior',
+      semanticFit: 2.0,
+      authorityFit: 1.0,
+      evidenceConfidence: 8.0,
+      verdict: 'not_qualified',
+      reason: 'Junior developer in London, not an owner in New York.',
+      requirements: [
+        { requirementId: 'role', status: 'fail' },
+        { requirementId: 'location', status: 'fail' },
+        { requirementId: 'signal', status: 'pass' }
+      ]
+    }];
+
+    const validation = validateFinalistJudgments({ judgments: judgmentRaw }, contract, [candidate]);
+    assert.equal(validation.counts.hardFail, 1);
+    assert.equal(validation.counts.qualified, 0);
+    const outcome = validation.outcomes.get('junior');
+    assert.equal(outcome?.status, 'hard_fail');
+  });
+
+  it('buildStrategistPrompt includes compiled requirements digest and unmet hard requirements', () => {
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+      brief: 'dental clinic owner in Austin',
+      authorityRequired: true,
+      exclusions: [],
+      initialQueries: [],
+      requirements: [
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner', 'founder'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'Austin', sourcePhrase: 'Austin', acceptableTerms: ['Austin', 'TX'], queryable: true },
+        { id: 'signal', scope: 'signal', importance: 'hard', evidenceModality: 'open_web_signal', description: 'hiring dental hygienist', sourcePhrase: 'hiring dental hygienist', acceptableTerms: ['hiring hygienist'], queryable: true }
+      ]
+    };
+
+    const logs: string[] = [];
+    const prompt = buildStrategistPrompt({
+      query: 'dental clinic owner in Austin',
+      round: 2,
+      maxRounds: 6,
+      remaining: 5,
+      previousQueries: ['dental clinic owner Austin'],
+      previousRoundSummary: { viableCandidates: 1 },
+      contract,
+      missingRequirementIds: ['signal'],
+      logEvent: (msg) => logs.push(msg)
+    });
+
+    assert.ok(prompt.includes('Compiled prospect requirements'));
+    assert.ok(prompt.includes('[hard/person_role/structured_profile] owner'));
+    assert.ok(prompt.includes('[hard/signal/open_web_signal] hiring dental hygienist'));
+    assert.ok(prompt.includes('UNMET HARD REQUIREMENTS'));
+    assert.ok(prompt.includes('signal'));
+    assert.ok(prompt.includes('lane: "signal" and search open web'));
+    assert.ok(logs.some(l => l.includes('[Strategist] Injected unmet hard requirements into prompt: [signal]')));
+  });
+
+  it('buildRoundDiagnostics is session-aware and uses contract terms without false recovery for non-US/UK niches', () => {
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+      brief: 'factory manager in Toronto Canada',
+      authorityRequired: true,
+      exclusions: [],
+      initialQueries: [],
+      requirements: [
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'factory manager', sourcePhrase: 'factory manager', acceptableTerms: ['factory manager', 'plant manager'], queryable: true },
+        { id: 'location', scope: 'person_location', importance: 'hard', evidenceModality: 'structured_profile', description: 'Toronto Canada', sourcePhrase: 'Toronto Canada', acceptableTerms: ['Toronto', 'Ontario', 'Canada'], queryable: true }
+      ]
+    };
+
+    const leads = [
+      { fullName: 'Pierre Tremblay', currentTitle: 'Plant Manager', currentCompany: 'Apex Manufacturing', location: 'Toronto, Ontario, Canada' },
+      { fullName: 'Sarah Chen', currentTitle: 'Factory Manager', currentCompany: 'Precision Metals', location: 'Toronto, Canada' }
+    ];
+
+    // Case 1: When alreadyQualified is 8 for target 10, banked(8) + viable(2) = 10 >= 5 -> shouldRecover is false
+    const diagSatisfied = buildRoundDiagnostics({
+      round: 2,
+      rawCandidates: 10,
+      extractedCandidates: 2,
+      leads,
+      contract,
+      targetLimit: 10,
+      alreadyQualified: 8
+    });
+
+    assert.equal(diagSatisfied.viableCandidates, 2);
+    assert.equal(diagSatisfied.missingHardRequirementIds.length, 0);
+    assert.equal(diagSatisfied.shouldRecover, false);
+
+    // Case 2: When alreadyQualified is 0 and only 1 viable candidate for target 10 -> shouldRecover is true
+    const diagShort = buildRoundDiagnostics({
+      round: 1,
+      rawCandidates: 10,
+      extractedCandidates: 1,
+      leads: [leads[0]],
+      contract,
+      targetLimit: 10,
+      alreadyQualified: 0
+    });
+
+    assert.equal(diagShort.shouldRecover, true);
+  });
+
+  it('selectEvidenceForFinalist pins open-web signal evidence to e2 slot and tracks coverage', () => {
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+      brief: 'AI agency owner in New York hiring n8n developers',
+      authorityRequired: true,
+      exclusions: [],
+      initialQueries: [],
+      requirements: [
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner', 'founder'], queryable: true },
+        { id: 'company', scope: 'company_type', importance: 'hard', evidenceModality: 'structured_profile', description: 'AI agency', sourcePhrase: 'AI agency', acceptableTerms: ['AI agency', 'AI consultancy'], queryable: true },
+        { id: 'signal', scope: 'signal', importance: 'hard', evidenceModality: 'open_web_signal', description: 'hiring n8n', sourcePhrase: 'hiring n8n', acceptableTerms: ['hiring n8n', 'n8n developer'], queryable: true }
+      ]
+    };
+
+    const lead = {
+      fullName: 'Alex Vance',
+      currentTitle: 'Founder & CEO',
+      currentCompany: 'FlowState AI',
+      location: 'New York, NY',
+      evidence: {
+        rawText: 'Founder of FlowState AI, a leading AI consultancy in New York.',
+        snippets: [
+          '[OPEN-WEB SIGNAL: https://jobs.lever.co/flowstate/n8n] FlowState AI is hiring an n8n developer for workflow automation systems.'
+        ]
+      }
+    };
+
+    const selected = selectEvidenceForFinalist(lead, contract);
+    assert.ok(selected.evidence.some(e => e.id === 'e2'));
+    const e2 = selected.evidence.find(e => e.id === 'e2');
+    assert.ok(e2?.text.includes('[OPEN-WEB SIGNAL:'));
+    assert.ok(e2?.text.includes('hiring an n8n developer'));
+    assert.ok(selected.coveredHardRequirementIds.includes('signal'));
+  });
+
+  it('verifyDecisionMakerFromEvidence handles qualified consultant titles and ignores stop words', () => {
+    const principalConsultant = verifyDecisionMakerFromEvidence({
+      query: 'looking for AI agency consultant in New York',
+      currentTitle: 'Principal Security Consultant',
+      currentCompany: 'CyberAI LLC'
+    });
+
+    assert.equal(principalConsultant.ignoredTitle, false);
+    assert.ok(principalConsultant.confidence >= 5);
+
+    const intern = verifyDecisionMakerFromEvidence({
+      query: 'AI agency in New York',
+      currentTitle: 'Summer Intern',
+      currentCompany: 'CyberAI LLC'
+    });
+
+    assert.equal(intern.ignoredTitle, true);
+    assert.equal(intern.confidence, 2);
+  });
+
+  it('selectDiversifiedLeads guarantees top Pareto skyline non-dominated leads make the output', () => {
+    const candidates = [
+      { id: 'c1', fullName: 'Lead One', currentCompany: 'Alpha Corp', fitScore: 9, intentScore: 9, evidenceQualityScore: 9, finalSelectionScore: 8.5 },
+      { id: 'c2', fullName: 'Lead Two', currentCompany: 'Beta Corp', fitScore: 8, intentScore: 8, evidenceQualityScore: 8, finalSelectionScore: 8.0 },
+      { id: 'c3', fullName: 'Lead Three', currentCompany: 'Gamma Corp', fitScore: 7, intentScore: 7, evidenceQualityScore: 7, finalSelectionScore: 7.5 }
+    ];
+
+    const selected = selectDiversifiedLeads(candidates, 2, 1);
+    assert.equal(selected.length, 2);
+    // Non-dominated c1 must be included in output
+    assert.ok(selected.some(c => c.id === 'c1'));
+  });
+
+  it('computeMMRDiversitySelection penalizes company variations using companiesMatch', () => {
+    const candidates = [
+      { id: 'c1', currentCompany: 'Google LLC', location: 'Mountain View', fitScore: 9, finalSelectionScore: 9.0 },
+      { id: 'c2', currentCompany: 'Google Inc', location: 'Mountain View', fitScore: 8.8, finalSelectionScore: 8.8 },
+      { id: 'c3', currentCompany: 'Microsoft Corp', location: 'Redmond', fitScore: 8.5, finalSelectionScore: 8.5 }
+    ];
+
+    // With target count 2, c1 (Google) is picked first. Because Google Inc matches Google LLC via companiesMatch,
+    // MMR should penalize Google Inc and pick Microsoft Corp (c3) instead of second Google.
+    const selected = computeMMRDiversitySelection(candidates, 2, 0.70);
+    assert.equal(selected.length, 2);
+    assert.equal(selected[0].id, 'c1');
+    assert.equal(selected[1].id, 'c3');
   });
 });

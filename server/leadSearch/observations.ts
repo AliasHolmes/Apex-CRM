@@ -83,12 +83,21 @@ const cleanCompanyHint = (value: unknown) => String(value || '')
   .trim()
   .slice(0, 80);
 
+const COMPANY_HINT_BLOCKLIST = new Set([
+  'short notice', 'home', 'large', 'will', 'present', 'remote', 'available',
+  'your service', 'your company', 'clients', 'request', 'application',
+  'stealth', 'freelance', 'self employed', 'confidential', 'various'
+]);
+
 const looksLikeCompanyHint = (value: string) => {
   const candidate = cleanCompanyHint(value);
   if (candidate.length < 3 || candidate.length > 80) return false;
   if (!/[a-z0-9]/i.test(candidate)) return false;
+  const lower = candidate.toLowerCase();
+  if (COMPANY_HINT_BLOCKLIST.has(lower)) return false;
   if (/\b(hiring|job|jobs|careers|work|apply|vacancy|position|role)\b/i.test(candidate)) return false;
   if (/\b(connections?|followers?|people also viewed|about|experience|education)\b/i.test(candidate)) return false;
+  if (/\b(available at|open to|looking for|seeking|working at)\b/i.test(lower)) return false;
   if (/^[\d\s,.-]+$/.test(candidate)) return false;
   return true;
 };

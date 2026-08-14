@@ -107,6 +107,14 @@ export function computeCareerTrajectoryDCR(
   };
 }
 
+const STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'are', 'that', 'this', 'from', 'they', 'have',
+  'who', 'what', 'where', 'their', 'our', 'can', 'not', 'all', 'has', 'but',
+  'looking', 'target', 'prospects', 'companies', 'leads', 'want', 'need'
+]);
+
+const QUALIFIED_CONSULTANT_PREFIXES = /\b(principal|senior|managing|strategy|technical|security|healthcare|medical|financial|lead|chief)\b/i;
+
 export function verifyDecisionMakerFromEvidence(input: {
   query: string;
   fullName?: string;
@@ -131,7 +139,12 @@ export function verifyDecisionMakerFromEvidence(input: {
 
   const positiveMatches = collectMatches(textToSearch, POSITIVE_TITLE_PATTERNS);
   const seniorityPositive = POSITIVE_SENIORITY_PATTERNS.some(pattern => pattern.test(seniorityText));
-  const weakMatches = collectMatches(textToSearch, WEAK_TITLE_PATTERNS);
+  const rawWeakMatches = collectMatches(textToSearch, WEAK_TITLE_PATTERNS);
+  const weakMatches = rawWeakMatches.filter(label => {
+    if (label === 'consultant' && QUALIFIED_CONSULTANT_PREFIXES.test(textToSearch)) return false;
+    if (label === 'specialist' && QUALIFIED_CONSULTANT_PREFIXES.test(textToSearch)) return false;
+    return true;
+  });
   const hasStudentOrgConflict = /\b(student|campus|university|college)\s+(club|organization|society|association)\b/.test(textToSearch);
   const hasAssistantAuthorityConflict = /\bassistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)\b/.test(textToSearch);
 
@@ -143,7 +156,7 @@ export function verifyDecisionMakerFromEvidence(input: {
   const companyMatched = Boolean(input.currentCompany && textToSearch.includes(normalizeForTitleMatching(input.currentCompany)));
   
   // Calculate Career Trajectory DCR Score:
-  const domainKeywords = queryText.split(/\s+/).filter(w => w.length > 2);
+  const domainKeywords = queryText.split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w.toLowerCase()));
   const trajectory = computeCareerTrajectoryDCR(input.experiences || [], domainKeywords);
 
   let confidence = 0;

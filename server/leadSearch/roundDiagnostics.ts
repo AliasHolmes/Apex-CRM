@@ -24,43 +24,17 @@ const candidateText = (lead: Record<string, any>) => normalize([
   lead.summary, lead.evidence?.rawText, lead.evidence?.summary, ...(lead.evidence?.snippets || [])
 ].filter(Boolean).join(' '));
 
-const USA_ALIASES = ['usa', 'united states', 'u.s.', 'us ', 'america', 'california', 'new york', 'texas', 'florida', 'illinois', 'washington', 'seattle', 'san francisco', 'los angeles', 'chicago', 'boston', 'austin', 'miami', 'denver', 'atlanta'];
-const UK_ALIASES = ['uk', 'united kingdom', 'england', 'scotland', 'wales', 'london', 'manchester', 'birmingham'];
-const OWNER_ROLE_ALIASES = ['owner', 'founder', 'co-founder', 'cofounder', 'ceo', 'chief executive', 'managing partner', 'managing director', 'principal', 'president', 'proprietor', 'director'];
-const AI_AGENCY_ALIASES = ['ai agency', 'ai agencies', 'ai marketing agency', 'ai consultancy', 'ai studio', 'ai firm', 'artificial intelligence agency', 'ai-powered agency', 'agentic ai'];
-
 const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequirement) => {
   const text = candidateText(lead);
   const terms = requirement.acceptableTerms.map(normalize);
 
-  // Exact term matching first
+  // Exact term matching against the contract's compiled acceptable terms (synonyms are already expanded in contract)
   if (terms.some(term => term && text.includes(term))) return true;
-
-  // Semantic expansion for location scope
-  if (requirement.scope === 'person_location') {
-    const isUSA = terms.some(t => ['usa', 'united states', 'us', 'america'].includes(t));
-    if (isUSA && USA_ALIASES.some(alias => text.includes(alias))) return true;
-
-    const isUK = terms.some(t => ['uk', 'united kingdom', 'britain', 'england'].includes(t));
-    if (isUK && UK_ALIASES.some(alias => text.includes(alias))) return true;
-  }
-
-  // Semantic expansion for role scope
-  if (requirement.scope === 'person_role') {
-    const isOwnership = terms.some(t => OWNER_ROLE_ALIASES.includes(t));
-    if (isOwnership && OWNER_ROLE_ALIASES.some(alias => text.includes(alias))) return true;
-  }
-
-  // Semantic expansion for company type scope
-  if (requirement.scope === 'company_type') {
-    const isAiAgency = terms.some(t => t.includes('ai agency') || t.includes('ai agencies') || t.includes('agency'));
-    if (isAiAgency && AI_AGENCY_ALIASES.some(alias => text.includes(alias))) return true;
-  }
 
   return false;
 };
 
-/** Deterministic recovery trigger based on this round only, not cumulative logs. */
+/** Deterministic recovery trigger based on contract terms and session-wide progress. */
 export function buildRoundDiagnostics(params: {
   round: number;
   rawCandidates: number;
@@ -68,6 +42,7 @@ export function buildRoundDiagnostics(params: {
   leads: Record<string, any>[];
   contract: ProspectContract;
   targetLimit: number;
+  alreadyQualified?: number;
 }): RoundDiagnostics {
   const requirements = params.contract.requirements.map(requirement => {
     let pass = 0;
@@ -86,6 +61,8 @@ export function buildRoundDiagnostics(params: {
   const viableCandidates = params.leads.filter(lead => params.contract.requirements
     .filter(requirement => requirement.importance === 'hard')
     .every(requirement => matchesRequirement(lead, requirement))).length;
+
+  const banked = params.alreadyQualified ?? 0;
   return {
     round: params.round,
     rawCandidates: params.rawCandidates,
@@ -93,6 +70,7 @@ export function buildRoundDiagnostics(params: {
     viableCandidates,
     requirements,
     missingHardRequirementIds,
-    shouldRecover: viableCandidates < Math.ceil(params.targetLimit * 0.5) || missingHardRequirementIds.length > 0
+    shouldRecover: (banked + viableCandidates) < Math.ceil(params.targetLimit * 0.5) || missingHardRequirementIds.length > 0
   };
 }
+

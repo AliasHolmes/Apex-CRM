@@ -221,15 +221,18 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
     });
 };
 
-export const buildFallbackQueryPlan = (query: string, spec: SearchSpec): SearchQueryPlanItem[] => {
+import type { ProspectContract } from './prospectContract.js';
+
+export const buildFallbackQueryPlan = (query: string, spec?: SearchSpec): SearchQueryPlanItem[] => {
   const base = clean(query);
-  const titles = spec.person.includeTitles.length ? spec.person.includeTitles : ['founder', 'owner'];
-  const signal = spec.signals.include[0] || 'growth automation';
+  const effectiveSpec = spec || buildFallbackSearchSpec(query);
+  const titles = effectiveSpec.person.includeTitles.length ? effectiveSpec.person.includeTitles : ['founder', 'owner'];
+  const signal = effectiveSpec.signals.include[0] || 'growth automation';
   const plans: SearchQueryPlanItem[] = [
     { query: `${base} ${titles.join(' ')}`, family: 'persona_title', intent: 'find_decision_makers', expectedSignal: 'Decision-maker profiles', priority: 1, lane: 'person', providerPreference: 'tavily', searchDepth: 'basic' },
     { query: `${base} company founder owner`, family: 'company_type', intent: 'expand_surface_area', expectedSignal: 'Qualified company and leadership evidence', priority: 2, lane: 'account', providerPreference: 'brightdata', searchDepth: 'basic' },
     { query: `${base} ${signal}`, family: 'growth_signal', intent: 'find_buying_signal', expectedSignal: 'Recent public business signals', priority: 3, lane: 'signal', providerPreference: 'brightdata', searchDepth: 'basic' },
-    { query: `${base} operations director`, family: 'persona_title', intent: 'expand_surface_area', expectedSignal: 'Adjacent operator decision makers', priority: 4, lane: 'person', providerPreference: 'corroborate', searchDepth: 'basic' }
+    { query: `${base} automation CRM`, family: 'tooling_signal', intent: 'find_buying_signal', expectedSignal: 'Tooling or automation context', priority: 4, lane: 'signal', providerPreference: 'corroborate', searchDepth: 'basic' }
   ];
   return plans.filter(item => item.query.trim().length > 0);
 };
@@ -238,7 +241,7 @@ export const buildSearchSpecPrompt = (query: string) => `Convert this prospectin
 
 export const buildStrategistPrompt = (params: {
   query: string;
-  spec: SearchSpec;
+  spec?: SearchSpec;
   round: number;
   maxRounds: number;
   remaining: number;
@@ -246,24 +249,48 @@ export const buildStrategistPrompt = (params: {
   previousRoundSummary: Record<string, any>;
   queryPerformance?: Record<string, any>;
   discoveryMode?: string;
+  contract?: ProspectContract;
+  missingRequirementIds?: string[];
+  logEvent?: (msg: string) => void;
 }) => {
   const previousNote = params.previousQueries.length ? `Avoid repeats: ${params.previousQueries.join(' | ')}` : 'No previous queries.';
   const discoveryMode = params.discoveryMode || 'hybrid';
+
+  const requirementDigest = params.contract?.requirements?.length
+    ? `\nCompiled prospect requirements (use these exact terms in queries):
+${params.contract.requirements.map(r => `  - [${r.importance}/${r.scope}/${r.evidenceModality || 'structured_profile'}] ${r.description} (terms: ${r.acceptableTerms.slice(0, 3).join(', ')})`).join('\n')}`
+    : '';
+
+  const missingNote = params.missingRequirementIds && params.missingRequirementIds.length > 0
+    ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(', ')}`
+    : '';
+
+  if (params.logEvent && params.missingRequirementIds && params.missingRequirementIds.length > 0) {
+    params.logEvent(`[Strategist] Injected unmet hard requirements into prompt: [${params.missingRequirementIds.join(', ')}]`);
+  }
+
+  const roundSummaryStr = JSON.stringify(params.previousRoundSummary || {}).slice(0, 800);
+  const performanceStr = JSON.stringify(params.queryPerformance || {}).slice(0, 800);
+  const specStr = params.spec ? JSON.stringify(params.spec) : '{}';
+
   return `You are a dual-provider B2B prospecting strategist for Apex CRM.
 
 User brief: ${params.query}
-Structured targeting spec: ${JSON.stringify(params.spec)}
+Structured targeting spec: ${specStr}
 Discovery mode: ${discoveryMode}
+${requirementDigest}
+${missingNote}
 
 Generate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.
 ${previousNote}
-Prior round summary: ${JSON.stringify(params.previousRoundSummary)}
-Historical family/provider yield: ${JSON.stringify(params.queryPerformance || {})}
+Prior round summary: ${roundSummaryStr}
+Historical family/provider yield: ${performanceStr}
 
 Rules:
 - Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
 - Use at least two lanes: person, account, signal when the brief supports them.
 - person lane finds public professional profiles; account lane finds companies and leadership evidence; signal lane finds public growth, tooling, hiring, or pain evidence.
+- For open_web_signal requirements (e.g. hiring, tech stack, funding), use lane: "signal" and search open web - not LinkedIn.
 - Prefer searchDepth basic. Do not use advanced unless a single signal task truly needs it.
 - providerPreference guide:
   - tavily: AI-ranked precision person queries (domain-filtered LinkedIn).

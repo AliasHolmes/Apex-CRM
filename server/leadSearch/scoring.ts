@@ -1,3 +1,5 @@
+import { companiesMatch } from './signalStore.js';
+
 export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
 export type EvidenceQuality = 'weak' | 'partial' | 'good';
 
@@ -170,7 +172,8 @@ export function computeTfIdfSignalWeight(
 }
 
 export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDays = 0): number {
-  const base = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? rankLeadForFinalSelection(lead));
+  const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? rankLeadForFinalSelection(lead));
+  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase;
   const intent = lead.companyIntentEvidence;
   if (!intent) return base;
 
@@ -180,7 +183,8 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
   // Kalman fusion: if this lead was already scored in a prior round (priorObservedScore),
   // fuse the current enriched score with the earlier observation rather than discarding it.
   // processNoise=1.0, observationNoise=2.0 -> Kalman gain ~= 0.33 (conservatively trusts prior)
-  const priorObservedScore = Number(lead._priorScore);
+  const rawPrior = Number(lead._priorScore);
+  const priorObservedScore = rawPrior <= 1.0 && rawPrior > 0 ? rawPrior * 10 : rawPrior;
   const finalScore = Number.isFinite(priorObservedScore) && priorObservedScore > 0
     ? computeKalmanFusedScore(priorObservedScore, rawEnriched, 1.0, 2.0)
     : rawEnriched;
@@ -211,9 +215,11 @@ export function computeMMRDiversitySelection<T extends Record<string, any>>(
       let maxSim = 0;
       for (const sel of selected) {
         let sim = 0;
-        const candCompany = (candidate.currentCompany || candidate.company || '').toLowerCase();
-        const selCompany = (sel.currentCompany || sel.company || '').toLowerCase();
-        if (candCompany && selCompany && candCompany === selCompany) sim += 0.8;
+        const candCompany = candidate.currentCompany || candidate.company || '';
+        const selCompany = sel.currentCompany || sel.company || '';
+        if (candCompany && selCompany && (candCompany.toLowerCase() === selCompany.toLowerCase() || companiesMatch(candCompany, selCompany))) {
+          sim += 0.8;
+        }
 
         const candLoc = (candidate.location || '').toLowerCase();
         const selLoc = (sel.location || '').toLowerCase();
@@ -267,7 +273,8 @@ function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: Au
 }
 
 export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats?: BM25CorpusStats): number {
-  const qualificationScore = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore);
+  const rawScore = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore);
+  const qualificationScore = rawScore <= 1.0 && rawScore > 0 ? rawScore * 10 : rawScore;
   if ((lead.qualification?.verdict === 'qualified' || Number.isFinite(lead.finalSelectionScore)) && Number.isFinite(qualificationScore)) {
     return Number(Math.min(Math.max(qualificationScore, 0), 10).toFixed(2));
   }

@@ -8,11 +8,11 @@ process.env.APEX_DB_PATH = path.join(os.tmpdir(), `intent-test-${Date.now()}-${M
 const db = await import('../server/db.ts');
 const { runIntentEnrichment } = await import('../server/leadSearch/intentEnrichment.js');
 const { applyIntentEnrichmentDelta } = await import('../server/leadSearch/scoring.js');
-import type { ProspectContract } from '../server/leadSearch/prospectContract.js';
+import { PROSPECT_CONTRACT_POLICY_VERSION, type ProspectContract } from '../server/leadSearch/prospectContract.js';
 
 const mockContract: ProspectContract = {
   version: 1,
-  policyVersion: 'evidence-contract-v3',
+  policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
   brief: 'AI agency owner with hiring and white label offloading intent',
   authorityRequired: true,
   requirements: [
@@ -20,6 +20,7 @@ const mockContract: ProspectContract = {
       id: 'person_role-1',
       scope: 'person_role',
       importance: 'hard',
+      evidenceModality: 'structured_profile',
       description: 'owner',
       sourcePhrase: 'owner',
       acceptableTerms: ['owner', 'founder', 'CEO'],

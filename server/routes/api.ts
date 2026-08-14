@@ -2824,6 +2824,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         evidenceReasons: p.evidenceReasons,
         evidence: p.evidence,
         scoreBreakdown: p.scoreBreakdown,
+        paretoSkyline: p.paretoSkyline,
+        confidenceInterval: p.scoreBreakdown?.confidenceInterval || p.confidenceInterval,
         reviewStatus: 'UNREVIEWED',
         nextAction: 'NONE',
         buyingSignalsDetected: Array.from(new Set([

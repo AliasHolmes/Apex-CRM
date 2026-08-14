@@ -77,6 +77,7 @@ export interface DecisionMakerVerification {
   ignoredTitle: boolean;
   confidence: number;
   reason: string;
+  trajectoryScore?: number;
 }
 
 export type EvidenceQuality = 'weak' | 'partial' | 'good';
@@ -99,6 +100,11 @@ export interface ScoreBreakdown {
   evidenceQualityScore: number;
   sourceConfidenceScore: number;
   finalScore: number;
+  confidenceInterval?: {
+    lower: number;
+    upper: number;
+    uncertainty: number;
+  };
 }
 
 export interface ScoutEvidence {
@@ -123,6 +129,12 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   scout?: ScoutEvidence;
   finalSelectionScore?: number;
   discoveryLane?: string;
+  paretoSkyline?: boolean;
+  confidenceInterval?: {
+    lower: number;
+    upper: number;
+    uncertainty: number;
+  };
 }
 
 export const LEAD_STAGES = ['SCRAPED', 'ENRICHED', 'SEQUENCE ACTIVE', 'REPLIED', 'MEETING BOOKED', 'NEGOTIATING', 'CONVERTED', 'LOST', 'NURTURE'] as const;
@@ -171,6 +183,12 @@ export interface Lead {
   scout?: ScoutEvidence;
   finalSelectionScore?: number;
   discoveryLane?: string;
+  paretoSkyline?: boolean;
+  confidenceInterval?: {
+    lower: number;
+    upper: number;
+    uncertainty: number;
+  };
 }
 
 export interface ScrapingTask {

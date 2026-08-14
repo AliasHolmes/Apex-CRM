@@ -4,6 +4,7 @@ export type DecisionMakerVerification = {
   ignoredTitle: boolean;
   confidence: number;
   reason: string;
+  trajectoryScore?: number;
 };
 
 const POSITIVE_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
@@ -54,6 +55,58 @@ const collectMatches = (text: string, patterns: Array<{ label: string; pattern: 
     .map(({ label }) => label)
 );
 
+/**
+ * Calculates Career Trajectory Discounted Cumulative Relevance (DCR).
+ * Models past and current roles using exponential recency decay and domain authority:
+ * TrajectoryScore = min(10, Sum_{i=0..M-1} [ Seniority(R_i) * DomainRel(R_i) / (1 + gamma)^i ] / Sum_{j=0..M-1} (1 + gamma)^(-j))
+ */
+export function computeCareerTrajectoryDCR(
+  experiences: Array<{ title?: string; company?: string; description?: string }>,
+  domainKeywords: string[] = [],
+  discountRate = 0.25
+): { trajectoryScore: number; roleCount: number } {
+  if (!Array.isArray(experiences) || experiences.length === 0) {
+    return { trajectoryScore: 5.0, roleCount: 0 };
+  }
+
+  const normalizedDomain = domainKeywords.map(k => k.toLowerCase().trim()).filter(Boolean);
+  let weightedSum = 0;
+  let normalizer = 0;
+
+  for (let i = 0; i < Math.min(experiences.length, 6); i++) {
+    const exp = experiences[i];
+    const roleText = normalizeForTitleMatching(`${exp.title || ''} ${exp.company || ''} ${exp.description || ''}`);
+    const posMatches = collectMatches(roleText, POSITIVE_TITLE_PATTERNS);
+    
+    // Base seniority weight for role i
+    let roleSeniority = 4.0;
+    if (posMatches.includes('founder') || posMatches.includes('owner') || posMatches.includes('c-suite')) roleSeniority = 10.0;
+    else if (posMatches.includes('president') || posMatches.includes('managing partner')) roleSeniority = 9.0;
+    else if (posMatches.includes('vp') || posMatches.includes('head') || posMatches.includes('managing director')) roleSeniority = 8.0;
+    else if (posMatches.includes('director')) roleSeniority = 7.0;
+    else if (/\b(lead|manager|principal|supervisor)\b/.test(roleText)) roleSeniority = 5.5;
+
+    // Domain relevance (base 0.75 for general tech/business leadership, up to 1.0 for exact keyword matches)
+    let domainRel = 0.75;
+    if (normalizedDomain.length > 0) {
+      const matchCount = normalizedDomain.filter(k => roleText.includes(k)).length;
+      domainRel = matchCount > 0 ? Math.min(1.0, 0.85 + matchCount * 0.15) : 0.75;
+    } else {
+      domainRel = 0.85;
+    }
+
+    const discount = Math.pow(1 + discountRate, i);
+    weightedSum += (roleSeniority * domainRel) / discount;
+    normalizer += 1 / discount;
+  }
+
+  const finalScore = normalizer > 0 ? (weightedSum / normalizer) : 5.0;
+  return {
+    trajectoryScore: Number(Math.min(10, Math.max(1, finalScore)).toFixed(2)),
+    roleCount: experiences.length
+  };
+}
+
 export function verifyDecisionMakerFromEvidence(input: {
   query: string;
   fullName?: string;
@@ -62,6 +115,7 @@ export function verifyDecisionMakerFromEvidence(input: {
   headline?: string;
   seniorityLevel?: string;
   evidenceText?: string;
+  experiences?: Array<{ title?: string; company?: string; description?: string }>;
 }): DecisionMakerVerification {
   const queryText = normalizeForTitleMatching(input.query);
   const roleText = normalizeForTitleMatching([
@@ -88,6 +142,10 @@ export function verifyDecisionMakerFromEvidence(input: {
 
   const companyMatched = Boolean(input.currentCompany && textToSearch.includes(normalizeForTitleMatching(input.currentCompany)));
   
+  // Calculate Career Trajectory DCR Score:
+  const domainKeywords = queryText.split(/\s+/).filter(w => w.length > 2);
+  const trajectory = computeCareerTrajectoryDCR(input.experiences || [], domainKeywords);
+
   let confidence = 0;
   let reason = '';
 
@@ -110,11 +168,17 @@ export function verifyDecisionMakerFromEvidence(input: {
     reason = 'Minimal role context';
   }
 
+  // Boost confidence if career trajectory demonstrates proven executive authority (e.g. serial founder / ex-VP)
+  if (trajectory.roleCount >= 2 && trajectory.trajectoryScore >= 7.5 && !ignoredTitle) {
+    confidence = Math.min(10, Number((confidence + 0.5).toFixed(1)));
+  }
+
   return {
     titleMatched: hasPositiveTitle,
     companyMatched,
     ignoredTitle,
     confidence,
-    reason
+    reason,
+    trajectoryScore: trajectory.trajectoryScore
   };
 }

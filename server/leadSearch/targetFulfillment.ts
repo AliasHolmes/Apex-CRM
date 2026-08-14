@@ -798,7 +798,8 @@ ${chunk}`;
           currentCompany: extractedLead.currentCompany,
           headline: extractedLead.headline,
           seniorityLevel: extractedLead.seniorityLevel,
-          evidenceText: mergedEvidenceText || extractedLead.summary || ''
+          evidenceText: mergedEvidenceText || extractedLead.summary || '',
+          experiences: extractedLead.experiences || extractedLead.profile?.experiences
         });
 
         extractedLead.decisionMakerVerification = dmVerification;

@@ -84,7 +84,7 @@ export function buildScoutEvidence(
   };
 }
 
-import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool } from './scoring.js';
+import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool, computeParetoFrontier } from './scoring.js';
 
 /** Select high-quality prospects while preventing one account from consuming a run and balancing portfolio diversity via MMR. */
 export function selectDiversifiedLeads<T extends Record<string, any>>(
@@ -93,6 +93,14 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   maxPerCompany: number,
   logEvent?: (msg: string) => void
 ) {
+  // --- Step 0: Pareto Skyline Optimization ---
+  // Identify non-dominated candidates across (authority, intent, evidence quality)
+  // to protect specialist outlier leads from aggregate linear score washout.
+  const { skyline } = computeParetoFrontier(candidates);
+  if (logEvent && skyline.length > 0) {
+    logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, intent, and evidence quality.`);
+  }
+
   // --- Step 1: Shannon Entropy Normalization ---
   // Widen score distribution when candidates cluster tightly (low entropy),
   // so MMR and Sigmoid can meaningfully differentiate them.

@@ -8,6 +8,11 @@ export type ScoreBreakdown = {
   evidenceQualityScore: number;
   sourceConfidenceScore: number;
   finalScore: number;
+  confidenceInterval?: {
+    lower: number;
+    upper: number;
+    uncertainty: number;
+  };
 };
 
 const scoreOrDefault = (value: unknown, fallback: number) => {
@@ -261,7 +266,7 @@ function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: Au
   return Math.min(Math.max(capped, 1), 10);
 }
 
-export function rankLeadForFinalSelection(lead: Record<string, any>): number {
+export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats?: BM25CorpusStats): number {
   const qualificationScore = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore);
   if ((lead.qualification?.verdict === 'qualified' || Number.isFinite(lead.finalSelectionScore)) && Number.isFinite(qualificationScore)) {
     return Number(Math.min(Math.max(qualificationScore, 0), 10).toFixed(2));
@@ -275,6 +280,16 @@ export function rankLeadForFinalSelection(lead: Record<string, any>): number {
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
   const baseScore = clampScore(lead.scoreBreakdown?.finalScore || lead.scoreOverride || lead.fitScore || audit?.functionalRelevance, 5);
 
+  // BM25+ Profile & Evidence Text Relevance:
+  const queryTerms = Array.isArray(lead.scout?.matchedCriteria) ? lead.scout.matchedCriteria : [];
+  const profileDoc = `${lead.headline || ''} ${lead.summary || ''} ${lead.currentTitle || ''} ${lead.currentCompany || ''}`;
+  const bm25Bonus = queryTerms.length > 0
+    ? computeBM25PlusScore(profileDoc, queryTerms, corpusStats) * 0.05
+    : 0;
+
+  // Pareto Skyline anti-starvation bonus (+0.30 if lead is non-dominated):
+  const paretoBonus = lead.paretoSkyline ? 0.30 : 0;
+
   const rank = (
     authorityScore * 0.30 +
     companyScore * 0.20 +
@@ -282,11 +297,180 @@ export function rankLeadForFinalSelection(lead: Record<string, any>): number {
     corroborationScore * 0.15 +
     criteriaCoverageScore * 0.10 +
     sourceScore * 0.03 +
-    baseScore * 0.02
+    baseScore * 0.02 +
+    bm25Bonus +
+    paretoBonus
   );
 
   const capped = applyHardCaps(rank, lead, audit);
   return Number(capped.toFixed(2));
+}
+
+export type BM25CorpusStats = {
+  avgDocLength: number;
+  totalDocs: number;
+  docFrequencies: Map<string, number>;
+};
+
+export class BM25CorpusTracker {
+  private totalDocs = 0;
+  private totalLength = 0;
+  private docFrequencies = new Map<string, number>();
+
+  public registerDocument(text: string) {
+    if (!text) return;
+    const tokens = text.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    this.totalDocs++;
+    this.totalLength += tokens.length;
+    const seen = new Set(tokens);
+    for (const term of seen) {
+      this.docFrequencies.set(term, (this.docFrequencies.get(term) ?? 0) + 1);
+    }
+  }
+
+  public getStats(): BM25CorpusStats {
+    return {
+      avgDocLength: this.totalDocs > 0 ? this.totalLength / this.totalDocs : 50,
+      totalDocs: this.totalDocs,
+      docFrequencies: this.docFrequencies
+    };
+  }
+}
+
+/**
+ * Computes Okapi BM25+ score with document length normalization and term saturation.
+ * BM25+(D, Q) = Sum_t IDF(t) * [ (TF * (k1 + 1)) / (TF + k1 * (1 - b + b * (|D| / avgdl))) + delta ]
+ */
+export function computeBM25PlusScore(
+  documentText: string,
+  queryTerms: string[],
+  stats?: BM25CorpusStats,
+  k1 = 1.2,
+  b = 0.75,
+  delta = 0.5
+): number {
+  if (!documentText || !queryTerms || queryTerms.length === 0) return 0;
+  const docTokens = documentText.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  const docLength = docTokens.length;
+  if (docLength === 0) return 0;
+
+  const avgdl = stats?.avgDocLength || 50;
+  const totalDocs = Math.max(stats?.totalDocs || 1, 1);
+  const docFreqMap = stats?.docFrequencies || new Map<string, number>();
+
+  const tfMap = new Map<string, number>();
+  for (const token of docTokens) {
+    tfMap.set(token, (tfMap.get(token) ?? 0) + 1);
+  }
+
+  let totalScore = 0;
+  for (const rawTerm of queryTerms) {
+    const term = rawTerm.toLowerCase().trim();
+    if (!term || term.length <= 2) continue;
+    const tf = tfMap.get(term) ?? 0;
+    if (tf === 0) continue;
+
+    const df = docFreqMap.get(term) ?? 1;
+    // Robertson-Sparck Jones IDF with smoothing: ln(1 + (N - df + 0.5) / (df + 0.5))
+    const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5));
+    const termSaturation = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docLength / avgdl)));
+    totalScore += Math.max(0, idf) * (termSaturation + delta);
+  }
+
+  // Normalize to [0, 10] range
+  const normalized = Math.min(10, Math.max(0, totalScore * 1.5));
+  return Number(normalized.toFixed(2));
+}
+
+export type ParetoObjectiveVector = {
+  authority: number;
+  intent: number;
+  evidenceQuality: number;
+};
+
+export function extractObjectiveVector(lead: Record<string, any>): ParetoObjectiveVector {
+  const authority = clampScore(lead.decisionMakerVerification?.confidence ?? lead.audit?.authorityConfidence, 5);
+  const intent = companyIntentScore(lead);
+  const eq = evidenceQualityScore(evidenceQualityForLead(lead));
+  return { authority, intent, evidenceQuality: eq };
+}
+
+/**
+ * Fast Non-Dominated Sorting for extracting the Pareto Skyline Front (Front 1).
+ * A candidate a Pareto-dominates b iff a is >= b in all 3 objectives and > in at least one.
+ */
+export function computeParetoFrontier<T extends Record<string, any>>(candidates: T[]): {
+  skyline: T[];
+  nonSkyline: T[];
+} {
+  if (candidates.length <= 1) return { skyline: candidates, nonSkyline: [] };
+
+  const vectors = candidates.map(c => extractObjectiveVector(c));
+  const isDominated = new Array<boolean>(candidates.length).fill(false);
+
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = 0; j < candidates.length; j++) {
+      if (i === j) continue;
+      const u = vectors[j];
+      const v = vectors[i];
+      const dominates = (
+        u.authority >= v.authority &&
+        u.intent >= v.intent &&
+        u.evidenceQuality >= v.evidenceQuality &&
+        (u.authority > v.authority || u.intent > v.intent || u.evidenceQuality > v.evidenceQuality)
+      );
+      if (dominates) {
+        isDominated[i] = true;
+        break;
+      }
+    }
+  }
+
+  const skyline: T[] = [];
+  const nonSkyline: T[] = [];
+  candidates.forEach((c, idx) => {
+    if (!isDominated[idx]) {
+      (c as any).paretoSkyline = true;
+      skyline.push(c);
+    } else {
+      (c as any).paretoSkyline = false;
+      nonSkyline.push(c);
+    }
+  });
+
+  return { skyline, nonSkyline };
+}
+
+/**
+ * Estimates epistemic uncertainty and calculates 95% Credible Interval [mu - 1.96*sigma, mu + 1.96*sigma].
+ */
+export function computeEpistemicCredibleInterval(
+  lead: Record<string, any>,
+  pointEstimate: number
+): { lower: number; upper: number; uncertainty: number } {
+  const snippets = Array.isArray(lead.evidence?.snippets) ? lead.evidence.snippets.length : 0;
+  const sourceCount = Math.max(1, Number(lead.scout?.sourceCount || 1));
+  const quality = evidenceQualityForLead(lead);
+
+  // Variance components:
+  // 1. Information volume uncertainty:
+  const sigmaInfo = 1.0 / (1.0 + 0.35 * Math.min(snippets, 6));
+  // 2. Corroboration cross-check uncertainty:
+  const sigmaCorrob = 0.85 / Math.sqrt(sourceCount);
+  // 3. Intent scrape verification uncertainty:
+  const sigmaIntent = quality === 'good' ? 0.15 : quality === 'partial' ? 0.35 : 0.70;
+
+  const totalVariance = (sigmaInfo * sigmaInfo + sigmaCorrob * sigmaCorrob + sigmaIntent * sigmaIntent) / 3;
+  const sigma = Math.sqrt(totalVariance);
+
+  const lower = Math.max(0, Number((pointEstimate - 1.96 * sigma).toFixed(2)));
+  const upper = Math.min(10, Number((pointEstimate + 1.96 * sigma).toFixed(2)));
+
+  return {
+    lower,
+    upper,
+    uncertainty: Number(sigma.toFixed(3))
+  };
 }
 
 export function computeScoreBreakdown(
@@ -334,6 +518,8 @@ export function computeScoreBreakdown(
   let finalScore = baseScore + decisionMakerBonus - ignoredTitlePenalty;
   finalScore = applyHardCaps(finalScore, lead, activeAudit);
 
+  const confidenceInterval = computeEpistemicCredibleInterval(lead, finalScore);
+
   return {
     fitScore,
     intentScore,
@@ -341,5 +527,6 @@ export function computeScoreBreakdown(
     evidenceQualityScore: eqScore,
     sourceConfidenceScore: scScore,
     finalScore: Number(finalScore.toFixed(1)),
+    confidenceInterval,
   };
 }

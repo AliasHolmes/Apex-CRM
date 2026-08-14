@@ -48,16 +48,58 @@ export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | '
 const rowScopeKey = (row: AdaptivePerformanceRow) =>
   [row.family || 'general', row.lane || 'person', row.provider || 'tavily'].join('|').toLowerCase();
 
+/**
+ * Marsaglia and Tsang method for generating standard Gamma(alpha, 1) variates.
+ */
+export function sampleGamma(alpha: number): number {
+  if (alpha < 1) {
+    const u = Math.random();
+    return sampleGamma(1 + alpha) * Math.pow(Math.max(u, 1e-10), 1 / alpha);
+  }
+  const d = alpha - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    let z = 0;
+    let v = 0;
+    do {
+      const u1 = Math.random();
+      const u2 = Math.random();
+      z = Math.sqrt(-2.0 * Math.log(u1 || 1e-10)) * Math.cos(2.0 * Math.PI * u2);
+      v = 1 + c * z;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * z * z * z * z) return d * v;
+    if (Math.log(u || 1e-10) < 0.5 * z * z + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+
+/**
+ * Beta(alpha, beta) variate generation via Gamma transforms:
+ * X ~ Gamma(alpha), Y ~ Gamma(beta) => X / (X + Y) ~ Beta(alpha, beta).
+ */
+export function sampleBeta(alpha: number, beta: number): number {
+  const safeAlpha = Math.max(alpha, 0.001);
+  const safeBeta = Math.max(beta, 0.001);
+  const gAlpha = sampleGamma(safeAlpha);
+  const gBeta = sampleGamma(safeBeta);
+  const sum = gAlpha + gBeta;
+  return sum > 0 ? gAlpha / sum : 0.5;
+}
+
 export function scoreAdaptiveArm(
   row: AdaptivePerformanceRow | undefined,
   totalOutcomeRuns: number,
-  explorationStrength = 1.25
+  explorationStrength = 1.25,
+  useThompsonSampling = true
 ) {
   const outcomeRuns = finiteCount(row?.outcome_runs);
   if (outcomeRuns === 0) {
+    const coldStartThompson = useThompsonSampling ? sampleBeta(1.5, 1.0) : 1.0;
     return {
-      score: explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 2)),
+      score: (explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 2))) * (0.85 + 0.3 * coldStartThompson),
       outcomeRuns,
+      thompsonSample: coldStartThompson,
       reason: 'exploration' as const
     };
   }
@@ -70,9 +112,16 @@ export function scoreAdaptiveArm(
   const providerUnits = finiteCount(row?.provider_units);
   const latencySeconds = finiteCount(row?.search_latency_ms) / 1_000;
 
-  // Finalist quality and actual returned-list contribution dominate. Raw/unique
-  // volume is only a weak tie-breaker; rescues, provider spend, latency, and
-  // duplicates reduce the reward so the scheduler cannot optimize for noise.
+  // Beta-Bernoulli conjugate posteriors:
+  // Successes (alpha): Qualified finalists, returned list members, unique discoveries
+  // Failures (beta): Rescued low-tier candidates, duplicates, provider burn, latency
+  const alphaPrior = 1.0;
+  const betaPrior = 1.0;
+  const alphaPost = alphaPrior + qualified * 2.5 + returned * 2.0 + unique * 0.04;
+  const betaPost = betaPrior + rescued * 1.25 + duplicates * 0.08 + providerUnits * 0.12 + latencySeconds * 0.002;
+  const thompsonSample = sampleBeta(alphaPost, betaPost);
+
+  // Finalist quality and actual returned-list contribution dominate.
   const meanReward = (
     qualified * 2.5 +
     returned * 2 +
@@ -82,9 +131,21 @@ export function scoreAdaptiveArm(
     providerUnits * 0.12 -
     latencySeconds * 0.002
   ) / outcomeRuns;
-  const explorationBonus = explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 1) / outcomeRuns);
+  const ucbExplorationBonus = explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 1) / outcomeRuns);
 
-  return { score: meanReward + explorationBonus, outcomeRuns, reason: 'quality_history' as const };
+  // Fuse UCB1 with Thompson Sample:
+  const fusedScore = useThompsonSampling
+    ? (meanReward + ucbExplorationBonus) * 0.65 + (thompsonSample * 10) * 0.35
+    : meanReward + ucbExplorationBonus;
+
+  return {
+    score: fusedScore,
+    outcomeRuns,
+    thompsonSample,
+    alpha: alphaPost,
+    beta: betaPost,
+    reason: 'quality_history' as const
+  };
 }
 
 export function scheduleAdaptiveRetrievalTasks(

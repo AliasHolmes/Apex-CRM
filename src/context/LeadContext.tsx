@@ -300,9 +300,23 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         notes: 'Profile automatically harvested and structured by AI Search Scraper.',
         createdAt: new Date().toISOString(),
         tags: ['Scraped Lead', profile.industry || 'Tech'],
+        fitScore: qualified.scoreBreakdown?.fitScore,
+        intentScore: qualified.scoreBreakdown?.intentScore,
+        timingScore: qualified.scoreBreakdown?.timingScore,
         compositeScore,
         predictiveScore,
         qualificationScore: predictiveScore,
+        companyAccount: qualified.companyAccount,
+        decisionMakerVerification: qualified.decisionMakerVerification,
+        sourceProvider: qualified.sourceProvider || 'tavily',
+        evidenceReasons: qualified.evidenceReasons,
+        evidence: qualified.evidence,
+        scoreBreakdown: qualified.scoreBreakdown,
+        scout: qualified.scout,
+        finalSelectionScore: qualified.finalSelectionScore,
+        discoveryLane: qualified.discoveryLane,
+        paretoSkyline: qualified.paretoSkyline,
+        confidenceInterval: qualified.scoreBreakdown?.confidenceInterval || qualified.confidenceInterval,
         reviewStatus: 'UNREVIEWED',
         nextAction: 'NONE'
       };
@@ -354,7 +368,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
         const p = item;
         const hasAccountContext = !!p.companyAccount;
-        const backendFinalScore = Number(p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+        const backendFinalScore = Number(p.finalSelectionScore ?? p.scoreOverride ?? p.scoreBreakdown?.finalScore ?? 0);
         const compositeScore = backendFinalScore > 0
           ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
           : scoreLeadDeterministically(p, p.companyAccount);
@@ -383,6 +397,11 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           evidenceReasons: p.evidenceReasons,
           evidence: p.evidence,
           scoreBreakdown: p.scoreBreakdown,
+          scout: p.scout,
+          finalSelectionScore: p.finalSelectionScore,
+          discoveryLane: p.discoveryLane,
+          paretoSkyline: p.paretoSkyline,
+          confidenceInterval: p.scoreBreakdown?.confidenceInterval || p.confidenceInterval,
           buyingSignalsDetected: p.companyAccount?.buyingSignals?.map(signal => signal.label),
           reviewStatus: 'UNREVIEWED',
           nextAction: 'NONE'

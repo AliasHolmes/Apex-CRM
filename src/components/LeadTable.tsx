@@ -154,6 +154,11 @@ const LeadTableRow = React.memo(function LeadTableRow({
                 {reason}
               </Badge>
             ))}
+            {provenance.paretoSkyline && (
+              <Badge variant="outline" className="h-5 px-1.5 text-xs font-semibold text-amber-300 border-amber-500/30 bg-amber-500/10" title="Pareto Skyline: Non-dominated candidate across Authority, Intent, and Evidence Specificity">
+                Skyline
+              </Badge>
+            )}
             {Number(scout?.corroborationScore || 0) >= 7 && (
               <Badge variant="outline" className="h-5 px-1.5 text-xs text-indigo-300 border-indigo-500/25">
                 corroborated
@@ -209,9 +214,22 @@ const LeadTableRow = React.memo(function LeadTableRow({
       </TableCell>
       <TableCell className="text-center">
         {(lead.qualificationScore ?? lead.predictiveScore) ? (
-          <Badge variant="outline" className="border-indigo-500/30 text-indigo-400">
-            {lead.qualificationScore ?? lead.predictiveScore}% Qualified
-          </Badge>
+          <div className="flex flex-col items-center gap-0.5">
+            <Badge
+              variant="outline"
+              className="border-indigo-500/30 text-indigo-400"
+              title={provenance.confidenceInterval
+                ? `95% Credible Interval: [${provenance.confidenceInterval.lower} - ${provenance.confidenceInterval.upper}] (uncertainty: +/-${provenance.confidenceInterval.uncertainty})`
+                : undefined}
+            >
+              {lead.qualificationScore ?? lead.predictiveScore}% Qualified
+            </Badge>
+            {provenance.confidenceInterval && (
+              <span className="text-xs text-slate-500 font-mono" title="95% Credible Interval bounds">
+                [{provenance.confidenceInterval.lower} - {provenance.confidenceInterval.upper}]
+              </span>
+            )}
+          </div>
         ) : (
           <span className="text-xs text-slate-600">--</span>
         )}
@@ -1109,6 +1127,36 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 <section>
                   <h3 className="text-sm font-bold">Discovery query</h3>
                   <p className="mt-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-300">{provenance.discoveryQuery || 'No discovery query was stored for this prospect.'}</p>
+                </section>
+                <section>
+                  <h3 className="text-sm font-bold">Qualification & Mathematical Diagnostics</h3>
+                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
+                      <span className="text-slate-500 font-bold uppercase text-xs">Fit Score</span>
+                      <p className="mt-1 font-semibold text-slate-200">{detailsLead.scoreBreakdown?.fitScore ?? detailsLead.fitScore ?? 'N/A'}/10</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
+                      <span className="text-slate-500 font-bold uppercase text-xs">Intent Score</span>
+                      <p className="mt-1 font-semibold text-slate-200">{detailsLead.scoreBreakdown?.intentScore ?? detailsLead.intentScore ?? 'N/A'}/10</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
+                      <span className="text-slate-500 font-bold uppercase text-xs">Career DCR</span>
+                      <p className="mt-1 font-semibold text-indigo-300">{detailsLead.decisionMakerVerification?.trajectoryScore ? `${detailsLead.decisionMakerVerification.trajectoryScore}/10` : 'N/A'}</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
+                      <span className="text-slate-500 font-bold uppercase text-xs">95% Credible Interval</span>
+                      <p className="mt-1 font-semibold text-emerald-300">
+                        {provenance.confidenceInterval
+                          ? `[${provenance.confidenceInterval.lower} - ${provenance.confidenceInterval.upper}] (+/-${provenance.confidenceInterval.uncertainty})`
+                          : 'N/A'}
+                      </p>
+                    </div>
+                  </div>
+                  {provenance.paretoSkyline && (
+                    <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 text-xs text-amber-200">
+                      <span className="font-bold">Pareto Skyline Outlier:</span> This candidate is on Front 1 non-dominated ranking across Authority, Intent, and Evidence Specificity.
+                    </div>
+                  )}
                 </section>
                 <section>
                   <h3 className="text-sm font-bold">Matched criteria</h3>

@@ -21,6 +21,7 @@ export const getNextAction = (lead: Lead): NextAction => lead.nextAction || 'NON
 export function getLeadProvenance(lead: Lead) {
   const qualifiedProfile = lead.profile as QualifiedLeadProfile;
   const scout: ScoutEvidence | undefined = lead.scout || qualifiedProfile.scout;
+  const ci = lead.scoreBreakdown?.confidenceInterval || lead.confidenceInterval || qualifiedProfile.confidenceInterval;
   return {
     discoveryQuery: lead.evidence?.sourceQuery || qualifiedProfile.evidence?.sourceQuery || '',
     matchedCriteria: scout?.matchedCriteria || [],
@@ -28,6 +29,8 @@ export function getLeadProvenance(lead: Lead) {
     location: lead.profile.location || '',
     industry: lead.profile.industry || '',
     scout,
+    paretoSkyline: lead.paretoSkyline || qualifiedProfile.paretoSkyline || false,
+    confidenceInterval: ci,
   };
 }
 

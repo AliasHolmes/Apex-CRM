@@ -936,6 +936,27 @@ export default function CrmPipeline({
                   <h4 className="text-xs font-bold text-slate-300">Discovery query</h4>
                   <p className="mt-1 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs leading-relaxed text-slate-400">{selectedLeadProvenance?.discoveryQuery || 'No discovery query recorded.'}</p>
                 </div>
+                {(selectedLeadProvenance?.confidenceInterval || selectedLead.decisionMakerVerification?.trajectoryScore) && (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {selectedLead.decisionMakerVerification?.trajectoryScore !== undefined && (
+                      <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
+                        <span className="text-xs font-bold uppercase text-slate-500">Career Trajectory DCR</span>
+                        <p className="mt-0.5 font-semibold text-indigo-300">{selectedLead.decisionMakerVerification.trajectoryScore}/10</p>
+                      </div>
+                    )}
+                    {selectedLeadProvenance?.confidenceInterval && (
+                      <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
+                        <span className="text-xs font-bold uppercase text-slate-500">95% Credible Interval</span>
+                        <p className="mt-0.5 font-semibold text-emerald-300">[{selectedLeadProvenance.confidenceInterval.lower} - {selectedLeadProvenance.confidenceInterval.upper}] (+/-{selectedLeadProvenance.confidenceInterval.uncertainty})</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {selectedLeadProvenance?.paretoSkyline && (
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 text-xs text-amber-200">
+                    <span className="font-bold">Pareto Skyline Lead:</span> Non-dominated outlier ranking across Authority, Intent, and Evidence Specificity.
+                  </div>
+                )}
                 <div>
                   <h4 className="text-xs font-bold text-slate-300">Matched criteria</h4>
                   {selectedLeadProvenance?.matchedCriteria.length ? (

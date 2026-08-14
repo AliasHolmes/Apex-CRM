@@ -931,7 +931,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
 
     const { query, excludeList = [] } = req.body;
     if (!query) throw new Error('Search criteria/query is required');
-    if (!hasOpenAIKey()) throw new Error('OPENAI_API_KEY is not configured. Add it to your .env file to enable real lead discovery.');
+    if (!hasOpenAIKey()) throw new Error('No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY to your .env file.');
 
     const targetLimit = stats.requested;
     const rerankPoolMultiplier = Math.min(Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER || 3), 1), 5);
@@ -3091,7 +3091,7 @@ router.post('/generate-outbound', async (req, res): Promise<any> => {
     }
 
     if (!hasOpenAIKey()) {
-      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable AI outreach generation.' });
+      return res.status(503).json({ error: 'No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY to your .env file to enable AI outreach generation.' });
     }
 
     console.log(`[generate-outbound] Generating outreach for: ${profile.fullName}`);
@@ -3171,7 +3171,7 @@ router.post('/chat', async (req, res): Promise<any> => {
     if (query.length > 2_000) return res.status(400).json({ error: 'Query must be 2,000 characters or fewer.' });
 
     if (!hasOpenAIKey()) {
-      return res.status(503).json({ error: 'OPENAI_API_KEY is not configured. Add it to your .env file to enable the AI Copilot.' });
+      return res.status(503).json({ error: 'No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY to your .env file to enable the AI Copilot.' });
     }
 
     // The database is canonical. Do not accept a browser-provided lead dump,

@@ -85,29 +85,42 @@ export function buildCollectionCapacity(input: {
   /** Number of hard requirements in the prospect contract.
    * Simpler contracts converge faster; use this to shrink the round budget. */
   contractHardReqCount?: number;
+  maxRoundsCap?: number;
 }): CollectionCapacity {
   const targetLimit = clampInteger(input.targetLimit, 1, 200);
-  const poolMultiplier = clampInteger(input.poolMultiplier ?? 4, 2, 5);
+
+  // Dynamic pool multiplier:
+  // For small targets (<= 20), 2.0x cushion is ample for diversity.
+  // For medium targets (<= 50), 1.75x cushion provides strong candidate choices without round bloat.
+  // For large targets (> 50), 1.5x cushion keeps token and search usage bounded.
+  const defaultPoolMultiplier = targetLimit <= 20 ? 2.0 : targetLimit <= 50 ? 1.75 : 1.5;
+  const poolMultiplier = input.poolMultiplier !== undefined
+    ? Number(Math.min(Math.max(Number(input.poolMultiplier), 1.25), 4).toFixed(2))
+    : defaultPoolMultiplier;
+
   const poolMax = clampInteger(input.poolMax ?? MAX_CANDIDATE_POOL, 24, MAX_CANDIDATE_POOL);
 
-  // Derive a sensible base round budget from contract complexity.
-  // Fewer hard requirements = search snippets can satisfy them more easily,
-  // so the scout converges in fewer rounds.
+  // Base rounds from contract complexity
   const hardReqCount = clampInteger(input.contractHardReqCount ?? 3, 0, 10);
-  const baseRoundsByComplexity = hardReqCount <= 1 ? 4 : hardReqCount <= 2 ? 5 : 7;
-  const baseRounds = clampInteger(input.baseRounds ?? baseRoundsByComplexity, 2, MAX_COLLECTION_ROUNDS);
+  const baseRoundsByComplexity = hardReqCount <= 1 ? 3 : hardReqCount <= 2 ? 4 : 5;
+  const baseRounds = clampInteger(input.baseRounds ?? baseRoundsByComplexity, 2, 8);
 
-  const candidateBatchSize = Math.min(Math.max(targetLimit * 2, 4), 12);
-  const desiredPool = Math.max(targetLimit * poolMultiplier, targetLimit);
+  // Dynamic candidate batch scaling:
+  // Scales throughput per round with target size so large requests do not degenerate into 12-20 rounds.
+  const candidateBatchSize = clampInteger(Math.ceil(targetLimit * 0.6), 12, 36);
+
+  const desiredPool = Math.ceil(targetLimit * poolMultiplier);
   const rerankPoolTarget = Math.min(desiredPool, poolMax);
-  const requiredRounds = Math.ceil(rerankPoolTarget / candidateBatchSize);
+  const requiredRounds = Math.max(1, Math.ceil(rerankPoolTarget / candidateBatchSize));
 
-  // Two extra retrieval rounds let the scout compensate for duplicate or weak
-  // public results instead of stopping immediately when a batch is rejected.
-  // Cap at 10 rounds hard to prevent runaway recovery loops.
+  // Hard ceiling on max rounds (default: 6 rounds for targets <= 30, 8 rounds for target <= 50, 10 for larger)
+  const defaultMaxRoundsCap = targetLimit <= 30 ? 6 : targetLimit <= 50 ? 8 : 10;
+  const maxRoundsCap = clampInteger(input.maxRoundsCap ?? defaultMaxRoundsCap, 3, MAX_COLLECTION_ROUNDS);
+
+  // Add 1 recovery round pad, bounded by baseRounds and strictly capped by maxRoundsCap
   const maxRounds = Math.min(
-    Math.max(baseRounds, requiredRounds + 2),
-    MAX_COLLECTION_ROUNDS
+    Math.max(baseRounds, requiredRounds + 1),
+    maxRoundsCap
   );
 
   return {

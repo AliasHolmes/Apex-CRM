@@ -87,14 +87,26 @@ describe('evidence-grounded prospect quality', () => {
       baseRounds: 6
     });
 
-    assert.equal(capacity.candidateBatchSize, 12);
+    assert.equal(capacity.candidateBatchSize, 30);
     assert.equal(capacity.rerankPoolTarget, 200);
     assert.equal(capacity.requestedJudgePool, 200);
-    assert.equal(capacity.requiredRounds, 17);
-    assert.equal(capacity.maxRounds, 19);
+    assert.equal(capacity.requiredRounds, 7);
+    assert.equal(capacity.maxRounds, 8);
     assert.equal(capacity.poolCapped, false);
     const refinements = new Set(Array.from({ length: capacity.maxRounds - 2 }, (_, index) => collectionRefinementForRound(index + 3)));
     assert.equal(refinements.size, capacity.maxRounds - 2);
+  });
+
+  it('uses dynamic pool sizing and batch throughput for a 30-prospect search', () => {
+    const capacity = buildCollectionCapacity({
+      targetLimit: 30,
+      contractHardReqCount: 2
+    });
+
+    assert.equal(capacity.candidateBatchSize, 18);
+    assert.equal(capacity.rerankPoolTarget, 53); // 30 * 1.75 = 53
+    assert.equal(capacity.requiredRounds, 3);
+    assert.equal(capacity.maxRounds, 4); // bounded to 4-6 rounds
   });
 
   it('uses the full bounded recovery budget when a 20-prospect search stalls below target', () => {
@@ -108,15 +120,15 @@ describe('evidence-grounded prospect quality', () => {
 
     assert.equal(capacity.rerankPoolTarget, 80);
     assert.equal(capacity.requiredRounds, 7);
-    assert.equal(capacity.maxRounds, 9);
+    assert.equal(capacity.maxRounds, 6);
     assert.equal(shouldKeepCollectingAfterStall({
-      completedRound: 7,
+      completedRound: 5,
       maxRounds: capacity.maxRounds,
       acceptedLeads: 5,
       rerankPoolTarget: capacity.rerankPoolTarget
     }), true);
     assert.equal(shouldKeepCollectingAfterStall({
-      completedRound: 9,
+      completedRound: 6,
       maxRounds: capacity.maxRounds,
       acceptedLeads: 5,
       rerankPoolTarget: capacity.rerankPoolTarget
@@ -131,9 +143,10 @@ describe('evidence-grounded prospect quality', () => {
       baseRounds: 6
     });
 
+    assert.equal(capacity.candidateBatchSize, 36);
     assert.equal(capacity.rerankPoolTarget, 240);
-    assert.equal(capacity.requiredRounds, 20);
-    assert.equal(capacity.maxRounds, 22);
+    assert.equal(capacity.requiredRounds, 7);
+    assert.equal(capacity.maxRounds, 8);
     assert.equal(capacity.poolCapped, true);
   });
 

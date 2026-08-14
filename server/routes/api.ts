@@ -996,8 +996,9 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       targetLimit,
       poolMultiplier: rerankPoolMultiplier,
       poolMax: Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MAX || 240), targetLimit),
-      baseRounds: Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 6),
-      contractHardReqCount: contractHardCount
+      baseRounds: Number(process.env.LEAD_SEARCH_BASE_ROUNDS || 4),
+      contractHardReqCount: contractHardCount,
+      maxRoundsCap: Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 0) || undefined
     });
     let rerankPoolTarget = collectionCapacity.rerankPoolTarget;
     stats.rerank.poolTarget = rerankPoolTarget;
@@ -1787,7 +1788,7 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       stats.scout.discoveryProviderMode = discoveryProviderMode;
       stats.scout.brightDataSearchMode = brightDataSearchMode;
 
-      const evidenceBlocks: string[] = [];
+      let evidenceBlocks: string[] = [];
 
       for (const item of candidateItems) {
         if (acceptedLeads.length >= rerankPoolTarget) break;
@@ -1816,6 +1817,16 @@ router.post('/find-leads', async (req, res): Promise<any> => {
         evidenceByUrl.set(normalizedUrl || normalizeDedupeValue(url), evidenceMeta);
         if (queryRun) queryRun.evidenceBlocks++;
         evidenceBlocks.push(`--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`);
+      }
+
+      // Adaptive extraction evidence slicing:
+      // Slice evidence blocks to only what is needed to reach the rerank pool target (plus a 50% cushion),
+      // preventing late recovery rounds from running 3-4 heavy LLM extraction chunks for 2-3 leads.
+      const neededPoolRemaining = Math.max(1, rerankPoolTarget - acceptedLeads.length);
+      const neededEvidenceBlocks = Math.max(12, Math.ceil(neededPoolRemaining * 1.5));
+      if (evidenceBlocks.length > neededEvidenceBlocks) {
+        logEvent(`Round ${round}: capped extraction evidence to top ${neededEvidenceBlocks}/${evidenceBlocks.length} blocks (pool needed: ${neededPoolRemaining}).`);
+        evidenceBlocks = evidenceBlocks.slice(0, neededEvidenceBlocks);
       }
 
       const extractionChunkChars = Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 3200), 1800), 9000);
@@ -2570,6 +2581,20 @@ router.post('/find-leads', async (req, res): Promise<any> => {
       };
 
       logEvent(`Round ${round} diagnostics: ${previousRoundSummary.viableCandidates} candidates show all hard terms; recovery=${previousRoundSummary.shouldRecover ? 'needed' : 'not needed'}.`);
+
+      // Early shortlist termination:
+      // If we already have >= target * 1.33 accepted leads AND at least target viable candidates showing all hard requirements,
+      // stop immediately and proceed to Finalist Judging rather than burning unnecessary query rounds.
+      const earlyStopTargetThreshold = Math.ceil(targetLimit * 1.33);
+      if (
+        acceptedLeads.length >= earlyStopTargetThreshold &&
+        previousRoundSummary.viableCandidates >= targetLimit &&
+        (!previousRoundSummary.missingHardRequirementIds || previousRoundSummary.missingHardRequirementIds.length === 0)
+      ) {
+        logEvent(`Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}) collected with all hard criteria met. Stopping discovery loop early.`);
+        stats.stopReason = 'target_fulfilled_early';
+        break;
+      }
 
       const newAcceptedInRound = acceptedLeads.length - acceptedCountBeforeRound;
       if (newAcceptedInRound === 0) {

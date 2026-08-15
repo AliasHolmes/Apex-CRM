@@ -136,6 +136,7 @@ export default function ScrapeWorkspace() {
     sessionId: string;
     pollController: AbortController | null;
     pollTimer?: ReturnType<typeof setTimeout>;
+    sseSource?: EventSource | null;
   } | null>(null);
   const previewRequestRef = useRef<{ controller: AbortController; requestId: number } | null>(null);
   const previewRequestIdRef = useRef(0);
@@ -314,6 +315,7 @@ export default function ScrapeWorkspace() {
       .catch(() => undefined);
     if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
     activeDiscovery.pollController?.abort();
+    activeDiscovery.sseSource?.close();
     activeDiscovery.controller.abort();
     activeDiscoveryRef.current = null;
   }, []);
@@ -592,17 +594,19 @@ export default function ScrapeWorkspace() {
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
-    setInfoMsg(null);
+      setInfoMsg(null);
     setSourceLinks([]);
 
     const taskId = handleTaskAdd('search', findQuery);
     const requestController = new AbortController();
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
+    let sseSource: EventSource | null = null;
     const activeDiscovery = {
       controller: requestController,
       sessionId,
       pollController: null as AbortController | null,
       pollTimer: undefined as ReturnType<typeof setTimeout> | undefined,
+      sseSource: null as EventSource | null,
     };
     activeDiscoveryRef.current = activeDiscovery;
 
@@ -622,9 +626,42 @@ export default function ScrapeWorkspace() {
         excludeUrlsAndEmails.push(l.profile.fullName);
       });
 
-      // Poll sequentially so a slow response can never land after a newer one.
+      if (typeof EventSource !== 'undefined') {
+        try {
+          sseSource = new EventSource(`/api/mining-sessions/${sessionId}/stream`);
+          activeDiscovery.sseSource = sseSource;
+          sseSource.onmessage = (event) => {
+            if (activeDiscoveryRef.current?.sessionId !== sessionId) {
+              sseSource?.close();
+              return;
+            }
+            try {
+              const data = JSON.parse(event.data);
+              if (Array.isArray(data.logs) && data.logs.length > 0) {
+                setTerminalLogs(prev => [...prev, ...data.logs]);
+              }
+              if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
+                setLiveTraceEvents(data.traceEvents);
+              }
+            } catch {}
+          };
+          sseSource.addEventListener('end', () => sseSource?.close());
+          sseSource.onerror = () => {
+            sseSource?.close();
+          };
+        } catch {
+          // fallback to poll below
+        }
+      }
+
+      // Poll as a fallback mechanism if SSE is unavailable or blocked by proxy
       const pollLiveStatus = async () => {
         if (activeDiscoveryRef.current?.sessionId !== sessionId) return;
+        if (sseSource && sseSource.readyState !== EventSource.CLOSED) {
+          // SSE is active and healthy, back off polling interval
+          activeDiscovery.pollTimer = setTimeout(() => void pollLiveStatus(), 5000);
+          return;
+        }
         const pollController = new AbortController();
         activeDiscovery.pollController = pollController;
         try {
@@ -657,7 +694,7 @@ export default function ScrapeWorkspace() {
           }
         }
       };
-      activeDiscovery.pollTimer = setTimeout(() => void pollLiveStatus(), 0);
+      activeDiscovery.pollTimer = setTimeout(() => void pollLiveStatus(), 1000);
 
       const response = await fetch('/api/find-leads', {
         method: 'POST',
@@ -732,6 +769,7 @@ export default function ScrapeWorkspace() {
     } finally {
       if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
       activeDiscovery.pollController?.abort();
+      activeDiscovery.sseSource?.close();
       if (activeDiscoveryRef.current?.sessionId === sessionId) {
         activeDiscoveryRef.current = null;
       }
@@ -748,6 +786,7 @@ export default function ScrapeWorkspace() {
       .catch(() => undefined);
     if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
     activeDiscovery.pollController?.abort();
+    activeDiscovery.sseSource?.close();
     activeDiscovery.controller.abort();
   };
 

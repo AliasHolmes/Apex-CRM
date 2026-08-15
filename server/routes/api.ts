@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { LEAD_STAGE_SET as leadStages, REVIEW_STATUS_SET as reviewStatuses, NEXT_ACTION_SET as nextActions } from '../../src/types.js';
 import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getProfileDomain, getLinkedInHandle } from '../../src/utils/leadDedupe.js';
 
-import { readStoredLeads, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
+import { readStoredLeads, readLeadsSummary, readExistingIdentityKeys, readLeadsStageSummary, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt, type LLMUsage } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, chunkBrightDataBatchItems, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -61,7 +61,27 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
 
 router.get('/leads', (req, res): any => {
   try {
-    res.json({ apiVersion: 1, leads: readStoredLeads(), initialized: hasLeadStoreBeenInitialized() });
+    const { stage, reviewStatus, nextAction, search, limit, offset, summaryOnly } = req.query as Record<string, string | undefined>;
+    const parsedLimit = limit !== undefined ? Math.min(Math.max(Number(limit) || 1, 1), 2000) : undefined;
+    const parsedOffset = offset !== undefined ? Math.max(Number(offset) || 0, 0) : undefined;
+    const isSummary = summaryOnly === 'true';
+
+    const result = readLeadsSummary({
+      stage,
+      reviewStatus,
+      nextAction,
+      search,
+      limit: parsedLimit,
+      offset: parsedOffset,
+      summaryOnly: isSummary
+    });
+
+    res.json({
+      apiVersion: 1,
+      leads: result.leads,
+      total: result.total,
+      initialized: hasLeadStoreBeenInitialized()
+    });
   } catch (error: any) {
     console.error('Failed to read leads from SQLite:', error);
     res.status(500).json({ error: error.message || 'Failed to read leads' });
@@ -512,6 +532,47 @@ router.get('/search-logs/:id/live', (req, res) => {
   const logs = activeSessions.get(req.params.id) || [];
   const traceEvents = activeSessionEvents.get(req.params.id) || [];
   res.json({ apiVersion: 1, logs, traceEvents, session: readMiningSessionById(req.params.id) });
+});
+
+router.get('/mining-sessions/:sessionId/stream', (req, res): any => {
+  const { sessionId } = req.params;
+  if (!isSafeSessionId(sessionId)) {
+    return res.status(400).json({ error: 'Invalid sessionId.' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  let lastLogCount = 0;
+  let lastTraceCount = 0;
+
+  const sendDelta = () => {
+    const logs = activeSessions.get(sessionId) || [];
+    const traceEvents = activeSessionEvents.get(sessionId) || [];
+    const session = readMiningSessionById(sessionId);
+
+    const newLogs = logs.slice(lastLogCount);
+    const newTrace = traceEvents.slice(lastTraceCount);
+    lastLogCount = logs.length;
+    lastTraceCount = traceEvents.length;
+
+    if (newLogs.length > 0 || newTrace.length > 0 || (session && session.status !== 'running')) {
+      res.write(`data: ${JSON.stringify({ logs: newLogs, traceEvents: newTrace, session })}\n\n`);
+    }
+
+    if (session && session.status !== 'running' && session.status !== 'cancellation_requested') {
+      res.write('event: end\ndata: {}\n\n');
+      clearInterval(interval);
+      res.end();
+    }
+  };
+
+  sendDelta();
+  const interval = setInterval(sendDelta, 250);
+  req.on('close', () => clearInterval(interval));
 });
 
 router.get('/mining-sessions', (req, res): any => {
@@ -1066,11 +1127,8 @@ router.post('/find-leads', async (req, res): Promise<any> => {
     const expiredRows = pruneExpiredEnrichmentCache();
     if (expiredRows > 0) logEvent(`Pruned ${expiredRows} expired enrichment cache rows.`);
 
-    const existingKeys = new Set<string>();
+    const existingKeys = readExistingIdentityKeys();
     const excludedValues = new Set<string>();
-    for (const lead of readStoredLeads() as any[]) {
-      addProfileKeys(lead.profile || lead, existingKeys);
-    }
     for (const exclusion of excludeList) {
       const normalized = normalizeDedupeValue(exclusion);
       if (!normalized) continue;
@@ -3209,29 +3267,25 @@ router.post('/chat', async (req, res): Promise<any> => {
 
     // The database is canonical. Do not accept a browser-provided lead dump,
     // and omit contact details/notes from the model context by default.
-    const leads = readStoredLeads() as any[];
-    const stageCounts: Record<string, number> = {};
-    leads.forEach((l: any) => {
-      stageCounts[l.stage] = (stageCounts[l.stage] || 0) + 1;
-    });
+    const { count: totalLeads, stageCounts } = readLeadsStageSummary();
     const stageSummary = Object.entries(stageCounts)
       .map(([stage, count]) => `- ${stage}: ${count}`)
       .join('\n');
 
-    const leadsContext = leads.length === 0
+    const topLeads = readLeadsSummary({ limit: 50 }).leads;
+    const leadsContext = topLeads.length === 0
       ? 'The CRM pipeline is currently empty.'
-      : leads
+      : topLeads
         .slice()
-        .sort((a, b) => Number(b.compositeScore || 0) - Number(a.compositeScore || 0))
-        .slice(0, 50)
+        .sort((a, b) => Number(b.compositeScore ?? b.score ?? 0) - Number(a.compositeScore ?? a.score ?? 0))
         .map((l: any, i: number) =>
-          `${i + 1}. ${l.profile?.fullName || 'Unknown'} - ${l.profile?.currentTitle || 'Unknown'} at ${l.profile?.currentCompany || 'Unknown'} | Stage: ${l.stage || 'Unknown'} | Fit: ${l.fitScore ?? '?'}/10 | Intent: ${l.intentScore ?? '?'}/10`
+          `${i + 1}. ${l.profile?.fullName || l.fullName || 'Unknown'} - ${l.profile?.currentTitle || l.title || 'Unknown'} at ${l.profile?.currentCompany || l.company || 'Unknown'} | Stage: ${l.stage || 'Unknown'} | Fit: ${l.fitScore ?? '?'}/10 | Intent: ${l.intentScore ?? '?'}/10`
         ).join('\n');
 
     const systemPrompt = `${APEX_SYSTEM_PROMPT}
 
 ## Current CRM Pipeline Context
-Total Leads: ${leads.length}
+Total Leads: ${totalLeads}
 
 ### Pipeline Stage Breakdown:
 ${stageSummary}

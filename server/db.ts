@@ -5,12 +5,12 @@ import { DatabaseSync } from 'node:sqlite';
 import dotenv from 'dotenv';
 import { clampSearchLogRetentionLimit, setLlmStageLogger, type LlmStageLogEntry } from './leadSearch/telemetry.js';
 import { REVIEW_STATUS_SET as REVIEW_STATUSES, NEXT_ACTION_SET as NEXT_ACTIONS } from '../src/types.js';
-import { canonicalLinkedInIdentity } from '../src/utils/leadDedupe.js';
+import { canonicalLinkedInIdentity, normalizeDedupeValue } from '../src/utils/leadDedupe.js';
 
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 12;
+const LATEST_SCHEMA_VERSION = 13;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -50,6 +50,43 @@ function normalizeStoredLead(lead: Record<string, any>) {
   };
   delete normalized.emailDiscovery;
   return normalized;
+}
+
+export function extractPromotedLeadColumns(storedLead: Record<string, any>) {
+  const profile = storedLead.profile && typeof storedLead.profile === 'object' ? storedLead.profile : {};
+  const contactDetails = profile.contactDetails && typeof profile.contactDetails === 'object' ? profile.contactDetails : {};
+  const fullName = typeof profile.fullName === 'string' && profile.fullName.trim()
+    ? profile.fullName.trim()
+    : (typeof storedLead.fullName === 'string' && storedLead.fullName.trim() ? storedLead.fullName.trim() : null);
+  const company = typeof profile.currentCompany === 'string' && profile.currentCompany.trim()
+    ? profile.currentCompany.trim()
+    : (typeof storedLead.company === 'string' && storedLead.company.trim()
+        ? storedLead.company.trim()
+        : (typeof storedLead.currentCompany === 'string' && storedLead.currentCompany.trim() ? storedLead.currentCompany.trim() : null));
+  const title = typeof profile.currentTitle === 'string' && profile.currentTitle.trim()
+    ? profile.currentTitle.trim()
+    : (typeof storedLead.title === 'string' && storedLead.title.trim()
+        ? storedLead.title.trim()
+        : (typeof storedLead.currentTitle === 'string' && storedLead.currentTitle.trim() ? storedLead.currentTitle.trim() : null));
+  const stage = typeof storedLead.stage === 'string' && storedLead.stage.trim() ? storedLead.stage.trim() : 'NEW';
+  const reviewStatus = typeof storedLead.reviewStatus === 'string' && storedLead.reviewStatus.trim() ? storedLead.reviewStatus.trim() : 'UNREVIEWED';
+  const nextAction = typeof storedLead.nextAction === 'string' && storedLead.nextAction.trim() ? storedLead.nextAction.trim() : 'NONE';
+  const rawScore = storedLead.qualificationScore ?? storedLead.predictiveScore ?? storedLead.compositeScore ?? storedLead.score;
+  const score = typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : null;
+  const email = typeof contactDetails.email === 'string' && contactDetails.email.trim()
+    ? contactDetails.email.trim().toLowerCase()
+    : (typeof storedLead.email === 'string' && storedLead.email.trim() ? storedLead.email.trim().toLowerCase() : null);
+
+  return {
+    fullName,
+    company,
+    title,
+    stage,
+    reviewStatus,
+    nextAction,
+    score,
+    email
+  };
 }
 
 function getTableColumns(db: DatabaseSync, tableName: string) {
@@ -405,6 +442,51 @@ function runMigrations(db: DatabaseSync) {
       db.exec(`CREATE INDEX IF NOT EXISTS idx_enrichment_cache_intent ON enrichment_cache(normalized_url, intent_fingerprint) WHERE intent_fingerprint IS NOT NULL;`);
     }
 
+    if (currentVersion < 13) {
+      addColumnIfMissing(db, 'leads', 'full_name', 'full_name TEXT');
+      addColumnIfMissing(db, 'leads', 'company', 'company TEXT');
+      addColumnIfMissing(db, 'leads', 'title', 'title TEXT');
+      addColumnIfMissing(db, 'leads', 'stage', "stage TEXT NOT NULL DEFAULT 'NEW'");
+      addColumnIfMissing(db, 'leads', 'review_status', "review_status TEXT NOT NULL DEFAULT 'UNREVIEWED'");
+      addColumnIfMissing(db, 'leads', 'next_action', "next_action TEXT NOT NULL DEFAULT 'NONE'");
+      addColumnIfMissing(db, 'leads', 'score', 'score REAL');
+      addColumnIfMissing(db, 'leads', 'email', 'email TEXT');
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
+        CREATE INDEX IF NOT EXISTS idx_leads_stage_updated ON leads(stage, datetime(updated_at) DESC);
+        CREATE INDEX IF NOT EXISTS idx_leads_review_status ON leads(review_status);
+        CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC);
+      `);
+
+      const rows = db.prepare('SELECT id, payload FROM leads').all() as { id: string; payload: string }[];
+      const updateStmt = db.prepare(`
+        UPDATE leads
+        SET full_name = ?, company = ?, title = ?, stage = ?, review_status = ?, next_action = ?, score = ?, email = ?
+        WHERE id = ?
+      `);
+
+      for (const row of rows) {
+        try {
+          const lead = JSON.parse(row.payload);
+          const cols = extractPromotedLeadColumns(lead);
+          updateStmt.run(
+            cols.fullName,
+            cols.company,
+            cols.title,
+            cols.stage,
+            cols.reviewStatus,
+            cols.nextAction,
+            cols.score,
+            cols.email,
+            row.id
+          );
+        } catch {
+          // ignore corrupted payload on backfill
+        }
+      }
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (error) {
@@ -451,12 +533,24 @@ export function getLeadsDb() {
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 10000;
       PRAGMA foreign_keys = ON;
+      PRAGMA optimize;
+      PRAGMA cache_size = -8000;
+      PRAGMA temp_store = MEMORY;
 
       CREATE TABLE IF NOT EXISTS leads (
         id TEXT PRIMARY KEY,
         payload TEXT NOT NULL,
         created_at TEXT,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        full_name TEXT,
+        company TEXT,
+        title TEXT,
+        stage TEXT NOT NULL DEFAULT 'NEW',
+        review_status TEXT NOT NULL DEFAULT 'UNREVIEWED',
+        next_action TEXT NOT NULL DEFAULT 'NONE',
+        score REAL,
+        email TEXT
       );
 
       CREATE TABLE IF NOT EXISTS app_meta (
@@ -574,9 +668,9 @@ export function getLeadsDb() {
         ON prospect_contract_cache(expires_at);
     `);
     runMigrations(leadsDb);
+    setLlmStageLogger(insertLlmStageLog);
   }
 
-  setLlmStageLogger(insertLlmStageLog);
   return leadsDb;
 }
 
@@ -594,12 +688,94 @@ export function normalizeIncomingLeads(input: unknown) {
     }));
 }
 
-export function readStoredLeads() {
-  const rows = getLeadsDb()
-    .prepare('SELECT payload, revision FROM leads ORDER BY datetime(COALESCE(created_at, updated_at)) DESC')
-    .all() as { payload: string; revision: number }[];
+export type ReadLeadsOptions = {
+  stage?: string;
+  reviewStatus?: string;
+  nextAction?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+  summaryOnly?: boolean;
+};
 
-  return rows
+export type LeadSummary = {
+  id: string;
+  fullName: string | null;
+  company: string | null;
+  title: string | null;
+  stage: string;
+  reviewStatus: string;
+  nextAction: string;
+  score: number | null;
+  email: string | null;
+  revision: number;
+  createdAt?: string;
+  updatedAt: string;
+};
+
+export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]; total: number } {
+  const db = getLeadsDb();
+  const { stage, reviewStatus, nextAction, search, limit, offset, summaryOnly } = options;
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (stage && stage !== 'All') {
+    conditions.push('stage = ?');
+    params.push(stage);
+  }
+  if (reviewStatus && reviewStatus !== 'All') {
+    conditions.push('review_status = ?');
+    params.push(reviewStatus);
+  }
+  if (nextAction && nextAction !== 'All') {
+    conditions.push('next_action = ?');
+    params.push(nextAction);
+  }
+  if (search && search.trim()) {
+    conditions.push('(full_name LIKE ? OR company LIKE ? OR title LIKE ? OR email LIKE ?)');
+    const q = `%${search.trim()}%`;
+    params.push(q, q, q, q);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM leads ${where}`).get(...params) as { total?: number } | undefined;
+  const total = Number(totalRow?.total || 0);
+
+  let query = `SELECT ${summaryOnly ? 'id, full_name, company, title, stage, review_status, next_action, score, email, revision, created_at, updated_at' : 'payload, revision'} FROM leads ${where} ORDER BY datetime(COALESCE(created_at, updated_at)) DESC`;
+
+  const queryParams = [...params];
+  if (typeof limit === 'number' && limit > 0) {
+    query += ' LIMIT ?';
+    queryParams.push(limit);
+    if (typeof offset === 'number' && offset > 0) {
+      query += ' OFFSET ?';
+      queryParams.push(offset);
+    }
+  }
+
+  const rows = db.prepare(query).all(...queryParams) as any[];
+
+  if (summaryOnly) {
+    return {
+      leads: rows.map(r => ({
+        id: r.id,
+        fullName: r.full_name,
+        company: r.company,
+        title: r.title,
+        stage: r.stage,
+        reviewStatus: r.review_status,
+        nextAction: r.next_action,
+        score: r.score,
+        email: r.email,
+        revision: Number(r.revision || 1),
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+      })),
+      total
+    };
+  }
+
+  const leads = rows
     .map((row) => {
       try {
         return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) };
@@ -609,6 +785,45 @@ export function readStoredLeads() {
       }
     })
     .filter(Boolean);
+
+  return { leads, total };
+}
+
+export function readStoredLeads() {
+  return readLeadsSummary().leads;
+}
+
+export function readExistingIdentityKeys(): Set<string> {
+  const db = getLeadsDb();
+  const keys = new Set<string>();
+
+  const idRows = db.prepare('SELECT identity_key FROM lead_identities').all() as { identity_key: string }[];
+  for (const r of idRows) {
+    if (r.identity_key) keys.add(r.identity_key);
+  }
+
+  const leadRows = db.prepare('SELECT email, full_name, company FROM leads').all() as { email: string | null; full_name: string | null; company: string | null }[];
+  for (const row of leadRows) {
+    if (row.email) {
+      const normEmail = normalizeDedupeValue(row.email);
+      if (normEmail) keys.add(`email:${normEmail}`);
+    }
+    const name = normalizeDedupeValue(row.full_name || undefined);
+    const comp = normalizeDedupeValue(row.company || undefined);
+    if (name && comp) {
+      keys.add(`name_company:${name}::${comp}`);
+    }
+  }
+
+  return keys;
+}
+
+export function readLeadsStageSummary(): { count: number; stageCounts: Record<string, number> } {
+  const rows = getLeadsDb()
+    .prepare('SELECT stage, COUNT(*) as n FROM leads GROUP BY stage')
+    .all() as { stage: string; n: number }[];
+  const stageCounts = Object.fromEntries(rows.map(r => [r.stage, Number(r.n)]));
+  return { count: rows.reduce((s, r) => s + Number(r.n), 0), stageCounts };
 }
 
 export function readStoredLeadById(id: string) {
@@ -637,8 +852,11 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
   const insertLead = db.prepare(`
-    INSERT INTO leads (id, payload, created_at, updated_at, revision)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO leads (
+      id, payload, created_at, updated_at, revision,
+      full_name, company, title, stage, review_status, next_action, score, email
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   db.exec('BEGIN IMMEDIATE');
@@ -660,12 +878,21 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
     for (const lead of leads) {
       const revision = Number.isInteger(lead.revision) && lead.revision > 0 ? lead.revision : 1;
       const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
+      const cols = extractPromotedLeadColumns(storedLead);
       insertLead.run(
         storedLead.id,
         JSON.stringify(storedLead),
         typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
         now,
-        revision
+        revision,
+        cols.fullName,
+        cols.company,
+        cols.title,
+        cols.stage,
+        cols.reviewStatus,
+        cols.nextAction,
+        cols.score,
+        cols.email
       );
       const identityKey = leadIdentityKey(storedLead);
       if (identityKey) {
@@ -771,19 +998,40 @@ export function upsertLeadInExistingTransaction(
 
   const revision = existing ? Number(existing.revision || 1) + 1 : 1;
   const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
+  const cols = extractPromotedLeadColumns(storedLead);
+
   db.prepare(`
-    INSERT INTO leads (id, payload, created_at, updated_at, revision)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO leads (
+      id, payload, created_at, updated_at, revision,
+      full_name, company, title, stage, review_status, next_action, score, email
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       payload = excluded.payload,
       updated_at = excluded.updated_at,
-      revision = excluded.revision
+      revision = excluded.revision,
+      full_name = excluded.full_name,
+      company = excluded.company,
+      title = excluded.title,
+      stage = excluded.stage,
+      review_status = excluded.review_status,
+      next_action = excluded.next_action,
+      score = excluded.score,
+      email = excluded.email
   `).run(
     storedLead.id,
     JSON.stringify(storedLead),
     typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
     now,
-    revision
+    revision,
+    cols.fullName,
+    cols.company,
+    cols.title,
+    cols.stage,
+    cols.reviewStatus,
+    cols.nextAction,
+    cols.score,
+    cols.email
   );
 
   db.prepare('DELETE FROM lead_identities WHERE lead_id = ? AND identity_key <> ?')

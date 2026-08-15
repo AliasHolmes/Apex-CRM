@@ -381,118 +381,6 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     };
   }, [enrichmentQueue, handleMergeLead, handleUpdateLeadProfile, triggerToast]);
 
-
-  const handleTriggerPurgeDuplicates = () => {
-    const toDelete: string[] = [];
-    const seenEmails = new Set<string>();
-    const seenLinks = new Set<string>();
-    const seenNames = new Set<string>();
-
-    filteredLeads.forEach(lead => {
-      const p = lead.profile || ({} as Partial<any>);
-      const email = p.contactDetails?.email?.toLowerCase();
-      const linkedin = p.contactDetails?.linkedinUrl?.toLowerCase();
-      const comp = (p.currentCompany || '').toLowerCase();
-      const nameKey = `${(p.fullName || '').toLowerCase()}::${comp}`;
-
-      let isRedundant = false;
-
-      if (email && seenEmails.has(email)) isRedundant = true;
-      else if (linkedin && seenLinks.has(linkedin)) isRedundant = true;
-      else if (nameKey !== '::' && seenNames.has(nameKey)) isRedundant = true;
-
-      if (isRedundant) {
-        toDelete.push(lead.id);
-      } else {
-        if (email) seenEmails.add(email);
-        if (linkedin) seenLinks.add(linkedin);
-        if (nameKey !== '::') seenNames.add(nameKey);
-      }
-    });
-
-    if (toDelete.length > 0) {
-      const lockedDuplicateCount = toDelete.reduce(
-        (count, leadId) => count + (asyncLockedLeadIds.has(leadId) ? 1 : 0),
-        0,
-      );
-      if (lockedDuplicateCount > 0) {
-        triggerToast(
-          `Wait for enrichment to finish before removing ${lockedDuplicateCount} locked duplicate record${lockedDuplicateCount === 1 ? '' : 's'}.`,
-          'info',
-        );
-        return;
-      }
-      setDuplicateIdsToDelete(toDelete);
-      setShowConfirmPurgeDuplicates(true);
-    } else {
-      triggerToast('No redundant duplicates found.', 'info');
-    }
-  };
-
-  const handleExecutePurgeDuplicates = async () => {
-    if (duplicateIdsToDelete.length === 0 || isBulkMutating) return;
-    const targetIds = [...duplicateIdsToDelete];
-    if (targetIds.some((leadId) => asyncLockedLeadIds.has(leadId))) {
-      triggerToast('Wait for active enrichment before removing these duplicates.', 'info');
-      return;
-    }
-    setBulkMutation('purge');
-    try {
-      if (handleDeleteLeads) {
-        await handleDeleteLeads(targetIds);
-      } else {
-        await Promise.all(targetIds.map((id) => handleDeleteLead(id)));
-      }
-      if (!isMountedRef.current) return;
-      triggerToast(`Successfully purged ${targetIds.length} duplicate leads.`, 'success');
-      setDuplicateIdsToDelete([]);
-      setShowConfirmPurgeDuplicates(false);
-    } catch (error: any) {
-      if (isMountedRef.current) triggerToast(error.message || 'Could not delete duplicate leads.', 'error');
-    } finally {
-      if (isMountedRef.current) setBulkMutation(null);
-    }
-  };
-
-  // Helper to identify potential duplicates in the table
-  const duplicateIds = React.useMemo(() => {
-    const dupeIds = new Set<string>();
-    const emailMap = new Map<string, string[]>();
-    const linkMap = new Map<string, string[]>();
-    const nameMap = new Map<string, string[]>();
-
-    leads.forEach(lead => {
-      const p = lead.profile || ({} as Partial<any>);
-      const email = p.contactDetails?.email?.toLowerCase() || '';
-      const linkedin = p.contactDetails?.linkedinUrl?.toLowerCase() || '';
-      const comp = (p.currentCompany || '').toLowerCase();
-      const nameKey = `${(p.fullName || '').toLowerCase()}::${comp}`;
-
-      if (email) {
-        if (!emailMap.has(email)) emailMap.set(email, []);
-        emailMap.get(email)!.push(lead.id);
-      }
-      if (linkedin) {
-        if (!linkMap.has(linkedin)) linkMap.set(linkedin, []);
-        linkMap.get(linkedin)!.push(lead.id);
-      }
-      if (!nameMap.has(nameKey)) nameMap.set(nameKey, []);
-      nameMap.get(nameKey)!.push(lead.id);
-    });
-
-    for (const ids of emailMap.values()) {
-      if (ids.length > 1) ids.forEach(id => dupeIds.add(id));
-    }
-    for (const ids of linkMap.values()) {
-      if (ids.length > 1) ids.forEach(id => dupeIds.add(id));
-    }
-    for (const ids of nameMap.values()) {
-      if (ids.length > 1) ids.forEach(id => dupeIds.add(id));
-    }
-
-    return dupeIds;
-  }, [leads]);
-
   const normalizedSearch = useMemo(
     () => tableSearch.trim().toLocaleLowerCase(),
     [tableSearch],
@@ -541,6 +429,101 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       .map(({ lead }) => lead),
     [deferredSearch, industryFilter, locationFilter, nextActionFilter, reviewFilter, searchableLeads, stageFilter],
   );
+
+  // Consolidated single-pass duplicate analysis on filteredLeads
+  const duplicateAnalysis = useMemo(() => {
+    const duplicateIdSet = new Set<string>();
+    const redundantIdsToDelete: string[] = [];
+    const seenEmails = new Map<string, string>();
+    const seenLinks = new Map<string, string>();
+    const seenNames = new Map<string, string>();
+
+    for (const lead of filteredLeads) {
+      const p = (lead.profile || {}) as Partial<any>;
+      const email = p.contactDetails?.email?.toLowerCase();
+      const linkedin = p.contactDetails?.linkedinUrl?.toLowerCase();
+      const comp = (p.currentCompany || '').toLowerCase();
+      const nameKey = `${(p.fullName || '').toLowerCase()}::${comp}`;
+
+      let isRedundant = false;
+      let matchedFirstId: string | undefined;
+
+      if (email && seenEmails.has(email)) {
+        isRedundant = true;
+        matchedFirstId = seenEmails.get(email);
+      } else if (linkedin && seenLinks.has(linkedin)) {
+        isRedundant = true;
+        matchedFirstId = seenLinks.get(linkedin);
+      } else if (nameKey !== '::' && seenNames.has(nameKey)) {
+        isRedundant = true;
+        matchedFirstId = seenNames.get(nameKey);
+      }
+
+      if (isRedundant) {
+        if (matchedFirstId) duplicateIdSet.add(matchedFirstId);
+        duplicateIdSet.add(lead.id);
+        redundantIdsToDelete.push(lead.id);
+      } else {
+        if (email) seenEmails.set(email, lead.id);
+        if (linkedin) seenLinks.set(linkedin, lead.id);
+        if (nameKey !== '::') seenNames.set(nameKey, lead.id);
+      }
+    }
+
+    return {
+      duplicateIdSet,
+      redundantIdsToDelete,
+    };
+  }, [filteredLeads]);
+
+  const duplicateIds = duplicateAnalysis.duplicateIdSet;
+
+  const handleTriggerPurgeDuplicates = () => {
+    const toDelete = duplicateAnalysis.redundantIdsToDelete;
+
+    if (toDelete.length > 0) {
+      const lockedDuplicateCount = toDelete.reduce(
+        (count, leadId) => count + (asyncLockedLeadIds.has(leadId) ? 1 : 0),
+        0,
+      );
+      if (lockedDuplicateCount > 0) {
+        triggerToast(
+          `Wait for enrichment to finish before removing ${lockedDuplicateCount} locked duplicate record${lockedDuplicateCount === 1 ? '' : 's'}.`,
+          'info',
+        );
+        return;
+      }
+      setDuplicateIdsToDelete(toDelete);
+      setShowConfirmPurgeDuplicates(true);
+    } else {
+      triggerToast('No redundant duplicates found.', 'info');
+    }
+  };
+
+  const handleExecutePurgeDuplicates = async () => {
+    if (duplicateIdsToDelete.length === 0 || isBulkMutating) return;
+    const targetIds = [...duplicateIdsToDelete];
+    if (targetIds.some((leadId) => asyncLockedLeadIds.has(leadId))) {
+      triggerToast('Wait for active enrichment before removing these duplicates.', 'info');
+      return;
+    }
+    setBulkMutation('purge');
+    try {
+      if (handleDeleteLeads) {
+        await handleDeleteLeads(targetIds);
+      } else {
+        await Promise.all(targetIds.map((id) => handleDeleteLead(id)));
+      }
+      if (!isMountedRef.current) return;
+      triggerToast(`Successfully purged ${targetIds.length} duplicate leads.`, 'success');
+      setDuplicateIdsToDelete([]);
+      setShowConfirmPurgeDuplicates(false);
+    } catch (error: any) {
+      if (isMountedRef.current) triggerToast(error.message || 'Could not delete duplicate leads.', 'error');
+    } finally {
+      if (isMountedRef.current) setBulkMutation(null);
+    }
+  };
 
   const totalPages = Math.max(1, Math.ceil(filteredLeads.length / PROSPECTS_PAGE_SIZE));
   const activePage = Math.min(currentPage, totalPages);
@@ -619,36 +602,11 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   }, []);
 
   const handleSelectDuplicates = () => {
-    const toSelect = new Set<string>();
-    const seenEmails = new Set<string>();
-    const seenLinks = new Set<string>();
-    const seenNames = new Set<string>();
+    const toSelect = duplicateAnalysis.redundantIdsToDelete;
 
-    filteredLeads.forEach(lead => {
-      const p = lead.profile || ({} as Partial<any>);
-      const email = p.contactDetails?.email?.toLowerCase();
-      const linkedin = p.contactDetails?.linkedinUrl?.toLowerCase();
-      const comp = (p.currentCompany || '').toLowerCase();
-      const nameKey = `${(p.fullName || '').toLowerCase()}::${comp}`;
-
-      let isRedundant = false;
-
-      if (email && seenEmails.has(email)) isRedundant = true;
-      else if (linkedin && seenLinks.has(linkedin)) isRedundant = true;
-      else if (nameKey !== '::' && seenNames.has(nameKey)) isRedundant = true;
-
-      if (isRedundant) {
-        toSelect.add(lead.id);
-      } else {
-        if (email) seenEmails.add(email);
-        if (linkedin) seenLinks.add(linkedin);
-        if (nameKey !== '::') seenNames.add(nameKey);
-      }
-    });
-
-    if (toSelect.size > 0) {
+    if (toSelect.length > 0) {
       setSelectedLeadIds(new Set(toSelect));
-      triggerToast(`Selected ${toSelect.size} redundant duplicate leads.`, 'info');
+      triggerToast(`Selected ${toSelect.length} redundant duplicate leads.`, 'info');
     } else {
       triggerToast('No redundant duplicates found.', 'info');
     }

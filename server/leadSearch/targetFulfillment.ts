@@ -28,6 +28,7 @@ import {
 } from '../../src/utils/leadDedupe.js';
 import {
   readStoredLeads,
+  readExistingIdentityKeys,
   insertSearchLog,
   readQueryPerformance,
   upsertMiningSession
@@ -67,7 +68,8 @@ import {
   finalistJudgeSchema,
   partitionCandidatesByStrictEvidence,
   validateFinalistJudgments,
-  type CandidateOutcome
+  type CandidateOutcome,
+  type FinalistCandidate
 } from './finalistJudge.js';
 import { computeScoreBreakdown, type EvidenceQuality } from './scoring.js';
 import { verifyDecisionMakerFromEvidence } from './verification.js';
@@ -284,12 +286,9 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
   const queryExecutionCeiling = getQueryExecutionCeiling(target);
 
   const excludeList: string[] = Array.isArray(req.body?.excludeList) ? req.body.excludeList : [];
-  const existingKeys = new Set<string>();
+  const existingKeys = readExistingIdentityKeys();
   const excludedValues = new Set<string>();
 
-  for (const lead of readStoredLeads() as any[]) {
-    buildProfileDedupeKeys(lead.profile || lead).forEach(k => existingKeys.add(k));
-  }
   for (const exclusion of excludeList) {
     const normalized = normalizeDedupeValue(exclusion);
     if (!normalized) continue;
@@ -705,8 +704,10 @@ export async function executeTargetFulfillmentSession(options: TargetFulfillment
       const chunks = chunkEvidenceBlocksByTokenBudget(evidenceBlocks, 1800);
 
       const extractionResults: any[] = [];
-      for (const chunk of chunks) {
-        const prompt = `Extract distinct B2B prospects from the source-labeled evidence below.
+      const extractionTasks = chunks.map((chunk, idx) => ({
+        id: `${sessionId}:extract:r${currentRound}:c${idx}`,
+        run: async () => {
+          const prompt = `Extract distinct B2B prospects from the source-labeled evidence below.
 
 Rules:
 - Set contactDetails.linkedinUrl ONLY to the exact LINK value from the same "--- PROFILE CANDIDATE ---" block. Never copy an external website or third-party URL found inside snippet text.
@@ -718,18 +719,30 @@ ${promptQuery}
 
 Evidence:
 ${chunk}`;
-        try {
-          const extracted = await openAIStructured<any[]>(
-            prompt,
-            { type: 'array', items: { type: 'object', properties: { fullName: { type: 'string' }, currentTitle: { type: 'string' }, currentCompany: { type: 'string' }, contactDetails: { type: 'object', properties: { linkedinUrl: { type: 'string' } } } }, required: ['fullName'] } },
-            EXTRACTION_SYSTEM_PROMPT,
-            { maxTokens: 2500, temperature: 0 }
-          );
-          if (Array.isArray(extracted)) extractionResults.push(...extracted);
-        } catch (e: any) {
-          logEvent(`WARN: LLM extraction chunk failed: ${e.message}`);
+          try {
+            const extracted = await openAIStructured<any[]>(
+              prompt,
+              { type: 'array', items: { type: 'object', properties: { fullName: { type: 'string' }, currentTitle: { type: 'string' }, currentCompany: { type: 'string' }, contactDetails: { type: 'object', properties: { linkedinUrl: { type: 'string' } } } }, required: ['fullName'] } },
+              EXTRACTION_SYSTEM_PROMPT,
+              { maxTokens: 2500, temperature: 0 }
+            );
+            return Array.isArray(extracted) ? extracted : [];
+          } catch (e: any) {
+            logEvent(`WARN: LLM extraction chunk failed: ${e.message}`);
+            return [];
+          }
         }
+      }));
+
+      const chunkResults = await runProviderQueue(extractionTasks, {
+        concurrency: 3,
+        signal: sessionAbortController.signal
+      });
+      for (const res of chunkResults) {
+        if (Array.isArray(res)) extractionResults.push(...res);
       }
+
+      const candidatesToJudgeQueue: FinalistCandidate[] = [];
 
       for (const extractedLead of extractionResults) {
         if (!extractedLead || !extractedLead.fullName) continue;
@@ -843,53 +856,77 @@ ${chunk}`;
           qualifiedLeadsMap.set(stableId, qualifiedLead);
           addProfileKeys(qualifiedLead, existingKeys);
           logEvent(`Auto-qualified candidate: ${qualifiedLead.fullName} (${qualifiedLead.currentTitle} at ${qualifiedLead.currentCompany})`);
-        } else if (needsJudge.length > 0) {
-          const candidateToJudge = needsJudge[0];
-          const judgeBatch = [candidateToJudge];
-
-          judgeWaveCount++;
-          judgeBatchesRun++;
-
-          try {
-            const judgePrompt = buildFinalistJudgePrompt(contract, judgeBatch);
-            const judgmentResult = await openAIStructured<any>(judgePrompt, finalistJudgeSchema, FINALIST_JUDGE_SYSTEM_PROMPT, {
-              maxTokens: 1500,
-              temperature: 0,
-              circuitBreaker: llmCircuitBreaker
-            });
-
-            const validation = validateFinalistJudgments(judgmentResult, contract, judgeBatch);
-            judgeReviewedCount += validation.expectedJudgmentCount;
-            judgeQualifiedCount += validation.counts.qualified;
-            judgeHardFailCount += validation.counts.hardFail;
-            judgeUnknownCount += validation.counts.unknown;
-            judgeUnjudgedCount += validation.counts.unjudged;
-
-            const outcome = validation.outcomes.get(candidateToJudge.candidateId);
-            if (outcome && (outcome.status === 'qualified' || outcome.status === 'qualified_partial') && outcome.qualification) {
-              const lead = candidateToJudge.lead;
-              lead.qualification = outcome.qualification;
-              lead.whyThisLead = outcome.qualification.reason;
-              lead.finalSelectionScore = outcome.qualification.finalScore;
-              if (lead.scoreBreakdown) lead.scoreBreakdown.finalScore = lead.finalSelectionScore;
-              lead.scoreOverride = lead.finalSelectionScore;
-              // Preserve prior score for Kalman fusion on next enrichment round
-              const existingJudgeEntry = qualifiedLeadsMap.get(candidateToJudge.candidateId);
-              if (existingJudgeEntry?.finalSelectionScore) lead._priorScore = existingJudgeEntry.finalSelectionScore;
-              qualifiedLeadsMap.set(candidateToJudge.candidateId, lead);
-              addProfileKeys(lead, existingKeys);
-              logEvent(`Finalist Judge QUALIFIED candidate (${outcome.status}): ${lead.fullName}`);
-            }
-          } catch (err: any) {
-            logEvent(`WARN: Finalist Judge failed for candidate ${candidateToJudge.candidateId}: ${err.message}`);
+          if (isTargetFulfilled()) {
+            logEvent(`Diversified qualified target (${target}) reached.`);
+            terminationReason = 'target_reached';
+            break;
           }
+        } else if (needsJudge.length > 0) {
+          candidatesToJudgeQueue.push(...needsJudge);
+        }
+      }
+
+      if (candidatesToJudgeQueue.length > 0 && !isTargetFulfilled()) {
+        const JUDGE_BATCH_SIZE = Math.max(1, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 6));
+        const judgeBatches: FinalistCandidate[][] = [];
+        for (let i = 0; i < candidatesToJudgeQueue.length; i += JUDGE_BATCH_SIZE) {
+          judgeBatches.push(candidatesToJudgeQueue.slice(i, i + JUDGE_BATCH_SIZE));
         }
 
-        if (isTargetFulfilled()) {
-          logEvent(`Diversified qualified target (${target}) reached. Stopping candidate judging early.`);
-          terminationReason = 'target_reached';
-          break;
-        }
+        const judgeTasks = judgeBatches.map((judgeBatch, bIdx) => ({
+          id: `${sessionId}:judge:r${currentRound}:b${bIdx}`,
+          run: async () => {
+            if (isTargetFulfilled()) return;
+            judgeWaveCount++;
+            judgeBatchesRun++;
+
+            try {
+              const judgePrompt = buildFinalistJudgePrompt(contract, judgeBatch);
+              const judgmentResult = await openAIStructured<any>(judgePrompt, finalistJudgeSchema, FINALIST_JUDGE_SYSTEM_PROMPT, {
+                maxTokens: 2500,
+                temperature: 0,
+                circuitBreaker: llmCircuitBreaker
+              });
+
+              const validation = validateFinalistJudgments(judgmentResult, contract, judgeBatch);
+              judgeReviewedCount += validation.expectedJudgmentCount;
+              judgeQualifiedCount += validation.counts.qualified;
+              judgeHardFailCount += validation.counts.hardFail;
+              judgeUnknownCount += validation.counts.unknown;
+              judgeUnjudgedCount += validation.counts.unjudged;
+
+              for (const candidate of judgeBatch) {
+                const outcome = validation.outcomes.get(candidate.candidateId);
+                if (outcome && (outcome.status === 'qualified' || outcome.status === 'qualified_partial') && outcome.qualification) {
+                  const lead = candidate.lead;
+                  lead.qualification = outcome.qualification;
+                  lead.whyThisLead = outcome.qualification.reason;
+                  lead.finalSelectionScore = outcome.qualification.finalScore;
+                  if (lead.scoreBreakdown) lead.scoreBreakdown.finalScore = lead.finalSelectionScore;
+                  lead.scoreOverride = lead.finalSelectionScore;
+                  const existingJudgeEntry = qualifiedLeadsMap.get(candidate.candidateId);
+                  if (existingJudgeEntry?.finalSelectionScore) lead._priorScore = existingJudgeEntry.finalSelectionScore;
+                  qualifiedLeadsMap.set(candidate.candidateId, lead);
+                  addProfileKeys(lead, existingKeys);
+                  logEvent(`Finalist Judge QUALIFIED candidate (${outcome.status}): ${lead.fullName}`);
+                }
+              }
+            } catch (err: any) {
+              logEvent(`WARN: Finalist Judge failed for batch of ${judgeBatch.length}: ${err.message}`);
+            }
+          }
+        }));
+
+        await runProviderQueue(judgeTasks, {
+          concurrency: 2,
+          signal: sessionAbortController.signal
+        });
+      }
+
+      if (isTargetFulfilled()) {
+        logEvent(`Diversified qualified target (${target}) reached. Stopping candidate judging early.`);
+        terminationReason = 'target_reached';
+        break;
       }
     }
 

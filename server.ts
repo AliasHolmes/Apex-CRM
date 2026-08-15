@@ -8,13 +8,25 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import apiRouter from './server/routes/api.js';
-import { getLeadsDb } from './server/db.js';
+import { getLeadsDb, pruneExpiredEnrichmentCache } from './server/db.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '127.0.0.1';
 const isProduction = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
 const scriptSourcePolicy = isProduction ? "'self'" : "'self' 'unsafe-inline'";
+
+// Request timing & performance monitoring
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    if (req.originalUrl?.startsWith('/api') && duration > 500) {
+      console.log(`[PERF] Slow API request: ${req.method} ${req.originalUrl} (${duration}ms)`);
+    }
+  });
+  next();
+});
 
 // This is a single-user, local desktop service. Keep it loopback-only and avoid
 // accepting arbitrarily large bodies before an API handler has a chance to validate them.
@@ -133,7 +145,22 @@ async function startServer() {
     process.exitCode = 1;
   });
 
+  // Periodically prune expired enrichment cache and optimize SQLite indices (every 30 mins)
+  const MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000;
+  const maintenanceTimer = setInterval(() => {
+    try {
+      const db = getLeadsDb();
+      const pruned = pruneExpiredEnrichmentCache();
+      if (pruned > 0) console.log(`[Maintenance] Pruned ${pruned} expired enrichment cache records.`);
+      db.exec('PRAGMA optimize;');
+    } catch (err) {
+      console.warn('[Maintenance] Scheduled optimization failed:', err);
+    }
+  }, MAINTENANCE_INTERVAL_MS);
+  maintenanceTimer.unref();
+
   const shutdown = (signal: string) => {
+    clearInterval(maintenanceTimer);
     console.log(`\n[${signal}] Shutting down Apex CRM server gracefully...`);
     server.close(() => {
       console.log('HTTP server closed.');

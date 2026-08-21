@@ -68,8 +68,16 @@ const companyIntentScore = (lead: Record<string, any>) => {
 };
 
 export const postIntentScore = (lead: Record<string, any>): number => {
+  const state = lead.intentEnrichmentState as string | undefined;
   const postIntent = lead.postIntentEvidence;
-  if (!postIntent || postIntent.quality === 'none') return 5;
+
+  // Evidence of absence: was checked, found nothing -> slight prior downgrade
+  if (state === 'enriched_none' || (state === undefined && postIntent && postIntent.quality === 'none')) {
+    return 4.5;
+  }
+  // Not enriched: absence of evidence, neutral prior
+  if (!postIntent || postIntent.quality === 'none') return 5.0;
+
   const confidence = Math.min(1, Math.max(0, Number(postIntent.confidenceScore) || 0));
   const ageDays = parseSnippetFreshnessDays(postIntent.postSnippets || []);
   const freshnessFactor = computeFreshnessMultiplier(ageDays);

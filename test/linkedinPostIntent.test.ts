@@ -225,7 +225,7 @@ test('postIntentScore calculates expected values across quality tiers and freshn
       confidenceScore: 0
     }
   };
-  assert.strictEqual(postIntentScore(leadNone), 5);
+  assert.strictEqual(postIntentScore(leadNone), 4.5);
   assert.strictEqual(postIntentScore({}), 5);
 });
 
@@ -363,7 +363,7 @@ test('cache pre-warm elevates a lead with cached strong intent above an equal-ba
   // reflects the real historical signal.
   //
   // Correct semantics: ceteris paribus, cached strong intent breaks the tie upward.
-  // We do NOT expect intent to overcome a large authority gap — authority at 0.30 weight
+  // We do NOT expect intent to overcome a large authority gap -- authority at 0.30 weight
   // is rightly dominant. The pre-warm ensures that among similarly-ranked leads,
   // the one with confirmed historical buying signal bubbles to the top of the slice.
 
@@ -394,12 +394,115 @@ test('cache pre-warm elevates a lead with cached strong intent above an equal-ba
   const rankNoIntent = rankLeadForFinalSelection(leadNoIntent);
   const rankWithIntent = rankLeadForFinalSelection(leadWithCachedIntent);
 
-  // postScore(strong, 0.9, fresh) ≈ 8.9 → contributes 8.9 * 0.10 = 0.89
-  // Without intent: postScore = 5 → contributes 5 * 0.10 = 0.50
+  // postScore(strong, 0.9, fresh) is ~8.9 -> contributes 8.9 * 0.10 = 0.89
+  // Without intent: postScore = 5 -> contributes 5 * 0.10 = 0.50
   // Delta = +0.39 to the rank of the intent lead, with all other inputs identical.
   assert.ok(rankWithIntent > rankNoIntent,
     `Cached-intent lead (${rankWithIntent}) must outrank equal-base-rank lead without intent (${rankNoIntent})`);
   assert.ok(rankWithIntent - rankNoIntent >= 0.30,
     `Expected at least +0.30 rank delta from cached strong intent, got ${rankWithIntent - rankNoIntent}`);
 });
+
+test('postIntentScore handles epistemic states correctly (not_enriched = 5.0, enriched_none = 4.5, enriched_signal > 5.0)', () => {
+  const notEnrichedLead = {
+    fullName: 'Unchecked Lead',
+    intentEnrichmentState: 'not_enriched' as const
+  };
+  assert.strictEqual(postIntentScore(notEnrichedLead), 5.0, 'not_enriched must return neutral 5.0 prior');
+
+  const enrichedNoneLead = {
+    fullName: 'Checked But Empty Lead',
+    intentEnrichmentState: 'enriched_none' as const,
+    postIntentEvidence: {
+      quality: 'none' as const,
+      confidenceScore: 0
+    }
+  };
+  assert.strictEqual(postIntentScore(enrichedNoneLead), 4.5, 'enriched_none must return 4.5 prior (evidence of absence)');
+
+  const enrichedSignalLead = {
+    fullName: 'High Signal Lead',
+    intentEnrichmentState: 'enriched_signal' as const,
+    postIntentEvidence: {
+      quality: 'strong' as const,
+      confidenceScore: 0.9,
+      postSnippets: ['1d ago - Adopting new workflow engine']
+    }
+  };
+  const score = postIntentScore(enrichedSignalLead);
+  assert.ok(score >= 8.5 && score <= 9.0, `enriched_signal with strong quality should score ~8.9, got ${score}`);
+});
+
+test('runLinkedInPostIntentEnrichment cutline bubble logic prioritizes candidates near the cutline over distant top winners', async () => {
+  const mockContract: ProspectContract = {
+    version: 1,
+    policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+    brief: 'Founders hiring automation specialists',
+    authorityRequired: true,
+    requirements: [],
+    exclusions: [],
+    initialQueries: []
+  };
+
+  // Lead 1: Guaranteed winner (score ~ 9.0) -- way above cutline
+  const guaranteedWinner: any = {
+    fullName: 'Guaranteed Winner',
+    contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/guaranteed-winner' },
+    decisionMakerVerification: { confidence: 10 },
+    qualification: { finalScore: 9.5 }
+  };
+
+  // Lead 2: Cutline leader (score ~ 7.0) -- targetLimit = 2
+  const cutlineLead: any = {
+    fullName: 'Cutline Lead',
+    contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/cutline-lead' },
+    decisionMakerVerification: { confidence: 7 },
+    qualification: { finalScore: 7.0 }
+  };
+
+  // Lead 3: Bubble challenger (score ~ 6.8, within 0.39 of cutline)
+  const bubbleChallenger: any = {
+    fullName: 'Bubble Challenger',
+    contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/bubble-challenger' },
+    decisionMakerVerification: { confidence: 7 },
+    qualification: { finalScore: 6.8 }
+  };
+
+  // Lead 4: Far below cutline (score ~ 3.0)
+  const farBelowLead: any = {
+    fullName: 'Far Below Lead',
+    contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/far-below' },
+    decisionMakerVerification: { confidence: 2 },
+    qualification: { finalScore: 3.0 }
+  };
+
+  const map = new Map([
+    ['lead-1', guaranteedWinner],
+    ['lead-2', cutlineLead],
+    ['lead-3', bubbleChallenger],
+    ['lead-4', farBelowLead]
+  ]);
+
+  const processedQueries: string[] = [];
+  await runLinkedInPostIntentEnrichment({
+    qualifiedLeads: map,
+    contract: mockContract,
+    targetLimit: 2, // Cutline is between Lead 2 and Lead 3
+    maxLeads: 2,    // Budget is strictly 2 leads
+    brightDataSearch: async (q) => {
+      processedQueries.push(q);
+      return [];
+    },
+    logEvent: () => {},
+    recordTrace: () => {}
+  });
+
+  // The 2 processed leads must be the Bubble candidates (Cutline Lead and Bubble Challenger),
+  // NOT Guaranteed Winner (which doesn't need enrichment to qualify) or Far Below Lead.
+  assert.strictEqual(processedQueries.length, 2);
+  assert.ok(processedQueries.some(q => q.includes('cutline-lead')), 'Cutline lead must be in the bubble');
+  assert.ok(processedQueries.some(q => q.includes('bubble-challenger')), 'Bubble challenger must be prioritized over guaranteed winner');
+  assert.ok(!processedQueries.some(q => q.includes('guaranteed-winner')), 'Guaranteed winner outside the bubble should not consume budget when cap is tight');
+});
+
 

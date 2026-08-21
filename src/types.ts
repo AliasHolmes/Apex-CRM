@@ -103,6 +103,8 @@ export type PostIntentCategory =
 
 export type PostIntentQuality = 'strong' | 'moderate' | 'weak' | 'none';
 
+export type IntentEnrichmentState = 'not_enriched' | 'enriched_none' | 'enriched_signal';
+
 export interface PostIntentEvidence {
   queriedAt: string;
   postSnippets: string[];
@@ -153,6 +155,7 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   discoveryLane?: string;
   paretoSkyline?: boolean;
   postIntentEvidence?: PostIntentEvidence;
+  intentEnrichmentState?: IntentEnrichmentState;
   confidenceInterval?: {
     lower: number;
     upper: number;
@@ -208,6 +211,7 @@ export interface Lead {
   discoveryLane?: string;
   paretoSkyline?: boolean;
   postIntentEvidence?: PostIntentEvidence;
+  intentEnrichmentState?: IntentEnrichmentState;
   confidenceInterval?: {
     lower: number;
     upper: number;

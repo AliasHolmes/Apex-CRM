@@ -40,6 +40,7 @@ export type LinkedInPostIntentOptions = {
   qualifiedLeads: Map<string, any>;
   contract: ProspectContract;
   brightDataSearch: (query: string) => Promise<BrightDataSearchResult[]>;
+  targetLimit?: number;
   maxLeads?: number;
   concurrency?: number;
   ttlDays?: number;
@@ -221,6 +222,7 @@ export async function runLinkedInPostIntentEnrichment(
     qualifiedLeads,
     contract,
     brightDataSearch,
+    targetLimit,
     maxLeads = 20,
     concurrency = 2,
     ttlDays = 7,
@@ -247,7 +249,7 @@ export async function runLinkedInPostIntentEnrichment(
   // Pre-warm postIntentEvidence from cache before sorting.
   // rankLeadForFinalSelection calls postIntentScore(lead), which reads lead.postIntentEvidence.
   // Without this step, postIntentEvidence is undefined for every lead and the sort is blind
-  // to Phase 5 signal entirely — defeating the purpose of the cutline sort.
+  // to Phase 5 signal entirely -- defeating the purpose of the cutline sort.
   // Cache reads are synchronous SQLite; no SERP calls are made here.
   const allLeads = Array.from(qualifiedLeads.values());
   for (const lead of allLeads) {
@@ -260,14 +262,43 @@ export async function runLinkedInPostIntentEnrichment(
       try {
         lead.postIntentEvidence = JSON.parse(cached.evidenceBlock) as PostIntentEvidence;
       } catch {
-        // malformed cache entry — leave postIntentEvidence undefined, sorts to neutral 5
+        // malformed cache entry -- leave postIntentEvidence undefined, sorts to neutral 5
       }
     }
   }
 
+  // --- Cutline & Bubble Selection Logic ---
+  // Max possible rank swing = (Max Phase 5 Score - Baseline) * Weight = (8.9 - 5.0) * 0.10 = 0.39
+  const MAX_INTENT_SWING = 0.39;
+
   const sortedLeads = [...allLeads].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
-  const leadsToProcess = sortedLeads.slice(0, maxLeads);
-  logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects (sorted by rank from ${allLeads.length} candidates).`);
+  let leadsToProcess: any[] = [];
+
+  if (typeof targetLimit === 'number' && targetLimit > 0 && targetLimit < sortedLeads.length) {
+    const cutlineIndex = targetLimit - 1;
+    const cutlineScore = rankLeadForFinalSelection(sortedLeads[cutlineIndex]);
+
+    // 1. Identify "Bubble" candidates whose rank could realistically flip across the cutline
+    const bubbleLeads = sortedLeads.filter(lead => {
+      const score = rankLeadForFinalSelection(lead);
+      return score >= (cutlineScore - MAX_INTENT_SWING) &&
+             score <= (cutlineScore + MAX_INTENT_SWING);
+    });
+
+    // 2. Fill remaining budget with top-down winners (for verification and annotation)
+    const bubbleSet = new Set(bubbleLeads);
+    const remainingBudget = Math.max(0, maxLeads - bubbleLeads.length);
+    const topDownLeads = sortedLeads
+      .filter(l => !bubbleSet.has(l))
+      .slice(0, remainingBudget);
+
+    // 3. Process Bubble candidates first (selection impact), then Top-Down (annotation)
+    leadsToProcess = [...bubbleLeads, ...topDownLeads].slice(0, maxLeads);
+    logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects (bubble=${bubbleLeads.length}, topDown=${topDownLeads.length}, cutlineScore=${cutlineScore.toFixed(2)}, total=${allLeads.length}).`);
+  } else {
+    leadsToProcess = sortedLeads.slice(0, maxLeads);
+    logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects (sorted by rank from ${allLeads.length} candidates).`);
+  }
 
   const tasks: ProviderQueueTask<void>[] = leadsToProcess.map((lead, index) => {
     const name = lead.fullName || lead.profile?.fullName || `Lead-${index}`;
@@ -289,6 +320,7 @@ export async function runLinkedInPostIntentEnrichment(
           try {
             const evidence: PostIntentEvidence = JSON.parse(cached.evidenceBlock);
             lead.postIntentEvidence = evidence;
+            lead.intentEnrichmentState = (evidence && evidence.quality !== 'none') ? 'enriched_signal' : 'enriched_none';
             const newScore = applyPostIntentDelta(lead);
             lead.finalSelectionScore = newScore;
             if (lead.qualification) lead.qualification.finalScore = newScore;
@@ -309,6 +341,7 @@ export async function runLinkedInPostIntentEnrichment(
         const query = buildLinkedInPostSearchQuery(lead);
         if (!query) {
           stats.noResults++;
+          lead.intentEnrichmentState = 'enriched_none';
           return;
         }
 
@@ -331,6 +364,7 @@ export async function runLinkedInPostIntentEnrichment(
               sourceUrl: firstUrl
             };
             lead.postIntentEvidence = emptyEvidence;
+            lead.intentEnrichmentState = 'enriched_none';
             upsertIntentCacheEntry({
               normalizedUrl: cacheKey,
               companyName: lead.currentCompany || lead.company || name,
@@ -358,6 +392,7 @@ export async function runLinkedInPostIntentEnrichment(
           };
 
           lead.postIntentEvidence = postEvidence;
+          lead.intentEnrichmentState = (postEvidence.quality !== 'none') ? 'enriched_signal' : 'enriched_none';
           const newScore = applyPostIntentDelta(lead);
           lead.finalSelectionScore = newScore;
           if (lead.qualification) lead.qualification.finalScore = newScore;
@@ -383,6 +418,9 @@ export async function runLinkedInPostIntentEnrichment(
           logEvent(`[Phase 5 Enriched] ${name}: category=${postEvidence.intentCategory}, quality=${postEvidence.quality}, confidence=${postEvidence.confidenceScore.toFixed(2)} -> updated score=${newScore.toFixed(2)}`);
         } catch (err: any) {
           stats.failed++;
+          if (!lead.intentEnrichmentState) {
+            lead.intentEnrichmentState = 'enriched_none';
+          }
           logEvent(`[Phase 5 WARN] LinkedIn post intent check failed for ${name}: ${err.message || String(err)}`);
         }
       }

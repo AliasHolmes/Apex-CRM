@@ -109,11 +109,11 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   logEvent?: (msg: string) => void
 ) {
   // --- Step 0: Pareto Skyline Optimization ---
-  // Identify non-dominated candidates across (authority, intent, evidence quality)
+  // Identify non-dominated candidates across (authority, company intent, post intent, evidence quality)
   // to protect specialist outlier leads from aggregate linear score washout.
   const { skyline } = computeParetoFrontier(candidates);
   if (logEvent && skyline.length > 0) {
-    logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, intent, and evidence quality.`);
+    logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, company intent, post intent, and evidence quality.`);
   }
 
   // Reserve up to 30% of slots for top Pareto non-dominated candidates

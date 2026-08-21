@@ -186,15 +186,22 @@ export async function checkCompanyIntent(
       options.corpus.registerOccurrences(uniqueBuying);
     }
 
-    // Compute TF-IDF aggregate score for this company (0-1 normalised)
+    // Compute TF-IDF aggregate score with category multipliers (tooling 1.5x, hiring 1.4x, pain 1.2x)
+    const categorized = options?.intentSignals?.categorized;
+    const toolingSet = new Set((categorized?.tooling || []).map(s => s.toLowerCase()));
+    const hiringSet = new Set((categorized?.hiring || []).map(s => s.toLowerCase()));
+    const painSet = new Set((categorized?.pain || []).map(s => s.toLowerCase()));
+
     let tfidfRawTotal = 0;
     for (const signal of uniqueBuying) {
-      const count = signalCounts.get(signal.toLowerCase()) ?? 1;
+      const lowerSig = signal.toLowerCase();
+      const count = signalCounts.get(lowerSig) ?? 1;
+      const catMultiplier = toolingSet.has(lowerSig) ? 1.5 : hiringSet.has(lowerSig) ? 1.4 : painSet.has(lowerSig) ? 1.2 : 1.0;
       if (options?.corpus) {
-        tfidfRawTotal += options.corpus.computeWeight(signal, count);
+        tfidfRawTotal += options.corpus.computeWeight(signal, count) * catMultiplier;
       } else {
         // Fallback: simple term-frequency proxy when no corpus is provided
-        tfidfRawTotal += Math.log1p(count);
+        tfidfRawTotal += Math.log1p(count) * catMultiplier;
       }
     }
     // Normalise to 0-1 using a soft cap (sum of 10 signals at max IDF ~= saturation)

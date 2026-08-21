@@ -93,6 +93,27 @@ export interface LeadEvidence {
   whyThisLead?: string;
 }
 
+export type PostIntentCategory =
+  | 'hiring'
+  | 'evaluating_tools'
+  | 'pain_signal'
+  | 'growth_signal'
+  | 'general'
+  | 'none';
+
+export type PostIntentQuality = 'strong' | 'moderate' | 'weak' | 'none';
+
+export interface PostIntentEvidence {
+  queriedAt: string;
+  postSnippets: string[];
+  intentKeywords: string[];
+  intentCategory: PostIntentCategory;
+  confidenceScore: number;
+  quality: PostIntentQuality;
+  llmReason: string;
+  sourceUrl?: string;
+}
+
 export interface ScoreBreakdown {
   fitScore: number;
   intentScore: number;
@@ -100,6 +121,7 @@ export interface ScoreBreakdown {
   evidenceQualityScore: number;
   sourceConfidenceScore: number;
   finalScore: number;
+  postIntentScore?: number;
   confidenceInterval?: {
     lower: number;
     upper: number;
@@ -130,6 +152,7 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   finalSelectionScore?: number;
   discoveryLane?: string;
   paretoSkyline?: boolean;
+  postIntentEvidence?: PostIntentEvidence;
   confidenceInterval?: {
     lower: number;
     upper: number;
@@ -184,6 +207,7 @@ export interface Lead {
   finalSelectionScore?: number;
   discoveryLane?: string;
   paretoSkyline?: boolean;
+  postIntentEvidence?: PostIntentEvidence;
   confidenceInterval?: {
     lower: number;
     upper: number;

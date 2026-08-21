@@ -454,6 +454,7 @@ function runMigrations(db: DatabaseSync) {
 
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
+        CREATE INDEX IF NOT EXISTS idx_leads_created_updated ON leads(created_at DESC, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_leads_stage_updated ON leads(stage, datetime(updated_at) DESC);
         CREATE INDEX IF NOT EXISTS idx_leads_review_status ON leads(review_status);
         CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC);
@@ -579,6 +580,7 @@ export function getLeadsDb() {
         expires_at TEXT NOT NULL
       );
 
+      CREATE INDEX IF NOT EXISTS idx_leads_created_updated ON leads(created_at DESC, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_url ON enrichment_cache(normalized_url);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
@@ -741,7 +743,7 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]
   const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM leads ${where}`).get(...params) as { total?: number } | undefined;
   const total = Number(totalRow?.total || 0);
 
-  let query = `SELECT ${summaryOnly ? 'id, full_name, company, title, stage, review_status, next_action, score, email, revision, created_at, updated_at' : 'payload, revision'} FROM leads ${where} ORDER BY datetime(COALESCE(created_at, updated_at)) DESC`;
+  let query = `SELECT ${summaryOnly ? 'id, full_name, company, title, stage, review_status, next_action, score, email, revision, created_at, updated_at' : 'payload, revision'} FROM leads ${where} ORDER BY created_at DESC, updated_at DESC`;
 
   const queryParams = [...params];
   if (typeof limit === 'number' && limit > 0) {
@@ -802,7 +804,7 @@ export function readExistingIdentityKeys(): Set<string> {
     if (r.identity_key) keys.add(r.identity_key);
   }
 
-  const leadRows = db.prepare('SELECT email, full_name, company FROM leads').all() as { email: string | null; full_name: string | null; company: string | null }[];
+  const leadRows = db.prepare('SELECT email, full_name, company FROM leads WHERE email IS NOT NULL OR full_name IS NOT NULL').all() as { email: string | null; full_name: string | null; company: string | null }[];
   for (const row of leadRows) {
     if (row.email) {
       const normEmail = normalizeDedupeValue(row.email);

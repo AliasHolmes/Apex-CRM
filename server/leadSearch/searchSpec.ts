@@ -180,7 +180,9 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
       const family = familyFor(item, spec);
       const isSignal = lane === 'signal';
       const isPerson = lane === 'person';
-      const requestedDepth = item.searchDepth || (isSignal && (item.priority || index + 1) <= 2 ? 'advanced' : 'basic');
+      // Enforce basic depth for person discovery to optimize recall and cost (1 credit),
+      // while escalating top signal tasks to advanced for rich job/tooling context.
+      const requestedDepth = isPerson ? 'basic' : (item.searchDepth || (isSignal && (item.priority || index + 1) <= 2 ? 'advanced' : 'basic'));
       const providerPreference = item.providerPreference || (lane === 'account' || isSignal ? 'corroborate' : 'tavily');
       // Tavily's country parameter is a strict lowercase enum. Do not let an
       // LLM substitute a metro area or differently-cased country name here;
@@ -251,13 +253,14 @@ export const buildStrategistPrompt = (params: {
   discoveryMode?: string;
   contract?: ProspectContract;
   missingRequirementIds?: string[];
+  discoveredCompanies?: string[];
   logEvent?: (msg: string) => void;
 }) => {
   const previousNote = params.previousQueries.length ? `Avoid repeats: ${params.previousQueries.join(' | ')}` : 'No previous queries.';
   const discoveryMode = params.discoveryMode || 'hybrid';
 
   const requirementDigest = params.contract?.requirements?.length
-    ? `\nCompiled prospect requirements (use these exact terms in queries):
+    ? `\nCompiled prospect requirements:
 ${params.contract.requirements.map(r => `  - [${r.importance}/${r.scope}/${r.evidenceModality || 'structured_profile'}] ${r.description} (terms: ${r.acceptableTerms.slice(0, 3).join(', ')})`).join('\n')}`
     : '';
 
@@ -265,8 +268,15 @@ ${params.contract.requirements.map(r => `  - [${r.importance}/${r.scope}/${r.evi
     ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(', ')}`
     : '';
 
+  const flywheelNote = params.discoveredCompanies && params.discoveredCompanies.length > 0
+    ? `\nDISCOVERED COMPANIES WITH ACTIVE SIGNALS (generate person queries targeting decision makers at these companies): ${params.discoveredCompanies.slice(0, 5).join(', ')}`
+    : '';
+
   if (params.logEvent && params.missingRequirementIds && params.missingRequirementIds.length > 0) {
     params.logEvent(`[Strategist] Injected unmet hard requirements into prompt: [${params.missingRequirementIds.join(', ')}]`);
+  }
+  if (params.logEvent && params.discoveredCompanies && params.discoveredCompanies.length > 0) {
+    params.logEvent(`[Strategist] Injected reverse flywheel target companies into prompt: [${params.discoveredCompanies.slice(0, 5).join(', ')}]`);
   }
 
   const roundSummaryStr = JSON.stringify(params.previousRoundSummary || {}).slice(0, 800);
@@ -280,6 +290,7 @@ Structured targeting spec: ${specStr}
 Discovery mode: ${discoveryMode}
 ${requirementDigest}
 ${missingNote}
+${flywheelNote}
 
 Generate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.
 ${previousNote}
@@ -289,8 +300,10 @@ Historical family/provider yield: ${performanceStr}
 Rules:
 - Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
 - Use at least two lanes: person, account, signal when the brief supports them.
-- person lane finds public professional profiles; account lane finds companies and leadership evidence; signal lane finds public growth, tooling, hiring, or pain evidence.
-- For open_web_signal requirements (e.g. hiring, tech stack, funding), use lane: "signal" and search open web - not LinkedIn.
+- person lane finds public professional profiles. Keep person queries focused on Roles + Company Types/Names + Locations. Do NOT append niche hiring or tooling trigger keywords to person queries.
+- account lane finds companies and leadership evidence.
+- signal lane finds public growth, tooling, hiring, or pain evidence on the open web (not LinkedIn).
+- For open_web_signal requirements (e.g. hiring, tech stack, funding), use lane: "signal" and search open web.
 - Prefer searchDepth basic. Do not use advanced unless a single signal task truly needs it.
 - providerPreference guide:
   - tavily: AI-ranked precision person queries (domain-filtered LinkedIn).

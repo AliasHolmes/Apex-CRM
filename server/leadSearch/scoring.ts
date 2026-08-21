@@ -1,4 +1,5 @@
 import { companiesMatch } from './signalStore.js';
+import { parseSnippetFreshnessDays, computeFreshnessMultiplier } from './intentSignals.js';
 
 export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
 export type EvidenceQuality = 'weak' | 'partial' | 'good';
@@ -10,6 +11,7 @@ export type ScoreBreakdown = {
   evidenceQualityScore: number;
   sourceConfidenceScore: number;
   finalScore: number;
+  postIntentScore?: number;
   confidenceInterval?: {
     lower: number;
     upper: number;
@@ -192,6 +194,30 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
   return Number(finalScore.toFixed(2));
 }
 
+export function applyPostIntentDelta(lead: Record<string, any>): number {
+  const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? lead.scoreOverride ?? 5);
+  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase;
+  const postIntent = lead.postIntentEvidence;
+  if (!postIntent || postIntent.quality === 'none') return base;
+
+  const confidence = Math.min(1, Math.max(0, Number(postIntent.confidenceScore) || 0));
+  const rawDelta =
+    postIntent.quality === 'strong'   ? 0.50 + confidence * 0.30 :
+    postIntent.quality === 'moderate' ? 0.25 + confidence * 0.20 :
+    postIntent.quality === 'weak'     ? 0.10 : 0;
+
+  const ageDays = parseSnippetFreshnessDays(postIntent.postSnippets || []);
+  const freshnessFactor = computeFreshnessMultiplier(ageDays);
+  const delta = Number((rawDelta * freshnessFactor).toFixed(2));
+
+  const newFinal = Number(Math.min(10, base + delta).toFixed(2));
+  if (lead.scoreBreakdown) {
+    lead.scoreBreakdown.postIntentScore = Number((confidence * 10 * freshnessFactor).toFixed(1));
+    lead.scoreBreakdown.finalScore = newFinal;
+  }
+  return newFinal;
+}
+
 export function computeMMRDiversitySelection<T extends Record<string, any>>(
   candidates: T[],
   targetCount: number,
@@ -273,11 +299,6 @@ function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: Au
 }
 
 export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats?: BM25CorpusStats): number {
-  const rawScore = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore);
-  const qualificationScore = rawScore <= 1.0 && rawScore > 0 ? rawScore * 10 : rawScore;
-  if ((lead.qualification?.verdict === 'qualified' || Number.isFinite(lead.finalSelectionScore)) && Number.isFinite(qualificationScore)) {
-    return Number(Math.min(Math.max(qualificationScore, 0), 10).toFixed(2));
-  }
   const audit: AuditSummary | undefined = lead.audit;
   const authorityScore = clampScore(lead.decisionMakerVerification?.confidence ?? audit?.authorityConfidence, 5);
   const companyScore = companyIntentScore(lead);
@@ -285,7 +306,8 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   const criteriaCoverageScore = clampScore(lead.scout?.criteriaCoverageScore, 5);
   const corroborationScore = clampScore(lead.scout?.corroborationScore, 4);
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
-  const baseScore = clampScore(lead.scoreBreakdown?.finalScore || lead.scoreOverride || lead.fitScore || audit?.functionalRelevance, 5);
+  const rawBase = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore ?? lead.scoreBreakdown?.finalScore ?? lead.scoreOverride ?? lead.fitScore ?? audit?.functionalRelevance);
+  const baseScore = clampScore(rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase, 5);
 
   // BM25+ Profile & Evidence Text Relevance:
   const queryTerms = Array.isArray(lead.scout?.matchedCriteria) ? lead.scout.matchedCriteria : [];

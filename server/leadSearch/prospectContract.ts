@@ -28,10 +28,30 @@ export type ProspectRequirement = {
   queryable: boolean;
 };
 
+export type DecompositionMode = 'single_stream_identity' | 'dual_stream_intent';
+
+export type IdentitySpec = {
+  roles: string[];
+  locations: string[];
+  companyTypes: string[];
+  industries: string[];
+  seniorities?: string[];
+};
+
+export type IntentSpec = {
+  toolingKeywords: string[];
+  hiringSignals: string[];
+  painSignals: string[];
+  growthSignals: string[];
+};
+
 export type ProspectContract = {
   version: 1;
   policyVersion: typeof PROSPECT_CONTRACT_POLICY_VERSION;
   brief: string;
+  decompositionMode?: DecompositionMode;
+  identitySpec?: IdentitySpec;
+  intentSpec?: IntentSpec;
   authorityRequired: boolean;
   requirements: ProspectRequirement[];
   exclusions: string[];
@@ -90,6 +110,21 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
 
   return unique(expanded);
 };
+
+const INTENT_TRIGGER_PATTERN = /\b(hiring|recruiting|looking\s+for|seeking|using|evaluating|migrating|switching|scaling\s+past|manual\s+process|bottleneck|open\s+role|partner\s+program|white\s*label|subcontract)\b/i;
+
+export function detectDecompositionMode(brief: string): DecompositionMode {
+  const text = clean(brief);
+  if (!text) return 'single_stream_identity';
+  const words = text.split(/\s+/).filter(Boolean);
+  if (INTENT_TRIGGER_PATTERN.test(text)) {
+    return 'dual_stream_intent';
+  }
+  if (words.length > 14) {
+    return 'dual_stream_intent';
+  }
+  return 'single_stream_identity';
+}
 
 /**
  * The fallback never adds an inferred audience. It keeps a search usable when
@@ -198,10 +233,37 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   }
 
   const fallback = buildContractFallbackQueries(brief, deduped);
+  const decompositionMode = detectDecompositionMode(brief);
+  const identityRoles = unique(deduped.filter(r => r.scope === 'person_role').flatMap(r => r.acceptableTerms));
+  const identityLocations = unique(deduped.filter(r => r.scope === 'person_location').flatMap(r => r.acceptableTerms));
+  const identityCompanyTypes = unique(deduped.filter(r => r.scope === 'company_type').flatMap(r => r.acceptableTerms));
+  const identityIndustries = unique(deduped.filter(r => r.scope === 'company_industry').flatMap(r => r.acceptableTerms));
+
+  const identitySpec: IdentitySpec = {
+    roles: identityRoles.length ? identityRoles : spec.person.includeTitles,
+    locations: identityLocations.length ? identityLocations : spec.person.locations,
+    companyTypes: identityCompanyTypes.length ? identityCompanyTypes : spec.company.keywords,
+    industries: identityIndustries.length ? identityIndustries : spec.company.industries,
+    seniorities: spec.person.seniorities
+  };
+
+  const intentRequirements = deduped.filter(r => r.scope === 'signal' || r.evidenceModality === 'open_web_signal');
+  const intentTerms = intentRequirements.flatMap(r => r.acceptableTerms);
+
+  const intentSpec: IntentSpec = {
+    toolingKeywords: intentTerms.filter(t => /\b(n8n|zapier|make|hubspot|salesforce|supabase|airtable|react|python|aws)\b/i.test(t)),
+    hiringSignals: intentTerms.filter(t => /\b(hiring|recruiting|role|specialist|developer|engineer|lead)\b/i.test(t)),
+    painSignals: intentTerms.filter(t => /\b(manual|scaling|bottleneck|legacy|churn|slow)\b/i.test(t)),
+    growthSignals: intentTerms.filter(t => /\b(funded|series|expanding|growing|launch)\b/i.test(t))
+  };
+
   return {
     version: 1,
     policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
     brief: clean(brief),
+    decompositionMode,
+    identitySpec,
+    intentSpec,
     authorityRequired: inferredAuthority(deduped),
     requirements: deduped,
     exclusions,
@@ -259,8 +321,27 @@ export function buildContractFallbackQueries(brief: string, requirements: Prospe
 export const prospectContractSchema = {
   type: Type.OBJECT,
   properties: {
+    decompositionMode: { type: Type.STRING },
     authorityRequired: { type: Type.BOOLEAN },
     exclusions: { type: Type.ARRAY, items: { type: Type.STRING } },
+    identitySpec: {
+      type: Type.OBJECT,
+      properties: {
+        roles: { type: Type.ARRAY, items: { type: Type.STRING } },
+        locations: { type: Type.ARRAY, items: { type: Type.STRING } },
+        companyTypes: { type: Type.ARRAY, items: { type: Type.STRING } },
+        industries: { type: Type.ARRAY, items: { type: Type.STRING } }
+      }
+    },
+    intentSpec: {
+      type: Type.OBJECT,
+      properties: {
+        toolingKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+        hiringSignals: { type: Type.ARRAY, items: { type: Type.STRING } },
+        painSignals: { type: Type.ARRAY, items: { type: Type.STRING } },
+        growthSignals: { type: Type.ARRAY, items: { type: Type.STRING } }
+      }
+    },
     requirements: {
       type: Type.ARRAY,
       items: {
@@ -299,7 +380,23 @@ export const prospectContractSchema = {
   required: ['authorityRequired', 'requirements', 'exclusions', 'initialQueries']
 };
 
-export const buildProspectContractPrompt = (brief: string, suppliedSpec?: unknown) => `You compile a strict prospecting contract and first retrieval plan.\n\nUser brief:\n${clean(brief)}\n\n${suppliedSpec ? `User-supplied editable search spec (these are immutable constraints):\n${JSON.stringify(suppliedSpec)}\n\n` : ''}Rules:\n- A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.\n- Never invent adjacent personas, firm sizes, industries, buying intent, locations, or signals.\n- At most 5 hard and 5 soft requirements. A person role, profession, company type, or location explicitly requested is hard.\n- For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.\n- acceptableTerms are short alternatives for the same stated requirement, never broader personas.\n- Generate concise profile-retrieval queries and signal-retrieval queries for any open_web_signal hard requirements.\n- Do not use Google dorks, site:, or the word LinkedIn.\n- coveredRequirementIds may reference only the returned requirement ids.\nReturn only the requested JSON.`;
+export const buildProspectContractPrompt = (brief: string, suppliedSpec?: unknown) => `You compile a strict prospecting contract and first retrieval plan.
+
+User brief:
+${clean(brief)}
+
+${suppliedSpec ? `User-supplied editable search spec (these are immutable constraints):\n${JSON.stringify(suppliedSpec)}\n\n` : ''}Rules:
+- Classify decompositionMode as 'single_stream_identity' (for short/simple persona briefs without explicit buying triggers) or 'dual_stream_intent' (for briefs with hiring, tooling, pain, or expansion triggers).
+- For dual_stream_intent briefs: decouple identitySpec (roles, locations, companyTypes, industries) from intentSpec (toolingKeywords, hiringSignals, painSignals, growthSignals).
+- In person-lane profile discovery queries, include ONLY identity terms (Role + Location + Company Type). NEVER include intent/hiring/tooling trigger words in person-lane queries.
+- For open_web_signal / intent requirements, generate dedicated signal-lane queries searching the open web.
+- A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.
+- At most 5 hard and 5 soft requirements. A person role, profession, company type, or location explicitly requested is hard.
+- For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
+- acceptableTerms are short alternatives for the same stated requirement, never broader personas.
+- Do not use Google dorks, site:, or the word LinkedIn in initialQueries.
+- coveredRequirementIds may reference only the returned requirement ids.
+Return only the requested JSON.`;
 
 export const buildRecoveryQueryPrompt = (contract: ProspectContract, diagnostics: { missingHardRequirementIds: string[]; viableCandidates: number }) => `Generate exactly four distinct recovery retrieval queries for this immutable prospect contract.\n\nContract: ${JSON.stringify({ requirements: contract.requirements, exclusions: contract.exclusions })}\n\nRound evidence: ${JSON.stringify(diagnostics)}\n\nRules:\n- Preserve every hard requirement in every query.\n- Recover only the missing hard requirements; do not widen personas, geography, firmographics, or intent.\n- Use only contract terms. Do not use Google dorks, site:, or the word LinkedIn.\n- Vary only the contract's acceptable terms and retrieval phrasing such as public profile or professional profile.\n- Return exactly four query objects.`;
 
@@ -372,10 +469,37 @@ export function normalizeProspectContract(
     requirements: normalizedRequirements,
     exclusions
   });
+
+  const rawMode = clean(raw.decompositionMode);
+  const decompositionMode: DecompositionMode =
+    rawMode === 'dual_stream_intent' || rawMode === 'single_stream_identity'
+      ? rawMode
+      : fallback.decompositionMode || detectDecompositionMode(brief);
+
+  const rawIdentity = raw.identitySpec && typeof raw.identitySpec === 'object' ? raw.identitySpec : {};
+  const identitySpec: IdentitySpec = {
+    roles: Array.isArray(rawIdentity.roles) && rawIdentity.roles.length ? unique(rawIdentity.roles) : fallback.identitySpec?.roles || [],
+    locations: Array.isArray(rawIdentity.locations) && rawIdentity.locations.length ? unique(rawIdentity.locations) : fallback.identitySpec?.locations || [],
+    companyTypes: Array.isArray(rawIdentity.companyTypes) && rawIdentity.companyTypes.length ? unique(rawIdentity.companyTypes) : fallback.identitySpec?.companyTypes || [],
+    industries: Array.isArray(rawIdentity.industries) && rawIdentity.industries.length ? unique(rawIdentity.industries) : fallback.identitySpec?.industries || [],
+    seniorities: fallback.identitySpec?.seniorities
+  };
+
+  const rawIntent = raw.intentSpec && typeof raw.intentSpec === 'object' ? raw.intentSpec : {};
+  const intentSpec: IntentSpec = {
+    toolingKeywords: Array.isArray(rawIntent.toolingKeywords) && rawIntent.toolingKeywords.length ? unique(rawIntent.toolingKeywords) : fallback.intentSpec?.toolingKeywords || [],
+    hiringSignals: Array.isArray(rawIntent.hiringSignals) && rawIntent.hiringSignals.length ? unique(rawIntent.hiringSignals) : fallback.intentSpec?.hiringSignals || [],
+    painSignals: Array.isArray(rawIntent.painSignals) && rawIntent.painSignals.length ? unique(rawIntent.painSignals) : fallback.intentSpec?.painSignals || [],
+    growthSignals: Array.isArray(rawIntent.growthSignals) && rawIntent.growthSignals.length ? unique(rawIntent.growthSignals) : fallback.intentSpec?.growthSignals || []
+  };
+
   return {
     version: 1,
     policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
     brief: clean(brief),
+    decompositionMode,
+    identitySpec,
+    intentSpec,
     authorityRequired: Boolean(raw.authorityRequired) || inferredAuthority(normalizedRequirements),
     requirements: normalizedRequirements.length ? normalizedRequirements : fallback.requirements,
     exclusions,
@@ -391,6 +515,12 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   const exclusions = contract.exclusions.map(lower).filter(Boolean);
   const seen = new Set<string>();
   const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
+  const intentTerms = new Set([
+    ...(contract.intentSpec?.toolingKeywords || []).map(lower),
+    ...(contract.intentSpec?.hiringSignals || []).map(lower),
+    ...(contract.intentSpec?.painSignals || []).map(lower),
+    ...(contract.intentSpec?.growthSignals || []).map(lower)
+  ]);
   const normalized: SearchQueryPlanItem[] = [];
   for (const raw of rawItems.slice(0, 6)) {
     const candidate = typeof raw === 'string' ? { query: raw } : raw && typeof raw === 'object' ? raw as Record<string, any> : {};
@@ -399,6 +529,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
     if (!isSignalLane) {
       for (const requirement of hardRequirements) {
+        if (intentTerms.has(lower(requirement.sourcePhrase))) continue;
         if (!includesAny(query, requirement.acceptableTerms)) {
           query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
         }

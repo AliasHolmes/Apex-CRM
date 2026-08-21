@@ -6,8 +6,9 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-6.0-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v12-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v12" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v13-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v13" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+    <img src="https://img.shields.io/badge/Lead_Engine-150_Tests_Passing-10B981" alt="Lead Engine 150 Tests" />
   </p>
 </div>
 
@@ -20,10 +21,14 @@ Apex CRM is a single-user, local-first application for finding relevant prospect
 Its primary workflow is intentionally practical:
 
 1. Describe the people or companies you want to find in natural language.
-2. The engine compiles a versioned Prospect Contract and executes multi-modal retrieval tasks across public web sources using Tavily and Bright Data.
-3. Observations from LinkedIn (identity) and the open web (intent/signals) are fused and verified.
-4. Review evidence-grounded prospects, matched criteria, certainty scores, and LinkedIn URLs.
-5. Send connection requests and messages manually on LinkedIn.
+2. The engine uses **Adaptive Prompt Intelligence** to classify your brief:
+   - Simple persona briefs run direct high-recall discovery with zero LLM overhead.
+   - Long-shot intent briefs decouple into **Stream A (Identity)** for 100% SERP recall and **Stream B (Intent Triggers)** for multi-channel open-web research.
+3. The engine executes multi-modal retrieval tasks across public web sources using Tavily and Bright Data.
+4. Active hiring/tooling triggers on the open web feed a **Signal-to-Company Reverse Flywheel**, immediately retrieving executives at companies with verified intent.
+5. High-fidelity enrichment analyzes company websites (**Phase 4 TF-IDF**) and public prospect activity (**Phase 5 LinkedIn Post SERP Intent with Temporal Freshness Decay**).
+6. Review evidence-grounded prospects, matched criteria, "Why Now" flame/radio badges, certainty intervals, and LinkedIn URLs.
+7. Send connection requests and messages manually on LinkedIn.
 
 The application includes inventory management, stage tracking, profile enrichment, pipeline management, saved searches, activity history, and outreach draft generation. It is not an automated LinkedIn bot and avoids browser automation or fragile LinkedIn anti-bot hooks.
 
@@ -33,59 +38,54 @@ The application includes inventory management, stage tracking, profile enrichmen
 
 ```mermaid
 flowchart TD
-    Brief["Prospect Brief"] --> Contract["Prospect Contract (Policy v2)"]
-    Contract --> Planner["Query Planner (Identity & Signal Lanes)"]
-    Planner --> Scheduler["Adaptive Scheduler & Key Rotation"]
-    Scheduler --> Tavily["Tavily Search & Extract"]
-    Scheduler --> Bright["Bright Data MCP"]
+    Brief["Prospect Brief"] --> Classifier["Adaptive Prompt Intelligence"]
+    Classifier -->|Simple Brief| StreamIdentity["Single-Stream Mode (Direct Persona)"]
+    Classifier -->|Compound Brief| StreamDual["Dual-Stream Mode (Decoupled Specs)"]
+    StreamDual --> StreamA["Stream A: Identity Plane (Role, Geo, Firm)"]
+    StreamDual --> StreamB["Stream B: Intent Plane (Tools, Jobs, Pain)"]
+    StreamIdentity --> PersonQueries["LinkedIn Profile Queries (Basic Depth)"]
+    StreamA --> PersonQueries
+    StreamB --> SignalQueries["Open-Web Signal Queries (Advanced Depth)"]
+    SignalQueries --> Tavily["Tavily Search & Extract"]
+    PersonQueries --> Tavily
+    PersonQueries --> Bright["Bright Data SERP"]
+    SignalQueries --> Flywheel["Signal-to-Company Reverse Flywheel"]
+    Flywheel -->|Prioritized Accounts| PersonQueries
     Tavily --> Fusion["Observation Normalizer & SignalStore Fusion"]
     Bright --> Fusion
-    Fusion --> Evidence["Evidence Pinning & Extraction"]
-    Evidence --> Diagnostics["Round Diagnostics (Pass Rates & Missing IDs)"]
-    Diagnostics -->|Unmet Hard Reqs| Strategist["Closed-Loop Strategist (Recovery)"]
-    Strategist --> Scheduler
-    Evidence --> Judge["3-Tier Finalist Judge"]
-    Judge --> FastPath["Strict Fast-Path (Profile Match)"]
-    Judge --> LLMJudge["Bounded LLM Judge (e1/e2 Evidence)"]
-    FastPath --> Pareto["Pareto Skyline (30% Reservation)"]
-    LLMJudge --> Pareto
-    Pareto --> MMR["MMR Diversity (Fuzzy Brand Clustering)"]
-    MMR --> Inventory["Local Prospect Inventory (SQLite v12)"]
+    Fusion --> Judge["3-Tier Finalist Judge & Pareto Skyline"]
+    Judge --> Phase4["Phase 4: Company Website TF-IDF Intent"]
+    Phase4 --> Phase5["Phase 5: LinkedIn Post SERP Intent (Freshness Decay)"]
+    Phase5 --> MMR["MMR Diversity & Final Selection"]
+    MMR --> Inventory["Local Prospect Inventory (SQLite v13)"]
 ```
 
 ### Key Architectural Capabilities
 
-#### 1. Multi-Modal Prospect Contracts (Policy v2)
-- Compiles the user's natural language brief into explicit hard and soft criteria with semantic term expansion (`acceptableTerms`).
-- Supports multi-modality requirement scopes:
-  - `person_role` / `person_location` / `company_type`: Verified against `structured_profile` evidence.
-  - `signal`: Verified against `open_web_signal` evidence (e.g. job postings, tech stacks, press releases, hiring surges).
-  - `authority`: Verified against `domain_verification` and decision-maker titles.
-- Deterministic fallback compiler ensures search continuity even when LLM planner APIs are unavailable.
+#### 1. Adaptive Prompt Intelligence & Decoupled Decomposition
+- **Mode 1: `single_stream_identity`**: Automatically fast-tracks simple persona briefs (e.g., *"Immigration lawyers in London"*), skipping dynamic intent compilation to save ~1.5s latency and 1 LLM call per session.
+- **Mode 2: `dual_stream_intent`**: Decouples compound briefs into **Stream A (Identity Spec)** and **Stream B (Intent Spec)**.
+- **Zero-Yield Search Fix**: Enforces that `person` lane profile discovery queries (`site:linkedin.com/in/`) contain **only** identity terms (Role + Location + Company Type), permanently preventing 0-yield SERP results caused by cramming niche intent keywords into profile searches.
 
-#### 2. Dual-Lane Retrieval & SignalStore Fusion
-- **Identity Lanes (`lane: "identity"`)**: Prioritize LinkedIn profile URLs and personal authority.
-- **Signal Lanes (`lane: "signal"`)**: Target open web and company pages for external intent triggers (e.g., Lever, Greenhouse, tech stack announcements).
-- **SignalStore**: Automatically normalizes company brand variations (`companiesMatch`), extracts company hints from hosted domains/paths, and attaches corroborating signals to prospect profiles.
+#### 2. Multi-Source Intent Research (Phases 4 & 5)
+- **Phase 4 (Company Website TF-IDF)**: Scrapes company websites against categorized intent dictionaries (`tooling` 1.5x, `hiring` 1.4x, `pain` 1.2x) with session-scoped IDF corpus weighting.
+- **Phase 5 (LinkedIn Post SERP Intent)**: Queries Google for indexed prospect post snippets (`site:linkedin.com/posts <handle>`), classifies intent categories (`hiring`, `evaluating_tools`, `pain_signal`, `growth_signal`), and renders "Why Now" (Active Intent / Activity) indicators and detail cards.
+- **Temporal Freshness Decay**: Parses SERP snippet recency markers (`"2 days ago"`, `"3 weeks ago"`, `"4 months ago"`) and applies exponential half-life decay (e^(-0.02 * days)) so newly published intent triggers receive full boost.
 
-#### 3. Evidence Budgeting & Pinned Signal Defense
-- Evidence blocks for candidate evaluation are strictly bounded to prevent context window overflow.
-- Open-web signal blocks (`[OPEN-WEB SIGNAL:]`) are pinned to a reserved evidence slot (`e2`) to ensure hiring and intent proof is never evicted by profile snippet length.
+#### 3. Signal-to-Company Reverse Flywheel
+- When Stream B searches open-web job boards and careers pages, discovered companies with active buying triggers are registered in `SignalStore`.
+- The strategist automatically synthesizes prioritized profile queries targeting decision-makers at those specific accounts:
+  `site:linkedin.com/in/ ("Founder" OR "CEO") "DiscoveredCompany"`
 
-#### 4. 3-Tier Finalist Judge
-- **Strict Fast-Path**: Candidates with exact, unambiguous structured profile matches bypass LLM evaluation with zero token cost.
-- **Bounded LLM Judge**: Evaluates ambiguous candidates strictly against provided evidence snippets. Missing evidence is assigned `unknown`.
-- **Modality-Aware Scoring**: Candidates passing all profile requirements but missing open-web signal confirmation receive `qualified_partial` (with a 15% discount), while failing a hard requirement results in an immediate hard fail.
+#### 4. Dynamic Search Depth Escalation (Cost & Recall Optimized)
+- Persona discovery queries are locked to Tavily `searchDepth: 'basic'` (1 credit per query, high recall).
+- Top priority open-web signal queries escalate to `searchDepth: 'advanced'` to extract rich job descriptions and tech stack snippets, reducing session credit consumption by ~60%.
 
-#### 5. Closed-Loop Multi-Round Recovery
-- `buildRoundDiagnostics` measures per-requirement pass rates across candidate batches in real time.
-- Unmet hard requirements (pass rate < 25%) are identified and fed directly into `buildStrategistPrompt` as `missingRequirementIds`.
-- The Strategist generates focused recovery queries to specifically address missing constraints rather than guessing from the raw brief.
-- Session-aware recovery (`alreadyQualified`) stops query execution when target lead volume is fulfilled.
-
-#### 6. Pareto Skyline Guarantee & MMR Diversity
-- **Pareto Skyline**: Up to 30% of candidate slots are reserved for non-dominated Pareto front outliers (high authority, high intent, or strong evidence), preventing dilution by single-metric scoring.
-- **Maximal Marginal Relevance (MMR)**: Uses tokenized fuzzy company brand matching (`companiesMatch`) to prevent over-indexing on company variations (e.g., "Acme Corp" vs "Acme LLC").
+#### 5. 3-Tier Finalist Judge & Pareto Skyline
+- **Strict Fast-Path**: Direct, unambiguous profile matches auto-qualify with zero LLM overhead.
+- **Bounded Semantic Judge**: Evaluates ambiguous candidates strictly against cited evidence snippets. Candidates with verified profiles but unconfirmed open-web signals receive `qualified_partial` (15% discount), while failing a hard requirement results in an immediate hard fail.
+- **Pareto Skyline Guarantee**: Up to 30% of candidate slots are reserved for non-dominated Pareto front outliers (high authority + high verified intent).
+- **Maximal Marginal Relevance (MMR)**: Uses tokenized fuzzy company brand matching (`companiesMatch`) to prevent over-indexing on company variations.
 
 ---
 
@@ -230,16 +230,16 @@ All API routes are mounted under `/api`:
 
 ---
 
-## Database & Schema (v12)
+## Database & Schema (v13)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
 ### Schema Capabilities:
-- **`leads`**: Core prospect records, LinkedIn canonical identities, matched criteria, uncertainty scores, and revision locks.
+- **`leads`**: Core prospect records, LinkedIn canonical identities, matched criteria, postIntentEvidence, uncertainty scores, and revision locks.
 - **`mining_sessions`**: Durable execution sessions, target progress, and phase summaries.
 - **`mining_traces`**: Granular event streams for real-time observability.
 - **`query_performance`**: Historical yield, latency, and provider unit accounting per query family and lane.
-- **`prospect_contracts`**: Versioned requirement contracts and compilation metadata.
+- **`prospect_contracts`**: Versioned requirement contracts, decomposition modes, and compilation metadata.
 - **`intent_cache`**: Dynamic company intent signals and observation fingerprints.
 - **`enrichment_cache`**: Positive and negative profile scraping caches.
 - **`search_specs` & `saved_searches`**: Reusable prospecting configurations.
@@ -254,17 +254,23 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 Apex CRM maintains an extensive test suite:
 
 ```bash
-# Typecheck
+# Typecheck (0 errors)
 npm run lint
 
-# Core Lead Engine Suite (132 tests)
+# Full Lead Engine Suite (150 tests)
 npm run test:lead-engine
 
-# Prospect Quality & Contract Suite (18 tests)
+# Adaptive Decomposition & Multi-Source Intent Suite (24 tests)
+npm run test:intent-engine
+
+# Prospect Quality & Contract Suite (19 tests)
 npm run test:prospect-quality
 
-# Intent Signals & Dynamic Enrichment
-npm run test:intent-engine
+# UI Contracts & Dashboard Nav (6 tests)
+npm run test:ui
+
+# ASCII & UTF-8 Encoding Hygiene (1 test)
+npm run test:glyphs
 
 # Scout Pipeline & Provider Routing
 npm run test:scout
@@ -275,8 +281,8 @@ npm run test:key-rotation
 # LLM Gateway & Budget Limits
 npm run test:llm
 
-# Persistence & Revisions
-npm run test:persistence
+# Persistence, Identity Deduplication & Revisions
+npm run test:dedupe
 ```
 
 ---
@@ -302,7 +308,7 @@ src/
   utils/                     Deduplication, normalization, and UI formatting
 server/
   routes/
-    api.ts                   REST API endpoints and discovery orchestration
+    api.ts                   REST API endpoints and HTTP adapters
   services/
     llm.ts                   LLM gateway, fallbacks, and JSON schemas
     tavily.ts                Tavily search, extraction, and key rotation
@@ -310,19 +316,22 @@ server/
     keyRotator.ts            Provider key pool and rate-limit manager
     evidenceService.ts       Markdown extraction and email discovery
   leadSearch/
-    prospectContract.ts      Contract schema and semantic compiler
+    discoveryEngine.ts       Deep Discovery Session Engine & reverse flywheel
+    prospectContract.ts      Contract schema, prompt intelligence & decomposition
+    intentSignals.ts         Dynamic signal compiler, categories & freshness decay
+    companyIntent.ts         Phase 4 company website TF-IDF intent scoring
+    linkedinPostIntent.ts    Phase 5 LinkedIn post SERP intent research
     finalistJudge.ts         3-Tier Judge and strict candidate evaluation
     roundDiagnostics.ts      Pass-rate diagnostics and recovery detection
-    searchSpec.ts            Query planner and strategist prompts
-    intentSignals.ts         Cross-vertical intent signals compiler
+    searchSpec.ts            Query planner, dynamic depth & strategist prompts
     observations.ts          Observation normalization and company extraction
     signalStore.ts           Brand matching and signal fusion
     scoutScoring.ts          Scout candidate scoring and Pareto reservation
-    scoring.ts               Final composite scoring and MMR diversity
+    scoring.ts               Composite scoring, freshness decay & MMR diversity
     verification.ts          Decision-maker verification and title checks
-    targetFulfillment.ts     Multi-round fulfillment engine
+    targetFulfillment.ts     Forwarding facade for discovery engine
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v12 schema, migrations, and CRUD helpers
+  db.ts                      SQLite v13 schema, migrations, and CRUD helpers
 test/                        Automated unit, integration, and replay test suites
 scripts/                     Dev orchestrator and server runners
 litellm.config.yaml          LiteLLM proxy configuration

@@ -31,6 +31,7 @@ export function getLeadProvenance(lead: Lead) {
     scout,
     paretoSkyline: lead.paretoSkyline || qualifiedProfile.paretoSkyline || false,
     confidenceInterval: ci,
+    postIntentEvidence: lead.postIntentEvidence || qualifiedProfile.postIntentEvidence,
   };
 }
 

@@ -111,4 +111,24 @@ describe('Target Fulfillment Engine Mechanics', () => {
     assert.equal(clampedYield, 0.25);
     assert.equal(requiredTranche, 30);
   });
+
+  it('validates discoveryEngine interface, state maps, and query boundaries', async () => {
+    const { discoveryEngine } = await import('../server/leadSearch/discoveryEngine.ts');
+    assert.equal(discoveryEngine.isActive('non-existent-session'), false);
+    assert.equal(discoveryEngine.getLiveLogs('non-existent-session'), null);
+    assert.equal(discoveryEngine.getLiveTrace('non-existent-session'), null);
+    assert.equal(discoveryEngine.cancel('non-existent-session'), false);
+
+    // Empty query validation
+    await assert.rejects(
+      () => discoveryEngine.execute({ promptQuery: '' }),
+      /query must be a non-empty string/
+    );
+
+    // Query length bound validation
+    await assert.rejects(
+      () => discoveryEngine.execute({ promptQuery: 'a'.repeat(2001) }),
+      /query must be a non-empty string of 2,000 characters or fewer/
+    );
+  });
 });

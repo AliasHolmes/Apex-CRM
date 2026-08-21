@@ -73,9 +73,9 @@ export function createLLMSessionCircuitBreaker(failureThreshold = 2): LLMSession
 const DEFAULT_PRIMARY_BASE = 'https://byesu.com/v1';
 const DEFAULT_PRIMARY_MODEL = 'gpt-5.5';
 const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
-const DEFAULT_OPENROUTER_MODEL = 'poolside/laguna-m.1:free';
+const DEFAULT_OPENROUTER_MODEL = 'meta-llama/llama-3.3-70b-instruct:free';
 const DEFAULT_GROQ_BASE = 'https://api.groq.com/openai/v1';
-const DEFAULT_GROQ_MODEL = 'qwen/qwen3.6-27b';
+const DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile';
 const DEFAULT_LITELLM_BASE = 'http://127.0.0.1:4000/v1';
 const DEFAULT_LITELLM_MODEL = 'apex-primary';
 
@@ -182,7 +182,7 @@ export function getAPIKey(): string {
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
-  timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 45000),
+  timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 240000),
   maxRetries = Number(process.env.LLM_MAX_RETRIES || 0)
 ): Promise<Response> {
   const retry429 = process.env.LLM_RETRY_429 === 'true';

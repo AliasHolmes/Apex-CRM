@@ -79,6 +79,18 @@ export class SignalStore {
     return { companyName: uniqueCandidates[0] || '', blocks: [] };
   }
 
+  /** Return list of unique company names discovered with signal evidence. */
+  getUniqueCompanyNames(): string[] {
+    const names = new Set<string>();
+    for (const b of this.blocks) {
+      const cleanName = String(b.companyName || '').trim();
+      if (cleanName && cleanName.length >= 2 && !names.has(cleanName)) {
+        names.add(cleanName);
+      }
+    }
+    return Array.from(names);
+  }
+
   get size(): number {
     return this.blocks.length;
   }

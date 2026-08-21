@@ -31,6 +31,7 @@ import {
   Trash2,
   Wand2,
   X,
+  Flame,
 } from 'lucide-react';
 import type { Lead, LinkedInProfile, NextAction, ReviewStatus } from '../types';
 import {
@@ -955,6 +956,36 @@ export default function CrmPipeline({
                 {selectedLeadProvenance?.paretoSkyline && (
                   <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 text-xs text-amber-200">
                     <span className="font-bold">Pareto Skyline Lead:</span> Non-dominated outlier ranking across Authority, Intent, and Evidence Specificity.
+                  </div>
+                )}
+                {selectedLeadProvenance?.postIntentEvidence && selectedLeadProvenance.postIntentEvidence.quality !== 'none' && (
+                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                        <Flame className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+                        <span className="capitalize">Why Now: {(selectedLeadProvenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}</span>
+                      </div>
+                      <Badge variant="outline" className="border-amber-500/30 text-amber-400 bg-amber-500/10">
+                        {Math.round((selectedLeadProvenance.postIntentEvidence.confidenceScore || 0) * 100)}% Confidence
+                      </Badge>
+                    </div>
+                    {selectedLeadProvenance.postIntentEvidence.llmReason && (
+                      <p className="text-slate-300">{selectedLeadProvenance.postIntentEvidence.llmReason}</p>
+                    )}
+                    {selectedLeadProvenance.postIntentEvidence.intentKeywords?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {selectedLeadProvenance.postIntentEvidence.intentKeywords.map((kw: string) => (
+                          <Badge key={kw} variant="secondary" className="text-xs px-1.5 py-0">
+                            {kw}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    {selectedLeadProvenance.postIntentEvidence.postSnippets?.length > 0 && (
+                      <div className="text-slate-400 italic border-l-2 border-amber-500/30 pl-2 mt-1">
+                        "{selectedLeadProvenance.postIntentEvidence.postSnippets[0]}"
+                      </div>
+                    )}
                   </div>
                 )}
                 <div>

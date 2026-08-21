@@ -269,7 +269,37 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls.length, 3);
     assert.equal(calls[2].url, 'https://api.groq.com/openai/v1/chat/completions');
     assert.equal(calls[2].auth, 'Bearer test-groq-key');
-    assert.equal(calls[2].body.model, 'qwen/qwen3.6-27b');
+    assert.equal(calls[2].body.model, 'llama-3.3-70b-versatile');
+  });
+
+  it('uses default Llama models for OpenRouter and Groq fallbacks when env overrides are omitted', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('default-llama-models');
+    const calls: Array<{ url: string; body: any }> = [];
+
+    globalThis.fetch = async (url, options: any) => {
+      calls.push({
+        url: url.toString(),
+        body: JSON.parse(options.body),
+      });
+
+      if (calls.length === 1) {
+        return new Response('primary unavailable', { status: 503 });
+      }
+
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test prompt');
+    assert.equal(res.text, 'openrouter ok');
+    assert.equal(res.provider, 'OpenRouter');
+    assert.equal(calls[1].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
   });
 
   it('reports configured and unconfigured providers without exposing keys', async () => {

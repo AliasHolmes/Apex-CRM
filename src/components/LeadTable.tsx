@@ -22,7 +22,9 @@ import {
   AlertTriangle,
   X,
   UploadCloud,
-  Loader2
+  Loader2,
+  Flame,
+  Radio
 } from 'lucide-react';
 import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
@@ -162,6 +164,26 @@ const LeadTableRow = React.memo(function LeadTableRow({
             {Number(scout?.corroborationScore || 0) >= 7 && (
               <Badge variant="outline" className="h-5 px-1.5 text-xs text-indigo-300 border-indigo-500/25">
                 corroborated
+              </Badge>
+            )}
+            {provenance.postIntentEvidence && provenance.postIntentEvidence.quality === 'strong' && (
+              <Badge
+                variant="outline"
+                className="h-5 px-1.5 text-xs font-semibold text-amber-300 border-amber-500/40 bg-amber-500/10 flex items-center gap-1"
+                title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+              >
+                <Flame className="h-3 w-3 text-amber-400" aria-hidden="true" />
+                {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
+              </Badge>
+            )}
+            {provenance.postIntentEvidence && provenance.postIntentEvidence.quality === 'moderate' && (
+              <Badge
+                variant="outline"
+                className="h-5 px-1.5 text-xs text-sky-300 border-sky-500/30 bg-sky-500/10 flex items-center gap-1"
+                title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+              >
+                <Radio className="h-3 w-3 text-sky-400" aria-hidden="true" />
+                {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
               </Badge>
             )}
           </div>
@@ -1116,6 +1138,41 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                     </div>
                   )}
                 </section>
+                {provenance.postIntentEvidence && provenance.postIntentEvidence.quality !== 'none' && (
+                  <section>
+                    <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-300">
+                      <Flame className="h-4 w-4 text-amber-400" aria-hidden="true" />
+                      Why Now (Recent LinkedIn Activity)
+                    </h3>
+                    <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-amber-200 capitalize">
+                          {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
+                        </span>
+                        <Badge variant="outline" className="border-amber-500/30 text-amber-400 bg-amber-500/10">
+                          {Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% Confidence
+                        </Badge>
+                      </div>
+                      {provenance.postIntentEvidence.llmReason && (
+                        <p className="text-slate-300">{provenance.postIntentEvidence.llmReason}</p>
+                      )}
+                      {provenance.postIntentEvidence.intentKeywords?.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {provenance.postIntentEvidence.intentKeywords.map((kw: string) => (
+                            <Badge key={kw} variant="secondary" className="text-xs px-1.5 py-0">
+                              {kw}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                      {provenance.postIntentEvidence.postSnippets?.length > 0 && (
+                        <div className="text-slate-400 italic border-l-2 border-amber-500/30 pl-2 mt-1">
+                          "{provenance.postIntentEvidence.postSnippets[0]}"
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                )}
                 <section>
                   <h3 className="text-sm font-bold">Matched criteria</h3>
                   {provenance.matchedCriteria.length > 0 ? (

@@ -2,7 +2,7 @@ import { Type, openAIStructured } from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
 import { getIntentCacheEntry, upsertIntentCacheEntry } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
-import { applyPostIntentDelta } from './scoring.js';
+import { applyPostIntentDelta, rankLeadForFinalSelection } from './scoring.js';
 import type { ProspectContract } from './prospectContract.js';
 import type { BrightDataSearchResult } from '../services/brightdata.js';
 
@@ -242,10 +242,32 @@ export async function runLinkedInPostIntentEnrichment(
     return stats;
   }
 
-  const leadsToProcess = Array.from(qualifiedLeads.values()).slice(0, maxLeads);
-  logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects.`);
-
   const INTENT_FINGERPRINT = 'linkedin_post_v1';
+
+  // Pre-warm postIntentEvidence from cache before sorting.
+  // rankLeadForFinalSelection calls postIntentScore(lead), which reads lead.postIntentEvidence.
+  // Without this step, postIntentEvidence is undefined for every lead and the sort is blind
+  // to Phase 5 signal entirely — defeating the purpose of the cutline sort.
+  // Cache reads are synchronous SQLite; no SERP calls are made here.
+  const allLeads = Array.from(qualifiedLeads.values());
+  for (const lead of allLeads) {
+    if (lead.postIntentEvidence) continue; // already attached (e.g. from an earlier pass)
+    const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || lead.profile?.contactDetails?.linkedinUrl || '';
+    const handle = extractLinkedInUsername(url) || (lead.fullName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (!handle) continue;
+    const cached = getIntentCacheEntry(`linkedin:post:${handle}`, INTENT_FINGERPRINT);
+    if (cached) {
+      try {
+        lead.postIntentEvidence = JSON.parse(cached.evidenceBlock) as PostIntentEvidence;
+      } catch {
+        // malformed cache entry — leave postIntentEvidence undefined, sorts to neutral 5
+      }
+    }
+  }
+
+  const sortedLeads = [...allLeads].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
+  const leadsToProcess = sortedLeads.slice(0, maxLeads);
+  logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects (sorted by rank from ${allLeads.length} candidates).`);
 
   const tasks: ProviderQueueTask<void>[] = leadsToProcess.map((lead, index) => {
     const name = lead.fullName || lead.profile?.fullName || `Lead-${index}`;

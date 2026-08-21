@@ -67,6 +67,18 @@ const companyIntentScore = (lead: Record<string, any>) => {
   return 5;
 };
 
+export const postIntentScore = (lead: Record<string, any>): number => {
+  const postIntent = lead.postIntentEvidence;
+  if (!postIntent || postIntent.quality === 'none') return 5;
+  const confidence = Math.min(1, Math.max(0, Number(postIntent.confidenceScore) || 0));
+  const ageDays = parseSnippetFreshnessDays(postIntent.postSnippets || []);
+  const freshnessFactor = computeFreshnessMultiplier(ageDays);
+  const base = postIntent.quality === 'strong' ? 8 :
+               postIntent.quality === 'moderate' ? 6.5 :
+               postIntent.quality === 'weak' ? 5.5 : 5;
+  return Math.min(10, Number((base + confidence * freshnessFactor).toFixed(2)));
+};
+
 export function computeBayesianIntentDelta(intent: Record<string, any>, cacheAgeDays = 0): number {
   if (!intent) return 0;
 
@@ -306,6 +318,7 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   const criteriaCoverageScore = clampScore(lead.scout?.criteriaCoverageScore, 5);
   const corroborationScore = clampScore(lead.scout?.corroborationScore, 4);
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
+  const postScore = postIntentScore(lead);
   const rawBase = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore ?? lead.scoreBreakdown?.finalScore ?? lead.scoreOverride ?? lead.fitScore ?? audit?.functionalRelevance);
   const baseScore = clampScore(rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase, 5);
 
@@ -321,12 +334,13 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
 
   const rank = (
     authorityScore * 0.30 +
-    companyScore * 0.20 +
-    evidenceScore * 0.20 +
+    companyScore * 0.15 +
+    evidenceScore * 0.15 +
     corroborationScore * 0.15 +
     criteriaCoverageScore * 0.10 +
     sourceScore * 0.03 +
     baseScore * 0.02 +
+    postScore * 0.10 +
     bm25Bonus +
     paretoBonus
   );
@@ -414,19 +428,21 @@ export function computeBM25PlusScore(
 export type ParetoObjectiveVector = {
   authority: number;
   intent: number;
+  postIntent: number;
   evidenceQuality: number;
 };
 
 export function extractObjectiveVector(lead: Record<string, any>): ParetoObjectiveVector {
   const authority = clampScore(lead.decisionMakerVerification?.confidence ?? lead.audit?.authorityConfidence, 5);
   const intent = companyIntentScore(lead);
+  const postIntent = postIntentScore(lead);
   const eq = evidenceQualityScore(evidenceQualityForLead(lead));
-  return { authority, intent, evidenceQuality: eq };
+  return { authority, intent, postIntent, evidenceQuality: eq };
 }
 
 /**
  * Fast Non-Dominated Sorting for extracting the Pareto Skyline Front (Front 1).
- * A candidate a Pareto-dominates b iff a is >= b in all 3 objectives and > in at least one.
+ * A candidate a Pareto-dominates b iff a is >= b in all 4 objectives and > in at least one.
  */
 export function computeParetoFrontier<T extends Record<string, any>>(candidates: T[]): {
   skyline: T[];
@@ -445,8 +461,9 @@ export function computeParetoFrontier<T extends Record<string, any>>(candidates:
       const dominates = (
         u.authority >= v.authority &&
         u.intent >= v.intent &&
+        u.postIntent >= v.postIntent &&
         u.evidenceQuality >= v.evidenceQuality &&
-        (u.authority > v.authority || u.intent > v.intent || u.evidenceQuality > v.evidenceQuality)
+        (u.authority > v.authority || u.intent > v.intent || u.postIntent > v.postIntent || u.evidenceQuality > v.evidenceQuality)
       );
       if (dominates) {
         isDominated[i] = true;

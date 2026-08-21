@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
 import { isDiscoveryProviderConfigured } from '@/lib/ui';
@@ -109,19 +109,84 @@ Signals: Posted publicly in the last 30 days
 Priority: Owners at growing service businesses`;
 
 const TraceSummaryViewer = ({ traceSummary, traceEvents = [] }: { traceSummary?: MiningTraceSummary; traceEvents?: MiningTraceEvent[] }) => {
+  const derivedSummary = useMemo(() => {
+    if (traceSummary) return null;
+    let totalTokens = 0;
+    let estimatedUsd = 0;
+    const providerMap: Record<string, { calls: number; successes: number; failures: number; skipped: number; totalTokens: number; totalLatencyMs: number }> = {};
+    const phaseMap: Record<string, { phase: string; status: 'ok' | 'error'; events: number; totalLatencyMs: number }> = {};
+
+    for (const ev of traceEvents) {
+      if (ev.llm) {
+        totalTokens += Number(ev.llm.totalTokens || 0);
+        estimatedUsd += Number(ev.llm.estimatedCostUsd || 0);
+      }
+      const prov = ev.provider || (ev.llm ? 'llm' : ev.tavily ? 'tavily' : ev.brightData ? 'brightdata' : 'system');
+      if (!providerMap[prov]) {
+        providerMap[prov] = { calls: 0, successes: 0, failures: 0, skipped: 0, totalTokens: 0, totalLatencyMs: 0 };
+      }
+      providerMap[prov].calls++;
+      if (ev.status === 'success') providerMap[prov].successes++;
+      else if (ev.status === 'error') providerMap[prov].failures++;
+      else if (ev.status === 'skipped') providerMap[prov].skipped++;
+      if (ev.llm?.totalTokens) providerMap[prov].totalTokens += Number(ev.llm.totalTokens);
+      if (ev.latencyMs) providerMap[prov].totalLatencyMs += Number(ev.latencyMs);
+
+      const ph = ev.phase || 'session';
+      if (!phaseMap[ph]) {
+        phaseMap[ph] = { phase: ph, status: 'ok', events: 0, totalLatencyMs: 0 };
+      }
+      phaseMap[ph].events++;
+      if (ev.status === 'error') phaseMap[ph].status = 'error';
+      if (ev.latencyMs) phaseMap[ph].totalLatencyMs += Number(ev.latencyMs);
+    }
+
+    const providers: [string, any][] = Object.entries(providerMap).map(([p, item]) => [
+      p,
+      {
+        calls: item.calls,
+        successes: item.successes,
+        failures: item.failures,
+        skipped: item.skipped,
+        totalTokens: item.totalTokens,
+        latencyMs: item.totalLatencyMs,
+        avgLatencyMs: item.calls > 0 ? Math.round(item.totalLatencyMs / item.calls) : 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        estimatedCostUsd: 0,
+        fallbackUses: 0
+      }
+    ]);
+
+    const phases = Object.values(phaseMap).map(p => ({
+      phase: p.phase,
+      status: p.status,
+      events: p.events,
+      durationMs: p.totalLatencyMs
+    }));
+
+    return { totalTokens, estimatedUsd, providers, phases };
+  }, [traceSummary, traceEvents]);
+
   const providerSummary: ProviderSummary = traceSummary?.providerSummary || {};
-  const providers = Object.entries(providerSummary).filter(([, item]) => item.calls > 0 || item.failures > 0 || item.skipped > 0);
-  const phases = traceSummary?.phaseTimeline || [];
-  const cost = traceSummary?.costSummary;
+  const providers = traceSummary
+    ? Object.entries(providerSummary).filter(([, item]) => item.calls > 0 || item.failures > 0 || item.skipped > 0)
+    : (derivedSummary?.providers || []);
+  const phases = traceSummary?.phaseTimeline || derivedSummary?.phases || [];
+  const totalTokens = traceSummary?.costSummary?.totalTokens ?? derivedSummary?.totalTokens ?? 0;
+  const estimatedUsd = traceSummary?.costSummary?.estimatedUsd ?? derivedSummary?.estimatedUsd ?? 0;
+  const costPerLead = traceSummary?.costSummary?.costPerAcceptedLead;
+  const eventCount = traceSummary?.eventCount ?? traceEvents.length;
   const recent = traceEvents.slice(-6).reverse();
+
   if (!traceSummary && traceEvents.length === 0) return null;
   return (
     <div className="mt-3 space-y-3 border-t border-slate-800/60 pt-3">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Events</div><div className="text-sm text-slate-200 font-semibold">{traceSummary?.eventCount ?? traceEvents.length}</div></div>
-        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Model tokens</div><div className="text-sm text-indigo-300 font-semibold">{cost?.totalTokens?.toLocaleString?.() || 0}</div></div>
-        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Est. Cost</div><div className="text-sm text-emerald-300 font-semibold">${(cost?.estimatedUsd || 0).toFixed(4)}</div></div>
-        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Cost / Lead</div><div className="text-sm text-slate-200 font-semibold">${(cost?.costPerAcceptedLead || 0).toFixed(4)}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Events</div><div className="text-sm text-slate-200 font-semibold">{eventCount}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Model tokens</div><div className="text-sm text-indigo-300 font-semibold">{totalTokens.toLocaleString()}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Est. Cost</div><div className="text-sm text-emerald-300 font-semibold">${estimatedUsd.toFixed(4)}</div></div>
+        <div className="bg-slate-950/60 border border-slate-800 rounded-md p-2"><div className="text-xs uppercase text-slate-500 font-bold">Cost / Lead</div><div className="text-sm text-slate-200 font-semibold">{costPerLead !== undefined ? `$${costPerLead.toFixed(4)}` : '-'}</div></div>
       </div>
       {providers.length > 0 && <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{providers.map(([provider, item]) => (<div key={provider} className="bg-slate-950/50 border border-slate-800 rounded-md p-2 text-xs"><div className="flex items-center justify-between mb-1"><span className="uppercase font-bold text-slate-300">{provider}</span><span className="text-slate-500">avg {formatDuration(item.avgLatencyMs)}</span></div><div className="flex gap-3 text-xs text-slate-400"><span>{item.calls} calls</span><span className="text-emerald-400">{item.successes} ok</span><span className="text-rose-400">{item.failures} fail</span>{item.totalTokens > 0 && <span className="text-indigo-300">{item.totalTokens.toLocaleString()} tok</span>}</div></div>))}</div>}
       {phases.length > 0 && <div className="flex flex-wrap gap-1.5">{phases.map(phase => (<span key={phase.phase} className={`px-2 py-1 rounded-md border text-xs font-semibold ${phase.status === 'error' ? 'border-rose-500/30 text-rose-300 bg-rose-500/5' : 'border-slate-700 text-slate-300 bg-slate-950/50'}`}>{phase.phase.replace(/_/g, ' ')} - {phase.events} - {formatDuration(phase.durationMs)}</span>))}</div>}
@@ -641,7 +706,11 @@ export default function ScrapeWorkspace() {
                 setTerminalLogs(prev => [...prev, ...data.logs]);
               }
               if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
-                setLiveTraceEvents(data.traceEvents);
+                setLiveTraceEvents(prev => {
+                  const existingIds = new Set(prev.map(e => e.id));
+                  const incoming = data.traceEvents.filter((e: MiningTraceEvent) => !existingIds.has(e.id));
+                  return incoming.length > 0 ? [...prev, ...incoming] : prev;
+                });
               }
             } catch {}
           };

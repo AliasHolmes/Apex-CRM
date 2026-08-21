@@ -28,7 +28,7 @@ test('buildLinkedInPostSearchQuery generates query from LinkedIn handle', () => 
       linkedinUrl: 'https://www.linkedin.com/in/lewismcguinness/'
     }
   };
-  assert.strictEqual(buildLinkedInPostSearchQuery(lead), 'site:linkedin.com/posts "lewismcguinness"');
+  assert.strictEqual(buildLinkedInPostSearchQuery(lead), '(site:linkedin.com/posts OR site:linkedin.com/pulse) "lewismcguinness"');
 });
 
 test('buildLinkedInPostSearchQuery falls back to name + company if no handle', () => {
@@ -36,14 +36,14 @@ test('buildLinkedInPostSearchQuery falls back to name + company if no handle', (
     fullName: 'Dominic S',
     currentCompany: 'Apex Tech'
   };
-  assert.strictEqual(buildLinkedInPostSearchQuery(lead), '"Dominic S" "Apex Tech" site:linkedin.com/posts');
+  assert.strictEqual(buildLinkedInPostSearchQuery(lead), '"Dominic S" "Apex Tech" (site:linkedin.com/posts OR site:linkedin.com/pulse)');
 });
 
 test('buildLinkedInPostSearchQuery falls back to name only if company is missing', () => {
   const lead = {
     fullName: 'Dominic S'
   };
-  assert.strictEqual(buildLinkedInPostSearchQuery(lead), '"Dominic S" site:linkedin.com/posts');
+  assert.strictEqual(buildLinkedInPostSearchQuery(lead), '"Dominic S" (site:linkedin.com/posts OR site:linkedin.com/pulse)');
 });
 
 test('buildLinkedInPostSearchQuery returns empty string if no identifiers', () => {

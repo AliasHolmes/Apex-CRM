@@ -90,15 +90,15 @@ export function buildLinkedInPostSearchQuery(lead: Record<string, any>): string 
   const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || lead.profile?.contactDetails?.linkedinUrl;
   const handle = extractLinkedInUsername(url);
   if (handle) {
-    return `site:linkedin.com/posts "${handle}"`;
+    return `(site:linkedin.com/posts OR site:linkedin.com/pulse) "${handle}"`;
   }
   const name = String(lead.fullName || lead.profile?.fullName || '').trim();
   const company = String(lead.currentCompany || lead.company || lead.profile?.currentCompany || '').trim();
   if (name && company) {
-    return `"${name}" "${company}" site:linkedin.com/posts`;
+    return `"${name}" "${company}" (site:linkedin.com/posts OR site:linkedin.com/pulse)`;
   }
   if (name) {
-    return `"${name}" site:linkedin.com/posts`;
+    return `"${name}" (site:linkedin.com/posts OR site:linkedin.com/pulse)`;
   }
   return '';
 }
@@ -106,7 +106,7 @@ export function buildLinkedInPostSearchQuery(lead: Record<string, any>): string 
 export function extractPostSnippets(results: BrightDataSearchResult[]): { snippets: string[]; postContext: string; firstUrl?: string } {
   const postResults = (results || []).filter(item => {
     const u = (item.url || '').toLowerCase();
-    return u.includes('linkedin.com/posts') || u.includes('linkedin.com/feed/update') || u.includes('linkedin.com/activity');
+    return u.includes('linkedin.com/posts') || u.includes('linkedin.com/feed/update') || u.includes('linkedin.com/activity') || u.includes('linkedin.com/pulse');
   });
 
   const targetResults = postResults.length > 0 ? postResults : (results || []).slice(0, 3);

@@ -24,7 +24,10 @@ import {
   UploadCloud,
   Loader2,
   Flame,
-  Radio
+  Radio,
+  ShieldCheck,
+  UserCheck,
+  Zap
 } from 'lucide-react';
 import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
@@ -205,29 +208,83 @@ const LeadTableRow = React.memo(function LeadTableRow({
           </div>
         )}
       </TableCell>
-      <TableCell>
-        <div className="flex min-w-[190px] flex-col gap-1.5">
-          {lead.profile.contactDetails?.email ? (
-            <div className="flex items-center gap-1.5 font-semibold">
-              <Mail className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-              <span className="max-w-[190px] truncate" title={lead.profile.contactDetails.email}>
-                {lead.profile.contactDetails.email}
-              </span>
+      <TableCell className="max-w-[220px]">
+        <div className="flex flex-col gap-1">
+          {provenance.postIntentEvidence && provenance.postIntentEvidence.quality !== 'none' ? (
+            <div className="flex items-center gap-1.5">
+              <Badge
+                variant="outline"
+                className={`h-5 px-1.5 text-xs font-semibold flex items-center gap-1 ${
+                  provenance.postIntentEvidence.quality === 'strong'
+                    ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
+                    : 'text-sky-300 border-sky-500/30 bg-sky-500/10'
+                }`}
+                title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+              >
+                {provenance.postIntentEvidence.quality === 'strong' ? (
+                  <Flame className="h-3 w-3 text-amber-400" aria-hidden="true" />
+                ) : (
+                  <Zap className="h-3 w-3 text-sky-400" aria-hidden="true" />
+                )}
+                <span className="capitalize">{(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')}</span>
+              </Badge>
+            </div>
+          ) : lead.companyAccount?.buyingSignals?.length ? (
+            <div className="flex items-center gap-1.5">
+              <Badge variant="outline" className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1">
+                <Zap className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+                <span>{lead.companyAccount.buyingSignals.length} Signals (Pain {lead.companyAccount.operationalPainScore})</span>
+              </Badge>
+            </div>
+          ) : Array.isArray(lead.buyingSignalsDetected) && lead.buyingSignalsDetected.length > 0 ? (
+            <div className="flex items-center gap-1.5">
+              <Badge variant="outline" className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1">
+                <Zap className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+                <span>{lead.buyingSignalsDetected[0]}</span>
+              </Badge>
             </div>
           ) : (
-            <span className="italic text-muted-foreground">Not provided</span>
+            <span className="text-xs text-slate-500 italic">No active intent trigger</span>
           )}
+          {lead.companyAccount?.painSummary ? (
+            <div className="text-xs text-slate-400 truncate max-w-[210px]" title={lead.companyAccount.painSummary}>
+              {lead.companyAccount.painSummary}
+            </div>
+          ) : lead.profile.contactDetails?.email ? (
+            <div className="flex items-center gap-1 text-xs text-slate-400 truncate max-w-[210px]" title={lead.profile.contactDetails.email}>
+              <Mail className="h-3 w-3 text-slate-500 shrink-0" aria-hidden="true" />
+              <span className="truncate">{lead.profile.contactDetails.email}</span>
+            </div>
+          ) : null}
         </div>
       </TableCell>
-      <TableCell>
+      <TableCell className="max-w-[220px]">
         <button
           type="button"
           onClick={() => onOpenDetails(lead)}
-          className="flex min-w-[130px] flex-col items-start gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={`Review workflow for ${lead.profile.fullName}`}
+          className="flex min-w-[140px] flex-col items-start gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:opacity-80 transition-opacity"
+          aria-label={`View authority and match details for ${lead.profile.fullName}`}
         >
-          <Badge variant="outline" className="text-xs">{getReviewStatusLabel(getReviewStatus(lead))}</Badge>
-          <span className="text-xs text-muted-foreground">{getNextActionLabel(getNextAction(lead))}</span>
+          {(lead.decisionMakerVerification?.titleMatched && !lead.decisionMakerVerification?.ignoredTitle) ? (
+            <Badge variant="outline" className="h-5 px-1.5 text-xs font-semibold text-emerald-300 border-emerald-500/40 bg-emerald-500/10 flex items-center gap-1">
+              <ShieldCheck className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+              <span>Verified Decision Maker</span>
+            </Badge>
+          ) : lead.decisionMakerVerification?.trajectoryScore !== undefined ? (
+            <Badge variant="outline" className="h-5 px-1.5 text-xs text-indigo-300 border-indigo-500/30 bg-indigo-500/10 flex items-center gap-1">
+              <UserCheck className="h-3 w-3 text-indigo-400" aria-hidden="true" />
+              <span>Authority {lead.decisionMakerVerification.trajectoryScore}/10</span>
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="h-5 px-1.5 text-xs text-slate-400 border-slate-700 bg-slate-800/40">
+              {lead.profile.currentTitle && /\b(founder|co-founder|owner|ceo|cto|cmo|cpo|cro|president|partner|vp|director|head)\b/i.test(lead.profile.currentTitle)
+                ? 'Key Decision Maker'
+                : 'Target Match'}
+            </Badge>
+          )}
+          <span className="text-xs text-slate-400 truncate max-w-[210px]" title={lead.decisionMakerVerification?.reason || lead.evidenceReasons?.[0] || lead.notes || 'Click to view qualification and provenance'}>
+            {lead.decisionMakerVerification?.reason || lead.evidenceReasons?.[0] || (lead.notes ? lead.notes.replace(/^LinkedIn-indexed lead with account context\.\s*/, '') : 'View full match details')}
+          </span>
         </button>
       </TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">
@@ -822,6 +879,8 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       'Next Action',
       'Current Title',
       'Current Company',
+      'Buying Signals & Intent',
+      'Authority & Decision Maker',
       'Corporate Email',
       'Phone Number',
       'LinkedIn Profile URL',
@@ -854,6 +913,12 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         getNextAction(lead),
         lead.profile.currentTitle || '',
         lead.profile.currentCompany || '',
+        provenance.postIntentEvidence?.intentCategory
+          ? `${provenance.postIntentEvidence.intentCategory} (${provenance.postIntentEvidence.quality})`
+          : (lead.companyAccount?.buyingSignals?.map(s => s.label).join('; ') || (lead.buyingSignalsDetected || []).join('; ')),
+        (lead.decisionMakerVerification?.titleMatched && !lead.decisionMakerVerification?.ignoredTitle)
+          ? `Verified Decision Maker (${lead.decisionMakerVerification.reason || ''})`
+          : (lead.decisionMakerVerification?.trajectoryScore !== undefined ? `Authority ${lead.decisionMakerVerification.trajectoryScore}/10` : (lead.profile.currentTitle || '')),
         lead.profile.contactDetails?.email || '',
         lead.profile.contactDetails?.phone || '',
         lead.profile.contactDetails?.linkedinUrl || '',
@@ -1383,8 +1448,8 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <TableHead>Contact Profile Name</TableHead>
               <TableHead>Primary Title</TableHead>
               <TableHead>Employer / Company Name</TableHead>
-              <TableHead>Corporate Outreach Email</TableHead>
-              <TableHead>Workflow</TableHead>
+              <TableHead>Buying Signals & Intent</TableHead>
+              <TableHead>Authority & Match Reason</TableHead>
               <TableHead>Added</TableHead>
               <TableHead className="text-center">Qualification Score</TableHead>
               <TableHead className="text-center">Pipeline status</TableHead>

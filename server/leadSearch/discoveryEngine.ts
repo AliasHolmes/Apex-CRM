@@ -351,7 +351,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
   activeSessionControllers.set(sessionId, sessionAbortController);
   const recordTrace = (event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) => {
     const recorded = telemetry.record(event);
-    activeSessionEvents.set(sessionId, telemetry.getEvents().slice(-100));
+    activeSessionEvents.set(sessionId, telemetry.getEvents());
     if (options.listener?.onTraceEvent) options.listener.onTraceEvent(recorded);
     return recorded;
   };
@@ -440,6 +440,22 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
 
   const incrementCounter = (counts: Record<string, number>, reason: string) => {
     counts[reason] = (counts[reason] || 0) + 1;
+  };
+
+  const sleepWithAbort = (ms: number, signal?: AbortSignal): Promise<void> => {
+    if (ms <= 0) return Promise.resolve();
+    if (signal?.aborted) return Promise.reject(new Error('Session cancelled'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error('Session cancelled'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   };
 
   const trackableBrightDataSearch = async (
@@ -1053,7 +1069,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       await runProviderQueue(tavilyPlans.map(({ plan, index }) => ({
         id: `${sessionId}:tavily:r${round}:q${index + 1}`,
         priority: 1_000 - plan.item.priority,
-        run: async () => {
+        run: async (signal?: AbortSignal) => {
         const searchStarted = Date.now();
         try {
           const tavilyOptions = plan.item.tavily;
@@ -1075,7 +1091,10 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
             recordProviderUsage('tavily', estimatedCredits);
           }
           queryRuns[index].providerUnits += estimatedCredits;
-          const res = await tavilySearch(plan.executableQuery, tavilyOptions);
+          const res = await tavilySearch(plan.executableQuery, {
+            ...tavilyOptions,
+            signal: signal || sessionAbortController.signal
+          });
           const resultsCount = res.items?.length || 0;
           recordTrace({
             phase: 'search',
@@ -1273,7 +1292,10 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
                     const fallbackStarted = Date.now();
                     logEvent(`Round ${round}: falling back to Tavily for query "${plan.executableQuery}".`);
                     const tavilyOptions = plan.item.tavily;
-                    const res = await tavilySearch(plan.executableQuery, tavilyOptions);
+                    const res = await tavilySearch(plan.executableQuery, {
+                      ...tavilyOptions,
+                      signal: sessionAbortController.signal
+                    });
                     const fallbackItems = (res.items || []).map((item: any) => ({
                       title: String(item.title || ''),
                       url: String(item.url || ''),
@@ -1346,6 +1368,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       });
       const fusedObservations = fuseObservations(observations);
       let uniqueRoundItems: any[] = [];
+      const roundCandidateKeys = new Set<string>();
       for (const observation of fusedObservations) {
         const planIndex = roundPlans.findIndex(plan => plan.executableQuery === observation.query);
         const queryRun = planIndex >= 0 ? queryRuns[planIndex] : undefined;
@@ -1372,8 +1395,8 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         }
 
         const candidateKey = username || normalizedUrl || observation.identityKey;
-        if (!candidateKey || seenCandidateKeys.has(candidateKey)) continue;
-        seenCandidateKeys.add(candidateKey);
+        if (!candidateKey || seenCandidateKeys.has(candidateKey) || roundCandidateKeys.has(candidateKey)) continue;
+        roundCandidateKeys.add(candidateKey);
 
         item.url = url;
         item.title = observation.title;
@@ -1398,7 +1421,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         uniqueRoundItems.push(item);
       }
 
-      rawResultsCount = seenCandidateKeys.size;
+      rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
       stats.rawCandidates = rawResultsCount;
 
       if (uniqueRoundItems.length === 0) {
@@ -1678,6 +1701,16 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
             }
           );
           const extractedLeads = Array.isArray(extracted) ? extracted : [];
+          for (const lead of extractedLeads) {
+            const u = extractLinkedInUsername(lead.contactDetails?.linkedinUrl || lead.sourceUrl || '') || normalizeLinkedInUrl(lead.contactDetails?.linkedinUrl || lead.sourceUrl || '');
+            if (u) seenCandidateKeys.add(u);
+          }
+          const chunkLinkMatches = chunk.matchAll(/LINK:\s*([^\s\n]+)/g);
+          for (const match of chunkLinkMatches) {
+            const url = match[1];
+            const u = extractLinkedInUsername(url) || normalizeLinkedInUrl(url);
+            if (u) seenCandidateKeys.add(u);
+          }
           debugLogs.push({
             timestamp: new Date().toISOString(),
             type: 'llm_request',
@@ -2160,9 +2193,9 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
           if (brightDataProviderDisabled) break;
           for (let attempt = 0; attempt < retryMax && !target.enriched && !brightDataProviderDisabled; attempt++) {
             if (brightDataTransportRetryAfter && Date.now() < brightDataTransportRetryAfter) {
-              await new Promise(resolve => setTimeout(resolve, Math.max(0, brightDataTransportRetryAfter - Date.now())));
+              await sleepWithAbort(Math.max(0, brightDataTransportRetryAfter - Date.now()), sessionAbortController.signal);
             }
-            if (attempt > 0) await new Promise(resolve => setTimeout(resolve, retryDelays[Math.min(attempt - 1, retryDelays.length - 1)]));
+            if (attempt > 0) await sleepWithAbort(retryDelays[Math.min(attempt - 1, retryDelays.length - 1)], sessionAbortController.signal);
             const started = Date.now();
             target.retryAttempts++;
             brightDataStats.profileRetryAttempted++;
@@ -2527,8 +2560,12 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     // Safety net: if qualifiedLeads falls short of targetLimit, we promote acceptedLeads up to the limit
     const qualifiedUrls = new Set<string>(qualifiedLeads.map(lead => lead.contactDetails?.linkedinUrl || lead.sourceUrl || ''));
     let rescuedCount = 0;
+    const maxRescueRatio = Math.min(Math.max(Number(process.env.SAFETY_NET_MAX_RESCUE_RATIO ?? 0.5), 0), 1.0);
+    const maxRescuesAllowed = Math.ceil(targetLimit * maxRescueRatio);
     if (qualifiedLeads.length < targetLimit) {
-      logEvent(`Safety Net: Finalist Judge qualified ${qualifiedLeads.length}/${targetLimit} leads. Rescuing top remaining accepted candidates.`);
+      const needed = targetLimit - qualifiedLeads.length;
+      const rescueCap = Math.min(needed, maxRescuesAllowed);
+      logEvent(`Safety Net: Finalist Judge qualified ${qualifiedLeads.length}/${targetLimit} leads. Rescuing top remaining accepted candidates (cap: ${rescueCap}).`);
       acceptedLeads.forEach(lead => {
         lead.finalSelectionScore = rankLeadForFinalSelection(lead);
       });
@@ -2537,11 +2574,12 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         return rankDelta !== 0 ? rankDelta : effectiveScore(b) - effectiveScore(a);
       });
       for (const lead of acceptedLeads) {
-        if (qualifiedLeads.length >= targetLimit) break;
+        if (rescuedCount >= rescueCap || qualifiedLeads.length >= targetLimit) break;
         const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || '';
         if (!qualifiedUrls.has(url)) {
           lead.qualification = { verdict: 'rescued', reason: 'Safety Net: identity-verified, signal evidence unavailable', finalScore: lead.finalSelectionScore };
           lead.whyThisLead = 'Safety Net: identity verified, buying signal not confirmed';
+          lead.isRescued = true;
           qualifiedLeads.push(lead);
           qualifiedUrls.add(url);
           rescuedCount++;

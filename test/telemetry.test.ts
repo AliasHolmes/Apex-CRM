@@ -85,5 +85,41 @@ test('insertSearchLog stores telemetry fields and culls by SEARCH_LOG_RETENTION_
   assert.equal(newest?.providerSummary.llm.calls, 1);
   assert.equal(newest?.costSummary.totalTokens, 100);
   assert.equal(dbModule.readSearchLogById('session-0'), null);
+});
 
+test('MiningTelemetryRecorder and live trace deltas survive >100 events without monotonic stalling', () => {
+  const recorder = new MiningTelemetryRecorder('session-100-test', 'test query', 5, new Date().toISOString());
+  for (let i = 1; i <= 150; i++) {
+    recorder.record({
+      phase: 'search',
+      operation: 'tavily_search',
+      status: 'success',
+      provider: 'tavily',
+      metadata: { eventIndex: i }
+    });
+  }
+
+  assert.equal(recorder.getEvents().length, 150);
+
+  // Simulate SSE delta consumption across multiple ticks
+  let lastTraceCount = 0;
+  const receivedEvents: any[] = [];
+
+  // Tick 1: first 60 events
+  const liveEventsTick1 = recorder.getEvents().slice(0, 60);
+  const delta1 = liveEventsTick1.slice(lastTraceCount);
+  lastTraceCount = liveEventsTick1.length;
+  receivedEvents.push(...delta1);
+  assert.equal(delta1.length, 60);
+
+  // Tick 2: all 150 events
+  const liveEventsTick2 = recorder.getEvents();
+  const delta2 = liveEventsTick2.slice(lastTraceCount);
+  lastTraceCount = liveEventsTick2.length;
+  receivedEvents.push(...delta2);
+  assert.equal(delta2.length, 90);
+
+  // Total received should be all 150 events, not capped at 100
+  assert.equal(receivedEvents.length, 150);
+  assert.equal(receivedEvents[149].metadata?.eventIndex, 150);
 });

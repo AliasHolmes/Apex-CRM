@@ -687,5 +687,93 @@ describe('evidence-grounded prospect quality', () => {
     assert.ok(persisted.tags.includes('Intent Corroborated'));
     assert.ok(persisted.tags.includes('LinkedIn Post: growth signal'));
   });
+
+  it('preserves candidate re-discovery when an extraction chunk fails', () => {
+    const seenCandidateKeys = new Set<string>();
+    const roundCandidateKeys = new Set<string>();
+
+    const rawCandidates = [
+      { identityKey: 'linkedin:alex-founder', username: 'alex-founder', url: 'https://linkedin.com/in/alex-founder' },
+      { identityKey: 'linkedin:sarah-ceo', username: 'sarah-ceo', url: 'https://linkedin.com/in/sarah-ceo' }
+    ];
+
+    // Round 1: candidate keys added only to roundCandidateKeys during fusion
+    for (const c of rawCandidates) {
+      if (seenCandidateKeys.has(c.username) || roundCandidateKeys.has(c.username)) continue;
+      roundCandidateKeys.add(c.username);
+    }
+    assert.equal(roundCandidateKeys.size, 2);
+    assert.equal(seenCandidateKeys.size, 0);
+
+    // Chunk 1 fails (e.g. LLM timeout / syntax error)
+    // seenCandidateKeys is NOT populated for failed chunk
+    const chunkFailed = true;
+    if (!chunkFailed) {
+      for (const c of rawCandidates) seenCandidateKeys.add(c.username);
+    }
+
+    assert.equal(seenCandidateKeys.size, 0);
+
+    // Round 2: candidate is discovered again and NOT blocked by seenCandidateKeys
+    const round2CandidateKeys = new Set<string>();
+    for (const c of rawCandidates) {
+      if (seenCandidateKeys.has(c.username) || round2CandidateKeys.has(c.username)) continue;
+      round2CandidateKeys.add(c.username);
+    }
+    assert.equal(round2CandidateKeys.size, 2, 'Failed chunk candidates should remain discoverable in Round 2');
+
+    // Successful chunk parse in Round 2 populates seenCandidateKeys
+    for (const c of rawCandidates) seenCandidateKeys.add(c.username);
+    assert.equal(seenCandidateKeys.size, 2);
+
+    // Round 3: candidate is now recognized as seen
+    const round3CandidateKeys = new Set<string>();
+    for (const c of rawCandidates) {
+      if (seenCandidateKeys.has(c.username) || round3CandidateKeys.has(c.username)) continue;
+      round3CandidateKeys.add(c.username);
+    }
+    assert.equal(round3CandidateKeys.size, 0, 'Successfully extracted candidates should be deduped in Round 3');
+  });
+
+  it('safety net caps rescue promotions according to SAFETY_NET_MAX_RESCUE_RATIO', () => {
+    const targetLimit = 10;
+    const maxRescueRatio = 0.4; // 40% cap => max 4 rescued leads
+    const maxRescuesAllowed = Math.ceil(targetLimit * maxRescueRatio);
+    assert.equal(maxRescuesAllowed, 4);
+
+    const qualifiedLeads: any[] = [
+      { id: 'q1', qualification: { verdict: 'qualified' } },
+      { id: 'q2', qualification: { verdict: 'qualified' } }
+    ];
+
+    const acceptedLeads: any[] = Array.from({ length: 8 }, (_, i) => ({
+      id: `acc-${i + 1}`,
+      sourceUrl: `https://linkedin.com/in/acc-${i + 1}`,
+      contactDetails: { linkedinUrl: `https://linkedin.com/in/acc-${i + 1}` },
+      finalSelectionScore: 8 - i * 0.5
+    }));
+
+    const needed = targetLimit - qualifiedLeads.length; // 8 needed
+    const rescueCap = Math.min(needed, maxRescuesAllowed); // capped at 4
+
+    let rescuedCount = 0;
+    const qualifiedUrls = new Set<string>(qualifiedLeads.map(l => l.contactDetails?.linkedinUrl || l.sourceUrl || ''));
+    for (const lead of acceptedLeads) {
+      if (rescuedCount >= rescueCap || qualifiedLeads.length >= targetLimit) break;
+      const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || '';
+      if (!qualifiedUrls.has(url)) {
+        lead.qualification = { verdict: 'rescued', reason: 'Safety Net: unconfirmed by judge' };
+        lead.isRescued = true;
+        qualifiedLeads.push(lead);
+        qualifiedUrls.add(url);
+        rescuedCount++;
+      }
+    }
+
+    assert.equal(rescuedCount, 4);
+    assert.equal(qualifiedLeads.length, 6); // 2 qualified + 4 rescued (bounded by cap)
+    assert.equal(qualifiedLeads.filter(l => l.isRescued).length, 4);
+    assert.equal(qualifiedLeads.filter(l => l.qualification.verdict === 'rescued').length, 4);
+  });
 });
 

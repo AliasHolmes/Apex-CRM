@@ -1172,7 +1172,7 @@ const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
 export function pruneExpiredEnrichmentCache(now = new Date()) {
   const db = getLeadsDb();
   const cutoff = now.toISOString();
-  const result = db.prepare('DELETE FROM enrichment_cache WHERE datetime(expires_at) <= datetime(?)').run(cutoff);
+  const result = db.prepare('DELETE FROM enrichment_cache WHERE expires_at <= ?').run(cutoff);
   return Number(result.changes || 0);
 }
 
@@ -1187,13 +1187,13 @@ export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new
   if (normalizedUrl || linkedinUsername) {
     const row = db.prepare(`
       SELECT * FROM enrichment_cache
-      WHERE datetime(expires_at) > datetime(?)
+      WHERE expires_at > ?
         AND scrape_quality IN ('good', 'partial')
         AND (
           (? != '' AND normalized_url = ?)
           OR (? != '' AND linkedin_username = ?)
         )
-      ORDER BY datetime(created_at) DESC
+      ORDER BY created_at DESC
       LIMIT 1
     `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
     const match = toCacheRow(row);
@@ -1203,11 +1203,11 @@ export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new
   if (personName && companyName) {
     const row = db.prepare(`
       SELECT * FROM enrichment_cache
-      WHERE datetime(expires_at) > datetime(?)
+      WHERE expires_at > ?
         AND scrape_quality IN ('good', 'partial')
         AND person_name = ?
         AND company_name = ?
-      ORDER BY datetime(created_at) DESC
+      ORDER BY created_at DESC
       LIMIT 1
     `).get(cutoff, personName, companyName);
     return toCacheRow(row);
@@ -1291,10 +1291,10 @@ export function getIntentCacheEntry(
 
   const row = db.prepare(`
     SELECT * FROM enrichment_cache
-    WHERE datetime(expires_at) > datetime(?)
+    WHERE expires_at > ?
       AND normalized_url = ?
       AND intent_fingerprint = ?
-    ORDER BY datetime(created_at) DESC
+    ORDER BY created_at DESC
     LIMIT 1
   `).get(cutoff, cleanUrl, cleanFp);
 
@@ -1318,14 +1318,14 @@ export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, n
   if (normalizedUrl || linkedinUsername) {
     const row = db.prepare(`
       SELECT * FROM enrichment_cache
-      WHERE datetime(expires_at) > datetime(?)
+      WHERE expires_at > ?
         AND scrape_quality = 'bad'
         AND source_provider = 'brightdata'
         AND (
           (? != '' AND normalized_url = ?)
           OR (? != '' AND linkedin_username = ?)
         )
-      ORDER BY datetime(created_at) DESC
+      ORDER BY created_at DESC
       LIMIT 1
     `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
     const match = toCacheRow(row);

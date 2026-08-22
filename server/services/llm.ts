@@ -448,6 +448,7 @@ export type TavilySearchOptions = {
   maxResults?: number;
   includeRawContent?: boolean;
   chunksPerSource?: number;
+  signal?: AbortSignal;
 };
 
 /**
@@ -494,6 +495,7 @@ export async function tavilySearch(
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
+      signal: options.signal,
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -553,6 +555,7 @@ export async function tavilyExtract(
     extractDepth?: 'basic' | 'advanced';
     chunksPerSource?: number;
     timeout?: number;
+    signal?: AbortSignal;
   }
 ): Promise<TavilyExtractResult[]> {
   const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 20);
@@ -561,6 +564,7 @@ export async function tavilyExtract(
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
     const res = await fetch('https://api.tavily.com/extract', {
       method: 'POST',
+      signal: options?.signal,
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',

@@ -188,7 +188,7 @@ test('findCompanyWebsite rejects one-label and news-article domains that only me
 });
 
 test('Bright Data classifies target gateway and malformed search responses as retryable target transients', () => {
-  for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body', "Unexpected non-JSON response from Bright Data for search_engine."]) {
+  for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body']) {
     const classified = classifyBrightDataError(new Error(message));
     assert.strictEqual(classified.reasonCode, 'target_transient');
     assert.strictEqual(classified.retryable, true);
@@ -197,13 +197,27 @@ test('Bright Data classifies target gateway and malformed search responses as re
   }
 });
 
-test('Bright Data search retry recovers one transient malformed response', async () => {
+test('Bright Data classifies SERP non-JSON response (challenge page) as non-retryable target transient', () => {
+  // Per official BD docs: HTTP 502 "verifying" (challenge page) requires ≥15s wait before retry.
+  // Any retry < 15s triggers failed_query_rejected lockout. Mark non-retryable → Tavily fallback.
+  for (const message of [
+    'Unexpected non-JSON response from Bright Data for search_engine.',
+    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',
+  ]) {
+    const classified = classifyBrightDataError(new Error(message));
+    assert.strictEqual(classified.reasonCode, 'target_transient');
+    assert.strictEqual(classified.retryable, false);
+    assert.strictEqual(classified.providerDisabled, false);
+  }
+});
+
+test('Bright Data search retry recovers one transient gateway error', async () => {
   let attempts = 0;
   const retries: number[] = [];
   let retryNotifications = 0;
   const result = await executeBrightDataSearchWithRetry(async attempt => {
     attempts = attempt;
-    if (attempt === 1) throw new Error("Unexpected non-JSON response from Bright Data for search_engine.");
+    if (attempt === 1) throw new Error("HTTP 502 Bad Gateway");
     return ['recovered'];
   }, {
     maxRetries: 1,
@@ -219,12 +233,12 @@ test('Bright Data search retry recovers one transient malformed response', async
   assert.strictEqual(retryNotifications, 1);
 });
 
-test('Bright Data search retry stops after two physical attempts', async () => {
+test('Bright Data search retry stops after two physical attempts on retryable gateway error', async () => {
   let attempts = 0;
   await assert.rejects(
     executeBrightDataSearchWithRetry(async attempt => {
       attempts = attempt;
-      throw new Error("Unexpected non-JSON response from Bright Data for search_engine.");
+      throw new Error("HTTP 502 Bad Gateway");
     }, { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} }),
     (error: unknown) => error instanceof BrightDataError && error.reasonCode === 'target_transient'
   );
@@ -236,6 +250,10 @@ test('Bright Data search retry never repeats non-retryable failures', async () =
     '401 unauthorized invalid token',
     'quota credits exhausted',
     'HTTP 400 Request validation failed',
+    // Non-JSON SERP = BD challenge/verification page. Per official docs: 15s wait required before
+    // retry, so we mark it non-retryable and fall back to Tavily immediately.
+    'Unexpected non-JSON response from Bright Data for search_engine.',
+    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',
     'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds.'
   ]) {
     let attempts = 0;

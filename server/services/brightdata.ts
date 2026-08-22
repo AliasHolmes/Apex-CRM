@@ -183,10 +183,20 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   if (/connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'transport_transient', retryable: true, clearClient: true, statusCode });
   }
-  if (/minimum of \d+\s*seconds?|recently failed and cannot be attempted/.test(lower)) {
+  // Official BD docs: "verifying" (challenge page, HTTP 502) and "failed_query_rejected" / "repeat_query_rejected"
+  // (HTTP 429) both require a minimum 15-second wait before retrying the same query.
+  // Since a 15s per-query delay is unacceptable in the mining pipeline, we classify all of these
+  // as non-retryable. The caller's Tavily fallback fires immediately instead of wasting a retry
+  // that is guaranteed to lockout (confirmed: any retry < 15s hits failed_query_rejected).
+  if (/minimum of \d+\s*seconds?|recently failed and cannot be attempted|cannot be attempted at this time|repeat.{0,20}rejected|failed.{0,20}rejected/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
   }
-  if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content|unexpected non-json response from bright data/.test(lower)) {
+  // Non-JSON SERP response = BD returned a challenge/verification page (HTTP 502 "verifying").
+  // Per BD docs: wait ≥15s before retrying the same query. Mark non-retryable → Tavily fallback.
+  if (/unexpected non-json response from bright data/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
+  }
+  if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'target_transient', retryable: true, statusCode });
   }
   if (/captcha|login wall|blocked|privacy checkpoint|sign in to view|authwall/.test(lower)) {

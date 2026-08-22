@@ -170,8 +170,8 @@ test('deleteMiningSession and deleteMiningSessions delete target sessions', asyn
 
   const s4 = `test-del-4-${Date.now()}`;
   upsertMiningSession({ id: s4, status: 'interrupted', prompt: 'test 4' });
-  const cleared = clearInterruptedMiningSessions();
-  assert.ok(cleared >= 1);
+  const cleared = deleteMiningSessions([s4]);
+  assert.equal(cleared, 1);
   assert.equal(readMiningSessionById(s4), null);
 });
 

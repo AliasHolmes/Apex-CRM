@@ -143,6 +143,7 @@ import {
   shouldRunBrightDataForTask
 } from './discoveryRouting.js';
 import { executePlanStage } from './stages/planStage.js';
+import { executeRetrieveStage } from './stages/retrieveStage.js';
 import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
@@ -955,307 +956,25 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
 
       const { roundPlans, queryRuns } = planResult;
 
-      const tavilyPlans = roundPlans
-        .map((plan, index) => ({ plan, index }))
-        .filter(({ plan }) => shouldRunTavilyForTask(plan.item, discoveryProviderMode, hasTavilyKey()));
-
-      // 1. Tavily Search (precision set under dual-provider routing)
-      recordTrace({
-        phase: 'search',
-        operation: 'tavily_round_search',
-        status: 'started',
-        provider: 'tavily',
+      const retrieveResult = await executeRetrieveStage(sessionCtx, {
         round,
-        counts: { queries: tavilyPlans.length, plannedQueries: roundPlans.length },
-        tavily: {
-          searchDepth: 'task-specific',
-          maxResults: Math.min(Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1), 20),
-          includeDomains: Array.from(new Set(tavilyPlans.flatMap(({ plan }) => plan.item.tavily.includeDomains || [])))
-        },
-        metadata: { discoveryProviderMode }
-      });
-      logEvent(`Round ${round}: executing ${tavilyPlans.length}/${roundPlans.length} Tavily queries (mode=${discoveryProviderMode}).`);
-
-      const tavilyResultsByIndex = new Map<number, { text: string; sources: any[]; items: any[] }>();
-      await runProviderQueue(tavilyPlans.map(({ plan, index }) => ({
-        id: `${sessionId}:tavily:r${round}:q${index + 1}`,
-        priority: 1_000 - plan.item.priority,
-        run: async (signal?: AbortSignal) => {
-        const searchStarted = Date.now();
-        try {
-          const tavilyOptions = plan.item.tavily;
-          const estimatedCredits = tavilyOptions.searchDepth === 'advanced' ? 2 : 1;
-          // Optional local reservation only when explicitly enabled; default is key rotation.
-          if (!freeTierBudget.reserveTavilySearch(tavilyOptions.searchDepth)) {
-            logEvent(`Round ${round}: skipped Tavily task after local session reservation (PROVIDER_CREDIT_RESERVATION=true).`);
-            tavilyResultsByIndex.set(index, { text: '', sources: [], items: [] });
-            return;
-          }
-          if (creditReservationEnabled) {
-            const monthlyReservation = reserveProviderUsage('tavily', estimatedCredits, tavilyCapabilities.monthlyLimit);
-            if (!monthlyReservation.allowed) {
-              logEvent(`Round ${round}: skipped Tavily task after local monthly reservation (PROVIDER_CREDIT_RESERVATION=true).`);
-              tavilyResultsByIndex.set(index, { text: '', sources: [], items: [] });
-              return;
-            }
-          } else {
-            recordProviderUsage('tavily', estimatedCredits);
-          }
-          queryRuns[index].providerUnits += estimatedCredits;
-          const res = await tavilySearch(plan.executableQuery, {
-            ...tavilyOptions,
-            signal: signal || sessionAbortController.signal
-          });
-          const resultsCount = res.items?.length || 0;
-          recordTrace({
-            phase: 'search',
-            operation: 'tavily_search',
-            status: 'success',
-            provider: 'tavily',
-            round,
-            query: plan.executableQuery,
-            latencyMs: Date.now() - searchStarted,
-            counts: { rawCandidates: resultsCount },
-            tavily: {
-              searchDepth: tavilyOptions.searchDepth,
-              maxResults: tavilyOptions.maxResults,
-              includeDomains: tavilyOptions.includeDomains
-            }
-          });
-          debugLogs.push({
-            timestamp: new Date().toISOString(),
-            type: 'tavily_search',
-            query: plan.executableQuery,
-            resultsCount,
-            results: res.items?.map((item: any) => ({ title: item.title, url: item.url, snippet: item.content || item.raw_content }))
-          });
-          tavilyResultsByIndex.set(index, res);
-        } catch (e: any) {
-          recordTrace({
-            phase: 'search',
-            operation: 'tavily_search',
-            status: 'error',
-            provider: 'tavily',
-            round,
-            query: plan.executableQuery,
-            latencyMs: Date.now() - searchStarted,
-            error: { message: e.message || String(e) }
-          });
-          logEvent(`WARN: Tavily Search failed for query "${plan.executableQuery}": ${e.message}`);
-          debugLogs.push({
-            timestamp: new Date().toISOString(),
-            type: 'tavily_error',
-            query: plan.executableQuery,
-            error: e.message
-          });
-          tavilyResultsByIndex.set(index, { text: '', sources: [], items: [] });
-        } finally {
-          queryRuns[index].searchLatencyMs += Date.now() - searchStarted;
-        }
-        }
-      })), {
-        concurrency: Number(process.env.TAVILY_SEARCH_CONCURRENCY || 3),
-        intervalCap: Number(process.env.TAVILY_SEARCH_INTERVAL_CAP || 0),
-        intervalMs: Number(process.env.TAVILY_SEARCH_INTERVAL_MS || 1_000),
-        signal: sessionAbortController.signal
+        roundPlans,
+        queryRuns,
+        discoveryProviderMode,
+        brightDataSearchMode,
+        brightDataReady,
+        brightDataProviderDisabled,
+        brightDataTransportRetryAfter,
+        brightDataSearchRetryMax,
+        brightDataSearchRetryBaseDelayMs,
+        tavilyCapabilities,
+        brightDataCapabilities,
+        stats
       });
 
-      let roundItems: any[] = [];
-      for (const [resultIndex, result] of tavilyResultsByIndex.entries()) {
-        const items = Array.isArray(result.items) ? result.items : [];
-        for (const item of items) {
-          item.sourceProvider = 'tavily';
-          roundItems.push({ item, resultIndex });
-        }
-      }
-
-      // 1b. Bright Data search (primary/hybrid/secondary/fallback via routing helpers)
-      let usingBrightDataSearch = false;
-      if (brightDataReady && !brightDataProviderDisabled && brightDataSearchMode !== 'off') {
-        const tavilyResultCount = roundItems.length;
-        const bdSearchPlans = roundPlans
-          .map((plan, index) => ({ plan, index }))
-          .filter(({ plan }) => shouldRunBrightDataForTask(plan.item, discoveryProviderMode, brightDataSearchMode, {
-            brightDataReady: brightDataReady && !brightDataProviderDisabled,
-            tavilyResultCount
-          }));
-
-        if (bdSearchPlans.length === 0) {
-          logEvent(`Round ${round}: no Bright Data search tasks for mode=${brightDataSearchMode}.`);
-        } else {
-          usingBrightDataSearch = true;
-          stats.sourceProvider = stats.sourceProvider === 'tavily' && roundItems.length === 0 ? 'brightdata_search' : 'mixed';
-          logEvent(`Round ${round}: executing ${bdSearchPlans.length} Bright Data searches (mode: ${brightDataSearchMode}).`);
-          const bdResults = await runProviderQueue(bdSearchPlans.map(({ plan, index }) => ({
-            id: `${sessionId}:brightdata:r${round}:q${index + 1}`,
-            priority: 1_000 - plan.item.priority,
-            run: async () => {
-              const bdSearchStarted = Date.now();
-              let physicalAttempts = 0;
-              let recovered = false;
-              try {
-                const results = await executeBrightDataSearchWithRetry(async attempt => {
-                  const attemptStarted = Date.now();
-                  if (!freeTierBudget.reserveBrightDataSearch()) {
-                    brightDataStats.skipped++;
-                    logEvent(`Round ${round}: skipped Bright Data search attempt ${attempt} after local session reservation (PROVIDER_CREDIT_RESERVATION=true).`);
-                    recordTrace({
-                      phase: 'search', operation: 'brightdata_search', status: 'skipped', provider: 'brightdata', round,
-                      query: plan.executableQuery,
-                      metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, reason: 'session_credit_reservation' }
-                    });
-                    return [] as any[];
-                  }
-                  if (creditReservationEnabled) {
-                    const monthlyReservation = reserveProviderUsage('brightdata', 1, brightDataCapabilities.monthlyLimit);
-                    if (!monthlyReservation.allowed) {
-                      brightDataStats.skipped++;
-                      logEvent(`Round ${round}: skipped Bright Data search attempt ${attempt} after local monthly reservation (PROVIDER_CREDIT_RESERVATION=true).`);
-                      recordTrace({
-                        phase: 'search', operation: 'brightdata_search', status: 'skipped', provider: 'brightdata', round,
-                        query: plan.executableQuery,
-                        metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, reason: 'monthly_credit_reservation' }
-                      });
-                      return [] as any[];
-                    }
-                  } else {
-                    recordProviderUsage('brightdata', 1);
-                  }
-
-                  physicalAttempts++;
-                  queryRuns[index].providerUnits += 1;
-                  // Google-backed search with site:linkedin.com/in for person discovery.
-                  // Account/signal lanes still use LinkedIn-oriented queries for DM recall.
-                  const linkedInQuery = toLinkedInSearchQuery(plan.item);
-                  try {
-                    const attemptResults = await trackableBrightDataSearch(
-                      linkedInQuery || plan.executableQuery,
-                      {},
-                      `round_${round}`
-                    );
-                    if (attempt > 1) recovered = true;
-                    const isBing = attemptResults.some(r => r.sourceEngine === 'bing');
-                    recordTrace({
-                      phase: 'search',
-                      operation: 'brightdata_search',
-                      status: 'success',
-                      provider: 'brightdata',
-                      round,
-                      query: plan.executableQuery,
-                      latencyMs: Date.now() - attemptStarted,
-                      counts: { rawCandidates: attemptResults.length },
-                      brightData: getTraceBrightDataStatus(),
-                      metadata: {
-                        attempt,
-                        maxAttempts: brightDataSearchRetryMax + 1,
-                        recovered: attempt > 1,
-                        engine: isBing ? 'bing' : 'google'
-                      }
-                    });
-                    return attemptResults;
-                  } catch (error: any) {
-                    const classified = classifyBrightDataError(error);
-                    const willRetry = classified.retryable && attempt <= brightDataSearchRetryMax;
-                    incrementCounter(brightDataStats.failureReasons, classified.reasonCode);
-                    if (classified.reasonCode === 'target_transient') brightDataStats.transientFailures++;
-                    if (classified.reasonCode === 'transport_transient') {
-                      brightDataStats.transportFailures++;
-                      brightDataStats.processRestarts++;
-                      brightDataTransportRetryAfter = Date.now() + 5_000;
-                    }
-                    if (classified.providerDisabled) {
-                      brightDataStats.providerDisabled++;
-                      brightDataProviderDisabled = true;
-                    }
-                    recordTrace({
-                      phase: 'search',
-                      operation: 'brightdata_search',
-                      status: willRetry ? 'info' : 'error',
-                      provider: 'brightdata',
-                      round,
-                      query: plan.executableQuery,
-                      latencyMs: Date.now() - attemptStarted,
-                      error: { message: classified.reasonCode + ': ' + classified.message },
-                      brightData: getTraceBrightDataStatus(),
-                      metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, retrying: willRetry }
-                    });
-                    throw classified;
-                  }
-                }, {
-                  maxRetries: brightDataSearchRetryMax,
-                  baseDelayMs: brightDataSearchRetryBaseDelayMs,
-                  onRetry: ({ error, nextAttempt, delayMs }) => {
-                    brightDataStats.searchRetries++;
-                    logEvent(`Round ${round}: Bright Data ${error.reasonCode}; retrying search attempt ${nextAttempt}/${brightDataSearchRetryMax + 1} after ${delayMs}ms.`);
-                  }
-                });
-
-                if (recovered) brightDataStats.searchRecovered++;
-                return { index, results, fallbackProvider: undefined };
-              } catch (error: any) {
-                const classified = classifyBrightDataError(error);
-                stats.brightDataFailures++;
-                brightDataStats.failed++;
-                logEvent(`[Search Fallback] Bright Data search challenged or unavailable (${classified.reasonCode}) after ${physicalAttempts} attempt(s); gracefully using fallback.`);
-
-                if (hasTavilyKey()) {
-                  try {
-                    const fallbackStarted = Date.now();
-                    logEvent(`Round ${round}: falling back to Tavily for query "${plan.executableQuery}".`);
-                    const tavilyOptions = plan.item.tavily;
-                    const res = await tavilySearch(plan.executableQuery, {
-                      ...tavilyOptions,
-                      signal: sessionAbortController.signal
-                    });
-                    const fallbackItems = (res.items || []).map((item: any) => ({
-                      title: String(item.title || ''),
-                      url: String(item.url || ''),
-                      content: String(item.content || item.raw_content || item.snippet || ''),
-                      sourceProvider: 'tavily' as const
-                    })).filter((item: any) => item.url && item.title);
-
-                    recordTrace({
-                      phase: 'search',
-                      operation: 'tavily_search',
-                      status: 'success',
-                      provider: 'tavily',
-                      round,
-                      query: plan.executableQuery,
-                      latencyMs: Date.now() - fallbackStarted,
-                      counts: { rawCandidates: fallbackItems.length },
-                      metadata: { fallbackFrom: 'brightdata', originalReason: classified.reasonCode }
-                    });
-
-                    return { index, results: fallbackItems, fallbackProvider: 'tavily' };
-                  } catch (fallbackError: any) {
-                    logEvent(`WARN: Tavily fallback search also failed for query "${plan.executableQuery}": ${fallbackError.message || String(fallbackError)}`);
-                  }
-                }
-
-                return { index, results: [] as any[], fallbackProvider: undefined };
-              } finally {
-                queryRuns[index].searchLatencyMs += Date.now() - bdSearchStarted;
-              }
-            }
-          })), {
-            concurrency: Number(process.env.BRIGHTDATA_SEARCH_CONCURRENCY || 2),
-            intervalCap: Number(process.env.BRIGHTDATA_SEARCH_INTERVAL_CAP || 0),
-            intervalMs: Number(process.env.BRIGHTDATA_SEARCH_INTERVAL_MS || 1_000),
-            signal: sessionAbortController.signal
-          });
-
-          for (const { index, results, fallbackProvider } of bdResults) {
-            if (results.length > 0 && !fallbackProvider) brightDataStats.searchSucceeded++;
-            stats.brightDataSearchResults += results.length;
-            for (const item of results) {
-              if (!item.sourceProvider) {
-                item.sourceProvider = fallbackProvider === 'tavily' ? 'tavily' : 'brightdata_search';
-              }
-              roundItems.push({ item, resultIndex: index });
-            }
-          }
-        }
-      }
+      const { roundItems } = retrieveResult;
+      brightDataProviderDisabled = retrieveResult.brightDataProviderDisabled;
+      brightDataTransportRetryAfter = retrieveResult.brightDataTransportRetryAfter;
 
       // Fuse provider observations before extraction. This retains independent
       // corroboration rather than discarding Bright Data results as duplicates.

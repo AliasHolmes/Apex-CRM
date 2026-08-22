@@ -1431,9 +1431,9 @@ const toSearchLogRecord = (row: any) => ({
   schemaVersion: Number(row.schema_version || 1)
 });
 
-export function readSearchLogs(limit = 100) {
+export function readSearchLogs(limit = 30) {
   const rows = getLeadsDb()
-    .prepare('SELECT * FROM search_logs ORDER BY timestamp DESC LIMIT ?')
+    .prepare('SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?')
     .all(limit) as any[];
   return rows.map(toSearchLogRecord);
 }

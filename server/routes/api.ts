@@ -63,6 +63,15 @@ router.get('/leads', (req, res): any => {
     const parsedOffset = offset !== undefined ? Math.max(Number(offset) || 0, 0) : undefined;
     const isSummary = summaryOnly === 'true';
 
+    // Direct JSON assembly fast-path for the default unfiltered lead list
+    if (!stage && !reviewStatus && !nextAction && !search && !isSummary && parsedLimit === undefined && parsedOffset === undefined) {
+      const db = getLeadsDb();
+      const rows = db.prepare('SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC').all() as { payload: string }[];
+      const initialized = hasLeadStoreBeenInitialized();
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.send(`{"apiVersion":1,"leads":[${rows.map(r => r.payload).join(',')}],"total":${rows.length},"initialized":${initialized}}`);
+    }
+
     const result = readLeadsSummary({
       stage,
       reviewStatus,
@@ -495,7 +504,7 @@ ${pastedText}`;
 router.get('/search-logs', (req, res): any => {
   try {
     const { limit } = req.query as Record<string, string | undefined>;
-    const parsedLimit = limit !== undefined ? Math.min(Math.max(Number(limit) || 1, 1), 500) : 100;
+    const parsedLimit = limit !== undefined ? Math.min(Math.max(Number(limit) || 1, 1), 500) : 30;
     const sessionById = new Map(readMiningSessions(parsedLimit).map((session) => [session.id, session]));
     const logs = readSearchLogs(parsedLimit).map((log: any) => ({
       id: log.id,

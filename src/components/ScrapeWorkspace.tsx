@@ -865,17 +865,76 @@ export default function ScrapeWorkspace() {
         throw new Error(errData.error || `Resume failed with status ${response.status}`);
       }
 
-      const data = await response.json();
       await rehydrateLeads(true);
       notifyLeadsUpdated();
-      setSuccessMsg(`Session resumed successfully. Leads synchronized.`);
-      updateTaskStatus(taskId, 'completed', Number(data.persistence?.createdCount || 0));
+      setLoading(false);
+      setInfoMsg('Resume accepted - the session is running again. Live progress is streaming below.');
+
+      // mode=job returns 202 immediately; the session keeps executing server-side.
+      // Keep the task "running" and the trace stream attached until the session
+      // reaches a terminal status, then report the real returned-prospect count.
+      // (Never persistence dispositions: checkpointed leads read createdCount 0.)
+      let watchTimer: ReturnType<typeof setInterval> | undefined;
+      let pollCount = 0;
+      const cleanupDiscoveryUi = () => {
+        if (watchTimer) clearInterval(watchTimer);
+        disconnectStream();
+        if (activeDiscoveryRef.current?.sessionId === sessionId) {
+          activeDiscoveryRef.current = null;
+        }
+      };
+
+      watchTimer = setInterval(() => {
+        pollCount += 1;
+        // Hard cap (~40 min at 3s) so the watcher can never leak indefinitely.
+        if (pollCount > 800 || requestController.signal.aborted) {
+          const aborted = requestController.signal.aborted;
+          cleanupDiscoveryUi();
+          if (aborted) {
+            updateTaskStatus(taskId, 'cancelled', 0);
+            setInfoMsg('Detached from resumed session.');
+          } else {
+            updateTaskStatus(taskId, 'failed');
+            setErrorCode('Stopped watching the resumed session before it finished. Check Mining history for its outcome.');
+          }
+          return;
+        }
+        void (async () => {
+          try {
+            const statusRes = await fetch(`/api/mining-sessions/${sessionId}`, { signal: requestController.signal });
+            if (!statusRes.ok) return;
+            const payload = await statusRes.json();
+            const sessionRow = payload.session;
+            const status = String(sessionRow?.status || '');
+            if (!status || status === 'running' || status === 'cancellation_requested') return;
+
+            cleanupDiscoveryUi();
+            const stats = sessionRow?.stats || {};
+            const totalReturned = Number(stats.returned ?? stats.persistedCount ?? 0);
+            await rehydrateLeads(true);
+            notifyLeadsUpdated();
+
+            if (status === 'success') {
+              updateTaskStatus(taskId, 'completed', totalReturned);
+              setSuccessMsg(`Resumed discovery finished: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.`);
+              triggerToast(`Resumed session finished with ${totalReturned} prospect${totalReturned === 1 ? '' : 's'}.`, 'success');
+            } else if (status === 'cancelled') {
+              updateTaskStatus(taskId, 'cancelled', totalReturned);
+              setInfoMsg('Resumed discovery was cancelled.');
+            } else {
+              updateTaskStatus(taskId, 'failed', totalReturned);
+              setErrorCode(sessionRow?.errorMessage || `Resumed session ended with status "${status}".`);
+            }
+          } catch {
+            // Transient network errors: keep polling until the hard cap.
+          }
+        })();
+      }, 3000);
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
         setErrorCode(err.message || 'Failed to resume mining session.');
         updateTaskStatus(taskId, 'failed');
       }
-    } finally {
       setLoading(false);
       disconnectStream();
       if (activeDiscoveryRef.current?.sessionId === sessionId) {

@@ -33,6 +33,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ResumableSessionsBanner, type ResumableSession } from "@/components/ResumableSessionsBanner";
+import { TraceTerminal } from "@/components/TraceTerminal";
+import { miningTraceStore } from "@/lib/traceStore";
 
 const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
   const panelId = useId();
@@ -290,9 +292,8 @@ export default function ScrapeWorkspace() {
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [sourceLinks, setSourceLinks] = useState<{ title: string; uri: string }[]>([]);
 
-  // Diagnostic Terminal States for Adaptive Scraping & Nudge Logs
-  const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
-  const [liveTraceEvents, setLiveTraceEvents] = useState<MiningTraceEvent[]>([]);
+  // Diagnostic Session State for Trace Terminal (managed via traceStore)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   
   const [showLogs, setShowLogs] = useState(false);
   const [searchLogs, setSearchLogs] = useState<SearchLog[]>([]);
@@ -666,7 +667,12 @@ export default function ScrapeWorkspace() {
     const taskId = handleTaskAdd('search', findQuery);
     const requestController = new AbortController();
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
-    let sseSource: EventSource | null = null;
+    setCurrentSessionId(sessionId);
+    const disconnectStream = miningTraceStore.connect(sessionId, () => {
+      void rehydrateLeads(true);
+      notifyLeadsUpdated();
+    });
+
     const activeDiscovery = {
       controller: requestController,
       sessionId,
@@ -677,9 +683,6 @@ export default function ScrapeWorkspace() {
     activeDiscoveryRef.current = activeDiscovery;
 
     try {
-      setTerminalLogs([`[${new Date().toLocaleTimeString()}] Preparing prospect search...`]);
-      setLiveTraceEvents([]);
-
       // Build exclusions list of already scraped identifiers to pass to backend search
       const excludeUrlsAndEmails: string[] = [];
       leads.forEach(l => {
@@ -691,84 +694,6 @@ export default function ScrapeWorkspace() {
         }
         excludeUrlsAndEmails.push(l.profile.fullName);
       });
-
-      if (typeof EventSource !== 'undefined') {
-        try {
-          sseSource = new EventSource(`/api/mining-sessions/${sessionId}/stream`);
-          activeDiscovery.sseSource = sseSource;
-          sseSource.onmessage = (event) => {
-            if (activeDiscoveryRef.current?.sessionId !== sessionId) {
-              sseSource?.close();
-              return;
-            }
-            try {
-              const data = JSON.parse(event.data);
-              if (Array.isArray(data.logs) && data.logs.length > 0) {
-                setTerminalLogs(prev => [...prev, ...data.logs]);
-              }
-              if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
-                setLiveTraceEvents(prev => {
-                  const existingIds = new Set(prev.map(e => e.id));
-                  const incoming = data.traceEvents.filter((e: MiningTraceEvent) => !existingIds.has(e.id));
-                  if (incoming.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
-                    void rehydrateLeads(true);
-                    notifyLeadsUpdated();
-                  }
-                  return incoming.length > 0 ? [...prev, ...incoming] : prev;
-                });
-              }
-            } catch {}
-          };
-          sseSource.addEventListener('end', () => sseSource?.close());
-          sseSource.onerror = () => {
-            sseSource?.close();
-          };
-        } catch {
-          // fallback to poll below
-        }
-      }
-
-      // Poll as a fallback mechanism if SSE is unavailable or blocked by proxy
-      const pollLiveStatus = async () => {
-        if (activeDiscoveryRef.current?.sessionId !== sessionId) return;
-        if (sseSource && sseSource.readyState !== EventSource.CLOSED) {
-          // SSE is active and healthy, back off polling interval
-          activeDiscovery.pollTimer = setTimeout(() => void pollLiveStatus(), 5000);
-          return;
-        }
-        const pollController = new AbortController();
-        activeDiscovery.pollController = pollController;
-        try {
-          const res = await fetch(`/api/search-logs/${sessionId}/live`, {
-            signal: pollController.signal,
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (
-              pollController.signal.aborted ||
-              activeDiscoveryRef.current?.sessionId !== sessionId
-            ) return;
-            if (Array.isArray(data.logs) && data.logs.length > 0) {
-              setTerminalLogs(data.logs);
-            }
-            if (Array.isArray(data.traceEvents)) {
-              setLiveTraceEvents(data.traceEvents);
-            }
-          }
-        } catch (error) {
-          if (!(error instanceof Error && error.name === 'AbortError')) {
-            console.error('Error polling live logs:', error);
-          }
-        } finally {
-          if (
-            activeDiscoveryRef.current?.sessionId === sessionId &&
-            !requestController.signal.aborted
-          ) {
-            activeDiscovery.pollTimer = setTimeout(() => void pollLiveStatus(), 2000);
-          }
-        }
-      };
-      activeDiscovery.pollTimer = setTimeout(() => void pollLiveStatus(), 1000);
 
       const response = await fetch('/api/find-leads', {
         method: 'POST',
@@ -876,9 +801,7 @@ export default function ScrapeWorkspace() {
     } finally {
       void rehydrateLeads(true);
       notifyLeadsUpdated();
-      if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
-      activeDiscovery.pollController?.abort();
-      activeDiscovery.sseSource?.close();
+      miningTraceStore.disconnect(sessionId);
       if (activeDiscoveryRef.current?.sessionId === sessionId) {
         activeDiscoveryRef.current = null;
       }
@@ -890,12 +813,9 @@ export default function ScrapeWorkspace() {
   const handleCancelDiscovery = () => {
     const activeDiscovery = activeDiscoveryRef.current;
     if (!activeDiscovery) return;
-    setTerminalLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Cancellation requested.`]);
+    miningTraceStore.disconnect(activeDiscovery.sessionId);
     void fetch(`/api/mining-sessions/${activeDiscovery.sessionId}/cancel`, { method: 'POST' })
       .catch(() => undefined);
-    if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
-    activeDiscovery.pollController?.abort();
-    activeDiscovery.sseSource?.close();
     activeDiscovery.controller.abort();
   };
 
@@ -912,7 +832,12 @@ export default function ScrapeWorkspace() {
     const taskId = handleTaskAdd('search', session.prompt);
     const requestController = new AbortController();
     const sessionId = session.id;
-    let sseSource: EventSource | null = null;
+    setCurrentSessionId(sessionId);
+    const disconnectStream = miningTraceStore.connect(sessionId, () => {
+      void rehydrateLeads(true);
+      notifyLeadsUpdated();
+    });
+
     const activeDiscovery = {
       controller: requestController,
       sessionId,
@@ -923,41 +848,6 @@ export default function ScrapeWorkspace() {
     activeDiscoveryRef.current = activeDiscovery;
 
     try {
-      setTerminalLogs([`[${new Date().toLocaleTimeString()}] Resuming session ${sessionId}...`]);
-      setLiveTraceEvents([]);
-
-      if (typeof EventSource !== 'undefined') {
-        try {
-          sseSource = new EventSource(`/api/mining-sessions/${sessionId}/stream`);
-          activeDiscovery.sseSource = sseSource;
-          sseSource.onmessage = (event) => {
-            if (activeDiscoveryRef.current?.sessionId !== sessionId) {
-              sseSource?.close();
-              return;
-            }
-            try {
-              const data = JSON.parse(event.data);
-              if (Array.isArray(data.logs) && data.logs.length > 0) {
-                setTerminalLogs(prev => [...prev, ...data.logs]);
-              }
-              if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
-                setLiveTraceEvents(prev => {
-                  const existingIds = new Set(prev.map(e => e.id));
-                  const incoming = data.traceEvents.filter((e: MiningTraceEvent) => !existingIds.has(e.id));
-                  if (incoming.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
-                    void rehydrateLeads(true);
-                    notifyLeadsUpdated();
-                  }
-                  return incoming.length > 0 ? [...prev, ...incoming] : prev;
-                });
-              }
-            } catch {}
-          };
-          sseSource.addEventListener('end', () => sseSource?.close());
-          sseSource.onerror = () => sseSource?.close();
-        } catch {}
-      }
-
       const response = await fetch(`/api/mining-sessions/${sessionId}/resume?mode=job`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -981,7 +871,7 @@ export default function ScrapeWorkspace() {
       }
     } finally {
       setLoading(false);
-      sseSource?.close();
+      disconnectStream();
       if (activeDiscoveryRef.current?.sessionId === sessionId) {
         activeDiscoveryRef.current = null;
       }
@@ -1266,56 +1156,18 @@ export default function ScrapeWorkspace() {
             </TabsContent>
           </Tabs>
 
-        {loading && activeTab === 'find' && (
-          <div className="mt-6 border border-indigo-500/20 bg-slate-950/80 rounded-2xl shadow-2xl overflow-hidden" aria-busy="true">
-            <div className="bg-slate-900 px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Search className="h-4 w-4 text-indigo-400" aria-hidden="true" />
-                <span className="text-sm font-semibold text-slate-200">Live discovery progress</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs bg-indigo-950/60 border border-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded font-semibold animate-pulse motion-reduce:animate-none" role="status">
-                  Search active
-                </span>
-                <Button type="button" variant="outline" size="sm" onClick={handleCancelDiscovery} className="h-8 text-xs">
-                  Cancel
-                </Button>
-              </div>
+        {loading && currentSessionId && (
+          <div className="mt-6 space-y-4" role="status" aria-live="polite">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-400 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                Discovery in progress...
+              </span>
+              <Button type="button" variant="outline" size="sm" onClick={handleCancelDiscovery} className="h-8 text-xs">
+                Cancel
+              </Button>
             </div>
-
-            <div className="p-5 font-mono text-xs text-indigo-300 space-y-2.5 max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950">
-              <div className="flex gap-3 items-center mb-1">
-                <div className="relative h-4 w-4 shrink-0">
-                  <div className="absolute inset-0 h-full w-full rounded-full border-2 border-indigo-400 border-t-transparent animate-spin motion-reduce:animate-none"></div>
-                </div>
-                <div className="text-sm text-slate-100 font-semibold">
-                  Search details
-                </div>
-              </div>
-
-              {terminalLogs.length > 0 ? (
-                terminalLogs.map((log, i) => {
-                  let colorClass = "text-slate-300";
-                  if (log.includes("WAITING") || log.includes("FILTERING")) colorClass = "text-amber-400 font-bold";
-                  if (log.includes("REQUEST") || log.includes("QUERY") || log.includes("DISCOVERY") || log.includes("EVIDENCE") || log.includes("EXTRACTION")) colorClass = "text-indigo-400 font-bold";
-                  return (
-                    <motion.div 
-                      key={i} 
-                      className={`${colorClass} leading-relaxed flex items-start gap-1`}
-                      initial={shouldReduceMotion ? false : { opacity: 0, x: -5 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ duration: shouldReduceMotion ? 0 : 0.15 }}
-                    >
-                      <span className="shrink-0 text-slate-600 select-none">{">"}</span>
-                      <span>{log}</span>
-                    </motion.div>
-                  );
-                })
-              ) : (
-                <p className="text-slate-500 italic">Starting the search...</p>
-              )}
-            </div>
-            <TraceSummaryViewer traceEvents={liveTraceEvents} />
+            <TraceTerminal sessionId={currentSessionId} />
           </div>
         )}
 

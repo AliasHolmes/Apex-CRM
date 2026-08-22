@@ -295,8 +295,19 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           writeResult = await persistLeadPatch(leadWithCurrentRevision, allowCreate);
         } catch (error) {
           if (!(error instanceof LeadPatchConflictError) || allowCreate) throw error;
-          const rebasedLead = rebaseLeadChanges(error.currentLead, lead, rollbackLead);
-          writeResult = await persistLeadPatch(rebasedLead);
+          const resolvedLead = await new Promise<Lead | null>((resolve) => {
+            openConflictDialog(lead, error.currentLead, (userChoice) => {
+              resolve(userChoice);
+            });
+          });
+
+          if (!resolvedLead) {
+            saveLeadsToStorage(currentLeads =>
+              currentLeads.map(c => c.id === error.currentLead.id ? error.currentLead : c)
+            );
+            return false;
+          }
+          writeResult = await persistLeadPatch(resolvedLead);
         }
         let canonicalLead = writeResult.lead;
         const hasNewerQueuedPatch = leadPatchQueuesRef.current.get(lead.id) !== operation;

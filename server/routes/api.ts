@@ -621,9 +621,24 @@ router.delete('/mining-sessions/resumable', (req, res): any => {
       ? req.body.sessionIds.filter((id: any) => typeof id === 'string' && isSafeSessionId(id))
       : [];
     if (sessionIds.length > 0) {
+      const activeIds = sessionIds.filter((id: string) => discoveryEngine.isActive(id));
+      if (activeIds.length > 0) {
+        return res.status(409).json({
+          error: `Cannot delete active mining sessions: ${activeIds.join(', ')}. Cancel them first.`,
+          activeIds
+        });
+      }
       const deletedCount = deleteMiningSessions(sessionIds);
       return res.json({ apiVersion: 1, success: true, deletedCount });
     }
+
+    const isConfirmedSweep = req.body?.all === true || req.query.confirm === 'all';
+    if (!isConfirmedSweep) {
+      return res.status(400).json({
+        error: 'Explicit confirmation ({ all: true } or ?confirm=all) or a non-empty sessionIds array is required to delete sessions.'
+      });
+    }
+
     const deletedCount = clearInterruptedMiningSessions();
     return res.json({ apiVersion: 1, success: true, deletedCount });
   } catch (error: any) {
@@ -642,6 +657,15 @@ router.get('/mining-sessions/:sessionId', (req, res): any => {
 router.delete('/mining-sessions/:sessionId', (req, res): any => {
   const { sessionId } = req.params;
   if (!isSafeSessionId(sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
+
+  if (discoveryEngine.isActive(sessionId)) {
+    return res.status(409).json({
+      error: `Cannot delete active mining session: ${sessionId}. Cancel it first before deleting.`,
+      sessionId,
+      active: true
+    });
+  }
+
   try {
     const deleted = deleteMiningSession(sessionId);
     if (!deleted) return res.status(404).json({ error: 'Mining session not found.' });

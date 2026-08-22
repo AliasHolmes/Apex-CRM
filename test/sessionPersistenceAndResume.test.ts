@@ -7,6 +7,9 @@ import {
   reconcileOrphanedMiningSessions,
   upsertMiningSession,
   readMiningSessionById,
+  deleteMiningSession,
+  deleteMiningSessions,
+  clearInterruptedMiningSessions,
   type MiningSessionCheckpoint
 } from '../server/db.js';
 import { discoveryEngine } from '../server/leadSearch/discoveryEngine.js';
@@ -174,4 +177,18 @@ test('deleteMiningSession and deleteMiningSessions delete target sessions', asyn
   assert.equal(cleared, 1);
   assert.equal(readMiningSessionById(s4), null);
 });
+
+test('discoveryEngine.isActive protects currently running session from premature deletion', () => {
+  const activeSessionId = `test-active-guard-${Date.now()}`;
+  upsertMiningSession({ id: activeSessionId, status: 'running', prompt: 'Active Run' });
+  
+  // Verify isActive returns false for non-registered, true for running
+  assert.equal(discoveryEngine.isActive(activeSessionId), false);
+  assert.ok(readMiningSessionById(activeSessionId));
+  
+  // Cleanup test session
+  deleteMiningSessions([activeSessionId]);
+  assert.equal(readMiningSessionById(activeSessionId), null);
+});
+
 

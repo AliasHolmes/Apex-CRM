@@ -140,7 +140,7 @@ export function ResumableSessionsBanner({
       await fetch('/api/mining-sessions/resumable', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({ all: true })
       });
     } catch (err) {
       console.error('Failed to clear all interrupted sessions:', err);

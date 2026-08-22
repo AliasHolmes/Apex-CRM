@@ -158,12 +158,17 @@ export async function executePlanStage(
 
   planItems = enforceContractQueries(planItems, config.contract);
 
+  const envTasks = Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND);
+  const maxTasks = Number.isFinite(envTasks) && envTasks > 0
+    ? envTasks
+    : Math.min(8, Math.max(3, Math.ceil((config.capacity?.candidateBatchSize || 12) / 4)));
+
   const adaptiveSchedule = scheduleAdaptiveRetrievalTasks(
     buildRetrievalTasks(planItems, searchSpec),
     historicalPerformance,
     {
       enabled: process.env.LEAD_ADAPTIVE_SCHEDULER_ENABLED !== 'false',
-      maxTasks: Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND || 3),
+      maxTasks,
       minOutcomeRuns: Number(process.env.LEAD_ADAPTIVE_MIN_OUTCOME_RUNS || 8),
       explorationStrength: Number(process.env.LEAD_ADAPTIVE_EXPLORATION_STRENGTH || 1.25)
     }
@@ -219,7 +224,6 @@ export async function executePlanStage(
       rescuedFinalists: 0,
       returnedFinalists: 0
     };
-    stats.queryRuns.push(run);
     return run;
   });
 

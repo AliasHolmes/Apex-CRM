@@ -967,6 +967,8 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       ? options.initialCheckpoint.round + 1
       : (options.initialCheckpoint?.round || 1);
 
+    let nextPlanPromise: Promise<any> | null = null;
+
     for (let round = initialRound; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
       if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
         stats.stopReason = 'timeout';
@@ -979,15 +981,18 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       acceptedCountBeforeRound = acceptedLeads.length;
       const remaining = Math.max(rerankPoolTarget - acceptedLeads.length, 0);
 
-      const planResult = await executePlanStage(sessionCtx, {
-        round,
-        remaining,
-        generatedQueries,
-        seenQueryTexts,
-        searchSpec,
-        discoveryProviderMode,
-        stats
-      });
+      const planResult = nextPlanPromise
+        ? await nextPlanPromise
+        : await executePlanStage(sessionCtx, {
+            round,
+            remaining,
+            generatedQueries,
+            seenQueryTexts,
+            searchSpec,
+            discoveryProviderMode,
+            stats
+          });
+      nextPlanPromise = null;
 
       if (planResult.stopReason) {
         stats.stopReason = planResult.stopReason;
@@ -995,6 +1000,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       }
 
       const { roundPlans, queryRuns } = planResult;
+      stats.queryRuns.push(...queryRuns);
 
       const retrieveResult = await executeRetrieveStage(sessionCtx, {
         round,
@@ -1034,6 +1040,22 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       const { candidateItems, roundCandidateKeys } = fuseResult;
       rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
       stats.rawCandidates = rawResultsCount;
+
+      // Stage Pipelining: Pre-compute plan for round N+1 speculatively in background while extract/verify/enrich execute
+      if (round + 1 <= maxRounds && acceptedLeads.length < rerankPoolTarget) {
+        nextPlanPromise = executePlanStage(sessionCtx, {
+          round: round + 1,
+          remaining: Math.max(rerankPoolTarget - acceptedLeads.length, 0),
+          generatedQueries,
+          seenQueryTexts,
+          searchSpec,
+          discoveryProviderMode,
+          stats
+        }).catch(err => {
+          logEvent(`WARN: Pipelined plan for round ${round + 1} failed: ${err.message || String(err)}`);
+          return { roundPlans: [], queryRuns: [] };
+        });
+      }
 
       const extractResult = await executeExtractStage(sessionCtx, {
         round,

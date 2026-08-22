@@ -4,7 +4,7 @@ import { getIntentCacheEntry, upsertIntentCacheEntry } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
 import { applyPostIntentDelta, rankLeadForFinalSelection } from './scoring.js';
 import type { ProspectContract } from './prospectContract.js';
-import type { BrightDataSearchResult } from '../services/brightdata.js';
+import type { BrightDataSearchResult, BrightDataSearchOptions } from '../services/brightdata.js';
 
 export type PostIntentCategory =
   | 'hiring'
@@ -39,7 +39,7 @@ export type LinkedInPostIntentStats = {
 export type LinkedInPostIntentOptions = {
   qualifiedLeads: Map<string, any>;
   contract: ProspectContract;
-  brightDataSearch: (query: string) => Promise<BrightDataSearchResult[]>;
+  brightDataSearch: (query: string, options?: BrightDataSearchOptions) => Promise<BrightDataSearchResult[]>;
   tavilySearchFallback?: (query: string, options?: any) => Promise<any>;
   targetLimit?: number;
   maxLeads?: number;
@@ -348,7 +348,11 @@ export async function runLinkedInPostIntentEnrichment(
         }
 
         try {
-          let results = await brightDataSearch(query).catch(() => {
+          let results = await brightDataSearch(query, {
+            onBingFallback: ({ resultsCount }: { resultsCount: number }) => {
+              logEvent(`[Phase 5] Google SERP challenged for ${name}; Bing fallback rescued ${resultsCount} post result(s).`);
+            }
+          }).catch(() => {
             // The Bright Data service already retried internally; this is the
             // final failure. Log compactly and let the Tavily fallback run.
             logEvent(`[Phase 5] Bright Data post search unavailable for ${name}; continuing with fallback results.`);

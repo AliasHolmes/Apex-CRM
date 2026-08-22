@@ -408,6 +408,11 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     searchSucceeded: 0,
     searchRetries: 0,
     searchRecovered: 0,
+    searchGoogleAttempted: 0,
+    searchGoogleSucceeded: 0,
+    searchBingAttempted: 0,
+    searchBingSucceeded: 0,
+    searchBingRecovered: 0,
     profileScrapesAttempted: 0,
     profileScrapesSucceeded: 0,
     companyScrapesAttempted: 0,
@@ -1158,8 +1163,23 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
                   // Account/signal lanes still use LinkedIn-oriented queries for DM recall.
                   const linkedInQuery = toLinkedInSearchQuery(plan.item);
                   try {
-                    const attemptResults = await brightDataSearch(linkedInQuery || plan.executableQuery);
+                    const attemptResults = await brightDataSearch(linkedInQuery || plan.executableQuery, {
+                      onEngineAttempt: (engine) => {
+                        if (engine === 'google') brightDataStats.searchGoogleAttempted++;
+                        else if (engine === 'bing') brightDataStats.searchBingAttempted++;
+                      },
+                      onBingFallback: ({ resultsCount }) => {
+                        brightDataStats.searchBingRecovered++;
+                        logEvent(`[Search Fallback] Google SERP challenged; Bing fallback rescued ${resultsCount} result(s) for "${plan.executableQuery}".`);
+                      }
+                    });
                     if (attempt > 1) recovered = true;
+                    const isBing = attemptResults.some(r => r.sourceEngine === 'bing');
+                    if (isBing) {
+                      brightDataStats.searchBingSucceeded++;
+                    } else {
+                      brightDataStats.searchGoogleSucceeded++;
+                    }
                     recordTrace({
                       phase: 'search',
                       operation: 'brightdata_search',
@@ -1170,7 +1190,12 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
                       latencyMs: Date.now() - attemptStarted,
                       counts: { rawCandidates: attemptResults.length },
                       brightData: getTraceBrightDataStatus(),
-                      metadata: { attempt, maxAttempts: brightDataSearchRetryMax + 1, recovered: attempt > 1 }
+                      metadata: {
+                        attempt,
+                        maxAttempts: brightDataSearchRetryMax + 1,
+                        recovered: attempt > 1,
+                        engine: isBing ? 'bing' : 'google'
+                      }
                     });
                     return attemptResults;
                   } catch (error: any) {

@@ -651,9 +651,11 @@ Experienced AI and Machine Learning leader. Currently scaling generative workflo
   assert.strictEqual(results.length, 2);
   assert.strictEqual(results[0].title, 'Alex Smith - Founder & CEO - TechCorp | LinkedIn');
   assert.strictEqual(results[0].url, 'https://www.linkedin.com/in/alexsmith');
+  assert.strictEqual(results[0].sourceEngine, 'bing');
   assert.ok(results[0].content.includes('Founder and CEO of TechCorp'));
   assert.strictEqual(results[1].title, 'Jane Doe - Head of AI - DataFlow | LinkedIn');
   assert.strictEqual(results[1].url, 'https://www.linkedin.com/in/janedoe');
+  assert.strictEqual(results[1].sourceEngine, 'bing');
   assert.ok(results[1].content.includes('Experienced AI and Machine Learning leader'));
 });
 

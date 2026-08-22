@@ -945,6 +945,7 @@ export type BrightDataSearchResult = {
   url: string;
   content: string;
   sourceProvider: 'brightdata_search';
+  sourceEngine?: 'google' | 'bing' | 'yandex';
 };
 
 export type BrightDataSearchOptions = {
@@ -954,6 +955,8 @@ export type BrightDataSearchOptions = {
   timeoutMs?: number;
   engine?: 'google' | 'bing' | 'yandex';
   allowBingFallback?: boolean;
+  onEngineAttempt?: (engine: 'google' | 'bing' | 'yandex') => void;
+  onBingFallback?: (event: { query: string; resultsCount: number }) => void;
 };
 
 /** Bright Data search_engine accepts a two-letter geo_location value. */
@@ -981,7 +984,8 @@ export function parseBingMarkdownResults(markdownText: string): BrightDataSearch
         title: currentTitle,
         url: currentUrl,
         content: content || currentTitle,
-        sourceProvider: 'brightdata_search' as const
+        sourceProvider: 'brightdata_search' as const,
+        sourceEngine: 'bing' as const
       });
     }
     currentTitle = '';
@@ -1059,6 +1063,7 @@ export async function brightDataSearch(query: string, options?: BrightDataSearch
   const allowBingFallback = (options?.allowBingFallback ?? (process.env.BRIGHTDATA_FALLBACK_ENGINE !== 'false')) && engine === 'google';
 
   const runSearch = async (activeEngine: 'google' | 'bing' | 'yandex'): Promise<BrightDataSearchResult[]> => {
+    options?.onEngineAttempt?.(activeEngine);
     return withBrightDataClient('search_engine', async (client) => {
       if (searchToolAvailable === null) {
         const tools = await client.listTools();
@@ -1104,7 +1109,8 @@ export async function brightDataSearch(query: string, options?: BrightDataSearch
         title: item.title || '',
         url: item.link || item.url || '',
         content: item.snippet || item.description || '',
-        sourceProvider: 'brightdata_search' as const
+        sourceProvider: 'brightdata_search' as const,
+        sourceEngine: activeEngine
       })).filter((item: BrightDataSearchResult) => item.url && item.title);
     }, { throwOnUnavailable: true, throwOnFailure: true });
   };
@@ -1118,6 +1124,7 @@ export async function brightDataSearch(query: string, options?: BrightDataSearch
         try {
           const bingResults = await runSearch('bing');
           if (bingResults && bingResults.length > 0) {
+            options?.onBingFallback?.({ query, resultsCount: bingResults.length });
             return bingResults;
           }
         } catch {

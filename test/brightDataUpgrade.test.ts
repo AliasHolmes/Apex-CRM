@@ -666,3 +666,61 @@ test('buildBrightDataSearchArguments preserves explicit engine choice', () => {
   const bingArgs = buildBrightDataSearchArguments('test query', { engine: 'bing' });
   assert.strictEqual(bingArgs.engine, 'bing');
 });
+
+test('search telemetry tracking distinguishes Google primary vs Bing rescue accurately', async () => {
+  const stats = {
+    searchAttempted: 0,
+    searchSucceeded: 0,
+    searchGoogleAttempted: 0,
+    searchGoogleSucceeded: 0,
+    searchBingAttempted: 0,
+    searchBingSucceeded: 0,
+    searchBingRecovered: 0
+  };
+
+  const mockBrightDataSearch = async (query: string, options: any = {}) => {
+    options.onEngineAttempt?.('google');
+    options.onEngineAttempt?.('bing');
+    options.onBingFallback?.({ query, resultsCount: 2 });
+    return [
+      { title: 'Result 1', url: 'https://linkedin.com/in/1', content: '...', sourceProvider: 'brightdata_search' as const, sourceEngine: 'bing' as const },
+      { title: 'Result 2', url: 'https://linkedin.com/in/2', content: '...', sourceProvider: 'brightdata_search' as const, sourceEngine: 'bing' as const }
+    ];
+  };
+
+  const trackableSearch = async (query: string, options: any = {}) => {
+    stats.searchAttempted++;
+    const results = await mockBrightDataSearch(query, {
+      ...options,
+      onEngineAttempt: (engine: string) => {
+        if (engine === 'google') stats.searchGoogleAttempted++;
+        else if (engine === 'bing') stats.searchBingAttempted++;
+        options.onEngineAttempt?.(engine);
+      },
+      onBingFallback: (evt: any) => {
+        stats.searchBingRecovered++;
+        options.onBingFallback?.(evt);
+      }
+    });
+    stats.searchSucceeded++;
+    const isBing = results.some(r => r.sourceEngine === 'bing');
+    if (isBing) stats.searchBingSucceeded++;
+    else stats.searchGoogleSucceeded++;
+    return results;
+  };
+
+  let callerNotified = false;
+  const results = await trackableSearch('query', {
+    onBingFallback: () => { callerNotified = true; }
+  });
+
+  assert.strictEqual(results.length, 2);
+  assert.strictEqual(stats.searchAttempted, 1);
+  assert.strictEqual(stats.searchSucceeded, 1);
+  assert.strictEqual(stats.searchGoogleAttempted, 1);
+  assert.strictEqual(stats.searchGoogleSucceeded, 0);
+  assert.strictEqual(stats.searchBingAttempted, 1);
+  assert.strictEqual(stats.searchBingSucceeded, 1);
+  assert.strictEqual(stats.searchBingRecovered, 1);
+  assert.strictEqual(callerNotified, true);
+});

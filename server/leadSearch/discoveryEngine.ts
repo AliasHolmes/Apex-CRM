@@ -77,6 +77,8 @@ import {
   scrapeAsMarkdown,
   scrapeBatchAsMarkdown,
   brightDataSearch,
+  type BrightDataSearchOptions,
+  type BrightDataSearchResult,
   shouldAttemptBrightData,
   classifyBrightDataError,
   executeBrightDataSearchWithRetry,
@@ -438,6 +440,40 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
 
   const incrementCounter = (counts: Record<string, number>, reason: string) => {
     counts[reason] = (counts[reason] || 0) + 1;
+  };
+
+  const trackableBrightDataSearch = async (
+    query: string,
+    options: BrightDataSearchOptions = {},
+    phaseLabel: string = 'search'
+  ): Promise<BrightDataSearchResult[]> => {
+    brightDataStats.searchAttempted++;
+    const results = await brightDataSearch(query, {
+      ...options,
+      onEngineAttempt: (engine) => {
+        if (engine === 'google') brightDataStats.searchGoogleAttempted++;
+        else if (engine === 'bing') brightDataStats.searchBingAttempted++;
+        options.onEngineAttempt?.(engine);
+      },
+      onBingFallback: (evt) => {
+        brightDataStats.searchBingRecovered++;
+        if (options.onBingFallback) {
+          options.onBingFallback(evt);
+        } else {
+          logEvent(`[Search Fallback] [${phaseLabel}] Google SERP challenged; Bing fallback rescued ${evt.resultsCount} result(s) for "${query}".`);
+        }
+      }
+    });
+
+    brightDataStats.searchSucceeded++;
+    const isBing = results.some(r => r.sourceEngine === 'bing');
+    if (isBing) {
+      brightDataStats.searchBingSucceeded++;
+    } else {
+      brightDataStats.searchGoogleSucceeded++;
+    }
+
+    return results;
   };
 
   const stats = {
@@ -1157,29 +1193,18 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
                   }
 
                   physicalAttempts++;
-                  brightDataStats.searchAttempted++;
                   queryRuns[index].providerUnits += 1;
                   // Google-backed search with site:linkedin.com/in for person discovery.
                   // Account/signal lanes still use LinkedIn-oriented queries for DM recall.
                   const linkedInQuery = toLinkedInSearchQuery(plan.item);
                   try {
-                    const attemptResults = await brightDataSearch(linkedInQuery || plan.executableQuery, {
-                      onEngineAttempt: (engine) => {
-                        if (engine === 'google') brightDataStats.searchGoogleAttempted++;
-                        else if (engine === 'bing') brightDataStats.searchBingAttempted++;
-                      },
-                      onBingFallback: ({ resultsCount }) => {
-                        brightDataStats.searchBingRecovered++;
-                        logEvent(`[Search Fallback] Google SERP challenged; Bing fallback rescued ${resultsCount} result(s) for "${plan.executableQuery}".`);
-                      }
-                    });
+                    const attemptResults = await trackableBrightDataSearch(
+                      linkedInQuery || plan.executableQuery,
+                      {},
+                      `round_${round}`
+                    );
                     if (attempt > 1) recovered = true;
                     const isBing = attemptResults.some(r => r.sourceEngine === 'bing');
-                    if (isBing) {
-                      brightDataStats.searchBingSucceeded++;
-                    } else {
-                      brightDataStats.searchGoogleSucceeded++;
-                    }
                     recordTrace({
                       phase: 'search',
                       operation: 'brightdata_search',
@@ -2239,15 +2264,10 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
             let websiteUrl = lead.contactDetails?.website || '';
             if ((!websiteUrl || websiteUrl.includes('linkedin.com')) && !brightDataProviderDisabled) {
               try {
-                brightDataStats.searchAttempted++;
                 websiteUrl = await findCompanyWebsite({
                   companyName,
                   location: lead.location,
-                  brightDataSearch: async (searchQuery) => {
-                    const results = await brightDataSearch(searchQuery);
-                    if (results.length > 0) brightDataStats.searchSucceeded++;
-                    return results;
-                  }
+                  brightDataSearch: (searchQuery) => trackableBrightDataSearch(searchQuery, {}, 'phase_4_company_website')
                 }) || '';
               } catch (error) {
                 const classified = classifyBrightDataError(error);
@@ -2540,7 +2560,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       const postIntentStats = await runLinkedInPostIntentEnrichment({
         qualifiedLeads: qualifiedMap,
         contract,
-        brightDataSearch,
+        brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
         tavilySearchFallback: hasTavilyKey() ? (q, opts) => tavilySearch(q, opts) : undefined,
         targetLimit,
         maxLeads: Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20),

@@ -732,9 +732,12 @@ export default function ScrapeWorkspace() {
       // avoids sending the same candidates through a second bulk write.
       await rehydrateLeads(true);
       notifyLeadsUpdated();
-      const addedCount = Number(data.persistence?.createdCount || 0);
+      const createdCount = Number(data.persistence?.createdCount || 0);
+      const updatedCount = Number(data.persistence?.updatedCount || 0);
+      const addedCount = createdCount + updatedCount;
+      const totalReturned = fetchedLeads.length || addedCount;
       const skippedCount = Number(data.persistence?.duplicateCount || 0);
-      updateTaskStatus(taskId, 'completed', addedCount);
+      updateTaskStatus(taskId, 'completed', totalReturned);
       const stats = data.stats;
       const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;
       const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
@@ -748,14 +751,17 @@ export default function ScrapeWorkspace() {
       const skippedInfo = skippedCount > 0 ? ` ${skippedCount} duplicate${skippedCount === 1 ? ' was' : 's were'} skipped.` : '';
       if (data.shortfall > 0 || data.shortfallReason) {
         setSuccessMsg(`${data.shortfallReason || `Found ${fetchedLeads.length}/${leadLimit} verified matches after exhausting search queries.`}${skippedInfo}${metricsInfo}`);
-      } else if (addedCount === 0) {
-        setSuccessMsg(`Discovery completed, but every returned prospect was already saved.${metricsInfo}`);
+      } else if (fetchedLeads.length === 0 && addedCount === 0) {
+        setSuccessMsg(`Discovery completed, but 0 verified prospects matched criteria.${metricsInfo}`);
       } else if (stats?.stopReason === 'target_reached') {
-        setSuccessMsg(`Target reached: ${addedCount}/${leadLimit} qualified prospects added.${skippedInfo}${metricsInfo} Prospects are ready for review.`);
+        const leadBreakdown = createdCount > 0 && updatedCount > 0
+          ? `${createdCount} new, ${updatedCount} refreshed`
+          : `${totalReturned}`;
+        setSuccessMsg(`Target reached: ${leadBreakdown}/${leadLimit} qualified prospects ready.${skippedInfo}${metricsInfo}`);
       } else if (stats) {
-        setSuccessMsg(`Discovery finished with ${addedCount}/${leadLimit} qualified prospects (stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
+        setSuccessMsg(`Discovery finished with ${totalReturned}/${leadLimit} qualified prospects (stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
       } else {
-        setSuccessMsg(`Discovery complete: ${addedCount} LinkedIn-indexed profile${addedCount === 1 ? '' : 's'} added.${skippedInfo}`);
+        setSuccessMsg(`Discovery complete: ${totalReturned} LinkedIn-indexed profile${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}`);
       }
       if (data.persistenceStatus === 'partial') {
         setSuccessMsg(prev => `${prev ?? 'Discovery finished.'} Partial save: some prospects came from mid-session checkpoints.`);

@@ -4,7 +4,7 @@ import type { IntentSignalSpec } from './intentSignals.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v4';
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v5';
 
 export type RequirementScope =
   | 'person_role'
@@ -94,6 +94,15 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
     if (hasTerm(terms, ['uk', 'united kingdom', 'britain', 'england'])) {
       expanded.push('UK', 'United Kingdom', 'Britain', 'England');
     }
+    if (hasTerm(terms, ['canada', 'canadian'])) {
+      expanded.push('Canada', 'Canadian');
+    }
+    if (hasTerm(terms, ['australia', 'australian', 'au'])) {
+      expanded.push('Australia', 'Australian');
+    }
+    if (hasTerm(terms, ['new zealand', 'newzealand', 'nz'])) {
+      expanded.push('New Zealand', 'NZ');
+    }
   }
 
   if (scope === 'person_role') {
@@ -103,7 +112,7 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   }
 
   if (scope === 'company_type') {
-    if (terms.some(t => /\bai\s+agenc/i.test(t))) {
+    if (terms.some(t => /\bai\s+agenc/i.test(t) || /\bagenc/i.test(t))) {
       expanded.push('AI agency', 'AI agencies', 'AI marketing agency', 'AI consultancy', 'AI studio', 'AI firm', 'artificial intelligence agency', 'AI-powered agency');
     }
   }
@@ -170,13 +179,17 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
 
   const roleHints = ['owner', 'owners', 'founder', 'founders', 'co-founder', 'ceo', 'chief executive officer', 'president', 'partner', 'partners', 'vp', 'vice president', 'head of', 'director', 'directors'];
   const hintedRoles = roleHints.filter(term => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i').test(brief));
-  const locationMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z][A-Za-z .'-]{1,60})$/i)?.[1] || '';
   const rolePattern = roleHints.map(term => term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
-  const companyMatch = clean(brief).match(new RegExp(`^(.+?)\\s+(?:${rolePattern})\\s+(?:in|near|from)\\s+.+$`, 'i'))?.[1] || '';
+
+  const rawLocMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120})/i)?.[1] || '';
+  const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\//).map(s => s.trim()).filter(Boolean) : [];
+
+  const companyTypeMatch = clean(brief).match(new RegExp('([A-Za-z0-9\\s-]{2,30}?)\\s+(?:' + rolePattern + ')\\b', 'i'))?.[1]?.trim() || '';
   const explicitCompanyKeywords = spec.company.keywords.filter(keyword => lower(keyword) !== lower(brief));
   const ownerMatch = clean(brief).match(/\b(?:firm\s+)?owners?\b/i)?.[0] || '';
   const professionMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,2}(?:lawyers?|attorneys?|dentists?|doctors?|brokers?|accountants?)\b/i)?.[0] || '';
   const firmMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,3}firm\b/i)?.[0] || '';
+  const intentMatch = clean(brief).match(/\b(hiring(?:\s+intent)?|recruiting|scaling|funding)\b/i)?.[0] || '';
 
   // Keep ownership as one requirement even when the user writes "firm owners".
   // The dedicated requirement below carries the useful owner/firm-owner variants.
@@ -186,10 +199,16 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   // even when an LLM omitted them from its contract.
   addWithAlternatives('person_role', ownerMatch, ['owner', 'owners', 'firm owner', 'firm owners']);
   addWithAlternatives('person_role', professionMatch, [professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`]);
-  add('person_location', [...spec.person.locations, ...spec.company.locations, locationMatch]);
+  add('person_location', [...spec.person.locations, ...spec.company.locations, ...extractedLocations]);
   addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
-  add('company_type', [...explicitCompanyKeywords, companyMatch]);
+  if (companyTypeMatch && !/^(with|and|or|in|from|at|the|a|an)$/i.test(companyTypeMatch)) {
+    addWithAlternatives('company_type', companyTypeMatch, [companyTypeMatch]);
+  }
+  add('company_type', explicitCompanyKeywords);
   add('company_industry', spec.company.industries);
+  if (intentMatch) {
+    addWithAlternatives('signal', intentMatch, ['hiring', 'careers', 'open roles', 'recruiting', 'growing team'], 'soft');
+  }
   add('signal', spec.signals.include, 'soft');
 
   // A brief with no editable spec still needs one non-invented hard target.
@@ -297,10 +316,19 @@ export function buildSignalLaneQueries(
 
 export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
   const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
-  const variants = [0, 1, 2, 3].map(index => hardRequirements
-    .map(requirement => requirement.acceptableTerms[index % Math.max(requirement.acceptableTerms.length, 1)] || requirement.sourcePhrase)
-    .filter(Boolean)
-    .join(' '));
+  const locationReq = hardRequirements.find(r => r.scope === 'person_location');
+  const nonLocationReqs = hardRequirements.filter(r => r.scope !== 'person_location');
+  const locationTerms = locationReq?.acceptableTerms && locationReq.acceptableTerms.length > 0
+    ? locationReq.acceptableTerms
+    : [''];
+
+  const variants = [0, 1, 2, 3].map(index => {
+    const nonLocTerms = nonLocationReqs
+      .map(requirement => requirement.acceptableTerms[index % Math.max(requirement.acceptableTerms.length, 1)] || requirement.sourcePhrase)
+      .filter(Boolean);
+    const locTerm = locationTerms[index % locationTerms.length];
+    return [...nonLocTerms, locTerm].filter(Boolean).join(' ');
+  });
   const base = queryTermsFor(requirements).join(' ') || clean(brief);
   const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
   const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({

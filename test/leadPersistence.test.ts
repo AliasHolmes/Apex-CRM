@@ -12,14 +12,19 @@ const {
   getLeadsDb,
   LeadNotFoundError,
   LeadRevisionConflictError,
+  readMiningSessionById,
   readStoredLeadById,
   readQueryPerformance,
+  reconcileOrphanedMiningSessions,
   recordQueryPerformance,
   upsertLead,
   upsertLeadWithIdentity,
   upsertLeads,
   upsertLeadsWithIdentity,
+  upsertMiningSession,
 } = await import('../server/db.ts');
+
+const { mapCandidateToPersistedLead } = await import('../server/leadSearch/discoveryEngine.ts');
 
 const createLead = (id: string, linkedinUrl?: string) => ({
   id,
@@ -158,4 +163,134 @@ test('query performance stores provisional work separately from finalist outcome
   assert.equal(row.returned_candidates, 2);
   assert.equal(row.search_latency_ms, 900);
   assert.equal(row.provider_units, 1);
+});
+
+test('reconcileOrphanedMiningSessions cleans up running and cancellation_requested sessions on startup', () => {
+  upsertMiningSession({
+    id: 'crashed-session-1',
+    status: 'running',
+    prompt: 'AI Founders in NY',
+    requestedLimit: 20,
+    startedAt: new Date(Date.now() - 100000).toISOString(),
+  });
+
+  upsertMiningSession({
+    id: 'crashed-session-2',
+    status: 'cancellation_requested',
+    prompt: 'B2B SaaS in Austin',
+    requestedLimit: 15,
+    startedAt: new Date(Date.now() - 50000).toISOString(),
+  });
+
+  upsertMiningSession({
+    id: 'completed-session',
+    status: 'success',
+    prompt: 'Completed search',
+    requestedLimit: 10,
+    startedAt: new Date(Date.now() - 200000).toISOString(),
+    completedAt: new Date(Date.now() - 150000).toISOString(),
+  });
+
+  const reconciledCount = reconcileOrphanedMiningSessions();
+  assert.ok(reconciledCount >= 2);
+
+  const s1 = readMiningSessionById('crashed-session-1');
+  const s2 = readMiningSessionById('crashed-session-2');
+  const s3 = readMiningSessionById('completed-session');
+
+  assert.equal(s1?.status, 'interrupted');
+  assert.ok(s1?.errorMessage?.includes('Session was active when server process stopped'));
+  assert.ok(s1?.completedAt);
+
+  assert.equal(s2?.status, 'interrupted');
+  assert.ok(s2?.errorMessage?.includes('Session was active when server process stopped'));
+  assert.ok(s2?.completedAt);
+
+  assert.equal(s3?.status, 'success');
+});
+
+test('reconcileOrphanedMiningSessions accepts a custom interruption reason', () => {
+  upsertMiningSession({
+    id: 'crashed-session-3',
+    status: 'running',
+    prompt: 'Custom reason check',
+    requestedLimit: 5,
+    startedAt: new Date(Date.now() - 30000).toISOString(),
+  });
+
+  const reconciledCount = reconcileOrphanedMiningSessions('Server process exited (SIGTERM).');
+  assert.ok(reconciledCount >= 1);
+
+  const s = readMiningSessionById('crashed-session-3');
+  assert.equal(s?.status, 'interrupted');
+  assert.equal(s?.errorMessage, 'Server process exited (SIGTERM).');
+  assert.ok(s?.completedAt);
+});
+
+test('multi-stage progressive checkpointing updates the same lead in-place with latest data', () => {
+  const db = getLeadsDb();
+  const candidate: Record<string, any> = {
+    fullName: 'Progressive Candidate',
+    currentTitle: 'Founder',
+    currentCompany: 'FlowState AI',
+    contactDetails: { linkedinUrl: 'https://linkedin.com/in/progressive-candidate-1' },
+    scoreBreakdown: { fitScore: 6, intentScore: 6, timingScore: 6, finalScore: 6.0 }
+  };
+
+  // Stage 1: Round Checkpoint (initial candidate discovery)
+  candidate.id = candidate.id || `lead-${Date.now()}-1`;
+  const mapped1 = mapCandidateToPersistedLead(candidate);
+  const res1 = upsertLeadsWithIdentity([mapped1]);
+  assert.equal(res1.length, 1);
+  assert.equal(res1[0].disposition, 'created');
+  candidate.id = res1[0].lead.id;
+
+  const stored1 = readStoredLeadById(candidate.id);
+  assert.ok(stored1);
+  assert.equal(stored1?.revision, 1);
+  assert.equal(stored1?.profile?.scoreBreakdown?.finalScore, 6.0);
+  assert.equal(stored1?.profile?.qualification, undefined);
+
+  // Stage 2: Post-Judge Checkpoint (candidate scored & qualified by Finalist Judge)
+  candidate.scoreBreakdown = { fitScore: 8.5, intentScore: 8.5, timingScore: 8.5, finalScore: 8.5 };
+  candidate.finalSelectionScore = 8.5;
+  candidate.qualification = { verdict: 'qualified', finalScore: 8.5, reason: 'Verified founder and agency match' };
+
+  const mapped2 = mapCandidateToPersistedLead(candidate);
+  const res2 = upsertLeadsWithIdentity([mapped2]);
+  assert.equal(res2.length, 1);
+  assert.equal(res2[0].disposition, 'updated');
+  assert.equal(res2[0].lead.id, candidate.id);
+
+  const stored2 = readStoredLeadById(candidate.id);
+  assert.ok(stored2);
+  assert.equal(stored2?.revision, 2);
+  assert.equal(stored2?.profile?.scoreBreakdown?.finalScore, 8.5);
+  assert.equal(stored2?.profile?.qualification?.verdict, 'qualified');
+
+  // Stage 3: Post-Phase 5 Final Persistence (intent evidence and final boost)
+  candidate.postIntentEvidence = {
+    quality: 'strong',
+    intentCategory: 'hiring',
+    confidenceScore: 9,
+    intentKeywords: ['hiring AI engineers']
+  };
+  candidate.scoreBreakdown = { fitScore: 8.5, intentScore: 8.5, timingScore: 8.5, finalScore: 9.2 };
+  candidate.finalSelectionScore = 9.2;
+
+  const mapped3 = mapCandidateToPersistedLead(candidate);
+  const res3 = upsertLeadsWithIdentity([mapped3]);
+  assert.equal(res3.length, 1);
+  assert.equal(res3[0].disposition, 'updated');
+  assert.equal(res3[0].lead.id, candidate.id);
+
+  const stored3 = readStoredLeadById(candidate.id);
+  assert.ok(stored3);
+  assert.equal(stored3?.revision, 3);
+  assert.equal(stored3?.profile?.scoreBreakdown?.finalScore, 9.2);
+  assert.equal(stored3?.profile?.postIntentEvidence?.intentCategory, 'hiring');
+
+  // Verify that only 1 single row exists in the database for this person
+  const countRow = db.prepare("SELECT COUNT(*) as count FROM leads WHERE full_name = 'Progressive Candidate'").get() as { count: number };
+  assert.equal(countRow.count, 1);
 });

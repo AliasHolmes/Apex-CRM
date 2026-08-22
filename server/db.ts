@@ -1930,6 +1930,20 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
   return record;
 }
 
+export function reconcileOrphanedMiningSessions(reason?: string): number {
+  const db = getLeadsDb();
+  const message = reason || 'Session was active when server process stopped (likely unexpected shutdown or crash).';
+  const result = db.prepare(`
+    UPDATE mining_sessions
+    SET status = 'interrupted',
+        error_message = COALESCE(error_message, ?),
+        completed_at = COALESCE(completed_at, datetime('now')),
+        updated_at = datetime('now')
+    WHERE status IN ('running', 'cancellation_requested')
+  `).run(message);
+  return Number(result.changes || 0);
+}
+
 // -- Lead Activities ----------------------------------------------------------
 
 export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge';

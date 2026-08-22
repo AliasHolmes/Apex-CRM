@@ -365,10 +365,12 @@ export interface SearchLog {
 }
 
 export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
+export type MiningPersistenceStatus = 'complete' | 'partial' | 'failed';
 
 export interface MiningSession {
   id: string;
   status: MiningSessionStatus;
+  persistenceStatus?: MiningPersistenceStatus;
   prompt: string;
   requestedLimit: number;
   startedAt: string;

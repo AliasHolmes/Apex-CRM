@@ -21,6 +21,7 @@ import { selectEvidenceForFinalist } from '../server/leadSearch/evidenceSelectio
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.ts';
 import { computeMMRDiversitySelection, computeScoreBreakdown } from '../server/leadSearch/scoring.ts';
 import { createLeadEvidence } from '../server/leadSearch/evidence.ts';
+import { mapCandidateToPersistedLead } from '../server/leadSearch/discoveryEngine.ts';
 
 const spec: any = {
   version: 1,
@@ -661,6 +662,30 @@ describe('evidence-grounded prospect quality', () => {
     // With flat email + weak evidence -> not capped at 7.5
     assert.ok(breakdown1.finalScore > 7.5);
     assert.ok(breakdown2.finalScore > 7.5);
+  });
+
+  it('mapCandidateToPersistedLead preserves stable ID and formats profile tags and scores', () => {
+    const candidate = {
+      id: 'lead-stable-123',
+      fullName: 'Sarah Connor',
+      currentTitle: 'Founder & CEO',
+      currentCompany: 'Cyberdyne Systems',
+      industry: 'Defense AI',
+      contactDetails: { linkedinUrl: 'https://linkedin.com/in/sarah-connor' },
+      scoreBreakdown: { fitScore: 9, intentScore: 8, timingScore: 8, finalScore: 8.5 },
+      postIntentEvidence: { quality: 'strong', intentCategory: 'growth_signal' },
+      companyIntentEvidence: { evidenceQuality: 'good' }
+    };
+
+    const persisted = mapCandidateToPersistedLead(candidate);
+    assert.equal(persisted.id, 'lead-stable-123');
+    assert.equal(persisted.stage, 'SCRAPED');
+    assert.equal(persisted.reviewStatus, 'UNREVIEWED');
+    assert.equal(persisted.nextAction, 'NONE');
+    assert.ok(persisted.tags.includes('LinkedIn Indexed'));
+    assert.ok(persisted.tags.includes('Defense AI'));
+    assert.ok(persisted.tags.includes('Intent Corroborated'));
+    assert.ok(persisted.tags.includes('LinkedIn Post: growth signal'));
   });
 });
 

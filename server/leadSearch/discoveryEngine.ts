@@ -206,6 +206,7 @@ export interface DiscoveryResult {
   stats: Record<string, any>;
   traceSummary: Record<string, any>;
   persistence?: { createdCount: number; updatedCount: number; duplicateCount: number };
+  persistenceStatus?: 'complete' | 'partial' | 'failed';
   sandboxMode?: boolean;
   stopReason?: string;
   cancelled?: boolean;
@@ -222,6 +223,65 @@ export function candidateStableId(lead: Record<string, any>, rawUrl?: string): s
   if (name && company) return `text:${name}@${company}`;
   if (name) return `text:${name}`;
   return `id:${crypto.randomUUID()}`;
+}
+
+export function mapCandidateToPersistedLead(p: any, fallbackId?: string, now = new Date().toISOString()): Record<string, any> {
+  const leadId = p.id || fallbackId || `lead-${crypto.randomUUID()}`;
+  p.id = leadId;
+  const hasAccountContext = !!p.companyAccount;
+  const rawBackendScore = Number(p.finalSelectionScore || p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
+  const backendFinalScore = rawBackendScore <= 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
+  const compositeScore = backendFinalScore > 0
+    ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
+    : Math.round(Math.min(Math.max(Number(p.companyAccount?.operationalPainScore || 0), 0), 10) * 10);
+  const predictiveScore = compositeScore > 0
+    ? Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)))
+    : 0;
+  return {
+    id: leadId,
+    profile: p,
+    stage: 'SCRAPED',
+    notes: hasAccountContext
+      ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Review profile and advance to outreach.'}`
+      : 'Discovered via Tavily LinkedIn-indexed search.',
+    createdAt: p.createdAt || now,
+    tags: Array.from(new Set([
+      'LinkedIn Indexed',
+      ...(hasAccountContext ? ['Account Context'] : []),
+      p.industry || 'Tech',
+      ...(Array.isArray(p.tags) ? p.tags : []),
+      ...(p.postIntentEvidence?.quality && p.postIntentEvidence.quality !== 'none' ? [`LinkedIn Post: ${String(p.postIntentEvidence.intentCategory || '').replace(/_/g, ' ')}`] : []),
+      ...(p.corroborated || p.companyIntentEvidence?.evidenceQuality === 'good' || p.companyIntentEvidence?.evidenceQuality === 'partial' ? ['Intent Corroborated'] : []),
+      ...(p.qualification?.verdict === 'qualified_partial' ? ['Signal Unverified'] : []),
+      ...(p.evidence?.corroborated || (p.scout?.sourceCount && p.scout.sourceCount > 1) ? ['Corroborated'] : [])
+    ].filter(Boolean))),
+    fitScore: p.scoreBreakdown?.fitScore,
+    intentScore: p.scoreBreakdown?.intentScore,
+    timingScore: p.scoreBreakdown?.timingScore,
+    compositeScore,
+    predictiveScore,
+    companyAccount: p.companyAccount,
+    decisionMakerVerification: p.decisionMakerVerification,
+    scout: p.scout,
+    finalSelectionScore: p.finalSelectionScore,
+    discoveryLane: p.discoveryLane,
+    sourceProvider: p.sourceProvider || 'tavily',
+    evidenceReasons: p.evidenceReasons,
+    evidence: p.evidence,
+    scoreBreakdown: p.scoreBreakdown,
+    postIntentEvidence: p.postIntentEvidence,
+    intentEnrichmentState: p.intentEnrichmentState,
+    paretoSkyline: p.paretoSkyline,
+    confidenceInterval: p.scoreBreakdown?.confidenceInterval || p.confidenceInterval,
+    reviewStatus: 'UNREVIEWED',
+    nextAction: 'NONE',
+    buyingSignalsDetected: Array.from(new Set([
+      ...(p.companyAccount?.buyingSignals?.map((signal: any) => signal.label) || []),
+      ...(p.companyIntentEvidence?.buyingSignals || []),
+      ...(p.postIntentEvidence?.intentKeywords || []),
+      ...(p.postIntentEvidence?.quality && p.postIntentEvidence.quality !== 'none' && p.postIntentEvidence.llmReason ? [p.postIntentEvidence.llmReason] : [])
+    ].filter(Boolean)))
+  };
 }
 
 export type ExecuteDiscoveryOptions = {
@@ -475,6 +535,10 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     return predictive;
   };
 
+  const acceptedLeads: any[] = [];
+  let persistedCount = 0;
+  const persistedLeadIds = new Set<string>();
+
   try {
     throwIfCancelled();
     logEvent(`--- NEW ADAPTIVE MINING SESSION: ${sessionId} ---`);
@@ -661,7 +725,43 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       return false;
     };
     
-    const acceptedLeads: any[] = [];
+    const checkpointAcceptedLeads = (candidates: any[], stageLabel: string) => {
+      if (!candidates || candidates.length === 0) return;
+      const persistStart = Date.now();
+      try {
+        const mapped = candidates.map(c => mapCandidateToPersistedLead(c));
+        const writeResults = upsertLeadsWithIdentity(mapped);
+        for (let i = 0; i < candidates.length; i++) {
+          const res = writeResults[i];
+          if (res && res.lead && res.lead.id) {
+            candidates[i].id = res.lead.id;
+            persistedLeadIds.add(res.lead.id);
+          }
+        }
+        persistedCount = persistedLeadIds.size;
+        recordTrace({
+          phase: 'persistence',
+          operation: 'checkpoint_leads',
+          status: 'success',
+          provider: 'sqlite',
+          latencyMs: Date.now() - persistStart,
+          counts: { candidates: candidates.length, persistedCount },
+          metadata: { checkpointStage: stageLabel }
+        });
+        logEvent(`[Checkpoint] Auto-persisted ${candidates.length} leads (${stageLabel}).`);
+      } catch (err: any) {
+        console.warn(`[Checkpoint] Warning: incremental checkpoint failed at ${stageLabel}:`, err);
+        recordTrace({
+          phase: 'persistence',
+          operation: 'checkpoint_leads',
+          status: 'error',
+          provider: 'sqlite',
+          latencyMs: Date.now() - persistStart,
+          error: { message: err.message || String(err) },
+          metadata: { checkpointStage: stageLabel }
+        });
+      }
+    };
     const leadQueryRuns = new WeakMap<Record<string, any>, QueryRunStats>();
     const seenCandidateKeys = new Set<string>();
     const seenQueryTexts = new Set<string>();
@@ -2086,6 +2186,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
           queryRun.acceptedLeads++;
           leadQueryRuns.set(lead, queryRun);
         }
+        lead.id = lead.id || `lead-${crypto.randomUUID()}`;
         addProfileKeys(lead, existingKeys);
         acceptedLeads.push(lead);
 
@@ -2206,6 +2307,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       };
 
       logEvent(`Round ${round} diagnostics: ${previousRoundSummary.viableCandidates} candidates show all hard terms; recovery=${previousRoundSummary.shouldRecover ? 'needed' : 'not needed'}.`);
+      checkpointAcceptedLeads(acceptedLeads.slice(acceptedCountBeforeRound), `round_${round}`);
 
       // Early shortlist termination:
       // If we already have >= target * 1.33 accepted leads AND at least target viable candidates showing all hard requirements,
@@ -2403,6 +2505,8 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       logEvent(`Safety Net: Promoted ${rescuedCount} candidates to reach target.`);
     }
 
+    checkpointAcceptedLeads(qualifiedLeads.length > 0 ? qualifiedLeads : acceptedLeads, 'post_finalist_judge');
+
     // === PHASE 5: POST-COLLECTION LINKEDIN POST INTENT ENRICHMENT ===
     const linkedinPostIntentEnabled = String(process.env.LINKEDIN_POST_INTENT_ENABLED || '').toLowerCase() !== 'false';
     if (linkedinPostIntentEnabled && qualifiedLeads.length > 0) {
@@ -2462,68 +2566,23 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
 
     const now = new Date().toISOString();
-    const mappedLeads: Record<string, any>[] = finalLeads.map((p: any, i: number) => {
-      const hasAccountContext = !!p.companyAccount;
-      const rawBackendScore = Number(p.finalSelectionScore || p.scoreBreakdown?.finalScore || p.scoreOverride || 0);
-      const backendFinalScore = rawBackendScore <= 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
-      const compositeScore = backendFinalScore > 0
-        ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
-        : Math.round(Math.min(Math.max(Number(p.companyAccount?.operationalPainScore || 0), 0), 10) * 10);
-      const predictiveScore = compositeScore > 0
-        ? Math.min(96, Math.floor(compositeScore * (hasAccountContext ? 0.96 : 0.9)))
-        : 0;
-      return {
-        id: `lead-bulk-${Date.now()}-${i}`,
-        profile: p,
-        stage: 'SCRAPED',
-        notes: hasAccountContext
-          ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || 'Review profile and advance to outreach.'}`
-          : 'Discovered via Tavily LinkedIn-indexed search.',
-        createdAt: now,
-        tags: Array.from(new Set([
-          'LinkedIn Indexed',
-          ...(hasAccountContext ? ['Account Context'] : []),
-          p.industry || 'Tech',
-          ...(Array.isArray(p.tags) ? p.tags : []),
-          ...(p.postIntentEvidence?.quality && p.postIntentEvidence.quality !== 'none' ? [`LinkedIn Post: ${String(p.postIntentEvidence.intentCategory || '').replace(/_/g, ' ')}`] : []),
-          ...(p.corroborated || p.companyIntentEvidence?.evidenceQuality === 'good' || p.companyIntentEvidence?.evidenceQuality === 'partial' ? ['Intent Corroborated'] : []),
-          ...(p.qualification?.verdict === 'qualified_partial' ? ['Signal Unverified'] : []),
-          ...(p.evidence?.corroborated || (p.scout?.sourceCount && p.scout.sourceCount > 1) ? ['Corroborated'] : [])
-        ].filter(Boolean))),
-        fitScore: p.scoreBreakdown?.fitScore,
-        intentScore: p.scoreBreakdown?.intentScore,
-        timingScore: p.scoreBreakdown?.timingScore,
-        compositeScore,
-        predictiveScore,
-        companyAccount: p.companyAccount,
-        decisionMakerVerification: p.decisionMakerVerification,
-        scout: p.scout,
-        finalSelectionScore: p.finalSelectionScore,
-        discoveryLane: p.discoveryLane,
-        sourceProvider: p.sourceProvider || 'tavily',
-        evidenceReasons: p.evidenceReasons,
-        evidence: p.evidence,
-        scoreBreakdown: p.scoreBreakdown,
-        postIntentEvidence: p.postIntentEvidence,
-        intentEnrichmentState: p.intentEnrichmentState,
-        paretoSkyline: p.paretoSkyline,
-        confidenceInterval: p.scoreBreakdown?.confidenceInterval || p.confidenceInterval,
-        reviewStatus: 'UNREVIEWED',
-        nextAction: 'NONE',
-        buyingSignalsDetected: Array.from(new Set([
-          ...(p.companyAccount?.buyingSignals?.map((signal: any) => signal.label) || []),
-          ...(p.companyIntentEvidence?.buyingSignals || []),
-          ...(p.postIntentEvidence?.intentKeywords || []),
-          ...(p.postIntentEvidence?.quality && p.postIntentEvidence.quality !== 'none' && p.postIntentEvidence.llmReason ? [p.postIntentEvidence.llmReason] : [])
-        ].filter(Boolean)))
-      };
-    });
+    const mappedLeads: Record<string, any>[] = finalLeads.map((p: any) =>
+      mapCandidateToPersistedLead(p, p.id || `lead-${crypto.randomUUID()}`, now)
+    );
 
     let persistence = { createdCount: 0, updatedCount: 0, duplicateCount: 0 };
     const persistStarted = Date.now();
     try {
       const writeResults = upsertLeadsWithIdentity(mappedLeads);
       const persistedLeads = writeResults.map((result) => result.lead);
+      for (let i = 0; i < finalLeads.length; i++) {
+        const res = writeResults[i];
+        if (res?.lead?.id) {
+          finalLeads[i].id = res.lead.id;
+          persistedLeadIds.add(res.lead.id);
+        }
+      }
+      persistedCount = persistedLeadIds.size;
       persistence = {
         createdCount: writeResults.filter((result) => result.disposition === 'created').length,
         updatedCount: writeResults.filter((result) => result.disposition === 'updated').length,
@@ -2550,8 +2609,15 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         error: { message: e.message || String(e) }
       });
       logEvent(`Error auto-persisting leads on backend: ${e.message}`);
-      throw new Error(`Failed to persist discovered leads: ${e.message || String(e)}`);
+      if (persistedCount === 0) {
+        throw new Error(`Failed to persist discovered leads: ${e.message || String(e)}`);
+      }
     }
+
+    const persistenceStatus: 'complete' | 'partial' | 'failed' =
+      persistence.createdCount + persistence.updatedCount + persistence.duplicateCount >= mappedLeads.length
+        ? 'complete'
+        : (persistedCount > 0 ? 'partial' : 'failed');
 
     telemetry.finish('success', stats);
     const traceSummary = telemetry.getSummary();
@@ -2573,7 +2639,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       id: sessionId,
       status: 'success',
       completedAt: new Date().toISOString(),
-      stats,
+      stats: { ...stats, persistedCount, persistenceStatus },
       traceSummary
     });
 
@@ -2581,13 +2647,16 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       markSavedSearchRun(options.savedSearchId);
     }
 
-    return { apiVersion: 1, leads: mappedLeads, persistence, stats, traceSummary, sandboxMode: false, sessionId, total: mappedLeads.length, requestedLimit: targetLimit, shortfall: Math.max(0, targetLimit - mappedLeads.length), shortfallReason: mappedLeads.length < targetLimit ? `Found ${mappedLeads.length}/${targetLimit} verified matches after exhausting search queries.` : undefined, stopReason: stats.stopReason, cancelled: false };
+    return { apiVersion: 1, leads: mappedLeads, persistence, persistenceStatus, stats, traceSummary, sandboxMode: false, sessionId, total: mappedLeads.length, requestedLimit: targetLimit, shortfall: Math.max(0, targetLimit - mappedLeads.length), shortfallReason: mappedLeads.length < targetLimit ? `Found ${mappedLeads.length}/${targetLimit} verified matches after exhausting search queries.` : undefined, stopReason: stats.stopReason, cancelled: false };
 
   } catch (error: any) {
     console.error('Error in /api/find-leads:', error);
-    const cancelled = error?.name === 'AbortError';
+    const cancelled = error?.name === 'AbortError' || String(error?.message || '').includes('cancelled');
     telemetry.finish('error', { ...stats, error: error.message || 'Failed to locate leads.' });
     const traceSummary = telemetry.getSummary();
+    // Report only what actually reached SQLite -- never inflate with unpersisted candidates.
+    const effectiveLeadsFound = persistedCount;
+    const persistenceStatus: 'complete' | 'partial' | 'failed' = persistedCount > 0 ? 'partial' : 'failed';
 
     const detailedLogsText = `${sessionLogs.join('\n')}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
     safeInsertSearchLog({
@@ -2598,7 +2667,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       status: cancelled ? 'cancelled' : 'error',
       errorMessage: error.message || 'Failed to locate leads.',
       rawResultsCount,
-      leadsFound: 0,
+      leadsFound: effectiveLeadsFound,
       detailedLogs: detailedLogsText,
       debugLogs: JSON.stringify(debugLogs)
     });
@@ -2608,7 +2677,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       status: cancelled ? 'cancelled' : 'error',
       completedAt: new Date().toISOString(),
       errorMessage: error.message || 'Failed to locate leads.',
-      stats,
+      stats: { ...stats, persistedCount, persistenceStatus },
       traceSummary
     });
 

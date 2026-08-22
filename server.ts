@@ -8,7 +8,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import apiRouter from './server/routes/api.js';
-import { getLeadsDb, pruneExpiredEnrichmentCache } from './server/db.js';
+import { getLeadsDb, pruneExpiredEnrichmentCache, reconcileOrphanedMiningSessions } from './server/db.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -106,6 +106,10 @@ async function startServer() {
   try {
     getLeadsDb();
     console.log('Database initialized and warmed up.');
+    const reconciled = reconcileOrphanedMiningSessions();
+    if (reconciled > 0) {
+      console.log(`[Startup] Reconciled ${reconciled} orphaned mining sessions to 'interrupted'.`);
+    }
   } catch (error) {
     console.error('Failed to eagerly initialize database:', error);
     process.exitCode = 1;
@@ -172,14 +176,10 @@ async function startServer() {
     });
     // Mark any active mining sessions as interrupted so the DB is consistent.
     try {
-      getLeadsDb().exec(`
-        UPDATE mining_sessions
-        SET status        = 'interrupted',
-            error_message = COALESCE(error_message, 'Server process exited (${signal}).'),
-            completed_at  = COALESCE(completed_at, datetime('now')),
-            updated_at    = datetime('now')
-        WHERE status IN ('running', 'cancellation_requested')
-      `);
+      const reconciled = reconcileOrphanedMiningSessions(`Server process exited (${signal}).`);
+      if (reconciled > 0) {
+        console.log(`[Shutdown:${signal}] Marked ${reconciled} active mining session(s) as 'interrupted'.`);
+      }
     } catch (dbErr) {
       console.warn('Could not update interrupted mining sessions:', dbErr);
     }

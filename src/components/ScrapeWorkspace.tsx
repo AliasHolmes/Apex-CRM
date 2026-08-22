@@ -824,12 +824,41 @@ export default function ScrapeWorkspace() {
       } else {
         setSuccessMsg(`Discovery complete: ${addedCount} LinkedIn-indexed profile${addedCount === 1 ? '' : 's'} added.${skippedInfo}`);
       }
+      if (data.persistenceStatus === 'partial') {
+        setSuccessMsg(prev => `${prev ?? 'Discovery finished.'} Partial save: some prospects came from mid-session checkpoints.`);
+      }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
         setErrorCode(null);
-        setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
-        updateTaskStatus(taskId, 'cancelled', 0);
-        triggerToast('Lead discovery cancelled.', 'info');
+        // Incremental checkpointing may have already persisted leads before the stop.
+        // Consult the session record (brief retries while the engine writes its final state)
+        // instead of claiming that nothing was saved.
+        let savedCount = 0;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 500 : 900));
+          try {
+            const res = await fetch(`/api/mining-sessions/${sessionId}`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            const stats: any = data?.session?.stats || {};
+            const status: string = String(data?.session?.status || '');
+            savedCount = Number(stats.persistedCount || 0);
+            const terminal = ['cancelled', 'error', 'success', 'interrupted'].includes(status);
+            if (terminal || savedCount > 0) break;
+          } catch {
+            // Session endpoint not ready yet; retry.
+          }
+        }
+        if (savedCount > 0) {
+          setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
+          updateTaskStatus(taskId, 'cancelled', savedCount);
+          triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
+          void rehydrateLeads(true).catch(() => {});
+        } else {
+          setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
+          updateTaskStatus(taskId, 'cancelled', 0);
+          triggerToast('Lead discovery cancelled.', 'info');
+        }
       } else {
         console.error(err);
         setErrorCode(err.message || 'Lead lookup failed.');

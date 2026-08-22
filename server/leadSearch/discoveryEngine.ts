@@ -1093,13 +1093,45 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
                 });
 
                 if (recovered) brightDataStats.searchRecovered++;
-                return { index, results };
+                return { index, results, fallbackProvider: undefined };
               } catch (error: any) {
                 const classified = classifyBrightDataError(error);
                 stats.brightDataFailures++;
                 brightDataStats.failed++;
                 logEvent(`WARN: Bright Data Search failed after ${physicalAttempts} physical attempt(s): ${classified.message}`);
-                return { index, results: [] as any[] };
+
+                if (hasTavilyKey()) {
+                  try {
+                    const fallbackStarted = Date.now();
+                    logEvent(`Round ${round}: immediately falling back to Tavily for query "${plan.executableQuery}" after Bright Data failure.`);
+                    const tavilyOptions = plan.item.tavily;
+                    const res = await tavilySearch(plan.executableQuery, tavilyOptions);
+                    const fallbackItems = (res.items || []).map((item: any) => ({
+                      title: String(item.title || ''),
+                      url: String(item.url || ''),
+                      content: String(item.content || item.raw_content || item.snippet || ''),
+                      sourceProvider: 'tavily' as const
+                    })).filter((item: any) => item.url && item.title);
+
+                    recordTrace({
+                      phase: 'search',
+                      operation: 'tavily_search',
+                      status: 'success',
+                      provider: 'tavily',
+                      round,
+                      query: plan.executableQuery,
+                      latencyMs: Date.now() - fallbackStarted,
+                      counts: { rawCandidates: fallbackItems.length },
+                      metadata: { fallbackFrom: 'brightdata', originalReason: classified.reasonCode }
+                    });
+
+                    return { index, results: fallbackItems, fallbackProvider: 'tavily' };
+                  } catch (fallbackError: any) {
+                    logEvent(`WARN: Tavily fallback search also failed for query "${plan.executableQuery}": ${fallbackError.message || String(fallbackError)}`);
+                  }
+                }
+
+                return { index, results: [] as any[], fallbackProvider: undefined };
               } finally {
                 queryRuns[index].searchLatencyMs += Date.now() - bdSearchStarted;
               }
@@ -1111,11 +1143,13 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
             signal: sessionAbortController.signal
           });
 
-          for (const { index, results } of bdResults) {
-            if (results.length > 0) brightDataStats.searchSucceeded++;
+          for (const { index, results, fallbackProvider } of bdResults) {
+            if (results.length > 0 && !fallbackProvider) brightDataStats.searchSucceeded++;
             stats.brightDataSearchResults += results.length;
             for (const item of results) {
-              item.sourceProvider = 'brightdata_search';
+              if (!item.sourceProvider) {
+                item.sourceProvider = fallbackProvider === 'tavily' ? 'tavily' : 'brightdata_search';
+              }
               roundItems.push({ item, resultIndex: index });
             }
           }
@@ -2357,6 +2391,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         qualifiedLeads: qualifiedMap,
         contract,
         brightDataSearch,
+        tavilySearchFallback: hasTavilyKey() ? (q, opts) => tavilySearch(q, opts) : undefined,
         targetLimit,
         maxLeads: Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20),
         concurrency: Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 2),

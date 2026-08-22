@@ -40,6 +40,7 @@ export type LinkedInPostIntentOptions = {
   qualifiedLeads: Map<string, any>;
   contract: ProspectContract;
   brightDataSearch: (query: string) => Promise<BrightDataSearchResult[]>;
+  tavilySearchFallback?: (query: string, options?: any) => Promise<any>;
   targetLimit?: number;
   maxLeads?: number;
   concurrency?: number;
@@ -222,6 +223,7 @@ export async function runLinkedInPostIntentEnrichment(
     qualifiedLeads,
     contract,
     brightDataSearch,
+    tavilySearchFallback,
     targetLimit,
     maxLeads = 20,
     concurrency = 2,
@@ -346,7 +348,27 @@ export async function runLinkedInPostIntentEnrichment(
         }
 
         try {
-          const results = await brightDataSearch(query).catch(() => []);
+          let results = await brightDataSearch(query).catch(() => []);
+          let activeProvider: 'brightdata' | 'tavily' = 'brightdata';
+
+          if ((!results || results.length === 0) && tavilySearchFallback) {
+            try {
+              const tavilyRes = await tavilySearchFallback(query, { searchDepth: 'basic', maxResults: 5 });
+              const items = Array.isArray(tavilyRes) ? tavilyRes : (tavilyRes?.items || tavilyRes?.results || []);
+              if (items.length > 0) {
+                activeProvider = 'tavily';
+                results = items.map((item: any) => ({
+                  title: String(item.title || ''),
+                  url: String(item.url || item.link || ''),
+                  content: String(item.content || item.raw_content || item.snippet || ''),
+                  sourceProvider: 'tavily' as any
+                })).filter((item: any) => item.url && item.title);
+              }
+            } catch {
+              // tavily fallback failed, proceed with empty results
+            }
+          }
+
           const { snippets, postContext, firstUrl } = extractPostSnippets(results);
 
           if (!snippets.length || postContext.length < 50) {
@@ -372,7 +394,7 @@ export async function runLinkedInPostIntentEnrichment(
               linkedinUsername: handle,
               evidenceBlock: JSON.stringify(emptyEvidence),
               scrapeQuality: 'weak',
-              sourceProvider: 'brightdata',
+              sourceProvider: activeProvider,
               intentFingerprint: INTENT_FINGERPRINT
             }, ttlDays);
             return;
@@ -410,7 +432,7 @@ export async function runLinkedInPostIntentEnrichment(
             linkedinUsername: handle,
             evidenceBlock: JSON.stringify(postEvidence),
             scrapeQuality: postEvidence.quality === 'strong' ? 'good' : postEvidence.quality === 'moderate' ? 'partial' : 'weak',
-            sourceProvider: 'brightdata',
+            sourceProvider: activeProvider,
             intentFingerprint: INTENT_FINGERPRINT
           }, ttlDays);
 

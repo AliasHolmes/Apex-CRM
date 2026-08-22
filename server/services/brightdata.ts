@@ -183,6 +183,9 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   if (/connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'transport_transient', retryable: true, clearClient: true, statusCode });
   }
+  if (/minimum of \d+\s*seconds?|recently failed and cannot be attempted/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
+  }
   if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content|unexpected non-json response from bright data/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'target_transient', retryable: true, statusCode });
   }

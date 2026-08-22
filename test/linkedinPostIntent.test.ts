@@ -505,4 +505,57 @@ test('runLinkedInPostIntentEnrichment cutline bubble logic prioritizes candidate
   assert.ok(!processedQueries.some(q => q.includes('guaranteed-winner')), 'Guaranteed winner outside the bubble should not consume budget when cap is tight');
 });
 
+test('runLinkedInPostIntentEnrichment falls back to Tavily search when Bright Data returns empty or fails', async () => {
+  const mockContract: ProspectContract = {
+    version: 1,
+    policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+    brief: 'Founders hiring automation specialists',
+    authorityRequired: true,
+    requirements: [],
+    exclusions: [],
+    initialQueries: []
+  };
+
+  const testLead: any = {
+    fullName: 'Fallback Prospect',
+    contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/fallback-prospect' },
+    decisionMakerVerification: { confidence: 8 },
+    qualification: { finalScore: 7.0 }
+  };
+
+  const map = new Map([['lead-fb', testLead]]);
+  let brightDataAttempted = false;
+  let tavilyAttempted = false;
+
+  const stats = await runLinkedInPostIntentEnrichment({
+    qualifiedLeads: map,
+    contract: mockContract,
+    maxLeads: 1,
+    brightDataSearch: async () => {
+      brightDataAttempted = true;
+      throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
+    },
+    tavilySearchFallback: async (q) => {
+      tavilyAttempted = true;
+      return {
+        items: [
+          {
+            title: "Fallback Prospect's Post | LinkedIn",
+            url: 'https://www.linkedin.com/posts/fallback-prospect_automation-hiring-12345',
+            content: 'We are urgently hiring senior workflow automation engineers for our team.'
+          }
+        ]
+      };
+    },
+    logEvent: () => {},
+    recordTrace: () => {}
+  });
+
+  assert.ok(brightDataAttempted, 'Bright Data search should be attempted first');
+  assert.ok(tavilyAttempted, 'Tavily search fallback should be called when Bright Data fails');
+  assert.ok(testLead.postIntentEvidence, 'postIntentEvidence should be populated via Tavily fallback');
+  assert.strictEqual(stats.attempted, 1);
+});
+
+
 

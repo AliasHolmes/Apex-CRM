@@ -232,7 +232,12 @@ test('Bright Data search retry stops after two physical attempts', async () => {
 });
 
 test('Bright Data search retry never repeats non-retryable failures', async () => {
-  for (const message of ['401 unauthorized invalid token', 'quota credits exhausted', 'HTTP 400 Request validation failed']) {
+  for (const message of [
+    '401 unauthorized invalid token',
+    'quota credits exhausted',
+    'HTTP 400 Request validation failed',
+    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds.'
+  ]) {
     let attempts = 0;
     await assert.rejects(
       executeBrightDataSearchWithRetry(async () => {

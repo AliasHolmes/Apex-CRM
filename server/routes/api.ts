@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { LEAD_STAGE_SET as leadStages, REVIEW_STATUS_SET as reviewStatuses, NEXT_ACTION_SET as nextActions } from '../../src/types.js';
 import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getProfileDomain, getLinkedInHandle } from '../../src/utils/leadDedupe.js';
 
-import { readStoredLeads, readLeadsSummary, readExistingIdentityKeys, readLeadsStageSummary, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
+import { readStoredLeads, readLeadsSummary, readExistingIdentityKeys, readLeadsStageSummary, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, readMiningSessionCheckpoint, readResumableMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt, type LLMUsage } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, chunkBrightDataBatchItems, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -606,6 +606,15 @@ router.get('/mining-sessions', (req, res): any => {
   }
 });
 
+router.get('/mining-sessions/resumable', (req, res): any => {
+  try {
+    res.json({ apiVersion: 1, sessions: readResumableMiningSessions() });
+  } catch (error: any) {
+    console.error('Failed to read resumable mining sessions:', error);
+    res.status(500).json({ error: 'Failed to retrieve resumable mining sessions.' });
+  }
+});
+
 router.get('/mining-sessions/:sessionId', (req, res): any => {
   if (!isSafeSessionId(req.params.sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
   const session = readMiningSessionById(req.params.sessionId);
@@ -623,6 +632,45 @@ router.post('/mining-sessions/:sessionId/cancel', (req, res): any => {
   discoveryEngine.addLog(sessionId, `[${cancellationRequestedAt}] Cancellation requested by local user.`);
   const session = upsertMiningSession({ id: sessionId, status: 'cancellation_requested', cancellationRequestedAt });
   res.status(202).json({ apiVersion: 1, success: true, sessionId, status: 'cancellation_requested', session });
+});
+
+router.post('/mining-sessions/:sessionId/resume', async (req, res): Promise<any> => {
+  const { sessionId } = req.params;
+  if (!isSafeSessionId(sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
+
+  if (discoveryEngine.isActive(sessionId)) {
+    return res.status(409).json({ error: `Session is already active: ${sessionId}`, sessionId });
+  }
+
+  const checkpoint = readMiningSessionCheckpoint(sessionId);
+  if (!checkpoint) {
+    return res.status(404).json({ error: `No resumable checkpoint found for session: ${sessionId}` });
+  }
+
+  const isAsyncMode = req.query.mode === 'job' || req.headers['prefer'] === 'respond-async';
+
+  if (isAsyncMode) {
+    discoveryEngine.resume(sessionId).catch(err => {
+      console.error(`[mining-session resume background error] ${sessionId}:`, err);
+    });
+
+    return res.status(202).json({
+      apiVersion: 1,
+      status: 'running',
+      sessionId,
+      streamUrl: `/api/mining-sessions/${sessionId}/stream`,
+      resumedFromRound: checkpoint.round,
+      message: `Resuming mining session from round ${checkpoint.round}.`
+    });
+  }
+
+  try {
+    const result = await discoveryEngine.resume(sessionId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    const cancelled = error.name === 'AbortError' || String(error.message || '').includes('cancelled');
+    return res.status(cancelled ? 499 : 500).json({ error: error.message || 'Failed to resume lead mining session.', cancelled });
+  }
 });
 
 router.get('/provider-capabilities', (req, res): any => {
@@ -755,6 +803,34 @@ router.post('/find-leads', async (req, res): Promise<any> => {
   const suppliedSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
   if (suppliedSessionId && !isSafeSessionId(suppliedSessionId)) {
     return res.status(400).json({ error: 'Invalid sessionId.' });
+  }
+
+  const isAsyncMode = req.query.mode === 'job' || req.headers['prefer'] === 'respond-async';
+  const targetSessionId = suppliedSessionId || `session-${crypto.randomUUID()}`;
+
+  if (isAsyncMode) {
+    if (discoveryEngine.isActive(targetSessionId)) {
+      return res.status(409).json({ error: `A lead mining session with this sessionId is already active: ${targetSessionId}`, sessionId: targetSessionId });
+    }
+
+    discoveryEngine.execute({
+      sessionId: targetSessionId,
+      promptQuery: req.body?.query,
+      requestedLimit: req.body?.limit,
+      discoveryProviderMode: req.body?.discoveryMode || req.body?.discoveryProviderMode,
+      searchSpec: req.body?.searchSpec,
+      excludeList: req.body?.excludeList
+    }).catch(err => {
+      console.error(`[find-leads background error] ${targetSessionId}:`, err);
+    });
+
+    return res.status(202).json({
+      apiVersion: 1,
+      status: 'running',
+      sessionId: targetSessionId,
+      streamUrl: `/api/mining-sessions/${targetSessionId}/stream`,
+      message: 'Discovery session accepted and executing in background.'
+    });
   }
 
   try {

@@ -83,6 +83,25 @@ export type SessionContext = {
   recordTrace: (event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) => MiningTraceEvent;
 };
 
+export type MiningSessionCheckpoint = {
+  sessionId: string;
+  round: number;
+  stage: string;
+  promptQuery: string;
+  targetLimit: number;
+  contract: ProspectContract;
+  searchSpec?: any;
+  queryRuns: QueryRunStats[];
+  acceptedLeads: any[];
+  qualifiedLeads: any[];
+  finalLeads: any[];
+  rejectionCounts: Record<string, number>;
+  failureCounts: Record<string, number>;
+  brightDataStats: any;
+  previousRoundSummary?: any;
+  updatedAt: string;
+};
+
 export type StageResult<T = void> = {
   stage: StageName;
   round?: number;

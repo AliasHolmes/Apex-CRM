@@ -10,7 +10,7 @@ import { canonicalLinkedInIdentity, normalizeDedupeValue } from '../src/utils/le
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 13;
+const LATEST_SCHEMA_VERSION = 14;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -510,6 +510,10 @@ function runMigrations(db: DatabaseSync) {
           // ignore corrupted payload on backfill
         }
       }
+    }
+
+    if (currentVersion < 14) {
+      addColumnIfMissing(db, 'mining_sessions', 'checkpoint_json', 'checkpoint_json TEXT');
     }
 
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
@@ -1838,6 +1842,25 @@ export function reserveProviderUsage(provider: string, units: number, monthlyLim
 
 export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
 
+export type MiningSessionCheckpoint = {
+  sessionId: string;
+  round: number;
+  stage: string;
+  promptQuery: string;
+  targetLimit: number;
+  contract: any;
+  searchSpec?: any;
+  queryRuns: any[];
+  acceptedLeads: any[];
+  qualifiedLeads: any[];
+  finalLeads: any[];
+  rejectionCounts: Record<string, number>;
+  failureCounts: Record<string, number>;
+  brightDataStats: any;
+  previousRoundSummary?: any;
+  updatedAt: string;
+};
+
 export type MiningSessionRecord = {
   id: string;
   status: MiningSessionStatus;
@@ -1849,6 +1872,7 @@ export type MiningSessionRecord = {
   errorMessage?: string;
   stats?: Record<string, unknown>;
   traceSummary?: Record<string, unknown>;
+  checkpoint?: MiningSessionCheckpoint;
   updatedAt: string;
 };
 
@@ -1863,6 +1887,7 @@ const toMiningSessionRecord = (row: any): MiningSessionRecord => ({
   errorMessage: row.error_message || undefined,
   stats: parseJSONField<Record<string, unknown> | undefined>(row.stats_json, undefined),
   traceSummary: parseJSONField<Record<string, unknown> | undefined>(row.trace_summary_json, undefined),
+  checkpoint: parseJSONField<MiningSessionCheckpoint | undefined>(row.checkpoint_json, undefined),
   updatedAt: row.updated_at
 });
 
@@ -1881,6 +1906,35 @@ export function readMiningSessions(limit = 25) {
   return rows.map(toMiningSessionRecord);
 }
 
+export function readResumableMiningSessions(): MiningSessionRecord[] {
+  const rows = getLeadsDb()
+    .prepare(`
+      SELECT * FROM mining_sessions
+      WHERE status = 'interrupted' AND checkpoint_json IS NOT NULL
+      ORDER BY datetime(updated_at) DESC
+      LIMIT 20
+    `)
+    .all() as any[];
+  return rows.map(toMiningSessionRecord);
+}
+
+export function saveMiningSessionCheckpoint(sessionId: string, checkpoint: MiningSessionCheckpoint) {
+  const db = getLeadsDb();
+  const now = checkpoint.updatedAt || new Date().toISOString();
+  db.prepare(`
+    UPDATE mining_sessions
+    SET checkpoint_json = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(JSON.stringify(checkpoint), now, sessionId);
+}
+
+export function readMiningSessionCheckpoint(sessionId: string): MiningSessionCheckpoint | null {
+  const db = getLeadsDb();
+  const row = db.prepare('SELECT checkpoint_json FROM mining_sessions WHERE id = ?').get(sessionId) as { checkpoint_json: string | null } | undefined;
+  return row?.checkpoint_json ? parseJSONField<MiningSessionCheckpoint | null>(row.checkpoint_json, null) : null;
+}
+
 export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Partial<Omit<MiningSessionRecord, 'id' | 'updatedAt'>> & { updatedAt?: string }) {
   const db = getLeadsDb();
   const existing = readMiningSessionById(update.id);
@@ -1896,14 +1950,15 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
     errorMessage: update.errorMessage ?? existing?.errorMessage,
     stats: update.stats ?? existing?.stats,
     traceSummary: update.traceSummary ?? existing?.traceSummary,
+    checkpoint: update.checkpoint ?? existing?.checkpoint,
     updatedAt: now
   };
 
   db.prepare(`
     INSERT INTO mining_sessions (
       id, status, prompt, requested_limit, started_at, completed_at,
-      cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cancellation_requested_at, error_message, stats_json, trace_summary_json, checkpoint_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       status = excluded.status,
       prompt = excluded.prompt,
@@ -1914,6 +1969,7 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
       error_message = excluded.error_message,
       stats_json = excluded.stats_json,
       trace_summary_json = excluded.trace_summary_json,
+      checkpoint_json = COALESCE(excluded.checkpoint_json, mining_sessions.checkpoint_json),
       updated_at = excluded.updated_at
   `).run(
     record.id,
@@ -1926,6 +1982,7 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
     record.errorMessage || null,
     record.stats ? JSON.stringify(record.stats) : null,
     record.traceSummary ? JSON.stringify(record.traceSummary) : null,
+    record.checkpoint ? JSON.stringify(record.checkpoint) : null,
     record.updatedAt
   );
 
@@ -1934,16 +1991,36 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
 
 export function reconcileOrphanedMiningSessions(reason?: string): number {
   const db = getLeadsDb();
-  const message = reason || 'Session was active when server process stopped (likely unexpected shutdown or crash).';
-  const result = db.prepare(`
-    UPDATE mining_sessions
-    SET status = 'interrupted',
-        error_message = COALESCE(error_message, ?),
-        completed_at = COALESCE(completed_at, datetime('now')),
-        updated_at = datetime('now')
+  const defaultMessage = 'Session was active when server process stopped (interrupted).';
+  const rows = db.prepare(`
+    SELECT id, checkpoint_json, error_message
+    FROM mining_sessions
     WHERE status IN ('running', 'cancellation_requested')
-  `).run(message);
-  return Number(result.changes || 0);
+  `).all() as { id: string; checkpoint_json: string | null; error_message: string | null }[];
+
+  for (const row of rows) {
+    let msg = reason || row.error_message || defaultMessage;
+    if (!reason && row.checkpoint_json) {
+      try {
+        const cp = JSON.parse(row.checkpoint_json);
+        if (cp?.round) {
+          msg = `${defaultMessage} Resumable from round ${cp.round}.`;
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+    db.prepare(`
+      UPDATE mining_sessions
+      SET status = 'interrupted',
+          error_message = ?,
+          completed_at = COALESCE(completed_at, datetime('now')),
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(msg, row.id);
+  }
+
+  return rows.length;
 }
 
 // -- Lead Activities ----------------------------------------------------------

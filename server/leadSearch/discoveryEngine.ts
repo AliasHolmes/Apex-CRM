@@ -44,7 +44,10 @@ import {
   recordQueryPerformance,
   readProviderUsage,
   recordProviderUsage,
-  reserveProviderUsage
+  reserveProviderUsage,
+  saveMiningSessionCheckpoint,
+  readMiningSessionCheckpoint,
+  readResumableMiningSessions
 } from '../db.js';
 import {
   hasOpenAIKey,
@@ -151,7 +154,7 @@ import { executeEnrichStage } from './stages/enrichStage.js';
 import { executeJudgeStage } from './stages/judgeStage.js';
 import { executeSelectStage } from './stages/selectStage.js';
 import { executePersistStage } from './stages/persistStage.js';
-import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext } from './pipelineTypes.js';
+import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext, MiningSessionCheckpoint } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
 import {
@@ -311,6 +314,7 @@ export type ExecuteDiscoveryOptions = {
   discoveryProviderMode?: string;
   excludeList?: string[];
   savedSearchId?: string;
+  initialCheckpoint?: MiningSessionCheckpoint;
   listener?: DiscoveryEventListener;
 };
 
@@ -666,12 +670,12 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       }
     }
 
-    // Build deterministic contract first as fallback.
-    const fallbackContract = buildDeterministicProspectContract(query, searchSpec);
+    // Build deterministic contract first as fallback (or restore from checkpoint).
+    const fallbackContract = options.initialCheckpoint?.contract || buildDeterministicProspectContract(query, searchSpec);
 
-    // Compile contract using LLM if OpenAI/Byesu key is configured.
-    let contract = fallbackContract;
-    if (hasOpenAIKey()) {
+    // Compile contract using LLM if OpenAI/Byesu key is configured and not resuming from existing contract.
+    let contract = options.initialCheckpoint?.contract || fallbackContract;
+    if (!options.initialCheckpoint?.contract && hasOpenAIKey()) {
       const contractStarted = Date.now();
       const contractPrompt = buildProspectContractPrompt(query);
       try {
@@ -934,7 +938,36 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       recordTrace
     };
 
-    for (let round = 1; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
+    if (options.initialCheckpoint) {
+      const cp = options.initialCheckpoint;
+      logEvent(`[Resume] Resuming session ${sessionId} from round ${cp.round} (${(cp.acceptedLeads || []).length} accepted leads).`);
+      stats.rounds = cp.round;
+      if (Array.isArray(cp.queryRuns)) {
+        stats.queryRuns.push(...cp.queryRuns);
+        for (const run of cp.queryRuns) {
+          if (run.query) seenQueryTexts.add(run.query);
+        }
+      }
+      if (cp.rejectionCounts) Object.assign(stats.rejectionReasons, cp.rejectionCounts);
+      if (cp.failureCounts && brightDataStats.failureReasons) Object.assign(brightDataStats.failureReasons, cp.failureCounts);
+      if (cp.brightDataStats) Object.assign(brightDataStats, cp.brightDataStats);
+      if (cp.previousRoundSummary) previousRoundSummary = cp.previousRoundSummary;
+      if (Array.isArray(cp.acceptedLeads)) {
+        for (const lead of cp.acceptedLeads) {
+          acceptedLeads.push(lead);
+          buildProfileDedupeKeys(lead).forEach(k => existingKeys.add(k));
+        }
+      }
+      if (Array.isArray(cp.qualifiedLeads)) {
+        qualifiedLeads.push(...cp.qualifiedLeads);
+      }
+    }
+
+    const initialRound = (options.initialCheckpoint?.round && options.initialCheckpoint.stage === 'enrich')
+      ? options.initialCheckpoint.round + 1
+      : (options.initialCheckpoint?.round || 1);
+
+    for (let round = initialRound; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
       if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
         stats.stopReason = 'timeout';
         break;
@@ -1095,6 +1128,24 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
 
       logEvent(`Round ${round} diagnostics: ${previousRoundSummary.viableCandidates} candidates show all hard terms; recovery=${previousRoundSummary.shouldRecover ? 'needed' : 'not needed'}.`);
       checkpointAcceptedLeads(acceptedLeads.slice(acceptedCountBeforeRound), `round_${round}`);
+      saveMiningSessionCheckpoint(sessionId, {
+        sessionId,
+        round,
+        stage: 'enrich',
+        promptQuery,
+        targetLimit,
+        contract,
+        searchSpec,
+        queryRuns: stats.queryRuns,
+        acceptedLeads: acceptedLeads.slice(0, 240),
+        qualifiedLeads: qualifiedLeads.slice(0, 240),
+        finalLeads: [],
+        rejectionCounts: stats.rejectionReasons,
+        failureCounts: brightDataStats.failureReasons,
+        brightDataStats,
+        previousRoundSummary,
+        updatedAt: new Date().toISOString()
+      });
 
       // Early shortlist termination:
       // If we already have >= target * 1.33 accepted leads AND at least target viable candidates showing all hard requirements,
@@ -1131,6 +1182,25 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     if (acceptedLeads.length === 0) {
       throw new Error('Could not extract any new qualified profiles from search results. Try more specific criteria.');
     }
+
+    saveMiningSessionCheckpoint(sessionId, {
+      sessionId,
+      round: stats.rounds || 1,
+      stage: 'judge',
+      promptQuery,
+      targetLimit,
+      contract,
+      searchSpec,
+      queryRuns: stats.queryRuns,
+      acceptedLeads: acceptedLeads.slice(0, 240),
+      qualifiedLeads: qualifiedLeads.slice(0, 240),
+      finalLeads: [],
+      rejectionCounts: stats.rejectionReasons,
+      failureCounts: brightDataStats.failureReasons,
+      brightDataStats,
+      previousRoundSummary,
+      updatedAt: new Date().toISOString()
+    });
 
     await executeJudgeStage(sessionCtx, {
       contract,
@@ -1273,6 +1343,42 @@ export class DiscoverySessionEngine {
       discoveryProviderMode: request.discoveryProviderMode,
       excludeList: request.excludeList,
       savedSearchId: request.savedSearchId,
+      listener
+    });
+  }
+
+  getResumableSessions() {
+    return readResumableMiningSessions();
+  }
+
+  async resume(sessionId: string, listener?: DiscoveryEventListener): Promise<DiscoveryResult> {
+    const trimmedId = (sessionId || '').trim();
+    if (!trimmedId) {
+      throw new Error('sessionId is required to resume a mining session.');
+    }
+    if (this.activeSessions.has(trimmedId)) {
+      throw new Error(`A lead mining session with this sessionId is already active: ${trimmedId}`);
+    }
+    const checkpoint = readMiningSessionCheckpoint(trimmedId);
+    if (!checkpoint) {
+      throw new Error(`No resumable checkpoint found for session: ${trimmedId}`);
+    }
+
+    const sessionAbortController = new AbortController();
+    this.activeSessionControllers.set(trimmedId, sessionAbortController);
+
+    return executeDiscoverySession({
+      sessionId: trimmedId,
+      promptQuery: checkpoint.promptQuery,
+      requestedLimit: checkpoint.targetLimit,
+      startedAt: Date.now(),
+      sessionAbortController,
+      activeSessions: this.activeSessions,
+      activeSessionControllers: this.activeSessionControllers,
+      activeSessionEvents: this.activeSessionEvents,
+      cancelledSessions: this.cancelledSessions,
+      searchSpec: checkpoint.searchSpec,
+      initialCheckpoint: checkpoint,
       listener
     });
   }

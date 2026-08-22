@@ -206,6 +206,7 @@ function runMigrations(db: DatabaseSync) {
           phase_timeline TEXT,
           schema_version INTEGER
         );
+        CREATE INDEX IF NOT EXISTS idx_search_logs_timestamp ON search_logs(timestamp DESC);
       `);
     }
 
@@ -654,6 +655,7 @@ export function getLeadsDb() {
         phase_timeline TEXT,
         schema_version INTEGER
       );
+      CREATE INDEX IF NOT EXISTS idx_search_logs_timestamp ON search_logs(timestamp DESC);
 
       CREATE TABLE IF NOT EXISTS llm_stage_logs (
         id TEXT PRIMARY KEY,

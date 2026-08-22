@@ -110,7 +110,7 @@ import {
   type RejectionReason
 } from './rejections.js';
 import { verifyDecisionMakerFromEvidence } from './verification.js';
-import { checkCompanyIntent, findCompanyWebsite } from './companyIntent.js';
+import { runIntentEnrichment } from './intentEnrichment.js';
 import { enrichLeadProfile } from './profileEnrichment.js';
 import {
   MiningTelemetryRecorder,
@@ -2239,9 +2239,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         if (brightDataToolDegraded) logEvent('Bright Data profile enrichment had target-level failures, but provider remains available for other Bright Data work.');
       }
 
-      // 5. Final Acceptance & Company Intent
-      const companyIntentTasks: (() => Promise<void>)[] = [];
-
+      // 5. Final Acceptance
       for (const { lead, queryRun } of postFilterLeads) {
         if (acceptedLeads.length >= rerankPoolTarget) break;
         const finalDecisionMaker = lead.decisionMakerVerification || verifyDecisionMakerFromEvidence({
@@ -2272,80 +2270,23 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         lead.id = lead.id || `lead-${crypto.randomUUID()}`;
         addProfileKeys(lead, existingKeys);
         acceptedLeads.push(lead);
-
-        // Optional company intent scraping for accepted high-score leads only.
-        if (companyIntentEnabled && lead.currentCompany && companyIntentTasks.length < companyIntentMaxPerSearch && effectiveScore(lead) >= companyIntentMinScore) {
-          companyIntentTasks.push(async () => {
-            const companyName = String(lead.currentCompany || '').trim();
-            const cachedIntent = getEnrichmentCacheEntry({ personName: companyName, companyName: '__company_intent__' });
-            if (cachedIntent) {
-              brightDataStats.cacheHits++;
-              try {
-                lead.companyIntentEvidence = JSON.parse(cachedIntent.evidenceBlock);
-              } catch {
-                lead.companyIntentEvidence = {
-                  websiteUrl: cachedIntent.normalizedUrl,
-                  evidenceQuality: cachedIntent.scrapeQuality,
-                  snippets: [cachedIntent.evidenceBlock],
-                  buyingSignals: [],
-                  painSignals: []
-                };
-              }
-              return;
-            }
-
-            let websiteUrl = lead.contactDetails?.website || '';
-            if ((!websiteUrl || websiteUrl.includes('linkedin.com')) && !brightDataProviderDisabled) {
-              try {
-                websiteUrl = await findCompanyWebsite({
-                  companyName,
-                  location: lead.location,
-                  brightDataSearch: (searchQuery) => trackableBrightDataSearch(searchQuery, {}, 'phase_4_company_website')
-                }) || '';
-              } catch (error) {
-                const classified = classifyBrightDataError(error);
-                incrementCounter(brightDataStats.failureReasons, classified.reasonCode);
-                if (classified.reasonCode === 'target_transient') brightDataStats.transientFailures++;
-                if (classified.reasonCode === 'transport_transient') {
-                  brightDataStats.transportFailures++;
-                  brightDataStats.processRestarts++;
-                  brightDataTransportRetryAfter = Date.now() + 5_000;
-                }
-                if (classified.providerDisabled) {
-                  brightDataStats.providerDisabled++;
-                  brightDataProviderDisabled = true;
-                }
-                debugLogs.push({ timestamp: new Date().toISOString(), type: 'brightdata_company_search_error', companyName, reasonCode: classified.reasonCode, error: classified.message });
-              }
-            }
-
-            if (!websiteUrl) return;
-            brightDataStats.companyScrapesAttempted++;
-            const intent = await checkCompanyIntent(websiteUrl);
-            if (intent) {
-              brightDataStats.companyScrapesSucceeded++;
-              lead.companyIntentEvidence = intent;
-              upsertEnrichmentCacheEntry({
-                normalizedUrl: websiteUrl,
-                personName: companyName,
-                companyName: '__company_intent__',
-                evidenceBlock: JSON.stringify(intent),
-                scrapeQuality: intent.evidenceQuality === 'good' ? 'good' : 'partial',
-                sourceProvider: 'brightdata'
-              }, ttlDays);
-            }
-          });
-        }
       }
 
-      if (companyIntentTasks.length > 0) {
-        await runProviderQueue(
-          companyIntentTasks.map((run, index) => ({
-            id: `${sessionId}:company-intent:r${round}:${index + 1}`,
-            run
-          })),
-          { concurrency: profileConcurrency, signal: sessionAbortController.signal }
-        );
+      // Optional company intent enrichment via canonical runIntentEnrichment module
+      if (companyIntentEnabled && acceptedLeads.length > 0 && companyIntentMaxPerSearch > 0) {
+        const qualifiedMap = new Map<string, any>(acceptedLeads.map((l, idx) => [l.id || `lead-${idx}`, l]));
+        await runIntentEnrichment({
+          qualifiedLeads: qualifiedMap,
+          contract,
+          companyIntentMaxPerSearch,
+          companyIntentConcurrency: profileConcurrency,
+          ttlDays,
+          brightDataSearch: (q) => trackableBrightDataSearch(q, {}, 'phase_4_company_website'),
+          tavilySearchFallback: hasTavilyKey() ? async (q) => (await tavilySearch(q, { signal: sessionAbortController.signal })).items : undefined,
+          sessionAbortSignal: sessionAbortController.signal,
+          logEvent,
+          recordTrace
+        });
       }
 
       const roundRuns = stats.queryRuns.filter(run => run.round === round);

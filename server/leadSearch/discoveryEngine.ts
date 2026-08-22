@@ -142,6 +142,8 @@ import {
   shouldRunTavilyForTask,
   shouldRunBrightDataForTask
 } from './discoveryRouting.js';
+import { executePlanStage } from './stages/planStage.js';
+import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
 import {
@@ -725,6 +727,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     const companyIntentEnabled = process.env.BRIGHTDATA_COMPANY_INTENT_ENABLED === 'true';
     const companyIntentMinScore = Math.min(Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MIN_SCORE || 8), 1), 10);
     const companyIntentMaxPerSearch = Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 3), 0);
+    const linkedinPostIntentEnabled = String(process.env.LINKEDIN_POST_INTENT_ENABLED || '').toLowerCase() !== 'false';
     // Default to post_filter deep unlock when Bright Data is available so scout
     // shortlists get markdown evidence; callers may still force on_demand.
     const profileEnrichmentStage = (process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE || (isBrightDataConfigured() ? "post_filter" : "on_demand"))
@@ -865,6 +868,64 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     let consecutiveStalledRounds = 0;
     let acceptedCountBeforeRound = 0;
 
+    const qualifiedLeads: any[] = [];
+
+    const sessionConfig: SessionConfig = {
+      sessionId,
+      promptQuery,
+      targetLimit,
+      minScore,
+      ttlDays,
+      startedAt,
+      contract,
+      capacity: collectionCapacity,
+      maxRounds,
+      creditReservationEnabled,
+      companyIntentEnabled,
+      companyIntentMaxPerSearch,
+      companyIntentMinScore,
+      linkedinPostIntentEnabled,
+      profileEnrichmentStage,
+      profileConcurrency,
+      profileMaxPerSearch,
+      extractionConcurrency: Math.min(Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1), 4),
+      judgeConcurrency: Number(process.env.FINALIST_JUDGE_CONCURRENCY || 2)
+    };
+
+    const sessionState: PipelineSessionState = {
+      round: 1,
+      seenCandidateKeys,
+      existingKeys,
+      queryRuns: stats.queryRuns,
+      acceptedLeads,
+      qualifiedLeads,
+      finalLeads: [],
+      rejectionCounts: stats.rejectionReasons,
+      failureCounts: brightDataStats.failureReasons,
+      brightDataStats,
+      freeTierBudget,
+      llmCircuitBreaker,
+      abortController: sessionAbortController,
+      telemetry,
+      debugLogs,
+      previousRoundSummary
+    };
+
+    const pipelinePorts: PipelinePorts = {
+      brightDataSearch: (q, opts, label) => trackableBrightDataSearch(q, opts, label),
+      tavilySearch: (q, opts) => tavilySearch(q, opts),
+      scrapeMarkdown: (url) => scrapeAsMarkdown(url),
+      scrapeBatchMarkdown: (urls) => scrapeBatchAsMarkdown(urls)
+    };
+
+    const sessionCtx: SessionContext = {
+      config: sessionConfig,
+      state: sessionState,
+      ports: pipelinePorts,
+      logEvent,
+      recordTrace
+    };
+
     for (let round = 1; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
       if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
         stats.stopReason = 'timeout';
@@ -872,177 +933,27 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       }
 
       stats.rounds = round;
+      sessionState.round = round;
+      sessionState.previousRoundSummary = previousRoundSummary;
       acceptedCountBeforeRound = acceptedLeads.length;
       const remaining = Math.max(rerankPoolTarget - acceptedLeads.length, 0);
-      const historicalPerformance = readQueryPerformance(100);
-      const historicalYield = Object.fromEntries(historicalPerformance.slice(0, 30).map((row: any) => [
-        `${row.family}:${row.lane}:${row.provider}`,
-        {
-          runs: Number(row.runs || 0),
-          outcomeRuns: Number(row.outcome_runs || 0),
-          accepted: Number(row.accepted_candidates || 0),
-          qualified: Number(row.qualified_candidates || 0),
-          rescued: Number(row.rescued_candidates || 0),
-          returned: Number(row.returned_candidates || 0),
-          unique: Number(row.unique_candidates || 0),
-          duplicates: Number(row.duplicate_candidates || 0),
-          providerUnits: Number(row.provider_units || 0),
-          searchLatencyMs: Number(row.search_latency_ms || 0)
-        }
-      ]));
-      const strategistPrompt = buildScoutStrategistPrompt({
-        query,
-        spec: searchSpec,
+
+      const planResult = await executePlanStage(sessionCtx, {
         round,
-        maxRounds,
         remaining,
-        previousQueries: generatedQueries,
-        previousRoundSummary,
-        queryPerformance: historicalYield,
-        discoveryMode: discoveryProviderMode,
-        contract,
-        missingRequirementIds: previousRoundSummary?.missingHardRequirementIds,
-        logEvent
+        generatedQueries,
+        seenQueryTexts,
+        searchSpec,
+        discoveryProviderMode,
+        stats
       });
 
-      let planItems: SearchQueryPlanItem[] = [];
-      if (remaining <= 2 && round > 1) {
-        logEvent(`Round ${round}: target near completion (remaining: ${remaining}). Skipping LLM Strategist planning to optimize efficiency.`);
-      } else {
-        const strategyStarted = Date.now();
-        const strategyProviderAttempts: LLMProviderAttempt[] = [];
-        try {
-          recordTrace({
-            phase: 'strategy',
-            operation: 'strategist_planning',
-            status: 'started',
-            provider: 'llm',
-            round,
-            metadata: { promptLength: strategistPrompt.length }
-          });
-          const queryResult = await openAIStructured<any>(
-            strategistPrompt,
-            searchQueriesSchema,
-            STRATEGIST_SYSTEM_PROMPT,
-            {
-              maxTokens: 800,
-              temperature: 0.1,
-              circuitBreaker: llmCircuitBreaker,
-              onProviderAttempt: attempt => strategyProviderAttempts.push(attempt)
-            }
-          );
-          debugLogs.push({
-            timestamp: new Date().toISOString(),
-            type: 'llm_request',
-            label: `strategist_round_${round}`,
-            model: process.env.OPENAI_MODEL || 'gpt-5.5',
-            prompt: strategistPrompt,
-            systemInstruction: STRATEGIST_SYSTEM_PROMPT,
-            response: queryResult
-          });
-          planItems = normalizeQueryPlanItems(queryResult);
-          recordTrace({
-            phase: 'strategy',
-            operation: 'strategist_planning',
-            status: 'success',
-            provider: 'llm',
-            round,
-            latencyMs: Date.now() - strategyStarted,
-            counts: { generatedQueries: planItems.length },
-            llm: summarizeLLM('strategy', strategistPrompt, queryResult, Date.now() - strategyStarted, 0, strategyProviderAttempts)
-          });
-        } catch (e: any) {
-          recordTrace({
-            phase: 'strategy',
-            operation: 'strategist_planning',
-            status: 'error',
-            provider: 'llm',
-            round,
-            latencyMs: Date.now() - strategyStarted,
-            error: { message: e.message || String(e) },
-            llm: summarizeLLM('strategy', strategistPrompt, '', Date.now() - strategyStarted, 0, strategyProviderAttempts)
-          });
-          logEvent(`WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`);
-          debugLogs.push({
-            timestamp: new Date().toISOString(),
-            type: 'llm_error',
-            label: `strategist_round_${round}`,
-            prompt: strategistPrompt,
-            error: e.message
-          });
-        }
-      }
-
-      if (planItems.length === 0) {
-        planItems = buildScoutFallbackQueryPlan(query, searchSpec);
-        logEvent(`Round ${round}: using ${planItems.length} deterministic fallback queries.`);
-      }
-
-      planItems = enforceContractQueries(planItems, contract);
-
-      const adaptiveSchedule = scheduleAdaptiveRetrievalTasks(
-        buildRetrievalTasks(planItems, searchSpec),
-        historicalPerformance,
-        {
-          enabled: process.env.LEAD_ADAPTIVE_SCHEDULER_ENABLED !== 'false',
-          maxTasks: Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND || 3),
-          minOutcomeRuns: Number(process.env.LEAD_ADAPTIVE_MIN_OUTCOME_RUNS || 8),
-          explorationStrength: Number(process.env.LEAD_ADAPTIVE_EXPLORATION_STRENGTH || 1.25)
-        }
-      );
-      stats.scout.adaptiveScheduler = {
-        active: adaptiveSchedule.active,
-        totalOutcomeRuns: adaptiveSchedule.totalOutcomeRuns,
-        selected: adaptiveSchedule.decisions.filter(decision => decision.selected).map(decision => decision.scopeKey),
-        deferred: adaptiveSchedule.decisions.filter(decision => !decision.selected).map(decision => decision.scopeKey)
-      };
-      if (adaptiveSchedule.active) {
-        logEvent(`Round ${round}: adaptive scheduler selected ${adaptiveSchedule.tasks.length}/${planItems.length} tasks using finalist-attributed outcomes.`);
-        debugLogs.push({ timestamp: new Date().toISOString(), type: 'adaptive_schedule', round, decisions: adaptiveSchedule.decisions });
-      }
-
-      const roundPlans = adaptiveSchedule.tasks
-        .map(item => ({ item, executableQuery: item.query }))
-        .filter(plan => {
-          const key = plan.executableQuery.toLowerCase();
-          if (seenQueryTexts.has(key)) return false;
-          seenQueryTexts.add(key);
-          return true;
-        });
-
-      if (roundPlans.length === 0) {
-        logEvent(`Round ${round}: strategist produced no new queries.`);
-        stats.stopReason = 'exhausted';
+      if (planResult.stopReason) {
+        stats.stopReason = planResult.stopReason;
         break;
       }
 
-      generatedQueries.push(...roundPlans.map(plan => plan.executableQuery));
-
-      const queryRuns = roundPlans.map(plan => {
-        const run: QueryRunStats = {
-          round,
-          query: plan.executableQuery,
-          family: plan.item.family,
-          intent: plan.item.intent,
-          rawCandidates: 0,
-          uniqueCandidates: 0,
-          evidenceBlocks: 0,
-          extractedLeads: 0,
-          acceptedLeads: 0,
-          rejectionReasons: {},
-          lane: plan.item.lane,
-          providerPreference: plan.item.providerPreference,
-          tavilySearchDepth: plan.item.tavily.searchDepth,
-          corroboratedCandidates: 0,
-          searchLatencyMs: 0,
-          providerUnits: 0,
-          qualifiedFinalists: 0,
-          rescuedFinalists: 0,
-          returnedFinalists: 0
-        };
-        stats.queryRuns.push(run);
-        return run;
-      });
+      const { roundPlans, queryRuns } = planResult;
 
       const tavilyPlans = roundPlans
         .map((plan, index) => ({ plan, index }))
@@ -2395,12 +2306,13 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       judgeBatches.push(currentBatch);
     }
 
-    const qualifiedLeads: any[] = autoQualified.map(({ candidate, qualification }) => {
+    qualifiedLeads.length = 0;
+    qualifiedLeads.push(...autoQualified.map(({ candidate, qualification }) => {
       candidate.lead.qualification = qualification;
       candidate.lead.whyThisLead = qualification.reason;
       candidate.lead.finalSelectionScore = qualification.finalScore;
       return candidate.lead;
-    });
+    }));
     logEvent(`Finalist Judge: ${autoQualified.length} strict direct-profile qualifications; ${needsJudge.length} candidates need semantic review.`);
     if (judgeBatches.length) {
       logEvent(`Running evidence-validated Finalist Judge on ${needsJudge.length} candidates in ${judgeBatches.length} prompt-aware batch(es), up to ${maxBatchInputTokens} input tokens each.`);
@@ -2532,7 +2444,6 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     checkpointAcceptedLeads(qualifiedLeads.length > 0 ? qualifiedLeads : acceptedLeads, 'post_finalist_judge');
 
     // === PHASE 5: POST-COLLECTION LINKEDIN POST INTENT ENRICHMENT ===
-    const linkedinPostIntentEnabled = String(process.env.LINKEDIN_POST_INTENT_ENABLED || '').toLowerCase() !== 'false';
     if (linkedinPostIntentEnabled && qualifiedLeads.length > 0) {
       logEvent(`Phase 5: LinkedIn post intent enrichment starting. Pool: ${qualifiedLeads.length} qualified leads.`);
       const qualifiedMap = new Map<string, any>(qualifiedLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));

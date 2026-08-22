@@ -51,7 +51,7 @@ export type PipelinePorts = {
     options?: Record<string, any>
   ) => Promise<{ text: string; sources: { title: string; uri: string }[]; items: any[] }>;
   scrapeMarkdown: (url: string) => Promise<string | null>;
-  scrapeBatchMarkdown: (urls: string[]) => Promise<{ results: { url: string; markdown: string; status: number }[] }>;
+  scrapeBatchMarkdown: (urls: string[]) => Promise<any>;
 };
 
 export type PipelineSessionState = {
@@ -65,48 +65,13 @@ export type PipelineSessionState = {
   finalLeads: any[];
   rejectionCounts: Record<RejectionReason | string, number>;
   failureCounts: Record<string, number>;
-  brightDataStats: {
-    attempted: number;
-    succeeded: number;
-    failed: number;
-    cacheHits: number;
-    profileScrapesAttempted: number;
-    profileScrapesSucceeded: number;
-    profileBatchScrapesAttempted: number;
-    profileBatchScrapesSucceeded: number;
-    profileRetryAttempted: number;
-    profileRetrySucceeded: number;
-    companyScrapesAttempted: number;
-    companyScrapesSucceeded: number;
-    searchAttempted: number;
-    searchSucceeded: number;
-    searchGoogleAttempted: number;
-    searchGoogleSucceeded: number;
-    searchBingAttempted: number;
-    searchBingSucceeded: number;
-    searchBingRecovered: number;
-    transientFailures: number;
-    transportFailures: number;
-    providerDisabled: number;
-    emptyResponses: number;
-    negativeCacheWrites: number;
-    negativeCacheSkippedTransient: number;
-    processRestarts: number;
-    rejectionReasons: Record<string, number>;
-    failureReasons: Record<string, number>;
-  };
+  brightDataStats: any;
   freeTierBudget: ScoutFreeTierBudget;
   llmCircuitBreaker: LLMSessionCircuitBreaker;
   abortController: AbortController;
   telemetry: MiningTelemetryRecorder;
   debugLogs: any[];
-  previousRoundSummary?: {
-    rawCandidates: number;
-    uniqueCandidates: number;
-    extractedLeads: number;
-    acceptedLeads: number;
-    roundStopReason?: string;
-  };
+  previousRoundSummary?: any;
 };
 
 export type SessionContext = {

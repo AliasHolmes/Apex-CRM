@@ -1,3 +1,6 @@
+import type { LLMProviderAttempt, LLMUsage } from '../services/llm.js';
+import { estimateTokenCount } from './llmBudget.js';
+
 export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'sqlite' | 'system';
 export type MiningPhase =
   | 'session'
@@ -11,6 +14,33 @@ export type MiningPhase =
   | 'enrichment'
   | 'persistence';
 export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
+
+export function summarizeLLM(
+  purpose: string,
+  promptText: string,
+  output: unknown,
+  latencyMs: number,
+  parseRetries = 0,
+  providerAttempts: LLMProviderAttempt[] = [],
+  usage?: LLMUsage
+) {
+  const route = getLLMRouteLabel();
+  const successfulAttempt = providerAttempts.find(attempt => attempt.status === 'success');
+  const inputTokens = usage ? usage.inputTokens : estimateTokenCount(promptText);
+  const outputTokens = usage ? usage.outputTokens : estimateTokenCount(typeof output === 'string' ? output : JSON.stringify(output || ''));
+  return {
+    purpose,
+    model: usage?.model || successfulAttempt?.model || route.model,
+    route: usage?.provider || successfulAttempt?.provider || route.route,
+    fallbackUsed: providerAttempts.some(attempt => attempt.status === 'error' || attempt.status === 'skipped'),
+    providerAttempts,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
+    parseRetries
+  };
+}
 
 export type MiningTraceEvent = {
   id: string;

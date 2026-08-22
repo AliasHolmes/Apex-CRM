@@ -146,6 +146,7 @@ import { executePlanStage } from './stages/planStage.js';
 import { executeRetrieveStage } from './stages/retrieveStage.js';
 import { executeFuseStage } from './stages/fuseStage.js';
 import { executeExtractStage, type EvidenceMeta } from './stages/extractStage.js';
+import { executeVerifyStage } from './stages/verifyStage.js';
 import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
@@ -1021,92 +1022,13 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
 
       const provisionalLeads = extractResult.extractedProfiles;
 
-      recordTrace({
-        phase: 'filtering',
-        operation: 'provisional_leads_ready',
-        status: 'success',
-        provider: 'system',
+      const { postFilterLeads } = await executeVerifyStage(sessionCtx, {
         round,
-        counts: { provisionalLeads: provisionalLeads.length }
-      });
-
-      // 3. Filtering & Decision Maker Verification
-      let postFilterLeads: any[] = [];
-      for (const lead of provisionalLeads) {
-        const rawUrl = lead.contactDetails?.linkedinUrl;
-        if (rawUrl && !extractLinkedInUsername(rawUrl)) {
-          if (lead.contactDetails) lead.contactDetails.linkedinUrl = '';
-        }
-        const evidenceMeta = getEvidenceForLead(lead);
-        const queryRun = evidenceMeta.queryRun;
-
-        // Identity/Role checks
-        const hasIdentity = Boolean((lead?.fullName || '').trim());
-        if (!hasIdentity) { noteRejection('missing_identity', queryRun); continue; }
-        const hasRoleContext = Boolean((lead?.currentTitle || '').trim() || (lead?.currentCompany || '').trim() || (lead?.headline || '').trim());
-        if (!hasRoleContext) { noteRejection('missing_role_context', queryRun); continue; }
-
-        if (matchesExcludeList(lead) || hasDuplicateKeys(lead, existingKeys)) {
-          noteRejection('duplicate_existing_lead', queryRun);
-          continue;
-        }
-
-        const dmVerification = verifyDecisionMakerFromEvidence({
-          query: promptQuery,
-          fullName: lead.fullName,
-          currentTitle: lead.currentTitle,
-          currentCompany: lead.currentCompany,
-          headline: lead.headline,
-          seniorityLevel: lead.seniorityLevel,
-          evidenceText: evidenceMeta.evidenceBlock
-        });
-
-        lead.decisionMakerVerification = dmVerification;
-
-        lead.sourceProvider = evidenceMeta.sourceProvider;
-        lead.evidenceReasons = Array.isArray(lead.evidenceReasons) && lead.evidenceReasons.length
-          ? lead.evidenceReasons : [`Qualified from ${lead.sourceProvider} evidence for: ${query}`];
-        lead.evidence = createLeadEvidence({
-          sourceUrl: evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl || '',
-          sourceProvider: evidenceMeta.sourceProvider,
-          sourceQuery: evidenceMeta.sourceQuery,
-          sourceRound: evidenceMeta.sourceRound,
-          evidenceQuality: evidenceMeta.evidenceQuality,
-          evidenceBlock: evidenceMeta.evidenceBlock,
-          whyThisLead: lead.evidenceReasons[0]
-        });
-        lead.discoveryLane = evidenceMeta.lanes?.[0] || 'person';
-        lead.scout = buildScoutEvidence(lead, searchSpec, {
-          sourceProviders: evidenceMeta.sourceProviders,
-          sourceCount: evidenceMeta.sourceCount,
-          lanes: evidenceMeta.lanes
-        });
-
-        lead.scoreBreakdown = computeScoreBreakdown(lead, evidenceMeta.evidenceQuality, evidenceMeta.sourceProvider, dmVerification);
-        lead.scoreOverride = lead.scoreBreakdown.finalScore;
-
-        if (dmVerification.ignoredTitle && dmVerification.confidence < 4 && effectiveScore(lead) < minScore) {
-          noteRejection('not_decision_maker', queryRun);
-          continue;
-        }
-        
-        if (effectiveScore(lead) < minScore - 1) { // Apply hard floor slightly below minScore to allow enrichment
-          noteRejection('score_below_minimum', queryRun);
-          continue;
-        }
-
-        if (queryRun) { queryRun.extractedLeads++; }
-        postFilterLeads.push({ lead, evidenceMeta, queryRun });
-      }
-
-      recordTrace({
-        phase: 'filtering',
-        operation: 'lead_filtering',
-        status: 'success',
-        provider: 'system',
-        round,
-        counts: { postFilterLeads: postFilterLeads.length },
-        metadata: { rejectionReasons: stats.rejectionReasons }
+        provisionalLeads,
+        evidenceByUrl,
+        searchSpec,
+        excludeList,
+        stats
       });
 
       // 4. Post-Filter Bright Data Profile Enrichment (Deep Scrape)

@@ -71,6 +71,7 @@ export type PipelineSessionState = {
   abortController: AbortController;
   telemetry: MiningTelemetryRecorder;
   debugLogs: any[];
+  urlRetryQueue?: Set<string>;
   previousRoundSummary?: any;
 };
 

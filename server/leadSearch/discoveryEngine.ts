@@ -144,6 +144,7 @@ import {
 } from './discoveryRouting.js';
 import { executePlanStage } from './stages/planStage.js';
 import { executeRetrieveStage } from './stages/retrieveStage.js';
+import { executeFuseStage } from './stages/fuseStage.js';
 import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
@@ -978,101 +979,22 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
 
       // Fuse provider observations before extraction. This retains independent
       // corroboration rather than discarding Bright Data results as duplicates.
-      const observations: ScoutObservation[] = roundItems.map(({ item, resultIndex }) => {
-        const plan = roundPlans[resultIndex];
-        const queryRun = queryRuns[resultIndex];
-        if (queryRun) queryRun.rawCandidates++;
-        return {
-          title: String(item.title || ''),
-          url: String(item.url || item.link || ''),
-          content: String(item.content || item.snippet || item.raw_content || ''),
-          provider: item.sourceProvider === 'brightdata_search' ? 'brightdata' : 'tavily',
-          query: plan?.executableQuery || promptQuery,
-          round,
-          family: plan?.item.family,
-          lane: plan?.item.lane,
-          intent: plan?.item.intent,
-          expectedSignal: plan?.item.expectedSignal,
-          raw: item
-        };
+      const fuseResult = await executeFuseStage(sessionCtx, {
+        round,
+        roundItems,
+        roundPlans,
+        queryRuns,
+        stats
       });
-      const fusedObservations = fuseObservations(observations);
-      let uniqueRoundItems: any[] = [];
-      const roundCandidateKeys = new Set<string>();
-      for (const observation of fusedObservations) {
-        const planIndex = roundPlans.findIndex(plan => plan.executableQuery === observation.query);
-        const queryRun = planIndex >= 0 ? queryRuns[planIndex] : undefined;
-        const plan = planIndex >= 0 ? roundPlans[planIndex] : undefined;
-        const item = { ...observation.raw };
-        const url = observation.url;
-        const username = extractLinkedInUsername(url);
-        const normalizedUrl = normalizeLinkedInUrl(url);
 
-        // Never let an article, company site, or generic search result become
-        // a prospect record. This collector is deliberately LinkedIn-first.
-        if (!username || !normalizedUrl) {
-          noteRejection('missing_linkedin_profile', queryRun);
-          continue;
-        }
-
-        if (existingKeys.has(`linkedin:${username}`)) {
-          noteRejection('duplicate_existing_lead', queryRun);
-          continue;
-        }
-        if (normalizedUrl && existingKeys.has(`linkedin:${normalizedUrl}`)) {
-          noteRejection('duplicate_existing_lead', queryRun);
-          continue;
-        }
-
-        const candidateKey = username || normalizedUrl || observation.identityKey;
-        if (!candidateKey || seenCandidateKeys.has(candidateKey) || roundCandidateKeys.has(candidateKey)) continue;
-        roundCandidateKeys.add(candidateKey);
-
-        item.url = url;
-        item.title = observation.title;
-        item.content = observation.content;
-        item.sourceProvider = observation.sourceProviders.includes('brightdata') ? 'brightdata_search' : 'tavily';
-        item._normalizedUrl = normalizedUrl;
-        item._linkedinUsername = username;
-        item._sourceQuery = observation.query;
-        item._sourceRound = round;
-        item._queryFamily = observation.family || plan?.item.family;
-        item._queryIntent = observation.intent || plan?.item.intent;
-        item._expectedSignal = observation.expectedSignal || plan?.item.expectedSignal;
-        item._queryRun = queryRun;
-        item._sourceProviders = observation.sourceProviders;
-        item._sourceCount = observation.sourceCount;
-        item._lanes = observation.lanes;
-        item._corroborated = observation.corroborated;
-        if (queryRun) {
-          queryRun.uniqueCandidates++;
-          if (observation.corroborated) queryRun.corroboratedCandidates = (queryRun.corroboratedCandidates || 0) + 1;
-        }
-        uniqueRoundItems.push(item);
-      }
-
-      rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
-      stats.rawCandidates = rawResultsCount;
-
-      if (uniqueRoundItems.length === 0) {
-        logEvent(`Round ${round}: no new unique candidates.`);
-        stats.stopReason = 'exhausted';
+      if (fuseResult.stopReason) {
+        stats.stopReason = fuseResult.stopReason;
         break;
       }
 
-      uniqueRoundItems.sort((a, b) => {
-        const scoreItem = (item: any) =>
-          `${item.title || ''} ${item.content || ''} ${item.raw_content || ''}`.length +
-          (extractLinkedInUsername(item.url) ? 180 : 0) +
-          Number(item._sourceCount || 1) * 160 +
-          (item._corroborated ? 180 : 0) +
-          (Array.isArray(item._lanes) && item._lanes.includes('signal') ? 40 : 0);
-        return scoreItem(b) - scoreItem(a);
-      });
-
-      const candidateBudget = Math.min(uniqueRoundItems.length, Math.max(targetLimit * 4, 4));
-      const candidateItems = uniqueRoundItems.slice(0, candidateBudget);
-      logEvent(`Round ${round}: using top ${candidateItems.length}/${uniqueRoundItems.length} candidates for extraction budget.`);
+      const { candidateItems, roundCandidateKeys } = fuseResult;
+      rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
+      stats.rawCandidates = rawResultsCount;
 
       // Prefer Bright Data scrape_as_markdown for thin public pages (free Rapid
       // tool). Fall back to Tavily Extract only when BD is unavailable.

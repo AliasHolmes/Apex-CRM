@@ -21,7 +21,11 @@ app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    if (req.originalUrl?.startsWith('/api') && duration > 500) {
+    const isStreaming = req.originalUrl?.includes('/stream') ||
+                        req.originalUrl?.includes('/live') ||
+                        req.originalUrl?.includes('/find-leads') ||
+                        res.getHeader('content-type')?.toString().includes('text/event-stream');
+    if (req.originalUrl?.startsWith('/api') && !isStreaming && duration > 500) {
       console.log(`[PERF] Slow API request: ${req.method} ${req.originalUrl} (${duration}ms)`);
     }
   });

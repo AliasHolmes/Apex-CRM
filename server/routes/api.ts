@@ -494,8 +494,10 @@ ${pastedText}`;
 
 router.get('/search-logs', (req, res): any => {
   try {
-    const sessionById = new Map(readMiningSessions(100).map((session) => [session.id, session]));
-    const logs = readSearchLogs().map((log: any) => ({
+    const { limit } = req.query as Record<string, string | undefined>;
+    const parsedLimit = limit !== undefined ? Math.min(Math.max(Number(limit) || 1, 1), 500) : 100;
+    const sessionById = new Map(readMiningSessions(parsedLimit).map((session) => [session.id, session]));
+    const logs = readSearchLogs(parsedLimit).map((log: any) => ({
       id: log.id,
       timestamp: log.timestamp,
       prompt: log.prompt,

@@ -25,26 +25,42 @@ const isUsableEmail = (value: unknown): value is string => {
 };
 
 function normalizeStoredLead(lead: Record<string, any>) {
-  const profile = lead.profile && typeof lead.profile === 'object' ? { ...lead.profile } : {};
-  const contactDetails = profile.contactDetails && typeof profile.contactDetails === 'object'
-    ? { ...profile.contactDetails }
-    : {};
-  const legacyEmail = lead.emailDiscovery?.bestEmail || profile.emailDiscovery?.bestEmail;
-  if (!isUsableEmail(contactDetails.email) && isUsableEmail(legacyEmail)) {
-    contactDetails.email = legacyEmail.trim().toLowerCase();
-  } else if (isUsableEmail(contactDetails.email)) {
-    contactDetails.email = contactDetails.email.trim().toLowerCase();
+  if (!lead) return lead;
+
+  const profile = lead.profile && typeof lead.profile === 'object' ? lead.profile : undefined;
+  const contactDetails = profile?.contactDetails && typeof profile.contactDetails === 'object' ? profile.contactDetails : undefined;
+  const hasLegacyEmail = Boolean(lead.emailDiscovery || profile?.emailDiscovery);
+  const hasLegacyContactStatus = Boolean(
+    contactDetails &&
+    ('emailStatus' in contactDetails ||
+      'emailConfidence' in contactDetails ||
+      'emailSources' in contactDetails ||
+      'fallbackChannels' in contactDetails)
+  );
+
+  // Fast path: if already normalized without legacy emailDiscovery / status fields
+  if (!hasLegacyEmail && !hasLegacyContactStatus && REVIEW_STATUSES.has(lead.reviewStatus) && NEXT_ACTIONS.has(lead.nextAction)) {
+    return lead;
   }
 
-  delete contactDetails.emailStatus;
-  delete contactDetails.emailConfidence;
-  delete contactDetails.emailSources;
-  delete contactDetails.fallbackChannels;
-  delete profile.emailDiscovery;
+  const cleanProfile = profile ? { ...profile } : {};
+  const cleanContactDetails = contactDetails ? { ...contactDetails } : {};
+  const legacyEmail = lead.emailDiscovery?.bestEmail || cleanProfile.emailDiscovery?.bestEmail;
+  if (!isUsableEmail(cleanContactDetails.email) && isUsableEmail(legacyEmail)) {
+    cleanContactDetails.email = legacyEmail.trim().toLowerCase();
+  } else if (isUsableEmail(cleanContactDetails.email)) {
+    cleanContactDetails.email = cleanContactDetails.email.trim().toLowerCase();
+  }
+
+  delete cleanContactDetails.emailStatus;
+  delete cleanContactDetails.emailConfidence;
+  delete cleanContactDetails.emailSources;
+  delete cleanContactDetails.fallbackChannels;
+  delete cleanProfile.emailDiscovery;
 
   const normalized: Record<string, any> = {
     ...lead,
-    profile: { ...profile, contactDetails },
+    profile: { ...cleanProfile, contactDetails: cleanContactDetails },
     reviewStatus: REVIEW_STATUSES.has(lead.reviewStatus) ? lead.reviewStatus : 'UNREVIEWED',
     nextAction: NEXT_ACTIONS.has(lead.nextAction) ? lead.nextAction : 'NONE',
   };
@@ -454,9 +470,11 @@ function runMigrations(db: DatabaseSync) {
 
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
+        CREATE INDEX IF NOT EXISTS idx_leads_review_status ON leads(review_status);
+        CREATE INDEX IF NOT EXISTS idx_leads_next_action ON leads(next_action);
+        CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
         CREATE INDEX IF NOT EXISTS idx_leads_created_updated ON leads(created_at DESC, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_leads_stage_updated ON leads(stage, datetime(updated_at) DESC);
-        CREATE INDEX IF NOT EXISTS idx_leads_review_status ON leads(review_status);
         CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC);
       `);
 
@@ -532,10 +550,12 @@ export function getLeadsDb() {
     backupDatabaseBeforeMigration(currentVersion);
     leadsDb.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
       PRAGMA busy_timeout = 10000;
       PRAGMA foreign_keys = ON;
       PRAGMA optimize;
-      PRAGMA cache_size = -8000;
+      PRAGMA cache_size = -16000;
+      PRAGMA mmap_size = 268435456;
       PRAGMA temp_store = MEMORY;
 
       CREATE TABLE IF NOT EXISTS leads (
@@ -780,7 +800,9 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]
   const leads = rows
     .map((row) => {
       try {
-        return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) };
+        const parsed = JSON.parse(row.payload);
+        parsed.revision = Number(row.revision || parsed.revision || 1);
+        return normalizeStoredLead(parsed);
       } catch (error) {
         console.warn('Skipping unreadable lead record from SQLite:', error);
         return null;
@@ -1409,10 +1431,10 @@ const toSearchLogRecord = (row: any) => ({
   schemaVersion: Number(row.schema_version || 1)
 });
 
-export function readSearchLogs() {
+export function readSearchLogs(limit = 100) {
   const rows = getLeadsDb()
-    .prepare('SELECT * FROM search_logs ORDER BY timestamp DESC')
-    .all() as any[];
+    .prepare('SELECT * FROM search_logs ORDER BY timestamp DESC LIMIT ?')
+    .all(limit) as any[];
   return rows.map(toSearchLogRecord);
 }
 

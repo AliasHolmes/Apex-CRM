@@ -302,9 +302,7 @@ export class MiningTelemetryRecorder {
     private readonly query: string,
     private readonly requested: number,
     private readonly startedAt = nowIso()
-  ) {
-    setActiveTelemetryRecorder(this);
-  }
+  ) {}
 
   record(event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) {
     const traceEvent: MiningTraceEvent = {
@@ -437,18 +435,7 @@ export type LlmStageLogEntry = {
 };
 
 let llmStageLogger: ((entry: LlmStageLogEntry) => void) | null = null;
-let activeTelemetryRecorder: MiningTelemetryRecorder | null = null;
 
 export function setLlmStageLogger(logger: ((entry: LlmStageLogEntry) => void) | null) {
   llmStageLogger = logger;
-}
-
-export function setActiveTelemetryRecorder(recorder: MiningTelemetryRecorder | null) {
-  activeTelemetryRecorder = recorder;
-}
-
-export function recordTrace(event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) {
-  if (activeTelemetryRecorder) {
-    activeTelemetryRecorder.record(event);
-  }
 }

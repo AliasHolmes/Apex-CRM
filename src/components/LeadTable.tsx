@@ -707,21 +707,25 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     try {
       let updatedCount = targetIds.length;
       let removedCount = 0;
+      let rebasedCount = 0;
       if (handleUpdateLeadsStage) {
         const result = await handleUpdateLeadsStage(targetIds, stage);
         updatedCount = result.updatedCount;
         removedCount = result.removedCount;
+        rebasedCount = result.rebasedCount || 0;
       } else {
         await Promise.all(targetIds.map((id) => Promise.resolve(handleUpdateLeadStage(id, stage))));
       }
       if (!isMountedRef.current) return;
-      const removedMessage = removedCount > 0
-        ? ` ${removedCount} prospect${removedCount === 1 ? ' was' : 's were'} already removed elsewhere.`
-        : '';
+      const details: string[] = [];
+      if (rebasedCount > 0) details.push(`${rebasedCount} rebased over server changes`);
+      if (removedCount > 0) details.push(`${removedCount} archived remotely`);
+      const detailMsg = details.length > 0 ? ` (${details.join(', ')})` : '';
+
       triggerToast(
         updatedCount > 0
-          ? `Updated ${updatedCount} lead stage${updatedCount === 1 ? '' : 's'} to ${getPipelineStageMeta(stage).shortLabel}.${removedMessage}`
-          : `No stages were changed.${removedMessage}`,
+          ? `Updated ${updatedCount} lead stage${updatedCount === 1 ? '' : 's'} to ${getPipelineStageMeta(stage).shortLabel}.${detailMsg}`
+          : `No stages were changed.${detailMsg}`,
         updatedCount > 0 ? 'success' : 'info',
       );
       setSelectedLeadIds(new Set());

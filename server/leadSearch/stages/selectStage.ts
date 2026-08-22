@@ -2,7 +2,7 @@ import { runLinkedInPostIntentEnrichment } from '../linkedinPostIntent.js';
 import { selectDiversifiedLeads } from '../scoutScoring.js';
 import { recordQueryPerformance } from '../../db.js';
 import { hasTavilyKey } from '../../services/llm.js';
-import type { SessionContext } from '../pipelineTypes.js';
+import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
 import type { ProspectContract } from '../prospectContract.js';
 import type { SearchSpec } from '../searchSpec.js';
 import type { QueryRunStats } from '../strategist.js';
@@ -12,7 +12,7 @@ export type SelectStageInput = {
   searchSpec: SearchSpec;
   ttlDays: number;
   stats: any;
-  leadQueryRuns: WeakMap<Record<string, any>, QueryRunStats>;
+  leadQueryRuns: LeadQueryRunTracker | WeakMap<Record<string, any>, QueryRunStats>;
   trackableBrightDataSearch: (query: string, options?: any, lane?: string) => Promise<any[]>;
 };
 

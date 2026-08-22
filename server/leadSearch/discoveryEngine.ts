@@ -155,6 +155,7 @@ import { executeJudgeStage } from './stages/judgeStage.js';
 import { executeSelectStage } from './stages/selectStage.js';
 import { executePersistStage } from './stages/persistStage.js';
 import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext, MiningSessionCheckpoint } from './pipelineTypes.js';
+import { LeadQueryRunTracker } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
 import {
@@ -834,7 +835,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         });
       }
     };
-    const leadQueryRuns = new WeakMap<Record<string, any>, QueryRunStats>();
+    const leadQueryRuns = new LeadQueryRunTracker();
     const seenCandidateKeys = new Set<string>();
     const seenQueryTexts = new Set<string>();
     const evidenceByUrl = new Map<string, EvidenceMeta>();
@@ -961,14 +962,27 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       if (Array.isArray(cp.qualifiedLeads)) {
         qualifiedLeads.push(...cp.qualifiedLeads);
       }
+      if (cp.evidenceByUrl && typeof cp.evidenceByUrl === 'object') {
+        for (const [url, meta] of Object.entries(cp.evidenceByUrl)) {
+          evidenceByUrl.set(url, meta as EvidenceMeta);
+        }
+      }
+      if (cp.leadQueryRunMap) {
+        leadQueryRuns.fromJSON(cp.leadQueryRunMap);
+      }
     }
 
+    const isResumingAtJudging = options.initialCheckpoint?.stage === 'judge';
+    const skipCollection = isResumingAtJudging;
     const initialRound = (options.initialCheckpoint?.round && options.initialCheckpoint.stage === 'enrich')
       ? options.initialCheckpoint.round + 1
       : (options.initialCheckpoint?.round || 1);
 
     let nextPlanPromise: Promise<any> | null = null;
 
+    if (skipCollection) {
+      logEvent(`Resuming session directly at Finalist Judging stage with ${acceptedLeads.length} checkpointed candidate leads and restored evidence map.`);
+    } else {
     for (let round = initialRound; round <= maxRounds && acceptedLeads.length < rerankPoolTarget; round++) {
       if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
         stats.stopReason = 'timeout';
@@ -1166,6 +1180,8 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         failureCounts: brightDataStats.failureReasons,
         brightDataStats,
         previousRoundSummary,
+        evidenceByUrl: Object.fromEntries(Array.from(evidenceByUrl.entries()).slice(0, 240)),
+        leadQueryRunMap: leadQueryRuns.toJSON(),
         updatedAt: new Date().toISOString()
       });
 
@@ -1200,6 +1216,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         consecutiveStalledRounds = 0;
       }
     }
+    }
 
     if (acceptedLeads.length === 0) {
       throw new Error('Could not extract any new qualified profiles from search results. Try more specific criteria.');
@@ -1221,6 +1238,8 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       failureCounts: brightDataStats.failureReasons,
       brightDataStats,
       previousRoundSummary,
+      evidenceByUrl: Object.fromEntries(Array.from(evidenceByUrl.entries()).slice(0, 240)),
+      leadQueryRunMap: leadQueryRuns.toJSON(),
       updatedAt: new Date().toISOString()
     });
 

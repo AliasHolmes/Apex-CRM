@@ -142,7 +142,7 @@ interface LeadContextType {
   handleUpdateLeadsStage: (
     leadIds: string[],
     stage: Lead['stage'],
-  ) => Promise<{ updatedCount: number; removedCount: number }>;
+  ) => Promise<{ updatedCount: number; removedCount: number; rebasedCount: number }>;
   openConflictDialog: (
     localLead: Lead,
     serverLead: Lead,
@@ -838,11 +838,12 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       });
     });
 
-    if (updatedLeads.length === 0) return { updatedCount: 0, removedCount: 0 };
+    if (updatedLeads.length === 0) return { updatedCount: 0, removedCount: 0, rebasedCount: 0 };
 
     let operationError: unknown;
     let updatedCount = updatedLeads.length;
     let removedCount = 0;
+    let rebasedCount = 0;
     let bulkStageOperation!: Promise<boolean>;
     bulkStageOperation = (async () => {
       try {
@@ -866,6 +867,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
             .filter((lead): lead is Lead => Boolean(lead));
           leadsToPersist = rollbackLeads.map(lead => ({ ...lead, stage }));
           removedCount = updatedLeads.length - leadsToPersist.length;
+          rebasedCount = leadsToPersist.length;
           if (leadsToPersist.length === 0) {
             updatedCount = 0;
             restoreLeadSubset(idSet, []);
@@ -933,7 +935,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         ? operationError
         : new Error('Failed to update selected prospect stages.');
     }
-    return { updatedCount, removedCount };
+    return { updatedCount, removedCount, rebasedCount };
   }, [restoreLeadSubset, saveLeadsToStorage]);
 
   const contextValue = useMemo<LeadContextType>(() => ({

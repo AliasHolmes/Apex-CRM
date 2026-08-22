@@ -1858,6 +1858,8 @@ export type MiningSessionCheckpoint = {
   failureCounts: Record<string, number>;
   brightDataStats: any;
   previousRoundSummary?: any;
+  evidenceByUrl?: Record<string, any>;
+  leadQueryRunMap?: Record<string, any>;
   updatedAt: string;
 };
 

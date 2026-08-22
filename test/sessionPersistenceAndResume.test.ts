@@ -191,4 +191,106 @@ test('discoveryEngine.isActive protects currently running session from premature
   assert.equal(readMiningSessionById(activeSessionId), null);
 });
 
+test('discoveryEngine.resume from stage: judge restores evidenceByUrl and executes judgeStage directly', () => {
+  const sessionId = `test-judge-resume-${Date.now()}`;
+  upsertMiningSession({
+    id: sessionId,
+    status: 'interrupted',
+    prompt: 'Chief Technology Officers in Berlin',
+    requestedLimit: 2,
+    startedAt: new Date().toISOString()
+  });
+
+  const testLead = {
+    id: 'test-lead-judge-1',
+    fullName: 'Markus Vogel',
+    currentTitle: 'Chief Technology Officer',
+    currentCompany: 'Vogel Cloud Tech',
+    contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/markus-vogel-cto' },
+    fitScore: 10,
+    compositeScore: 95
+  };
+
+  const checkpoint: MiningSessionCheckpoint = {
+    sessionId,
+    round: 1,
+    stage: 'judge',
+    promptQuery: 'Chief Technology Officers in Berlin',
+    targetLimit: 2,
+    contract: {
+      brief: 'Chief Technology Officers in Berlin',
+      requirements: [{ id: 'req-1', text: 'Chief Technology Officer', importance: 'hard', category: 'role' }],
+      exclusions: [],
+      scoringRubric: { coreFitWeight: 40, buyerAuthorityWeight: 30, firmographicWeight: 20, buyingSignalWeight: 10, penaltyPerMissingRequirement: 15 },
+      searchQueries: [{ query: 'CTO Berlin', rationale: 'initial query', providerPreference: 'tavily', targetPersona: 'CTO' }],
+      decompositionMode: 'single_stream',
+      policyVersion: 'test-v1'
+    } as any,
+    queryRuns: [
+      {
+        round: 1,
+        query: 'CTO Berlin',
+        family: 'person',
+        lane: 'person',
+        providerPreference: 'tavily',
+        rawCandidates: 4,
+        uniqueCandidates: 4,
+        extractedLeads: 2,
+        acceptedLeads: 1,
+        qualifiedFinalists: 0,
+        rescuedFinalists: 0,
+        returnedFinalists: 0,
+        searchLatencyMs: 50,
+        providerUnits: 1,
+        rejectionReasons: {}
+      }
+    ],
+    acceptedLeads: [testLead],
+    qualifiedLeads: [],
+    finalLeads: [],
+    rejectionCounts: {},
+    failureCounts: {},
+    brightDataStats: { attempted: 0, succeeded: 0, failed: 0 },
+    evidenceByUrl: {
+      'https://www.linkedin.com/in/markus-vogel-cto': {
+        url: 'https://www.linkedin.com/in/markus-vogel-cto',
+        title: 'Markus Vogel - Chief Technology Officer - Vogel Cloud Tech | LinkedIn',
+        snippet: 'Chief Technology Officer at Vogel Cloud Tech in Berlin. Leading enterprise cloud modernization and platform engineering.',
+        markdown: '# Markus Vogel\nChief Technology Officer at Vogel Cloud Tech, Berlin.'
+      }
+    },
+    leadQueryRunMap: {
+      'test-lead-judge-1': {
+        round: 1,
+        query: 'CTO Berlin',
+        family: 'person',
+        lane: 'person',
+        providerPreference: 'tavily',
+        rawCandidates: 4,
+        uniqueCandidates: 4,
+        extractedLeads: 2,
+        acceptedLeads: 1,
+        qualifiedFinalists: 0,
+        rescuedFinalists: 0,
+        returnedFinalists: 0,
+        searchLatencyMs: 50,
+        providerUnits: 1,
+        rejectionReasons: {}
+      }
+    },
+    updatedAt: new Date().toISOString()
+  };
+
+  saveMiningSessionCheckpoint(sessionId, checkpoint);
+
+  const restored = readMiningSessionCheckpoint(sessionId);
+  assert.ok(restored?.evidenceByUrl);
+  assert.ok(restored.evidenceByUrl['https://www.linkedin.com/in/markus-vogel-cto']);
+  assert.equal(restored.stage, 'judge');
+  assert.ok(restored.leadQueryRunMap);
+
+  // Clean up test session
+  deleteMiningSessions([sessionId]);
+});
+
 

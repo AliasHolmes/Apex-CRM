@@ -21,7 +21,7 @@ import { incrementRejection, mapBrightDataRejection, type RejectionReason } from
 import { runIntentEnrichment } from '../intentEnrichment.js';
 import { hasTavilyKey } from '../../services/llm.js';
 import { buildProfileDedupeKeys } from '../../../src/utils/leadDedupe.js';
-import type { SessionContext } from '../pipelineTypes.js';
+import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
 import type { PostFilterLead } from './verifyStage.js';
 import type { EvidenceMeta } from './extractStage.js';
 import type { QueryRunStats } from '../strategist.js';
@@ -78,7 +78,7 @@ export type EnrichStageInput = {
   brightDataProviderDisabled: boolean;
   brightDataTransportRetryAfter: number;
   stats: any;
-  leadQueryRuns: WeakMap<Record<string, any>, QueryRunStats>;
+  leadQueryRuns: LeadQueryRunTracker | WeakMap<Record<string, any>, QueryRunStats>;
   trackableBrightDataSearch: (query: string, options?: any, lane?: string) => Promise<any[]>;
 };
 

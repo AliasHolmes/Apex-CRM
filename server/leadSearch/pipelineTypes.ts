@@ -99,8 +99,40 @@ export type MiningSessionCheckpoint = {
   failureCounts: Record<string, number>;
   brightDataStats: any;
   previousRoundSummary?: any;
+  evidenceByUrl?: Record<string, any>;
+  leadQueryRunMap?: Record<string, any>;
   updatedAt: string;
 };
+
+export class LeadQueryRunTracker {
+  private map = new Map<string, QueryRunStats>();
+
+  private getKey(lead: any): string {
+    if (!lead) return '';
+    return lead.id || lead.contactDetails?.linkedinUrl || lead.profile?.fullName || '';
+  }
+
+  get(lead: any): QueryRunStats | undefined {
+    const key = this.getKey(lead);
+    return key ? this.map.get(key) : undefined;
+  }
+
+  set(lead: any, queryRun: QueryRunStats): void {
+    const key = this.getKey(lead);
+    if (key) this.map.set(key, queryRun);
+  }
+
+  toJSON(): Record<string, QueryRunStats> {
+    return Object.fromEntries(this.map.entries());
+  }
+
+  fromJSON(data?: Record<string, QueryRunStats>): void {
+    if (!data || typeof data !== 'object') return;
+    for (const [key, run] of Object.entries(data)) {
+      this.map.set(key, run);
+    }
+  }
+}
 
 export type StageResult<T = void> = {
   stage: StageName;

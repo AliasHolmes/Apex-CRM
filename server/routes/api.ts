@@ -14,7 +14,7 @@ import { incrementRejection, mapBrightDataRejection, type RejectionReason } from
 import { verifyDecisionMakerFromEvidence } from '../leadSearch/verification.js';
 import { checkCompanyIntent, findCompanyWebsite } from '../leadSearch/companyIntent.js';
 import { enrichLeadProfile } from '../leadSearch/profileEnrichment.js';
-import { MiningTelemetryRecorder, estimateLLMCostUsd, getLLMRouteLabel, type MiningTraceEvent } from '../leadSearch/telemetry.js';
+import { estimateLLMCostUsd, getLLMRouteLabel, type MiningTraceEvent } from '../leadSearch/telemetry.js';
 import { buildFallbackQueryPlan as buildScoutFallbackQueryPlan, buildFallbackSearchSpec, buildRetrievalTasks, buildSearchSpecPrompt, buildStrategistPrompt as buildScoutStrategistPrompt, normalizeSearchSpec, type DiscoveryMode, type SearchSpec } from '../leadSearch/searchSpec.js';
 import { ScoutFreeTierBudget, brightDataFreeTierCapabilities, tavilyFreeTierCapabilities, isProviderCreditReservationEnabled } from '../leadSearch/freeTier.js';
 import { resolveDiscoveryProviderMode, resolveBrightDataSearchMode, shouldRunTavilyForTask, shouldRunBrightDataForTask } from '../leadSearch/discoveryRouting.js';

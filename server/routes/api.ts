@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { LEAD_STAGE_SET as leadStages, REVIEW_STATUS_SET as reviewStatuses, NEXT_ACTION_SET as nextActions } from '../../src/types.js';
 import { buildProfileDedupeKeys, hasDuplicateProfile, normalizeDedupeValue, getProfileDomain, getLinkedInHandle } from '../../src/utils/leadDedupe.js';
 
-import { readStoredLeads, readLeadsSummary, readExistingIdentityKeys, readLeadsStageSummary, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, readMiningSessionCheckpoint, readResumableMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
+import { readStoredLeads, readLeadsSummary, readExistingIdentityKeys, readLeadsStageSummary, readStoredLeadById, hasLeadStoreBeenInitialized, replaceStoredLeads, normalizeIncomingLeads, getLeadsDb, insertSearchLog, readSearchLogs, readSearchLogById, readMiningSessionById, readMiningSessions, readMiningSessionCheckpoint, readResumableMiningSessions, deleteMiningSession, deleteMiningSessions, clearInterruptedMiningSessions, upsertMiningSession, LeadNotFoundError, LeadRevisionConflictError, pruneExpiredEnrichmentCache, getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry, upsertLeadInExistingTransaction, upsertLeadWithIdentity, deleteLead, upsertLeadsWithIdentity, transferLeadIdentities, insertLeadActivity, readLeadActivities, upsertOutreachDraft, readOutreachDrafts, deleteOutreachDraft, readSavedSearches, readSavedSearchById, upsertSavedSearch, deleteSavedSearch, markSavedSearchRun, readQueryPerformance, recordQueryPerformance, readProviderUsage, recordProviderUsage, reserveProviderUsage } from '../db.js';
 import { hasOpenAIKey, hasTavilyKey, tavilySearch, tavilyExtract, openAIStructured, singleProfileSchema, APEX_SYSTEM_PROMPT, leadsArraySchema, searchQueriesSchema, searchSpecSchema, openAIText, STRATEGIST_SYSTEM_PROMPT, EXTRACTION_SYSTEM_PROMPT, bulkLeadsArraySchema, getLLMProviderSummaries, getTavilyKeyStatus, createLLMSessionCircuitBreaker, type LLMProviderAttempt, type LLMUsage } from '../services/llm.js';
 import { BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, chunkBrightDataBatchItems, closeBrightDataClient, getBrightDataStatus, getBrightDataCapabilities, isBrightDataConfigured, scrapeAsMarkdown, scrapeBatchAsMarkdown, brightDataSearch, shouldAttemptBrightData, classifyBrightDataError, executeBrightDataSearchWithRetry, isBrightDataRetryableError } from '../services/brightdata.js';
 import { buildTavilyEvidence, extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
@@ -615,11 +615,41 @@ router.get('/mining-sessions/resumable', (req, res): any => {
   }
 });
 
+router.delete('/mining-sessions/resumable', (req, res): any => {
+  try {
+    const sessionIds = Array.isArray(req.body?.sessionIds)
+      ? req.body.sessionIds.filter((id: any) => typeof id === 'string' && isSafeSessionId(id))
+      : [];
+    if (sessionIds.length > 0) {
+      const deletedCount = deleteMiningSessions(sessionIds);
+      return res.json({ apiVersion: 1, success: true, deletedCount });
+    }
+    const deletedCount = clearInterruptedMiningSessions();
+    return res.json({ apiVersion: 1, success: true, deletedCount });
+  } catch (error: any) {
+    console.error('Failed to delete resumable mining sessions:', error);
+    return res.status(500).json({ error: 'Failed to delete resumable mining sessions.' });
+  }
+});
+
 router.get('/mining-sessions/:sessionId', (req, res): any => {
   if (!isSafeSessionId(req.params.sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
   const session = readMiningSessionById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Mining session not found.' });
   res.json({ apiVersion: 1, session });
+});
+
+router.delete('/mining-sessions/:sessionId', (req, res): any => {
+  const { sessionId } = req.params;
+  if (!isSafeSessionId(sessionId)) return res.status(400).json({ error: 'Invalid sessionId.' });
+  try {
+    const deleted = deleteMiningSession(sessionId);
+    if (!deleted) return res.status(404).json({ error: 'Mining session not found.' });
+    return res.json({ apiVersion: 1, success: true, sessionId });
+  } catch (error: any) {
+    console.error('Failed to delete mining session:', error);
+    return res.status(500).json({ error: 'Failed to delete mining session.' });
+  }
 });
 
 router.post('/mining-sessions/:sessionId/cancel', (req, res): any => {

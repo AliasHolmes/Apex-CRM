@@ -149,3 +149,29 @@ test('discoveryEngine.resume fails gracefully when no checkpoint exists', async 
     /No resumable checkpoint found/
   );
 });
+
+test('deleteMiningSession and deleteMiningSessions delete target sessions', async () => {
+  const { deleteMiningSession, deleteMiningSessions, clearInterruptedMiningSessions } = await import('../server/db.js');
+  const s1 = `test-del-1-${Date.now()}`;
+  const s2 = `test-del-2-${Date.now()}`;
+  const s3 = `test-del-3-${Date.now()}`;
+
+  upsertMiningSession({ id: s1, status: 'interrupted', prompt: 'test 1' });
+  upsertMiningSession({ id: s2, status: 'interrupted', prompt: 'test 2' });
+  upsertMiningSession({ id: s3, status: 'interrupted', prompt: 'test 3' });
+
+  assert.equal(deleteMiningSession(s1), true);
+  assert.equal(readMiningSessionById(s1), null);
+
+  const deletedCount = deleteMiningSessions([s2, s3]);
+  assert.equal(deletedCount, 2);
+  assert.equal(readMiningSessionById(s2), null);
+  assert.equal(readMiningSessionById(s3), null);
+
+  const s4 = `test-del-4-${Date.now()}`;
+  upsertMiningSession({ id: s4, status: 'interrupted', prompt: 'test 4' });
+  const cleared = clearInterruptedMiningSessions();
+  assert.ok(cleared >= 1);
+  assert.equal(readMiningSessionById(s4), null);
+});
+

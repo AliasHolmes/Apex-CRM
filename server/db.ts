@@ -2023,6 +2023,26 @@ export function reconcileOrphanedMiningSessions(reason?: string): number {
   return rows.length;
 }
 
+export function deleteMiningSession(sessionId: string): boolean {
+  const db = getLeadsDb();
+  const info = db.prepare('DELETE FROM mining_sessions WHERE id = ?').run(sessionId);
+  return Number(info.changes) > 0;
+}
+
+export function deleteMiningSessions(sessionIds: string[]): number {
+  if (!sessionIds.length) return 0;
+  const db = getLeadsDb();
+  const placeholders = sessionIds.map(() => '?').join(',');
+  const info = db.prepare(`DELETE FROM mining_sessions WHERE id IN (${placeholders})`).run(...sessionIds);
+  return Number(info.changes);
+}
+
+export function clearInterruptedMiningSessions(): number {
+  const db = getLeadsDb();
+  const info = db.prepare("DELETE FROM mining_sessions WHERE status = 'interrupted'").run();
+  return Number(info.changes);
+}
+
 // -- Lead Activities ----------------------------------------------------------
 
 export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge';

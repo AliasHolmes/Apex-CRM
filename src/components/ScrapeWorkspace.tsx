@@ -981,10 +981,6 @@ export default function ScrapeWorkspace() {
             </TabsContent>
 
             <TabsContent value="find" className="space-y-4">
-              <ResumableSessionsBanner
-                onResumeSession={handleResumeInterruptedSession}
-                activeSessionId={activeDiscoveryRef.current?.sessionId}
-              />
               <form
                 onSubmit={handleLeadDiscovery}
                 className="space-y-4"
@@ -1152,7 +1148,12 @@ export default function ScrapeWorkspace() {
                 <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 text-sm text-indigo-100">
                   <span className="font-semibold">Flow:</span> Discover public prospects here, review them in Prospects, then enrich only the records you choose.
                 </div>
-            </form>
+              </form>
+
+              <ResumableSessionsBanner
+                onResumeSession={handleResumeInterruptedSession}
+                activeSessionId={activeDiscoveryRef.current?.sessionId}
+              />
             </TabsContent>
           </Tabs>
 

@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
 import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
 import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
-import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, chunkBrightDataBatchItems, classifyBrightDataError, executeBrightDataSearchWithRetry, normalizeBrightDataGeoLocation, normalizeBrightDataUrl } from '../server/services/brightdata.js';
+import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, chunkBrightDataBatchItems, classifyBrightDataError, createBrightDataMcpStderrFilter, executeBrightDataSearchWithEmptyBodyRecovery, executeBrightDataSearchWithRetry, filterBrightDataMcpStderrLine, isEmptyBodySerpTransientError, normalizeBrightDataGeoLocation, normalizeBrightDataUrl, parseBingMarkdownResults } from '../server/services/brightdata.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { brightDataFreeTierCapabilities } from '../server/leadSearch/freeTier.js';
 
@@ -550,4 +550,117 @@ test('brightDataFreeTierCapabilities unavailable no longer lists scrape_batch', 
   const cap = brightDataFreeTierCapabilities();
   assert.strictEqual(cap.unavailable.includes('scrape_batch'), false);
   assert.strictEqual(cap.supported.includes('scrape_batch'), true);
+});
+
+test('empty-body SERP transients are detected separately from challenge pages', () => {
+  // Empty 200 body: no "Response snippet" -> momentary hiccup the service can self-heal.
+  assert.strictEqual(isEmptyBodySerpTransientError(new Error("Tool 'search_engine' execution failed: Unexpected non-JSON response from Bright Data for search_engine.")), true);
+  assert.strictEqual(isEmptyBodySerpTransientError(new Error('Unexpected non-JSON response from Bright Data for search_engine.')), true);
+  // Challenge page / lockout snippets must NOT be retried (>=15s BD per-query lockout).
+  assert.strictEqual(isEmptyBodySerpTransientError(new Error('Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>')), false);
+  assert.strictEqual(isEmptyBodySerpTransientError(new Error('Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time.')), false);
+  assert.strictEqual(isEmptyBodySerpTransientError(new Error('HTTP 502 Bad Gateway')), false);
+});
+
+test('empty-body recovery retries once internally then succeeds silently', async () => {
+  let attempts = 0;
+  const sleeps: number[] = [];
+  const retried: number[] = [];
+  const result = await executeBrightDataSearchWithEmptyBodyRecovery(async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
+    return ['recovered'];
+  }, { delayMs: 5, sleep: async ms => { sleeps.push(ms); }, onRetry: ({ attempt }) => { retried.push(attempt); } });
+
+  assert.deepStrictEqual(result, ['recovered']);
+  assert.strictEqual(attempts, 2);
+  assert.deepStrictEqual(sleeps, [5]);
+  assert.deepStrictEqual(retried, [1]);
+});
+
+test('empty-body recovery never retries challenge or lockout variants', async () => {
+  for (const message of [
+    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',
+    "Tool 'search_engine' execution failed: Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds."
+  ]) {
+    let attempts = 0;
+    await assert.rejects(
+      executeBrightDataSearchWithEmptyBodyRecovery(async () => {
+        attempts++;
+        throw new Error(message);
+      }, { maxRetries: 1, delayMs: 0 })
+    );
+    assert.strictEqual(attempts, 1, message);
+  }
+});
+
+test('empty-body recovery respects maxRetries=0 and passes other errors straight through', async () => {
+  let emptyAttempts = 0;
+  await assert.rejects(
+    executeBrightDataSearchWithEmptyBodyRecovery(async () => {
+      emptyAttempts++;
+      throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
+    }, { maxRetries: 0, delayMs: 0 })
+  );
+  assert.strictEqual(emptyAttempts, 1);
+
+  let otherAttempts = 0;
+  await assert.rejects(
+    executeBrightDataSearchWithEmptyBodyRecovery(async () => {
+      otherAttempts++;
+      throw new Error('HTTP 502 Bad Gateway');
+    }, { maxRetries: 2, delayMs: 0 })
+  );
+  assert.strictEqual(otherAttempts, 1);
+});
+
+test('MCP stderr filter drops handled transient error blocks including stack frames', () => {
+  const state = createBrightDataMcpStderrFilter();
+  const lines = [
+    '[search_engine] executing (client=apex-crm-brightdata) {"query":"x","engine":"google","geo_location":"us"}',
+    '[search_engine] error Error: Unexpected non-JSON response from Bright Data for search_engine.',
+    '    at parse_google_search_response (file:///D:/work/AI/Apex%20crm/node_modules/@brightdata/mcp/search_utils.js:38:15)',
+    '    at async Object.execute (file:///D:/work/AI/Apex%20crm/node_modules/@brightdata/mcp/server.js:1318:22)',
+    '[search_engine] tool finished in 11122ms',
+    '[search_engine] executing (client=apex-crm-brightdata) {"query":"y"}',
+    '[search_engine] error Error: Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time.',
+    '[brightdata] zone check failed: real problem kept visible'
+  ];
+  const kept = lines.filter(line => filterBrightDataMcpStderrLine(state, line));
+  assert.deepStrictEqual(kept, [lines[0], lines[4], lines[5], lines[7]]);
+  assert.strictEqual(state.droppedLines, 4);
+});
+
+test('parseBingMarkdownResults extracts organic search results and ignores navigation links', () => {
+  const markdown = `
+# Bing Search Results
+
+[Skip to main content](https://www.bing.com/search?q=test)
+[Microsoft Privacy](https://www.microsoft.com/privacy)
+
+### [Alex Smith - Founder & CEO - TechCorp | LinkedIn](https://www.linkedin.com/in/alexsmith)
+Alex Smith is the Founder and CEO of TechCorp, leading innovative AI engineering teams in New York.
+
+### [Jane Doe - Head of AI - DataFlow | LinkedIn](https://www.linkedin.com/in/janedoe)
+Experienced AI and Machine Learning leader. Currently scaling generative workflows at DataFlow.
+
+[Next Page](https://www.bing.com/search?q=test&first=11)
+`;
+
+  const results = parseBingMarkdownResults(markdown);
+  assert.strictEqual(results.length, 2);
+  assert.strictEqual(results[0].title, 'Alex Smith - Founder & CEO - TechCorp | LinkedIn');
+  assert.strictEqual(results[0].url, 'https://www.linkedin.com/in/alexsmith');
+  assert.ok(results[0].content.includes('Founder and CEO of TechCorp'));
+  assert.strictEqual(results[1].title, 'Jane Doe - Head of AI - DataFlow | LinkedIn');
+  assert.strictEqual(results[1].url, 'https://www.linkedin.com/in/janedoe');
+  assert.ok(results[1].content.includes('Experienced AI and Machine Learning leader'));
+});
+
+test('buildBrightDataSearchArguments preserves explicit engine choice', () => {
+  const googleArgs = buildBrightDataSearchArguments('test query', { engine: 'google' });
+  assert.strictEqual(googleArgs.engine, 'google');
+
+  const bingArgs = buildBrightDataSearchArguments('test query', { engine: 'bing' });
+  assert.strictEqual(bingArgs.engine, 'bing');
 });

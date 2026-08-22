@@ -1216,12 +1216,12 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
                 const classified = classifyBrightDataError(error);
                 stats.brightDataFailures++;
                 brightDataStats.failed++;
-                logEvent(`WARN: Bright Data Search failed after ${physicalAttempts} physical attempt(s): ${classified.message}`);
+                logEvent(`[Search Fallback] Bright Data search challenged or unavailable (${classified.reasonCode}) after ${physicalAttempts} attempt(s); gracefully using fallback.`);
 
                 if (hasTavilyKey()) {
                   try {
                     const fallbackStarted = Date.now();
-                    logEvent(`Round ${round}: immediately falling back to Tavily for query "${plan.executableQuery}" after Bright Data failure.`);
+                    logEvent(`Round ${round}: falling back to Tavily for query "${plan.executableQuery}".`);
                     const tavilyOptions = plan.item.tavily;
                     const res = await tavilySearch(plan.executableQuery, tavilyOptions);
                     const fallbackItems = (res.items || []).map((item: any) => ({

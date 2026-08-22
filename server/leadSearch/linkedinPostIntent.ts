@@ -348,7 +348,12 @@ export async function runLinkedInPostIntentEnrichment(
         }
 
         try {
-          let results = await brightDataSearch(query).catch(() => []);
+          let results = await brightDataSearch(query).catch(() => {
+            // The Bright Data service already retried internally; this is the
+            // final failure. Log compactly and let the Tavily fallback run.
+            logEvent(`[Phase 5] Bright Data post search unavailable for ${name}; continuing with fallback results.`);
+            return [] as BrightDataSearchResult[];
+          });
           let activeProvider: 'brightdata' | 'tavily' = 'brightdata';
 
           if ((!results || results.length === 0) && tavilySearchFallback) {

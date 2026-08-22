@@ -90,6 +90,65 @@ const brightDataKeyPool = new ApiKeyPool('Bright Data', () => parseApiKeys(
   [process.env.BRIGHTDATA_API_TOKEN, process.env.API_TOKEN]
 ));
 
+// --- Local MCP child stderr filtering -------------------------------------
+// The local @brightdata/mcp server logs every tool call and error to stderr.
+// Transient SERP failures (empty/non-JSON bodies, per-query lockouts) are
+// retried or fallen back from inside this service, so their raw child-process
+// output is dropped instead of surfacing as scary console errors. Everything
+// else (real crashes, zone problems, unhandled HTTP errors) still passes
+// through. Set BRIGHTDATA_MCP_STDERR_DEBUG=true to bypass the filter.
+
+export type BrightDataMcpStderrFilterState = { suppressingStack: boolean; droppedLines: number };
+
+const MCP_TRANSIENT_ERROR_PATTERN = /\[(?:search_engine|search_engine_batch|scrape_as_markdown|scrape_batch)\] error .*(?:Unexpected non-JSON response from Bright Data|recently failed and cannot be attempted|failed_query_rejected|repeat_query_rejected)/;
+const MCP_STACK_FRAME_PATTERN = /^\s+at\s/;
+
+const mcpStderrDebugEnabled = () => String(process.env.BRIGHTDATA_MCP_STDERR_DEBUG || '').trim().toLowerCase() === 'true';
+
+export const createBrightDataMcpStderrFilter = (): BrightDataMcpStderrFilterState => ({
+  suppressingStack: false,
+  droppedLines: 0
+});
+
+/** Decide whether one line of the local MCP server's stderr should be forwarded. */
+export function filterBrightDataMcpStderrLine(state: BrightDataMcpStderrFilterState, line: string): boolean {
+  if (state.suppressingStack) {
+    if (MCP_STACK_FRAME_PATTERN.test(line)) {
+      state.droppedLines++;
+      return false;
+    }
+    state.suppressingStack = false;
+  }
+  if (MCP_TRANSIENT_ERROR_PATTERN.test(line)) {
+    // Drop the error line and any stack frames that follow it.
+    state.suppressingStack = true;
+    state.droppedLines++;
+    return false;
+  }
+  return true;
+}
+
+const attachFilteredMcpStderr = (stderr: any) => {
+  const filterState = createBrightDataMcpStderrFilter();
+  let pending = '';
+  stderr.setEncoding('utf8');
+  stderr.on('data', (chunk: string) => {
+    pending += chunk;
+    let newlineIndex: number;
+    while ((newlineIndex = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, newlineIndex);
+      pending = pending.slice(newlineIndex + 1);
+      if (filterBrightDataMcpStderrLine(filterState, line)) process.stderr.write(line + '\n');
+    }
+  });
+  stderr.on('end', () => {
+    if (pending && filterBrightDataMcpStderrLine(filterState, pending)) process.stderr.write(pending + '\n');
+    if (filterState.droppedLines > 0) {
+      console.error(`[brightdata:mcp] suppressed ${filterState.droppedLines} handled transient SERP error line(s)`);
+    }
+  });
+};
+
 const boundedNumber = (value: string | undefined, fallback: number, min: number, max: number) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -240,6 +299,58 @@ export async function executeBrightDataSearchWithRetry<T>(
         : baseDelayMs;
       const delayMs = retryBaseDelayMs * (2 ** (attempt - 1)) + Math.floor(random() * (jitterMs + 1));
       await options.onRetry?.({ error: classified, attempt, nextAttempt: attempt + 1, delayMs });
+      await sleep(delayMs);
+    }
+  }
+}
+
+const EMPTY_BODY_SERP_PATTERN = /unexpected non-json response from bright data/i;
+
+/**
+ * True when Bright Data answered HTTP 200 but the SERP body was empty or
+ * unparseable with no challenge snippet. The vendored @brightdata/mcp server
+ * only retries thrown HTTP/network errors (base_request), so an empty 200 body
+ * reaches us as "Unexpected non-JSON response..." with no "Response snippet".
+ * That is a momentary provider-side hiccup, safe to retry once after a short
+ * pause -- unlike challenge/lockout responses, which carry a snippet and
+ * enforce a >=15s per-query lockout.
+ */
+export function isEmptyBodySerpTransientError(error: unknown): boolean {
+  const classified = classifyBrightDataError(error);
+  return classified.reasonCode === 'target_transient'
+    && EMPTY_BODY_SERP_PATTERN.test(classified.message)
+    && !/response snippet/i.test(classified.message);
+}
+
+export type BrightDataEmptyBodyRetryOptions = {
+  maxRetries?: number;
+  delayMs?: number;
+  sleep?: (delayMs: number) => Promise<void>;
+  onRetry?: (context: { error: BrightDataError; attempt: number }) => void | Promise<void>;
+};
+
+/**
+ * Recovers the empty-200 SERP transient inside the service layer so every
+ * consumer (discovery rounds, Phase 5 post intent, company intent) self-heals
+ * instead of surfacing a raw non-JSON tool error. Challenge/lockout variants
+ * are deliberately not retried here; their fast Tavily fallback stays intact.
+ */
+export async function executeBrightDataSearchWithEmptyBodyRecovery<T>(
+  operation: () => Promise<T>,
+  options: BrightDataEmptyBodyRetryOptions = {}
+): Promise<T> {
+  const envMax = Number(process.env.BRIGHTDATA_SEARCH_EMPTY_BODY_RETRIES);
+  const envDelay = Number(process.env.BRIGHTDATA_SEARCH_EMPTY_BODY_RETRY_DELAY_MS);
+  const maxRetries = Math.min(Math.max(Math.floor(Number(options.maxRetries ?? (Number.isFinite(envMax) ? envMax : 1))), 0), 2);
+  const delayMs = Math.min(Math.max(Math.floor(Number(options.delayMs ?? (Number.isFinite(envDelay) ? envDelay : 1_500))), 0), 15_000);
+  const sleep = options.sleep || ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt >= maxRetries || !isEmptyBodySerpTransientError(error)) throw error;
+      await options.onRetry?.({ error: classifyBrightDataError(error), attempt: attempt + 1 });
       await sleep(delayMs);
     }
   }
@@ -449,9 +560,13 @@ async function connectLocalClient(apiToken: string, generation: number) {
       BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
       BASE_MAX_RETRIES: maxRetries
     } as Record<string, string>,
-    stderr: 'inherit',
+    stderr: mcpStderrDebugEnabled() ? 'inherit' : 'pipe',
     cwd: process.cwd()
   });
+
+  if (transport.stderr) {
+    attachFilteredMcpStderr(transport.stderr);
+  }
 
   transport.onerror = (error) => {
     if (generation !== clientGeneration || brightDataClient !== client) {
@@ -837,12 +952,88 @@ export type BrightDataSearchOptions = {
   geoLocation?: string;
   cursor?: string;
   timeoutMs?: number;
+  engine?: 'google' | 'bing' | 'yandex';
+  allowBingFallback?: boolean;
 };
 
 /** Bright Data search_engine accepts a two-letter geo_location value. */
 export function normalizeBrightDataGeoLocation(value?: string) {
   const normalized = String(value || '').trim().toLowerCase();
   return /^[a-z]{2}$/.test(normalized) ? normalized : '';
+}
+
+/**
+ * Parses markdown output returned by @brightdata/mcp for non-Google engines (Bing/Yandex).
+ * Extracts [Title](url) markdown links and accompanying description text blocks.
+ */
+export function parseBingMarkdownResults(markdownText: string): BrightDataSearchResult[] {
+  if (!markdownText || typeof markdownText !== 'string') return [];
+  const results: BrightDataSearchResult[] = [];
+  const lines = markdownText.split('\n');
+  let currentTitle = '';
+  let currentUrl = '';
+  let currentSnippetLines: string[] = [];
+
+  const flush = () => {
+    if (currentTitle && currentUrl) {
+      const content = currentSnippetLines.join(' ').replace(/\s+/g, ' ').trim();
+      results.push({
+        title: currentTitle,
+        url: currentUrl,
+        content: content || currentTitle,
+        sourceProvider: 'brightdata_search' as const
+      });
+    }
+    currentTitle = '';
+    currentUrl = '';
+    currentSnippetLines = [];
+  };
+
+  const ignoredHosts = /^(?:www\.)?(?:bing\.com|microsoft\.com|msn\.com|live\.com|bingapis\.com|azure\.com|microsoftedge\.com)/i;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const linkMatch = line.match(/^#{0,6}\s*\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/);
+    if (linkMatch) {
+      flush();
+      const candidateTitle = linkMatch[1].trim();
+      const candidateUrl = linkMatch[2].trim();
+      try {
+        const parsed = new URL(candidateUrl);
+        if (!ignoredHosts.test(parsed.hostname) && candidateTitle.length > 1) {
+          currentTitle = candidateTitle;
+          currentUrl = candidateUrl;
+        }
+      } catch {}
+      continue;
+    }
+
+    const inlineMatch = line.match(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/);
+    if (inlineMatch && !currentUrl) {
+      const candidateTitle = inlineMatch[1].trim();
+      const candidateUrl = inlineMatch[2].trim();
+      try {
+        const parsed = new URL(candidateUrl);
+        if (!ignoredHosts.test(parsed.hostname) && candidateTitle.length > 1) {
+          flush();
+          currentTitle = candidateTitle;
+          currentUrl = candidateUrl;
+          continue;
+        }
+      } catch {}
+    }
+
+    if (currentUrl) {
+      if (!line.startsWith('![') && !line.startsWith('---') && !line.startsWith('***')) {
+        currentSnippetLines.push(line);
+      }
+    }
+  }
+  flush();
+
+  return results.filter(r => r.url && r.title);
 }
 
 /**
@@ -853,9 +1044,10 @@ export function normalizeBrightDataGeoLocation(value?: string) {
 export function buildBrightDataSearchArguments(query: string, options: BrightDataSearchOptions = {}) {
   const configuredGeo = options.geoLocation || options.country || process.env.BRIGHTDATA_SEARCH_GEO_LOCATION || 'us';
   const geoLocation = normalizeBrightDataGeoLocation(configuredGeo);
+  const engine = options.engine || 'google';
   return {
     query,
-    engine: 'google' as const,
+    engine,
     ...(options.cursor ? { cursor: options.cursor } : {}),
     ...(geoLocation ? { geo_location: geoLocation } : {})
   };
@@ -863,50 +1055,78 @@ export function buildBrightDataSearchArguments(query: string, options: BrightDat
 
 export async function brightDataSearch(query: string, options?: BrightDataSearchOptions): Promise<BrightDataSearchResult[]> {
   const timeoutMs = options?.timeoutMs || baseTimeoutMs();
-  const result = await withBrightDataClient('search_engine', async (client) => {
-    if (searchToolAvailable === null) {
-      const tools = await client.listTools();
-      searchToolAvailable = tools.tools.some(t => t.name === 'search_engine');
-    }
+  const engine = options?.engine || 'google';
+  const allowBingFallback = (options?.allowBingFallback ?? (process.env.BRIGHTDATA_FALLBACK_ENGINE !== 'false')) && engine === 'google';
 
-    if (!searchToolAvailable) {
-      throw new BrightDataError('search_engine tool unavailable in Bright Data MCP', {
-        reasonCode: 'provider_config',
-        providerDisabled: true
-      });
-    }
+  const runSearch = async (activeEngine: 'google' | 'bing' | 'yandex'): Promise<BrightDataSearchResult[]> => {
+    return withBrightDataClient('search_engine', async (client) => {
+      if (searchToolAvailable === null) {
+        const tools = await client.listTools();
+        searchToolAvailable = tools.tools.some(t => t.name === 'search_engine');
+      }
 
-    const toolResult = await withHardTimeout(client.callTool(
-      {
-        name: 'search_engine',
-        arguments: buildBrightDataSearchArguments(query, options)
-      },
-      undefined,
-      { timeout: timeoutMs }
-    ), timeoutMs, 'Bright Data search_engine');
+      if (!searchToolAvailable) {
+        throw new BrightDataError('search_engine tool unavailable in Bright Data MCP', {
+          reasonCode: 'provider_config',
+          providerDisabled: true
+        });
+      }
 
-    if ((toolResult as any)?.isError) {
-      throw new Error(textFromToolResult(toolResult) || 'Bright Data search_engine returned an error');
-    }
+      const toolResult = await withHardTimeout(client.callTool(
+        {
+          name: 'search_engine',
+          arguments: buildBrightDataSearchArguments(query, { ...options, engine: activeEngine })
+        },
+        undefined,
+        { timeout: timeoutMs }
+      ), timeoutMs, `Bright Data search_engine (${activeEngine})`);
 
-    const textResult = textFromToolResult(toolResult);
-    if (!textResult) return [];
+      if ((toolResult as any)?.isError) {
+        throw new Error(textFromToolResult(toolResult) || `Bright Data search_engine (${activeEngine}) returned an error`);
+      }
 
-    let parsed: any;
+      const textResult = textFromToolResult(toolResult);
+      if (!textResult) return [];
+
+      if (activeEngine === 'bing' || activeEngine === 'yandex') {
+        return parseBingMarkdownResults(textResult);
+      }
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(textResult);
+      } catch {
+        return [];
+      }
+
+      const items = Array.isArray(parsed) ? parsed : (parsed.organic || parsed.results || []);
+      return items.map((item: any) => ({
+        title: item.title || '',
+        url: item.link || item.url || '',
+        content: item.snippet || item.description || '',
+        sourceProvider: 'brightdata_search' as const
+      })).filter((item: BrightDataSearchResult) => item.url && item.title);
+    }, { throwOnUnavailable: true, throwOnFailure: true });
+  };
+
+  const result = await executeBrightDataSearchWithEmptyBodyRecovery(async () => {
     try {
-      parsed = JSON.parse(textResult);
-    } catch {
-      return [];
+      return await runSearch(engine);
+    } catch (error) {
+      const classified = classifyBrightDataError(error);
+      if (allowBingFallback && (classified.reasonCode === 'target_transient' || /unexpected non-json response/i.test(classified.message))) {
+        try {
+          const bingResults = await runSearch('bing');
+          if (bingResults && bingResults.length > 0) {
+            return bingResults;
+          }
+        } catch {
+          // Bing fallback also failed; proceed to rethrow original classified error for Tavily
+        }
+      }
+      throw error;
     }
-
-    const items = Array.isArray(parsed) ? parsed : (parsed.organic || parsed.results || []);
-    return items.map((item: any) => ({
-      title: item.title || '',
-      url: item.link || item.url || '',
-      content: item.snippet || item.description || '',
-      sourceProvider: 'brightdata_search' as const
-    })).filter((item: BrightDataSearchResult) => item.url && item.title);
-  }, { throwOnUnavailable: true, throwOnFailure: true });
+  });
 
   return result || [];
 }

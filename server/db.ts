@@ -441,7 +441,12 @@ function runMigrations(db: DatabaseSync) {
       for (const row of rows) {
         try {
           const lead = JSON.parse(row.payload) as Record<string, any>;
-          const identityKey = canonicalLinkedInIdentity(lead?.profile?.contactDetails?.linkedinUrl);
+          const identityKey = canonicalLinkedInIdentity(
+            lead?.profile?.contactDetails?.linkedinUrl ||
+            lead?.contactDetails?.linkedinUrl ||
+            lead?.linkedinUrl ||
+            lead?.sourceUrl
+          );
           if (!identityKey) continue;
           insertIdentity.run(identityKey, row.id, row.created_at || detectedAt);
           const mapped = findIdentity.get(identityKey) as { lead_id?: string } | undefined;
@@ -971,7 +976,12 @@ export type LeadWriteResult = {
 type LeadWriteOptions = { requireExisting?: boolean };
 
 const leadIdentityKey = (lead: Record<string, any>) =>
-  canonicalLinkedInIdentity(lead?.profile?.contactDetails?.linkedinUrl);
+  canonicalLinkedInIdentity(
+    lead?.profile?.contactDetails?.linkedinUrl ||
+    lead?.contactDetails?.linkedinUrl ||
+    lead?.linkedinUrl ||
+    lead?.sourceUrl
+  );
 
 const readLeadFromRow = (row: { payload: string; revision: number } | undefined) => {
   if (!row) return null;

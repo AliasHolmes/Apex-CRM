@@ -7,6 +7,7 @@ export type LeadEvidence = {
   sourceRound: number;
   evidenceQuality: EvidenceQuality;
   snippets: string[];
+  evidenceBlock?: string;
   whyThisLead?: string;
 };
 
@@ -44,6 +45,7 @@ export function createLeadEvidence(params: {
     sourceQuery: params.sourceQuery,
     sourceRound: params.sourceRound,
     evidenceQuality: params.evidenceQuality,
+    evidenceBlock: params.evidenceBlock,
     snippets: snippetsFromEvidenceBlock(params.evidenceBlock),
     whyThisLead: params.whyThisLead,
   };

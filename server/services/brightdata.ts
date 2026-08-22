@@ -192,7 +192,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
   }
   // Non-JSON SERP response = BD returned a challenge/verification page (HTTP 502 "verifying").
-  // Per BD docs: wait ≥15s before retrying the same query. Mark non-retryable → Tavily fallback.
+  // Per BD docs: wait >=15s before retrying the same query. Mark non-retryable -> Tavily fallback.
   if (/unexpected non-json response from bright data/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
   }

@@ -28,24 +28,34 @@ export const canonicalLinkedInIdentity = (url?: string) => {
   return handle ? `linkedin:${handle}` : '';
 };
 
-export const getProfileDomain = (profile?: Partial<LinkedInProfile> | Record<string, any>) => {
-  if (!profile || typeof profile !== 'object') return '';
-  const website = profile.contactDetails?.website;
+export const getProfileDomain = (input?: Partial<LinkedInProfile> | Record<string, any>) => {
+  if (!input || typeof input !== 'object') return '';
+  const record = input as Record<string, any>;
+  const p = record.profile && typeof record.profile === 'object' ? (record.profile as Record<string, any>) : record;
+  const cd = (p.contactDetails && typeof p.contactDetails === 'object' ? p.contactDetails : undefined) ||
+             (record.contactDetails && typeof record.contactDetails === 'object' ? record.contactDetails : {});
+  const website = cd.website || record.website || p.website;
   if (website) return normalizeDedupeValue(website).split('/')[0];
-  const email = profile.contactDetails?.email;
+  const email = cd.email || record.email || p.email;
   if (email && typeof email === 'string' && email.includes('@')) return email.toLowerCase().split('@')[1];
   return '';
 };
 
-export const buildProfileDedupeKeys = (profile?: Partial<LinkedInProfile> | Record<string, any>) => {
-  if (!profile || typeof profile !== 'object') return new Set<string>();
-  const keys = new Set<string>();
-  const email = normalizeDedupeValue(profile.contactDetails?.email);
-  const linkedinIdentity = canonicalLinkedInIdentity(profile.contactDetails?.linkedinUrl);
-  const name = normalizeDedupeValue(profile.fullName);
-  const company = normalizeDedupeValue(profile.currentCompany);
-  const domain = getProfileDomain(profile);
+export const buildProfileDedupeKeys = (input?: Partial<LinkedInProfile> | Record<string, any>) => {
+  if (!input || typeof input !== 'object') return new Set<string>();
+  const record = input as Record<string, any>;
+  const p = record.profile && typeof record.profile === 'object' ? (record.profile as Record<string, any>) : record;
+  const cd = (p.contactDetails && typeof p.contactDetails === 'object' ? p.contactDetails : undefined) ||
+             (record.contactDetails && typeof record.contactDetails === 'object' ? record.contactDetails : {});
+  const email = normalizeDedupeValue(cd.email || record.email || p.email);
+  const linkedinIdentity = canonicalLinkedInIdentity(
+    cd.linkedinUrl || record.linkedinUrl || p.linkedinUrl || record.sourceUrl || p.sourceUrl
+  );
+  const name = normalizeDedupeValue(p.fullName || record.fullName || p.name || record.name);
+  const company = normalizeDedupeValue(p.currentCompany || record.currentCompany || p.company || record.company);
+  const domain = getProfileDomain(input);
 
+  const keys = new Set<string>();
   if (email) keys.add(`email:${email}`);
   if (linkedinIdentity) keys.add(linkedinIdentity);
   // A real LinkedIn profile is the authoritative person identity. Name and

@@ -19,7 +19,8 @@ import { buildStrategistPrompt } from '../server/leadSearch/searchSpec.ts';
 import { buildRoundDiagnostics } from '../server/leadSearch/roundDiagnostics.ts';
 import { selectEvidenceForFinalist } from '../server/leadSearch/evidenceSelection.ts';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.ts';
-import { computeMMRDiversitySelection } from '../server/leadSearch/scoring.ts';
+import { computeMMRDiversitySelection, computeScoreBreakdown } from '../server/leadSearch/scoring.ts';
+import { createLeadEvidence } from '../server/leadSearch/evidence.ts';
 
 const spec: any = {
   version: 1,
@@ -559,4 +560,107 @@ describe('evidence-grounded prospect quality', () => {
     assert.equal(selected[0].id, 'c1');
     assert.equal(selected[1].id, 'c3');
   });
+
+  it('selectEvidenceForFinalist extracts sentences from lead.evidence.evidenceBlock when evidenceText is omitted', () => {
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+      brief: 'AI agency owner in New York',
+      authorityRequired: true,
+      exclusions: [],
+      initialQueries: [],
+      requirements: [
+        { id: 'role', scope: 'person_role', importance: 'hard', evidenceModality: 'structured_profile', description: 'owner', sourcePhrase: 'owner', acceptableTerms: ['owner', 'founder'], queryable: true },
+        { id: 'company', scope: 'company_type', importance: 'hard', evidenceModality: 'structured_profile', description: 'AI agency', sourcePhrase: 'AI agency', acceptableTerms: ['AI agency', 'AI consultancy'], queryable: true }
+      ]
+    };
+
+    const lead = {
+      fullName: 'Samantha Ray',
+      currentTitle: 'Founder',
+      currentCompany: 'Apex Intelligence',
+      location: 'New York, NY',
+      evidence: {
+        evidenceBlock: 'Samantha Ray is the Founder and Principal of Apex Intelligence, a premier AI agency in New York specializing in generative AI.'
+      }
+    };
+
+    const selected = selectEvidenceForFinalist(lead, contract);
+    assert.ok(selected.evidence.length >= 2);
+    assert.ok(selected.evidence.some(e => e.text.includes('Samantha Ray is the Founder')));
+    assert.ok(selected.coveredHardRequirementIds.includes('role'));
+    assert.ok(selected.coveredHardRequirementIds.includes('company'));
+  });
+
+  it('finalistCandidateFromLead falls back to lead.evidence.evidenceBlock without contract', () => {
+    const lead = {
+      fullName: 'Marcus Brody',
+      currentTitle: 'Chief AI Architect',
+      currentCompany: 'Brody Labs',
+      evidence: {
+        evidenceBlock: 'Brody Labs AI consultancy founder Marcus Brody has 15 years in machine learning.'
+      }
+    };
+
+    const candidate = finalistCandidateFromLead('c0', lead);
+    assert.ok(candidate.evidence.some(e => e.text.includes('Brody Labs AI consultancy founder Marcus Brody')));
+  });
+
+  it('createLeadEvidence preserves full evidenceBlock and generates snippets', () => {
+    const evidence = createLeadEvidence({
+      sourceUrl: 'https://linkedin.com/in/test-lead',
+      sourceProvider: 'tavily',
+      sourceQuery: 'AI Founder New York',
+      sourceRound: 1,
+      evidenceQuality: 'good',
+      evidenceBlock: 'LINK: https://linkedin.com/in/test-lead\nFounder & CEO at NextGen AI in New York.\nSpecializing in LLM workflow automation.',
+      whyThisLead: 'Matches AI founder in New York'
+    });
+
+    assert.equal(evidence.evidenceBlock, 'LINK: https://linkedin.com/in/test-lead\nFounder & CEO at NextGen AI in New York.\nSpecializing in LLM workflow automation.');
+    assert.ok(evidence.snippets.length >= 1);
+    assert.ok(evidence.snippets.some(s => s.includes('Founder & CEO at NextGen AI')));
+  });
+
+  it('computeScoreBreakdown does not apply 7.5 cap when email is present in flat contactDetails.email or lead.email', () => {
+    const leadWithFlatContact = {
+      fullName: 'David Lee',
+      currentCompany: 'Lee Dynamics',
+      contactDetails: { email: 'david@leedynamics.com' },
+      fitScore: 9,
+      intentScore: 9,
+      timingScore: 9,
+      evidence: { evidenceQuality: 'weak' }
+    };
+
+    const leadWithDirectEmail = {
+      fullName: 'David Lee',
+      currentCompany: 'Lee Dynamics',
+      email: 'david@leedynamics.com',
+      fitScore: 9,
+      intentScore: 9,
+      timingScore: 9,
+      evidence: { evidenceQuality: 'weak' }
+    };
+
+    const leadWithoutEmail = {
+      fullName: 'David Lee',
+      currentCompany: 'Lee Dynamics',
+      fitScore: 9,
+      intentScore: 9,
+      timingScore: 9,
+      evidence: { evidenceQuality: 'weak' }
+    };
+
+    const breakdown1 = computeScoreBreakdown(leadWithFlatContact, 'weak', 'tavily');
+    const breakdown2 = computeScoreBreakdown(leadWithDirectEmail, 'weak', 'tavily');
+    const breakdown3 = computeScoreBreakdown(leadWithoutEmail, 'weak', 'tavily');
+
+    // Without email + weak evidence -> capped at 7.5
+    assert.ok(breakdown3.finalScore <= 7.5);
+    // With flat email + weak evidence -> not capped at 7.5
+    assert.ok(breakdown1.finalScore > 7.5);
+    assert.ok(breakdown2.finalScore > 7.5);
+  });
 });
+

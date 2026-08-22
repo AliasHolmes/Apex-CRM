@@ -281,7 +281,7 @@ export function finalistCandidateFromLead(
   const structuredEvidence = `Name: ${lead.fullName || ''}\nTitle: ${lead.currentTitle || lead.headline || ''}\nCompany: ${lead.currentCompany || ''}\nLocation: ${lead.location || ''}\nHeadline: ${lead.headline || ''}`;
   const evidence = [
     { id: 'e0', text: clean(structuredEvidence, 400) },
-    evidenceText || lead.evidence?.rawText || lead.evidence?.summary || lead.summary || '',
+    evidenceText || lead.evidence?.evidenceBlock || lead.evidence?.rawText || lead.evidence?.summary || lead.summary || '',
     ...snippets
   ].filter(item => item && (typeof item === 'string' ? item.trim() : item.text)).map((item, index) => {
     const text = typeof item === 'string' ? item : item.text;

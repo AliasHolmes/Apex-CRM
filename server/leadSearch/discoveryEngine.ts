@@ -666,6 +666,24 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     const seenCandidateKeys = new Set<string>();
     const seenQueryTexts = new Set<string>();
     const evidenceByUrl = new Map<string, EvidenceMeta>();
+    const getEvidenceForLead = (lead: any): EvidenceMeta => {
+      const linkedinUrl = lead?.contactDetails?.linkedinUrl || '';
+      const fallbackUrl = lead?.sourceUrl || '';
+      const candidateKeys = [
+        normalizeLinkedInUrl(linkedinUrl),
+        normalizeDedupeValue(linkedinUrl),
+        linkedinUrl,
+        normalizeLinkedInUrl(fallbackUrl),
+        normalizeDedupeValue(fallbackUrl),
+        fallbackUrl
+      ].filter(Boolean);
+
+      for (const key of candidateKeys) {
+        const found = evidenceByUrl.get(key);
+        if (found) return found;
+      }
+      return fallbackEvidenceForLead(lead);
+    };
     const brightDataReady = shouldAttemptBrightData();
     let brightDataProviderDisabled = !brightDataReady;
     let brightDataToolDegraded = false;
@@ -1416,7 +1434,13 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
           lanes: Array.isArray(item._lanes) ? item._lanes : [item._queryLane || 'person'],
           corroborated: Boolean(item._corroborated)
         };
-        evidenceByUrl.set(normalizedUrl || normalizeDedupeValue(url), evidenceMeta);
+        const primaryKey = normalizedUrl || normalizeDedupeValue(url);
+        if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);
+        if (url && url !== primaryKey) evidenceByUrl.set(url, evidenceMeta);
+        if (username) {
+          evidenceByUrl.set(`linkedin:${username}`, evidenceMeta);
+          evidenceByUrl.set(`linkedin.com/in/${username}`, evidenceMeta);
+        }
         if (queryRun) queryRun.evidenceBlocks++;
         evidenceBlocks.push(`--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`);
       }
@@ -1606,8 +1630,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
         if (rawUrl && !extractLinkedInUsername(rawUrl)) {
           if (lead.contactDetails) lead.contactDetails.linkedinUrl = '';
         }
-        const normalizedLeadUrl = normalizeLinkedInUrl(lead.contactDetails?.linkedinUrl);
-        const evidenceMeta = evidenceByUrl.get(normalizedLeadUrl || normalizeDedupeValue(lead.contactDetails?.linkedinUrl)) || fallbackEvidenceForLead(lead);
+        const evidenceMeta = getEvidenceForLead(lead);
         const queryRun = evidenceMeta.queryRun;
 
         // Identity/Role checks
@@ -2223,9 +2246,7 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
     stats.rerank.poolSize = acceptedLeads.length;
 
     const finalistCandidates: FinalistCandidate[] = acceptedLeads.map((lead, index) => {
-      const linkedinUrl = lead.contactDetails?.linkedinUrl || '';
-      const fallbackUrl = lead.sourceUrl || '';
-      const evidence = evidenceByUrl.get(linkedinUrl) || evidenceByUrl.get(fallbackUrl);
+      const evidence = getEvidenceForLead(lead);
       return finalistCandidateFromLead(`c${index}`, lead, evidence?.evidenceBlock, contract);
     });
 

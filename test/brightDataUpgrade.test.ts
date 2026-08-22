@@ -198,8 +198,8 @@ test('Bright Data classifies target gateway and malformed search responses as re
 });
 
 test('Bright Data classifies SERP non-JSON response (challenge page) as non-retryable target transient', () => {
-  // Per official BD docs: HTTP 502 "verifying" (challenge page) requires ≥15s wait before retry.
-  // Any retry < 15s triggers failed_query_rejected lockout. Mark non-retryable → Tavily fallback.
+  // Per official BD docs: HTTP 502 "verifying" (challenge page) requires >=15s wait before retry.
+  // Any retry < 15s triggers failed_query_rejected lockout. Mark non-retryable -> Tavily fallback.
   for (const message of [
     'Unexpected non-JSON response from Bright Data for search_engine.',
     'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',

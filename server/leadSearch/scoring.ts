@@ -309,7 +309,11 @@ function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: Au
     }
   }
 
-  const email = lead.profile?.contactDetails?.email || lead.emailDiscovery?.bestEmail || lead.publicEmail;
+  const email = lead.profile?.contactDetails?.email ||
+                lead.contactDetails?.email ||
+                lead.email ||
+                lead.emailDiscovery?.bestEmail ||
+                lead.publicEmail;
   const quality = lead.evidence?.evidenceQuality || lead.evidenceQuality;
   if (!email && (quality === 'weak' || quality === 'bad')) {
     capped = Math.min(capped, 7.5);

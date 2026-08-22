@@ -66,6 +66,7 @@ export function hasStrictStructuredMatch(lead: Record<string, any>, requirement:
 
 const sourceEvidencePieces = (lead: Record<string, any>, evidenceText?: string) => unique([
   evidenceText || '',
+  lead.evidence?.evidenceBlock || '',
   lead.evidence?.rawText || '',
   lead.evidence?.summary || '',
   lead.summary || '',

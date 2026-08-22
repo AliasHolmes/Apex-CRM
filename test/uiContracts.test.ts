@@ -138,3 +138,27 @@ test('UI source avoids unreadable type sizes and undefined project color scales'
 
   assert.deepEqual(violations, []);
 });
+
+import { miningTraceStore } from '../src/lib/traceStore.js';
+
+test('miningTraceStore manages session live state and subscriber notifications', () => {
+  const sessionId = `test-session-${Date.now()}`;
+
+  const initial = miningTraceStore.getState(sessionId);
+  assert.equal(initial.sessionId, sessionId);
+  assert.equal(initial.status, 'idle');
+  assert.deepEqual(initial.logs, []);
+  assert.deepEqual(initial.traceEvents, []);
+
+  let notifyCalled = false;
+  const unsubscribe = miningTraceStore.subscribe(() => {
+    notifyCalled = true;
+  });
+
+  const disconnect = miningTraceStore.connect(sessionId);
+  assert.ok(typeof disconnect === 'function');
+  assert.ok(notifyCalled, 'Subscriber should be notified on connect state change');
+
+  unsubscribe();
+  miningTraceStore.resetSession(sessionId);
+});

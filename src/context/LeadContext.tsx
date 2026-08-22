@@ -12,6 +12,7 @@ import { Lead, LinkedInProfile, NextAction, QualifiedLeadProfile, ReviewStatus }
 import { predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 import { preferNewerCanonical, rebaseLeadChanges } from '@/lib/leadMutations';
+import { ConflictDialog } from '@/components/ConflictDialog';
 
 const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
 
@@ -142,6 +143,11 @@ interface LeadContextType {
     leadIds: string[],
     stage: Lead['stage'],
   ) => Promise<{ updatedCount: number; removedCount: number }>;
+  openConflictDialog: (
+    localLead: Lead,
+    serverLead: Lead,
+    onResolve: (resolvedLead: Lead) => void,
+  ) => void;
 }
 
 const LeadContext = createContext<LeadContextType | undefined>(undefined);
@@ -152,6 +158,30 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const leadsRef = useRef<Lead[]>([]);
   const leadPatchQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const leadPatchRollbackRef = useRef<Map<string, Lead | null>>(new Map());
+
+  const [conflictModal, setConflictModal] = useState<{
+    open: boolean;
+    localLead: Lead | null;
+    serverLead: Lead | null;
+    onResolve?: (resolvedLead: Lead) => void;
+  }>({
+    open: false,
+    localLead: null,
+    serverLead: null
+  });
+
+  const openConflictDialog = useCallback((
+    localLead: Lead,
+    serverLead: Lead,
+    onResolve: (resolvedLead: Lead) => void
+  ) => {
+    setConflictModal({
+      open: true,
+      localLead,
+      serverLead,
+      onResolve
+    });
+  }, []);
 
   const saveLeadsToStorage = useCallback((updater: Lead[] | ((prevLeads: Lead[]) => Lead[])) => {
     const nextLeads = typeof updater === 'function'
@@ -913,6 +943,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     handleDeleteLead,
     handleDeleteLeads,
     handleUpdateLeadsStage,
+    openConflictDialog,
   }), [
     handleBulkLeadsAdded,
     handleDeleteLead,
@@ -929,6 +960,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     handleUpdateLeadsStage,
     isHydrated,
     leads,
+    openConflictDialog,
     rehydrateLeads,
     saveLeadsToStorage,
   ]);
@@ -936,6 +968,17 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   return (
     <LeadContext.Provider value={contextValue}>
       {children}
+      <ConflictDialog
+        open={conflictModal.open}
+        onOpenChange={(open) => setConflictModal(prev => ({ ...prev, open }))}
+        localLead={conflictModal.localLead}
+        serverLead={conflictModal.serverLead}
+        onResolve={(resolved) => {
+          if (conflictModal.onResolve) {
+            conflictModal.onResolve(resolved);
+          }
+        }}
+      />
     </LeadContext.Provider>
   );
 }

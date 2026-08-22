@@ -32,6 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ResumableSessionsBanner, type ResumableSession } from "@/components/ResumableSessionsBanner";
 
 const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
   const panelId = useId();
@@ -898,6 +899,95 @@ export default function ScrapeWorkspace() {
     activeDiscovery.controller.abort();
   };
 
+  const handleResumeInterruptedSession = async (session: ResumableSession) => {
+    if (loading) return;
+    setFindQuery(session.prompt);
+    setLeadLimit(session.requestedLimit);
+    setLeadLimitInput(String(session.requestedLimit));
+    setLoading(true);
+    setErrorCode(null);
+    setSuccessMsg(null);
+    setInfoMsg(`Resuming mining session "${session.prompt}" from checkpoint...`);
+    
+    const taskId = handleTaskAdd('search', session.prompt);
+    const requestController = new AbortController();
+    const sessionId = session.id;
+    let sseSource: EventSource | null = null;
+    const activeDiscovery = {
+      controller: requestController,
+      sessionId,
+      pollController: null as AbortController | null,
+      pollTimer: undefined as ReturnType<typeof setTimeout> | undefined,
+      sseSource: null as EventSource | null,
+    };
+    activeDiscoveryRef.current = activeDiscovery;
+
+    try {
+      setTerminalLogs([`[${new Date().toLocaleTimeString()}] Resuming session ${sessionId}...`]);
+      setLiveTraceEvents([]);
+
+      if (typeof EventSource !== 'undefined') {
+        try {
+          sseSource = new EventSource(`/api/mining-sessions/${sessionId}/stream`);
+          activeDiscovery.sseSource = sseSource;
+          sseSource.onmessage = (event) => {
+            if (activeDiscoveryRef.current?.sessionId !== sessionId) {
+              sseSource?.close();
+              return;
+            }
+            try {
+              const data = JSON.parse(event.data);
+              if (Array.isArray(data.logs) && data.logs.length > 0) {
+                setTerminalLogs(prev => [...prev, ...data.logs]);
+              }
+              if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
+                setLiveTraceEvents(prev => {
+                  const existingIds = new Set(prev.map(e => e.id));
+                  const incoming = data.traceEvents.filter((e: MiningTraceEvent) => !existingIds.has(e.id));
+                  if (incoming.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
+                    void rehydrateLeads(true);
+                    notifyLeadsUpdated();
+                  }
+                  return incoming.length > 0 ? [...prev, ...incoming] : prev;
+                });
+              }
+            } catch {}
+          };
+          sseSource.addEventListener('end', () => sseSource?.close());
+          sseSource.onerror = () => sseSource?.close();
+        } catch {}
+      }
+
+      const response = await fetch(`/api/mining-sessions/${sessionId}/resume?mode=job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: requestController.signal,
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Resume failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      await rehydrateLeads(true);
+      notifyLeadsUpdated();
+      setSuccessMsg(`Session resumed successfully. Leads synchronized.`);
+      updateTaskStatus(taskId, 'completed', Number(data.persistence?.createdCount || 0));
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        setErrorCode(err.message || 'Failed to resume mining session.');
+        updateTaskStatus(taskId, 'failed');
+      }
+    } finally {
+      setLoading(false);
+      sseSource?.close();
+      if (activeDiscoveryRef.current?.sessionId === sessionId) {
+        activeDiscoveryRef.current = null;
+      }
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       {/* Search Input Panels */}
@@ -1001,6 +1091,10 @@ export default function ScrapeWorkspace() {
             </TabsContent>
 
             <TabsContent value="find" className="space-y-4">
+              <ResumableSessionsBanner
+                onResumeSession={handleResumeInterruptedSession}
+                activeSessionId={activeDiscoveryRef.current?.sessionId}
+              />
               <form
                 onSubmit={handleLeadDiscovery}
                 className="space-y-4"

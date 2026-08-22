@@ -5,7 +5,7 @@
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
-import { useLeads } from '../context/LeadContext';
+import { useLeads, notifyLeadsUpdated } from '../context/LeadContext';
 import { isDiscoveryProviderConfigured } from '@/lib/ui';
 import { canonicalLinkedInIdentity } from '@/utils/leadDedupe';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
@@ -709,6 +709,10 @@ export default function ScrapeWorkspace() {
                 setLiveTraceEvents(prev => {
                   const existingIds = new Set(prev.map(e => e.id));
                   const incoming = data.traceEvents.filter((e: MiningTraceEvent) => !existingIds.has(e.id));
+                  if (incoming.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
+                    void rehydrateLeads(true);
+                    notifyLeadsUpdated();
+                  }
                   return incoming.length > 0 ? [...prev, ...incoming] : prev;
                 });
               }
@@ -790,6 +794,8 @@ export default function ScrapeWorkspace() {
       const fetchedLeads = data.leads || [];
 
       if (fetchedLeads.length === 0) {
+        await rehydrateLeads(true);
+        notifyLeadsUpdated();
         const zeroMsg = data.shortfallReason || 'Search completed: 0 verified prospects found after exhausting available search queries.';
         setSuccessMsg(zeroMsg);
         updateTaskStatus(taskId, 'completed', 0);
@@ -799,6 +805,7 @@ export default function ScrapeWorkspace() {
       // /find-leads is the authoritative persistence path. Rehydrating here
       // avoids sending the same candidates through a second bulk write.
       await rehydrateLeads(true);
+      notifyLeadsUpdated();
       const addedCount = Number(data.persistence?.createdCount || 0);
       const skippedCount = Number(data.persistence?.duplicateCount || 0);
       updateTaskStatus(taskId, 'completed', addedCount);
@@ -853,7 +860,7 @@ export default function ScrapeWorkspace() {
           setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
           updateTaskStatus(taskId, 'cancelled', savedCount);
           triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
-          void rehydrateLeads(true).catch(() => {});
+          void rehydrateLeads(true).then(() => notifyLeadsUpdated()).catch(() => {});
         } else {
           setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
           updateTaskStatus(taskId, 'cancelled', 0);
@@ -863,8 +870,11 @@ export default function ScrapeWorkspace() {
         console.error(err);
         setErrorCode(err.message || 'Lead lookup failed.');
         updateTaskStatus(taskId, 'failed', 0);
+        void rehydrateLeads(true).then(() => notifyLeadsUpdated()).catch(() => {});
       }
     } finally {
+      void rehydrateLeads(true);
+      notifyLeadsUpdated();
       if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
       activeDiscovery.pollController?.abort();
       activeDiscovery.sseSource?.close();

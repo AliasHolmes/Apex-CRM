@@ -154,6 +154,7 @@ function Dashboard() {
   const {
     leads,
     isHydrated,
+    rehydrateLeads,
     handleBulkLeadsAdded,
     handleUpdateLeadStage,
     handleUpdateLeadNotes,
@@ -209,6 +210,10 @@ function Dashboard() {
       return nextTabs;
     });
   }, [activeTab]);
+
+  useEffect(() => {
+    void rehydrateLeads(true);
+  }, [activeTab, rehydrateLeads]);
 
   const resetManualForm = useCallback(() => {
     setManualName('');

@@ -120,7 +120,11 @@ export default function CrmPipeline({
   onSelectLeadForOutreach,
 }: CrmPipelineProps) {
   const { triggerToast } = useToast();
-  const { handleUpdateLeadFields } = useLeads();
+  const { handleUpdateLeadFields, rehydrateLeads } = useLeads();
+
+  useEffect(() => {
+    void rehydrateLeads(true);
+  }, [rehydrateLeads]);
   const reduceMotion = useReducedMotion() ?? false;
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState('');

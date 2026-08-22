@@ -58,6 +58,10 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
 
 router.get('/leads', (req, res): any => {
   try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     const { stage, reviewStatus, nextAction, search, limit, offset, summaryOnly } = req.query as Record<string, string | undefined>;
     const parsedLimit = limit !== undefined ? Math.min(Math.max(Number(limit) || 1, 1), 2000) : undefined;
     const parsedOffset = offset !== undefined ? Math.max(Number(offset) || 0, 0) : undefined;

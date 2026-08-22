@@ -21,7 +21,13 @@ type StoredLeadsResponse = {
 };
 
 async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
-  const response = await fetch('/api/leads');
+  const response = await fetch(`/api/leads?_t=${Date.now()}`, {
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
+    }
+  });
   if (!response.ok) {
     throw new Error(`Failed to load leads: ${response.status}`);
   }
@@ -198,6 +204,45 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void rehydrateLeads();
+
+    const onVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void rehydrateLeads(true);
+      }
+    };
+    window.addEventListener('focus', onVisibilityOrFocus);
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+
+    const onCustomEvent = () => {
+      void rehydrateLeads(true);
+    };
+    window.addEventListener('apex_crm_leads_updated', onCustomEvent);
+
+    let broadcastChannel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        broadcastChannel = new BroadcastChannel('apex_crm_leads_sync');
+        broadcastChannel.onmessage = (event) => {
+          if (event.data?.type === 'LEADS_UPDATED') {
+            void rehydrateLeads(true);
+          }
+        };
+      }
+    } catch {}
+
+    const intervalId = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void rehydrateLeads(true);
+      }
+    }, 8000);
+
+    return () => {
+      window.removeEventListener('focus', onVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+      window.removeEventListener('apex_crm_leads_updated', onCustomEvent);
+      broadcastChannel?.close();
+      clearInterval(intervalId);
+    };
   }, [rehydrateLeads]);
 
   const reconcileLeadPatch = useCallback((lead: Lead, rollbackLead: Lead | null, allowCreate = false): Promise<boolean> => {
@@ -901,5 +946,20 @@ export function useLeads() {
     throw new Error('useLeads must be used within a LeadProvider');
   }
   return context;
+}
+
+export function notifyLeadsUpdated(): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('apex_crm_leads_updated'));
+    }
+  } catch {}
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const channel = new BroadcastChannel('apex_crm_leads_sync');
+      channel.postMessage({ type: 'LEADS_UPDATED', timestamp: Date.now() });
+      channel.close();
+    }
+  } catch {}
 }
 

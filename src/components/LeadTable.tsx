@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useDeferredValue, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
 import Papa from 'papaparse';
@@ -339,6 +339,7 @@ const LeadTableRow = React.memo(function LeadTableRow({
 export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => void }) {
   const {
     leads,
+    rehydrateLeads,
     handleUpdateLeadStage,
     handleUpdateLeadsStage,
     handleDeleteLead,
@@ -349,6 +350,10 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     handleBulkLeadsAdded,
     handleMergeLead,
   } = useLeads();
+
+  useEffect(() => {
+    void rehydrateLeads(true);
+  }, [rehydrateLeads]);
   const { triggerToast } = useToast();
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(() => new Set());
   const [tableSearch, setTableSearch] = useState('');

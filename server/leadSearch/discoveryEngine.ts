@@ -149,6 +149,7 @@ import { executeExtractStage, type EvidenceMeta } from './stages/extractStage.js
 import { executeVerifyStage } from './stages/verifyStage.js';
 import { executeEnrichStage } from './stages/enrichStage.js';
 import { executeJudgeStage } from './stages/judgeStage.js';
+import { executeSelectStage } from './stages/selectStage.js';
 import type { SessionConfig, PipelineSessionState, PipelinePorts, SessionContext } from './pipelineTypes.js';
 import { fuseObservations, type ScoutObservation } from './observations.js';
 import { buildScoutEvidence, selectDiversifiedLeads } from './scoutScoring.js';
@@ -1137,62 +1138,17 @@ export async function executeDiscoverySession(options: ExecuteDiscoveryOptions):
       checkpointAcceptedLeads
     });
 
-    // === PHASE 5: POST-COLLECTION LINKEDIN POST INTENT ENRICHMENT ===
-    if (linkedinPostIntentEnabled && qualifiedLeads.length > 0) {
-      logEvent(`Phase 5: LinkedIn post intent enrichment starting. Pool: ${qualifiedLeads.length} qualified leads.`);
-      const qualifiedMap = new Map<string, any>(qualifiedLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
-      const postIntentStats = await runLinkedInPostIntentEnrichment({
-        qualifiedLeads: qualifiedMap,
-        contract,
-        brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
-        tavilySearchFallback: hasTavilyKey() ? (q, opts) => tavilySearch(q, opts) : undefined,
-        targetLimit,
-        maxLeads: Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20),
-        concurrency: Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 2),
-        ttlDays,
-        sessionAbortSignal: sessionAbortController.signal,
-        logEvent,
-        recordTrace
-      });
-      (stats as any).linkedinPostIntent = postIntentStats;
-      logEvent(`Phase 5 complete: ${postIntentStats.succeeded} enriched, ${postIntentStats.cacheHits} cache hits, ${postIntentStats.noResults} no-results, ${postIntentStats.llmSkipped} skipped, ${postIntentStats.failed} failed.`);
-    }
-    // === END PHASE 5 ===
+    const selectResult = await executeSelectStage(sessionCtx, {
+      contract,
+      searchSpec,
+      ttlDays,
+      stats,
+      leadQueryRuns,
+      trackableBrightDataSearch
+    });
 
-    const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
-    for (const lead of qualifiedLeads) {
-      const queryRun = leadQueryRuns.get(lead);
-      if (!queryRun) continue;
-      if (lead.qualification?.verdict === 'rescued') queryRun.rescuedFinalists++;
-      else queryRun.qualifiedFinalists++;
-    }
-    for (const lead of finalLeads) {
-      const queryRun = leadQueryRuns.get(lead);
-      if (queryRun) queryRun.returnedFinalists++;
-    }
-    for (const run of stats.queryRuns) {
-      recordQueryPerformance({
-        family: run.family || 'general',
-        lane: run.lane || 'person',
-        provider: run.providerPreference || 'tavily',
-        runs: 0,
-        outcomeRuns: 1,
-        qualifiedCandidates: run.qualifiedFinalists,
-        rescuedCandidates: run.rescuedFinalists,
-        returnedCandidates: run.returnedFinalists
-      });
-    }
-    leadsFound = finalLeads.length;
-    stats.returned = leadsFound;
-    stats.rerank.returned = leadsFound;
-
-    if (leadsFound >= targetLimit) {
-      stats.stopReason = 'target_reached';
-    } else if (stats.stopReason === 'not_started') {
-      stats.stopReason = stats.rounds >= maxRounds ? 'max_rounds' : 'exhausted';
-    }
-
-    logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
+    const { finalLeads } = selectResult;
+    leadsFound = selectResult.leadsFound;
 
     const now = new Date().toISOString();
     const mappedLeads: Record<string, any>[] = finalLeads.map((p: any) =>

@@ -101,6 +101,51 @@ export function incrementCounter(
   counts[key] = (counts[key] || 0) + 1;
 }
 
+const TRANSIENT_LLM_ERROR =
+  /rate.?limit|429|timeout|etimedout|econnreset|fetch failed|socket hang up|5\d\d|bad gateway|service unavailable|overloaded/i;
+
+/** True when an LLM/provider error looks transient and worth retrying. */
+export function isTransientLLMError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return TRANSIENT_LLM_ERROR.test(message);
+}
+
+/**
+ * Run an async task with bounded retries for transient failures only.
+ * Parse/validation errors (non-transient) fail immediately. Abort-aware:
+ * retries stop as soon as the signal fires.
+ */
+export async function runWithTransientRetry<T>(
+  task: () => Promise<T>,
+  options: {
+    attempts?: number;
+    baseDelayMs?: number;
+    signal?: AbortSignal;
+    onRetry?: (attempt: number, delayMs: number, error: unknown) => void;
+  } = {},
+): Promise<T> {
+  const attempts = Math.max(1, Math.min(options.attempts ?? 1, 3));
+  const baseDelayMs = Math.max(0, options.baseDelayMs ?? 1500);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      const isLastAttempt =
+        attempt >= attempts ||
+        !isTransientLLMError(error) ||
+        options.signal?.aborted;
+      if (isLastAttempt) throw error;
+      const delayMs = baseDelayMs * attempt;
+      options.onRetry?.(attempt + 1, delayMs, error);
+      await sleepWithAbort(delayMs, options.signal);
+    }
+  }
+  throw lastError;
+}
+
 /** Abort-aware sleep that rejects immediately when the signal fires. */
 export function sleepWithAbort(
   ms: number,
@@ -120,4 +165,47 @@ export function sleepWithAbort(
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * Build a compact evidence map for a session checkpoint.
+ *
+ * Candidates can register up to four URL-form keys each in evidenceByUrl;
+ * persisting all of them bloats checkpoint_json. This keeps ONE canonical key
+ * per referenced candidate (preferring the "linkedin:<username>" form) and
+ * only for leads actually being checkpointed, so restored sessions retain
+ * exactly the evidence they need.
+ */
+export function buildCheckpointEvidence<E extends SessionEvidenceMeta>(
+  evidenceByUrl: Map<string, E>,
+  acceptedLeads: any[],
+  cap = 240,
+): Record<string, E> {
+  const result: Record<string, E> = {};
+  let included = 0;
+
+  for (const lead of acceptedLeads) {
+    if (included >= cap) break;
+    const linkedinUrl =
+      lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "";
+    if (!linkedinUrl) continue;
+
+    // Prefer canonical prefixed form, then normalized URL, then raw string -
+    // mirroring the lookup order of findEvidenceForLead.
+    const candidateKeys = [
+      `linkedin:${(linkedinUrl.match(/linkedin\.com\/in\/([^/?#]+)/i) || [])[1] || ""}`,
+      normalizeLinkedInUrl(linkedinUrl),
+      linkedinUrl,
+    ].filter(Boolean);
+
+    for (const key of candidateKeys) {
+      const found = evidenceByUrl.get(key);
+      if (found) {
+        result[key] = found;
+        included++;
+        break;
+      }
+    }
+  }
+  return result;
 }

@@ -20,9 +20,9 @@ Primary reference docs:
 | Metric                                                           | Value                                               |
 | ---------------------------------------------------------------- | --------------------------------------------------- |
 | Frontend (`src/`)                                                | ~9,983 lines across 33 files                        |
-| Backend engine (`server/leadSearch/`)                            | ~10,459 lines across 38 modules (incl. 9 `stages/`) |
+| Backend engine (`server/leadSearch/`)                            | ~11,415 lines across 40 modules (incl. 9 `stages/`) |
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~6,733 lines                                        |
-| REST routes                                                      | 37 (all under `/api`)                               |
+| REST routes                                                      | 38 (all under `/api`)                               |
 | SQLite tables                                                    | 15 (schema v15, WAL mode)                           |
 | Test suite                                                       | 30 files, ~6,283 lines                              |
 
@@ -40,9 +40,9 @@ Primary reference docs:
 ├─ src/                      React client (entry, components, context, lib, utils)
 ├─ server/
 │  ├─ db.ts                  SQLite v15 schema, migrations w/ auto-backup, CRUD, identity dedupe
-│  ├─ routes/api.ts          Thin HTTP adapter → 37 REST routes
+│  ├─ routes/api.ts          Thin HTTP adapter → 38 REST routes
 │  ├─ services/              llm.ts, brightdata.ts, keyRotator.ts, linkedinEvidence.ts
-│  └─ leadSearch/            Discovery Session Engine (29 modules + 9 stages/)
+│  └─ leadSearch/            Discovery Session Engine (31 modules + 9 stages/)
 ├─ scripts/dev.ts            Dev orchestrator (Vite + Express concurrently)
 ├─ test/                     30 node:test suites (~6,283 lines)
 ├─ docs/                     CODEBASE_INDEX.md (this file), adr/
@@ -103,11 +103,11 @@ Primary reference docs:
 
 ### Core
 
-| File            | Lines | Role                                                                                                                                                                                                                                                                 |
-| --------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.ts`     | 197   | Express app bootstrap, static serving, `/api` mount                                                                                                                                                                                                                  |
-| `db.ts`         | 2249  | SQLite v15: migrations w/ auto-backup, 15 tables, optimistic revision locks, `lead_identities` canonical dedupe, `checkpoint_json` persistence + resumable-session queries, CRUD helpers (`upsertLeadWithIdentity`, `readLeadsSummary`, `LeadRevisionConflictError`) |
-| `routes/api.ts` | 1187  | Thin HTTP adapter over services/engine (37 routes, §7) incl. async job mode (`?mode=job` / `Prefer: respond-async`) and SSE streams                                                                                                                                  |
+| File            | Lines | Role                                                                                                                                                                                                                                                                                               |
+| --------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.ts`     | 197   | Express app bootstrap, static serving, `/api` mount                                                                                                                                                                                                                                                |
+| `db.ts`         | 2956  | SQLite v15: migrations w/ auto-backup + batched SAVEPOINT backfills, 15 tables, optimistic revision locks, `lead_identities` canonical dedupe, `checkpoint_json` persistence + resumable-session queries, CRUD helpers (`upsertLeadWithIdentity`, `readLeadsSummary`, `LeadRevisionConflictError`) |
+| `routes/api.ts` | 1187  | Thin HTTP adapter over services/engine (38 routes, §7) incl. async job mode (`?mode=job` / `Prefer: respond-async`) and SSE streams                                                                                                                                                                |
 
 ### Services (`server/services/`)
 
@@ -141,7 +141,7 @@ Stage order is defined by `StageName` in `pipelineTypes.ts`: `plan → retrieve 
 
 | File                    | Lines | Key exports                                                                                                                                                   |
 | ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `discoveryEngine.ts`    | 1428  | `DiscoverySessionEngine`, `executeDiscoverySession`, `discoveryEngine` singleton — session lifecycle, lanes, flywheel, checkpointing, resumption, persistence |
+| `discoveryEngine.ts`    | 1600  | `DiscoverySessionEngine`, `executeDiscoverySession`, `discoveryEngine` singleton — session lifecycle, lanes, flywheel, checkpointing, resumption, persistence |
 | `targetFulfillment.ts`  | 26    | `executeTargetFulfillmentSession` — forwarding facade to engine                                                                                               |
 | `collectionCapacity.ts` | 142   | `MAX_COLLECTION_ROUNDS`, `buildCollectionCapacity`, stall/refinement logic                                                                                    |
 | `adaptiveScheduler.ts`  | 241   | `scheduleAdaptiveRetrievalTasks`, Thompson-sampling arm scoring (`sampleBeta`, `scoreAdaptiveArm`)                                                            |
@@ -200,49 +200,64 @@ Stage order is defined by `StageName` in `pipelineTypes.ts`: `plan → retrieve 
 | -------------- | ----- | ------------------------------------------------------------------------------------------- |
 | `telemetry.ts` | 441   | `MiningTelemetryRecorder`, `recordTrace`, cost estimation, retention limits, live-log hooks |
 
-## 7. REST API surface (37 routes, all under `/api`)
+#### Shared session infrastructure
+
+| File                | Lines | Key exports                                                                                                                                                                       |
+| ------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sessionHelpers.ts` | ~180  | `effectiveScore`, `buildFallbackEvidence`, `findEvidenceForLead`, `incrementCounter`, `sleepWithAbort`, `runWithTransientRetry`, `isTransientLLMError`, `buildCheckpointEvidence` |
+| `leadMapping.ts`    | 123   | `mapCandidateToPersistedLead` — canonical candidate-to-lead mapping (re-exported from `discoveryEngine` for checkpoint persistence and tests)                                     |
+
+#### Streaming & config
+
+| File                           | Lines | Key exports                                                                                                   |
+| ------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------- |
+| `services/sessionStreamHub.ts` | ~150  | `sessionStreamHub` — per-session SSE broadcaster: one poll interval + one DB read fanned out to N subscribers |
+| `configValidation.ts`          | ~70   | `validateEngineConfig()` — boot-time env sanity warnings (non-fatal)                                          |
+
+## 7. REST API surface (38 routes, all under `/api`)
 
 Verified against `server/routes/api.ts`:
 
-| Method | Route                                | Purpose                                                                          |
-| ------ | ------------------------------------ | -------------------------------------------------------------------------------- |
-| GET    | `/health`                            | App status/uptime                                                                |
-| GET    | `/llm-health`                        | LLM gateway/provider latency                                                     |
-| GET    | `/key-rotation-status`               | Sanitized key-pool health                                                        |
-| GET    | `/provider-capabilities`             | Scraper/search feature flags                                                     |
-| POST   | `/lead-search/preview`               | Compile contract + query plan without executing                                  |
-| POST   | `/find-leads`                        | Execute full discovery session (sync HTTP 200 or async HTTP 202 via `?mode=job`) |
-| POST   | `/scrape-url`                        | Scrape public page → markdown                                                    |
-| POST   | `/scrape-pasted`                     | Parse pasted text into leads                                                     |
-| GET    | `/mining-sessions`                   | List mining sessions                                                             |
-| GET    | `/mining-sessions/resumable`         | List interrupted sessions available for resume                                   |
-| DELETE | `/mining-sessions/resumable`         | Dismiss resumable sessions                                                       |
-| GET    | `/mining-sessions/:sessionId`        | Session detail                                                                   |
-| DELETE | `/mining-sessions/:sessionId`        | Delete session record                                                            |
-| GET    | `/mining-sessions/:sessionId/trace`  | Live trace snapshot                                                              |
-| GET    | `/mining-sessions/:sessionId/stream` | Live SSE event stream                                                            |
-| POST   | `/mining-sessions/:sessionId/cancel` | Cancel active run                                                                |
-| POST   | `/mining-sessions/:sessionId/resume` | Resume interrupted session from checkpoint                                       |
-| GET    | `/search-logs`                       | Query performance/cost summaries                                                 |
-| GET    | `/search-logs/:id`                   | Single log detail                                                                |
-| GET    | `/search-logs/:id/live`              | Live log stream                                                                  |
-| GET    | `/leads`                             | Filtered lead listing                                                            |
-| PUT    | `/leads`                             | Replace stored leads                                                             |
-| POST   | `/leads/bulk`                        | Bulk upsert (dedupe-aware)                                                       |
-| PATCH  | `/leads/:id`                         | Stage/review/notes update (revision lock; 409 on conflict)                       |
-| DELETE | `/leads`                             | Bulk clear                                                                       |
-| DELETE | `/leads/:id`                         | Soft-delete/archive                                                              |
-| GET    | `/leads/:id/activities`              | Lead activity audit trail                                                        |
-| POST   | `/leads/:id/merge`                   | Merge duplicate identities                                                       |
-| POST   | `/leads/:id/enrich-profile`          | Bright Data profile enrichment                                                   |
-| GET    | `/saved-searches`                    | List saved searches                                                              |
-| POST   | `/saved-searches`                    | Create/update saved search                                                       |
-| DELETE | `/saved-searches/:id`                | Delete saved search                                                              |
-| GET    | `/outreach-drafts`                   | List drafts                                                                      |
-| POST   | `/outreach-drafts`                   | Save draft                                                                       |
-| DELETE | `/outreach-drafts/:id`               | Delete draft                                                                     |
-| POST   | `/generate-outbound`                 | Generate contextual outreach message                                             |
-| POST   | `/chat`                              | Conversational CRM assistant                                                     |
+| Method | Route                                | Purpose                                                                            |
+| ------ | ------------------------------------ | ---------------------------------------------------------------------------------- |
+| GET    | `/health`                            | App status/uptime                                                                  |
+| GET    | `/llm-health`                        | LLM gateway/provider latency                                                       |
+| GET    | `/key-rotation-status`               | Sanitized key-pool health                                                          |
+| GET    | `/provider-capabilities`             | Scraper/search feature flags                                                       |
+| GET    | `/engine-metrics`                    | Aggregated engine health: stop reasons, persistence statuses, per-stage LLM totals |
+| POST   | `/lead-search/preview`               | Compile contract + query plan without executing                                    |
+| POST   | `/find-leads`                        | Execute full discovery session (sync HTTP 200 or async HTTP 202 via `?mode=job`)   |
+| POST   | `/scrape-url`                        | Scrape public page → markdown                                                      |
+| POST   | `/scrape-pasted`                     | Parse pasted text into leads                                                       |
+| GET    | `/mining-sessions`                   | List mining sessions                                                               |
+| GET    | `/mining-sessions/resumable`         | List interrupted sessions available for resume                                     |
+| DELETE | `/mining-sessions/resumable`         | Dismiss resumable sessions                                                         |
+| GET    | `/mining-sessions/:sessionId`        | Session detail                                                                     |
+| DELETE | `/mining-sessions/:sessionId`        | Delete session record                                                              |
+| GET    | `/mining-sessions/:sessionId/trace`  | Live trace snapshot                                                                |
+| GET    | `/mining-sessions/:sessionId/stream` | Live SSE event stream                                                              |
+| POST   | `/mining-sessions/:sessionId/cancel` | Cancel active run                                                                  |
+| POST   | `/mining-sessions/:sessionId/resume` | Resume interrupted session from checkpoint                                         |
+| GET    | `/search-logs`                       | Query performance/cost summaries                                                   |
+| GET    | `/search-logs/:id`                   | Single log detail                                                                  |
+| GET    | `/search-logs/:id/live`              | Live log stream                                                                    |
+| GET    | `/leads`                             | Filtered lead listing                                                              |
+| PUT    | `/leads`                             | Replace stored leads                                                               |
+| POST   | `/leads/bulk`                        | Bulk upsert (dedupe-aware)                                                         |
+| PATCH  | `/leads/:id`                         | Stage/review/notes update (revision lock; 409 on conflict)                         |
+| DELETE | `/leads`                             | Bulk clear                                                                         |
+| DELETE | `/leads/:id`                         | Soft-delete/archive                                                                |
+| GET    | `/leads/:id/activities`              | Lead activity audit trail                                                          |
+| POST   | `/leads/:id/merge`                   | Merge duplicate identities                                                         |
+| POST   | `/leads/:id/enrich-profile`          | Bright Data profile enrichment                                                     |
+| GET    | `/saved-searches`                    | List saved searches                                                                |
+| POST   | `/saved-searches`                    | Create/update saved search                                                         |
+| DELETE | `/saved-searches/:id`                | Delete saved search                                                                |
+| GET    | `/outreach-drafts`                   | List drafts                                                                        |
+| POST   | `/outreach-drafts`                   | Save draft                                                                         |
+| DELETE | `/outreach-drafts/:id`               | Delete draft                                                                       |
+| POST   | `/generate-outbound`                 | Generate contextual outreach message                                               |
+| POST   | `/chat`                              | Conversational CRM assistant                                                       |
 
 ## 8. Database schema (SQLite v15, `.apex-data/apex-crm.sqlite`)
 

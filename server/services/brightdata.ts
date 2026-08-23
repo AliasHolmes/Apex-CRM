@@ -718,6 +718,34 @@ export function shouldAttemptBrightData() {
   );
 }
 
+/**
+ * Proactive recovery probe: after a cooldown expires, fire one minimal search
+ * to discover provider recovery instead of waiting for the next real task to
+ * fail again. Never throws; returns true only when the probe succeeded and
+ * health was restored. Respects cooldown (returns false without probing).
+ */
+export async function probeBrightDataRecovery(): Promise<boolean> {
+  if (!isBrightDataConfigured()) return false;
+  if (isBrightDataCoolingDown()) return false;
+  if (!brightDataKeyPool.hasAvailableKey()) return false;
+  try {
+    const results = await Promise.race([
+      brightDataSearch("example", { timeoutMs: 10_000 }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("probe timeout")), 10_000),
+      ),
+    ]);
+    if (Array.isArray(results)) {
+      markProviderSuccess();
+      return true;
+    }
+    return false;
+  } catch {
+    // Probe failure keeps current degraded state; next cooldown applies.
+    return false;
+  }
+}
+
 export function getBrightDataStatus() {
   const cooldownMsRemaining = Math.max(0, disabledUntil - Date.now());
   const configured = isBrightDataConfigured();

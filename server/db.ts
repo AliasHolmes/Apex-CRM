@@ -2567,6 +2567,8 @@ export type MiningSessionCheckpoint = {
   previousRoundSummary?: any;
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
+  /** Last N debug-log entries, persisted so crash context survives resume. */
+  debugLogsTail?: any[];
   updatedAt: string;
 };
 
@@ -2646,6 +2648,19 @@ export function saveMiningSessionCheckpoint(
 ) {
   const db = getLeadsDb();
   const now = checkpoint.updatedAt || new Date().toISOString();
+  let payload = JSON.stringify(checkpoint);
+  // Size guard: evidence blocks dominate checkpoint weight. If the serialized
+  // snapshot exceeds ~512KB, degrade to metadata-only evidence (the resume
+  // path's fallback-evidence builder tolerates missing entries gracefully).
+  const evidenceCount = checkpoint.evidenceByUrl
+    ? Object.keys(checkpoint.evidenceByUrl).length
+    : 0;
+  if (payload.length > 512_000 && evidenceCount > 0) {
+    payload = JSON.stringify({ ...checkpoint, evidenceByUrl: {} });
+    console.warn(
+      `[checkpoint] ${sessionId}: exceeded 512KB; stripped evidenceByUrl (${evidenceCount} entries).`,
+    );
+  }
   db.prepare(
     `
     UPDATE mining_sessions
@@ -2653,7 +2668,96 @@ export function saveMiningSessionCheckpoint(
         updated_at = ?
     WHERE id = ?
   `,
-  ).run(JSON.stringify(checkpoint), now, sessionId);
+  ).run(payload, now, sessionId);
+}
+
+export type EngineMetrics = {
+  sessionsAnalyzed: number;
+  stopReasons: Record<string, number>;
+  persistenceStatuses: Record<string, number>;
+  avgLeadsFound: number;
+  stageTotals: {
+    stage: string;
+    calls: number;
+    totalLatencyMs: number;
+    inputTokens: number;
+    outputTokens: number;
+  }[];
+};
+
+/**
+ * Aggregate engine health over the last N search logs + their LLM stage
+ * entries. Pure SQL over existing tables; no new tables required.
+ */
+export function readEngineMetrics(limit = 20): EngineMetrics {
+  const db = getLeadsDb();
+  const boundedLimit = Math.min(Math.max(Math.floor(limit) || 20, 1), 100);
+
+  const sessionRows = db
+    .prepare(
+      `
+    SELECT status, error_message, stats_json, trace_summary_json
+    FROM mining_sessions
+    ORDER BY datetime(updated_at) DESC
+    LIMIT ?
+  `,
+    )
+    .all(boundedLimit) as any[];
+
+  const stopReasons: Record<string, number> = {};
+  const persistenceStatuses: Record<string, number> = {};
+  let leadsSum = 0;
+  let analyzed = 0;
+
+  for (const row of sessionRows) {
+    analyzed++;
+    const status = String(row.status || "unknown");
+    persistenceStatuses[status] = (persistenceStatuses[status] || 0) + 1;
+    try {
+      const stats = parseJSONField<Record<string, any>>(row.stats_json, {});
+      const stopReason = String(stats?.stopReason || "unknown");
+      stopReasons[stopReason] = (stopReasons[stopReason] || 0) + 1;
+      leadsSum += Number(stats?.persistedCount || 0);
+    } catch {
+      // skip malformed stats
+    }
+  }
+
+  const stageRows = db
+    .prepare(
+      `
+    SELECT stage,
+           COUNT(*) AS calls,
+           SUM(latency_ms) AS total_latency_ms,
+           SUM(input_tokens) AS input_tokens,
+           SUM(output_tokens) AS output_tokens
+    FROM llm_stage_logs
+    WHERE created_at >= COALESCE(
+      (SELECT MIN(created_at) FROM (
+        SELECT created_at FROM llm_stage_logs ORDER BY created_at DESC LIMIT ?
+      )),
+      datetime('now')
+    )
+    GROUP BY stage
+    ORDER BY calls DESC
+  `,
+    )
+    .all(boundedLimit * 50) as any[];
+
+  return {
+    sessionsAnalyzed: analyzed,
+    stopReasons,
+    persistenceStatuses,
+    avgLeadsFound:
+      analyzed > 0 ? Math.round((leadsSum / analyzed) * 10) / 10 : 0,
+    stageTotals: stageRows.map((row) => ({
+      stage: String(row.stage || "unknown"),
+      calls: Number(row.calls || 0),
+      totalLatencyMs: Number(row.total_latency_ms || 0),
+      inputTokens: Number(row.input_tokens || 0),
+      outputTokens: Number(row.output_tokens || 0),
+    })),
+  };
 }
 
 export function readMiningSessionCheckpoint(

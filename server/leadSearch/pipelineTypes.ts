@@ -1,22 +1,25 @@
-import type { ProspectContract } from './prospectContract.js';
-import type { MiningTelemetryRecorder, MiningTraceEvent } from './telemetry.js';
-import type { QueryRunStats } from './strategist.js';
-import type { RejectionReason } from './rejections.js';
-import type { LLMSessionCircuitBreaker } from '../services/llm.js';
-import type { ScoutFreeTierBudget } from './freeTier.js';
-import type { CollectionCapacity } from './collectionCapacity.js';
-import type { BrightDataSearchOptions, BrightDataSearchResult } from '../services/brightdata.js';
+import type { ProspectContract } from "./prospectContract.js";
+import type { MiningTelemetryRecorder, MiningTraceEvent } from "./telemetry.js";
+import type { QueryRunStats } from "./strategist.js";
+import type { RejectionReason } from "./rejections.js";
+import type { LLMSessionCircuitBreaker } from "../services/llm.js";
+import type { ScoutFreeTierBudget } from "./freeTier.js";
+import type { CollectionCapacity } from "./collectionCapacity.js";
+import type {
+  BrightDataSearchOptions,
+  BrightDataSearchResult,
+} from "../services/brightdata.js";
 
 export type StageName =
-  | 'plan'
-  | 'retrieve'
-  | 'fuse'
-  | 'extract'
-  | 'verify'
-  | 'enrich'
-  | 'judge'
-  | 'select'
-  | 'persist';
+  | "plan"
+  | "retrieve"
+  | "fuse"
+  | "extract"
+  | "verify"
+  | "enrich"
+  | "judge"
+  | "select"
+  | "persist";
 
 export type SessionConfig = {
   sessionId: string;
@@ -44,12 +47,16 @@ export type PipelinePorts = {
   brightDataSearch: (
     query: string,
     options?: BrightDataSearchOptions,
-    phaseLabel?: string
+    phaseLabel?: string,
   ) => Promise<BrightDataSearchResult[]>;
   tavilySearch: (
     query: string,
-    options?: Record<string, any>
-  ) => Promise<{ text: string; sources: { title: string; uri: string }[]; items: any[] }>;
+    options?: Record<string, any>,
+  ) => Promise<{
+    text: string;
+    sources: { title: string; uri: string }[];
+    items: any[];
+  }>;
   scrapeMarkdown: (url: string) => Promise<string | null>;
   scrapeBatchMarkdown: (urls: string[]) => Promise<any>;
 };
@@ -80,7 +87,9 @@ export type SessionContext = {
   state: PipelineSessionState;
   ports: PipelinePorts;
   logEvent: (msg: string) => void;
-  recordTrace: (event: Omit<MiningTraceEvent, 'id' | 'timestamp'> & { timestamp?: string }) => MiningTraceEvent;
+  recordTrace: (
+    event: Omit<MiningTraceEvent, "id" | "timestamp"> & { timestamp?: string },
+  ) => MiningTraceEvent;
 };
 
 export type MiningSessionCheckpoint = {
@@ -101,15 +110,44 @@ export type MiningSessionCheckpoint = {
   previousRoundSummary?: any;
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
+  /** Last N debug-log entries, persisted so crash context survives resume. */
+  debugLogsTail?: any[];
   updatedAt: string;
 };
 
 export class LeadQueryRunTracker {
   private map = new Map<string, QueryRunStats>();
 
+  /**
+   * Canonical identity key matching the fuseStage candidateKey convention
+   * ("linkedin:<username>"). Identity-based keys survive checkpoint/restore:
+   * a lead object reconstructed from a checkpoint resolves to the same map
+   * entry as the original in-memory object did.
+   */
   private getKey(lead: any): string {
-    if (!lead) return '';
-    return lead.id || lead.contactDetails?.linkedinUrl || lead.profile?.fullName || '';
+    if (!lead) return "";
+    const url =
+      lead.contactDetails?.linkedinUrl ||
+      lead.profile?.contactDetails?.linkedinUrl ||
+      lead.sourceUrl ||
+      "";
+    const usernameMatch = String(url).match(/linkedin\.com\/in\/([^/?#]+)/i);
+    if (usernameMatch?.[1]) return `linkedin:${usernameMatch[1].toLowerCase()}`;
+    if (lead.id) return `id:${lead.id}`;
+    const name = (lead.fullName || lead.profile?.fullName || "")
+      .trim()
+      .toLowerCase();
+    const company = (
+      lead.currentCompany ||
+      lead.company ||
+      lead.profile?.currentCompany ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+    if (name && company) return `text:${name}@${company}`;
+    if (name) return `text:${name}`;
+    return "";
   }
 
   get(lead: any): QueryRunStats | undefined {
@@ -127,7 +165,7 @@ export class LeadQueryRunTracker {
   }
 
   fromJSON(data?: Record<string, QueryRunStats>): void {
-    if (!data || typeof data !== 'object') return;
+    if (!data || typeof data !== "object") return;
     for (const [key, run] of Object.entries(data)) {
       this.map.set(key, run);
     }
@@ -137,7 +175,7 @@ export class LeadQueryRunTracker {
 export type StageResult<T = void> = {
   stage: StageName;
   round?: number;
-  status: 'completed' | 'skipped' | 'stopped';
+  status: "completed" | "skipped" | "stopped";
   data?: T;
   error?: Error;
   stopReason?: string;
@@ -145,5 +183,8 @@ export type StageResult<T = void> = {
 
 export type PipelineStage<TInput = void, TOutput = void> = {
   name: StageName;
-  execute: (ctx: SessionContext, input: TInput) => Promise<StageResult<TOutput>>;
+  execute: (
+    ctx: SessionContext,
+    input: TInput,
+  ) => Promise<StageResult<TOutput>>;
 };

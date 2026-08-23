@@ -87,6 +87,7 @@ import {
   getBrightDataStatus,
   getBrightDataCapabilities,
   isBrightDataConfigured,
+  probeBrightDataRecovery,
   scrapeAsMarkdown,
   scrapeBatchAsMarkdown,
   brightDataSearch,
@@ -213,6 +214,7 @@ import {
   findEvidenceForLead,
   incrementCounter,
   sleepWithAbort,
+  buildCheckpointEvidence,
   type SessionEvidenceMeta,
 } from "./sessionHelpers.js";
 
@@ -299,7 +301,7 @@ export type ExecuteDiscoveryOptions = {
   sessionAbortController: AbortController;
   activeSessions: Map<string, string[]>;
   activeSessionControllers: Map<string, AbortController>;
-  activeSessionEvents: Map<string, MiningTraceEvent[]>;
+  activeSessionEvents: Map<string, MiningTelemetryRecorder>;
   cancelledSessions: Set<string>;
   searchSpec?: SearchSpec;
   discoveryMode?: DiscoveryMode;
@@ -337,11 +339,21 @@ export async function executeDiscoverySession(
     error.name = "AbortError";
     throw error;
   };
+  const structuredLogs =
+    String(process.env.APEX_STRUCTURED_LOGS || "")
+      .trim()
+      .toLowerCase() === "true";
   const logEvent = (msg: string) => {
     throwIfCancelled();
-    const line = `[${new Date().toISOString()}] ${msg}`;
+    const line = structuredLogs
+      ? JSON.stringify({ ts: new Date().toISOString(), sessionId, msg })
+      : `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
     sessionLogs.push(line);
+    // Bound session log memory for very long sessions (last 500 lines kept).
+    if (sessionLogs.length > 500) {
+      sessionLogs.splice(0, sessionLogs.length - 500);
+    }
     activeSessions.set(sessionId, sessionLogs);
     if (options.listener?.onLog) options.listener.onLog(line);
   };
@@ -368,11 +380,13 @@ export async function executeDiscoverySession(
     startedAt: new Date(startedAt).toISOString(),
   });
   activeSessionControllers.set(sessionId, sessionAbortController);
+  // Store the recorder reference once (not per-event array copies) so live
+  // trace consumers read the bounded internal buffer directly.
+  activeSessionEvents.set(sessionId, telemetry);
   const recordTrace = (
     event: Omit<MiningTraceEvent, "id" | "timestamp"> & { timestamp?: string },
   ) => {
     const recorded = telemetry.record(event);
-    activeSessionEvents.set(sessionId, telemetry.getEvents());
     if (options.listener?.onTraceEvent) options.listener.onTraceEvent(recorded);
     return recorded;
   };
@@ -468,6 +482,7 @@ export async function executeDiscoverySession(
     negativeCacheWrites: 0,
     negativeCacheSkippedTransient: 0,
     processRestarts: 0,
+    probesSucceeded: 0,
     rejectionReasons: {} as Record<string, number>,
     failureReasons: {} as Record<string, number>,
   };
@@ -912,7 +927,7 @@ export async function executeDiscoverySession(
     const evidenceByUrl = new Map<string, EvidenceMeta>();
     const getEvidenceForLead = (lead: any): EvidenceMeta =>
       findEvidenceForLead(lead, evidenceByUrl) || fallbackEvidenceForLead(lead);
-    const brightDataReady = shouldAttemptBrightData();
+    let brightDataReady = shouldAttemptBrightData();
     let brightDataProviderDisabled = !brightDataReady;
     let brightDataToolDegraded = false;
     let brightDataTransportRetryAfter = 0;
@@ -1064,6 +1079,11 @@ export async function executeDiscoverySession(
       if (cp.leadQueryRunMap) {
         leadQueryRuns.fromJSON(cp.leadQueryRunMap);
       }
+      // Restore crash-time debug context so post-resume diagnostics retain
+      // what happened before the interruption.
+      if (Array.isArray(cp.debugLogsTail) && cp.debugLogsTail.length > 0) {
+        debugLogs.push(...cp.debugLogsTail.slice(-100));
+      }
     }
 
     const isResumingAtJudging = options.initialCheckpoint?.stage === "judge";
@@ -1075,6 +1095,7 @@ export async function executeDiscoverySession(
         : options.initialCheckpoint?.round || 1;
 
     let nextPlanPromise: Promise<any> | null = null;
+    let lastRecoveryProbeAt = 0;
 
     if (skipCollection) {
       logEvent(
@@ -1089,6 +1110,26 @@ export async function executeDiscoverySession(
         if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
           stats.stopReason = "timeout";
           break;
+        }
+
+        // Proactive Bright Data recovery: once cooldown expires, probe with a
+        // minimal search instead of waiting for the next real task to fail.
+        if (
+          brightDataProviderDisabled &&
+          isBrightDataConfigured() &&
+          Date.now() - lastRecoveryProbeAt > 60_000
+        ) {
+          lastRecoveryProbeAt = Date.now();
+          const recovered = await probeBrightDataRecovery().catch(() => false);
+          if (recovered) {
+            brightDataProviderDisabled = false;
+            brightDataReady = true;
+            brightDataStats.probesSucceeded =
+              (brightDataStats.probesSucceeded || 0) + 1;
+            logEvent(
+              "Bright Data recovered via proactive recovery probe; re-enabling lane.",
+            );
+          }
         }
 
         stats.rounds = round;
@@ -1309,10 +1350,12 @@ export async function executeDiscoverySession(
           failureCounts: brightDataStats.failureReasons,
           brightDataStats,
           previousRoundSummary,
-          evidenceByUrl: Object.fromEntries(
-            Array.from(evidenceByUrl.entries()).slice(0, 240),
+          evidenceByUrl: buildCheckpointEvidence(
+            evidenceByUrl,
+            acceptedLeads.slice(0, 240),
           ),
           leadQueryRunMap: leadQueryRuns.toJSON(),
+          debugLogsTail: debugLogs.slice(-100),
           updatedAt: new Date().toISOString(),
         });
 
@@ -1379,10 +1422,12 @@ export async function executeDiscoverySession(
       failureCounts: brightDataStats.failureReasons,
       brightDataStats,
       previousRoundSummary,
-      evidenceByUrl: Object.fromEntries(
-        Array.from(evidenceByUrl.entries()).slice(0, 240),
+      evidenceByUrl: buildCheckpointEvidence(
+        evidenceByUrl,
+        acceptedLeads.slice(0, 240),
       ),
       leadQueryRunMap: leadQueryRuns.toJSON(),
+      debugLogsTail: debugLogs.slice(-100),
       updatedAt: new Date().toISOString(),
     });
 
@@ -1471,11 +1516,32 @@ export async function executeDiscoverySession(
   }
 }
 
+export class SessionAlreadyActiveError extends Error {
+  constructor(public readonly sessionId: string) {
+    super(
+      `A lead mining session with this sessionId is already active: ${sessionId}`,
+    );
+    this.name = "SessionAlreadyActiveError";
+  }
+}
+
 export class DiscoverySessionEngine {
   private activeSessions = new Map<string, string[]>();
   private activeSessionControllers = new Map<string, AbortController>();
-  private activeSessionEvents = new Map<string, MiningTraceEvent[]>();
+  private activeSessionEvents = new Map<string, MiningTelemetryRecorder>();
   private cancelledSessions = new Set<string>();
+
+  /**
+   * Atomically claim a session slot. The has-check and the placeholder insert
+   * happen synchronously with no await between them, so two concurrent
+   * execute/resume calls can never both pass (fixes the TOCTOU race where the
+   * route-level isActive() pre-check had already been bypassed).
+   */
+  private tryClaim(sessionId: string): boolean {
+    if (this.activeSessions.has(sessionId)) return false;
+    this.activeSessions.set(sessionId, []);
+    return true;
+  }
 
   cancel(sessionId: string): boolean {
     if (!sessionId) return false;
@@ -1493,7 +1559,7 @@ export class DiscoverySessionEngine {
   }
 
   getLiveTrace(sessionId: string): MiningTraceEvent[] | null {
-    return this.activeSessionEvents.get(sessionId) || null;
+    return this.activeSessionEvents.get(sessionId)?.getEvents() || null;
   }
 
   getLiveLogs(sessionId: string): string[] | null {
@@ -1522,10 +1588,8 @@ export class DiscoverySessionEngine {
       (crypto.randomUUID
         ? crypto.randomUUID()
         : crypto.randomBytes(16).toString("hex"));
-    if (this.activeSessions.has(sessionId)) {
-      throw new Error(
-        `A lead mining session with this sessionId is already active: ${sessionId}`,
-      );
+    if (!this.tryClaim(sessionId)) {
+      throw new SessionAlreadyActiveError(sessionId);
     }
 
     const sessionAbortController = new AbortController();
@@ -1565,13 +1629,14 @@ export class DiscoverySessionEngine {
     if (!trimmedId) {
       throw new Error("sessionId is required to resume a mining session.");
     }
-    if (this.activeSessions.has(trimmedId)) {
-      throw new Error(
-        `A lead mining session with this sessionId is already active: ${trimmedId}`,
-      );
+    // Claim BEFORE the checkpoint read so a concurrent resume cannot slip
+    // through the gap between the isActive check and controller registration.
+    if (!this.tryClaim(trimmedId)) {
+      throw new SessionAlreadyActiveError(trimmedId);
     }
     const checkpoint = readMiningSessionCheckpoint(trimmedId);
     if (!checkpoint) {
+      this.activeSessions.delete(trimmedId);
       throw new Error(
         `No resumable checkpoint found for session: ${trimmedId}`,
       );

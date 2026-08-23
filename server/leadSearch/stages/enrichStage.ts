@@ -12,8 +12,10 @@ import {
   getEnrichmentCacheEntry,
   upsertEnrichmentCacheEntry,
   getNegativeEnrichmentCacheEntry,
-  upsertNegativeEnrichmentCacheEntry
+  upsertNegativeEnrichmentCacheEntry,
+  recordProviderUsage
 } from '../../db.js';
+import { deriveCompanyDomain, probeCompanySites, applySiteProbe } from '../siteProbe.js';
 import { verifyDecisionMakerFromEvidence } from '../verification.js';
 import { createLeadEvidence } from '../evidence.js';
 import { computeScoreBreakdown } from '../scoring.js';
@@ -477,6 +479,94 @@ export async function executeEnrichStage(
     const reservedButUnenriched = uncachedTargets.filter(target => target.reserved && !target.enriched).length;
     if (reservedButUnenriched > 0) stats.enriched = Math.max(0, stats.enriched - reservedButUnenriched);
     if (brightDataToolDegraded) logEvent('Bright Data profile enrichment had target-level failures, but provider remains available for other Bright Data work.');
+
+    // 1b. Company Site Probe Fallback for candidates missing rich profile data
+    const siteProbeEnabled = process.env.LEAD_SITE_PROBE_ENABLED !== 'false';
+    const siteProbeMax = Math.min(Math.max(Number(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND) || 12, 1), 30);
+    stats.siteProbe = stats.siteProbe || { attempted: 0, succeeded: 0, cacheHits: 0, negativeHits: 0, skippedDisabled: 0, skippedCap: 0 };
+
+    if (siteProbeEnabled && uncachedTargets.length > 0) {
+      const probeCandidateTargets = uncachedTargets
+        .filter(t => !t.enriched)
+        .sort((a, b) => (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0));
+
+      const targetsToProbe: EnrichmentTarget[] = [];
+      for (const target of probeCandidateTargets) {
+        if (targetsToProbe.length >= siteProbeMax) {
+          stats.siteProbe.skippedCap++;
+          continue;
+        }
+        const domain = deriveCompanyDomain(target.lead);
+        if (!domain) continue;
+
+        // Check positive cache
+        const posCache = getEnrichmentCacheEntry({ normalizedUrl: domain });
+        if (posCache) {
+          stats.siteProbe.cacheHits++;
+          applySiteProbe(target, { location: target.lead.location, services: posCache.evidenceBlock }, domain, refreshLeadEvidence);
+          target.enriched = true;
+          continue;
+        }
+
+        // Check negative cache
+        const negCache = getNegativeEnrichmentCacheEntry({ normalizedUrl: domain }, new Date(), 'site_probe');
+        if (negCache) {
+          stats.siteProbe.negativeHits++;
+          continue;
+        }
+
+        targetsToProbe.push(target);
+      }
+
+      if (targetsToProbe.length > 0) {
+        stats.siteProbe.attempted += targetsToProbe.length;
+        const probeStarted = Date.now();
+        try {
+          state.freeTierBudget.reserveTavilySearch('basic');
+          if (!config.creditReservationEnabled) recordProviderUsage('tavily', 1);
+
+          const probeResults = await probeCompanySites(targetsToProbe, {
+            abortSignal: state.abortController.signal,
+            onProviderUsage: (units) => {
+              if (!config.creditReservationEnabled) recordProviderUsage('tavily', units);
+            }
+          });
+
+          let probeSucceeded = 0;
+          for (const target of targetsToProbe) {
+            const domain = deriveCompanyDomain(target.lead);
+            if (domain && probeResults.has(domain)) {
+              const signals = probeResults.get(domain)!;
+              applySiteProbe(target, signals, domain, refreshLeadEvidence);
+              probeSucceeded++;
+            } else if (domain) {
+              // Negative cache dead / failed domain
+              upsertNegativeEnrichmentCacheEntry({
+                normalizedUrl: domain,
+                scrapeQuality: 'bad',
+                evidenceBlock: 'site_probe_no_signals',
+                sourceProvider: 'site_probe'
+              }, 24);
+            }
+          }
+          stats.siteProbe.succeeded += probeSucceeded;
+          logEvent(`Round ${round}: company site probe enriched ${probeSucceeded}/${targetsToProbe.length} candidates with location/headcount.`);
+          recordTrace({
+            phase: 'enrichment',
+            operation: 'site_probe',
+            status: probeSucceeded > 0 ? 'success' : 'skipped',
+            provider: 'tavily',
+            round,
+            latencyMs: Date.now() - probeStarted,
+            counts: { attempted: targetsToProbe.length, succeeded: probeSucceeded }
+          });
+        } catch (err: any) {
+          logEvent(`WARN: Company site probe failed in round ${round}: ${err.message || String(err)}`);
+        }
+      }
+    } else if (!siteProbeEnabled) {
+      stats.siteProbe.skippedDisabled += uncachedTargets.filter(t => !t.enriched).length;
+    }
   }
 
   // 2. Final Acceptance for candidates in this round

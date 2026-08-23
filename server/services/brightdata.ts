@@ -14,6 +14,7 @@ export type BrightDataReasonCode =
   | 'transport_transient'
   | 'provider_auth'
   | 'provider_quota'
+  | 'provider_rate_limit'
   | 'provider_config'
   | 'unknown';
 
@@ -260,6 +261,9 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   }
   if (/captcha|login wall|blocked|privacy checkpoint|sign in to view|authwall/.test(lower)) {
     return new BrightDataError(message, { reasonCode: 'target_blocked', statusCode });
+  }
+  if (/your system is sending too many|sending too many of this type|contact your account manager/.test(lower)) {
+    return new BrightDataError(message, { reasonCode: 'provider_rate_limit', retryable: false, statusCode: statusCode || 429 });
   }
   return new BrightDataError(message, { reasonCode: 'unknown', statusCode });
 }

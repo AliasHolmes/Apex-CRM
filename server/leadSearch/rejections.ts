@@ -8,6 +8,7 @@ export type RejectionReason =
   | 'weak_evidence'
   | 'brightdata_login_wall'
   | 'brightdata_low_quality'
+  | 'brightdata_rate_limit'
   | 'brightdata_failed'
   | 'llm_extraction_empty'
   | 'not_decision_maker';
@@ -25,6 +26,7 @@ export const mergeRejections = (target: RejectionCounts, source: RejectionCounts
 };
 
 export const mapBrightDataRejection = (reason?: string): RejectionReason => {
+  if (reason === 'provider_rate_limit_notice' || reason === 'provider_rate_limit') return 'brightdata_rate_limit';
   if (reason === 'blocked_or_login_wall') return 'brightdata_login_wall';
   if (reason === 'empty_or_too_short' || reason === 'missing_core_identity') return 'brightdata_low_quality';
   return 'brightdata_low_quality';

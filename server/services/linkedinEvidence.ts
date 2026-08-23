@@ -14,6 +14,18 @@ export type ParsedLinkedInEvidence = {
   rejectionReason?: string;
 };
 
+export const BRIGHTDATA_RATE_LIMIT_MARKERS = [
+  'your system is sending too many',
+  'sending too many of this type of request',
+  'contact your account manager'
+];
+
+export function containsRateLimitNotice(text: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return BRIGHTDATA_RATE_LIMIT_MARKERS.some(marker => lower.includes(marker));
+}
+
 const BAD_MARKERS = [
   'sign in to view',
   'join linkedin',
@@ -191,6 +203,10 @@ export function extractPublicEmail(markdown: string) {
 
 export function parseLinkedInEvidence(markdown: string, fallback?: { title?: string; url?: string; snippet?: string }): ParsedLinkedInEvidence {
   const sourceText = markdown || '';
+  if (containsRateLimitNotice(sourceText)) {
+    return { quality: 'bad', evidenceBlock: '', rejectionReason: 'provider_rate_limit_notice' };
+  }
+
   const compactSource = normalizeWhitespace(sourceText);
   const lowered = compactSource.toLowerCase();
 

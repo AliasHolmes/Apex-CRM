@@ -10,7 +10,7 @@ import { canonicalLinkedInIdentity, normalizeDedupeValue } from '../src/utils/le
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
-const LATEST_SCHEMA_VERSION = 14;
+const LATEST_SCHEMA_VERSION = 15;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
@@ -521,6 +521,10 @@ function runMigrations(db: DatabaseSync) {
       addColumnIfMissing(db, 'mining_sessions', 'checkpoint_json', 'checkpoint_json TEXT');
     }
 
+    if (currentVersion < 15) {
+      scrubRateLimitPollution(db);
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec('COMMIT');
   } catch (error) {
@@ -531,6 +535,75 @@ function runMigrations(db: DatabaseSync) {
     }
     throw error;
   }
+}
+
+export function scrubRateLimitPollution(db: DatabaseSync): { leadsScrubbed: number; cacheDeleted: number } {
+  let cacheDeleted = 0;
+  let leadsScrubbed = 0;
+
+  // 1. Delete polluted enrichment_cache entries
+  if (tableExists(db, 'enrichment_cache')) {
+    const cacheResult = db.prepare(`
+      DELETE FROM enrichment_cache
+      WHERE LOWER(evidence_block) LIKE '%your system is sending too many%'
+         OR LOWER(evidence_block) LIKE '%sending too many of this type%'
+         OR LOWER(evidence_block) LIKE '%contact your account manager%'
+    `).run();
+    cacheDeleted = Number(cacheResult.changes || 0);
+  }
+
+  // 2. Scrub polluted strings in leads table payloads
+  if (tableExists(db, 'leads')) {
+    const rows = db.prepare('SELECT id, payload FROM leads').all() as { id: string; payload: string }[];
+    const updateLead = db.prepare('UPDATE leads SET payload = ?, full_name = ?, company = ?, title = ? WHERE id = ?');
+
+    const noticeRegex1 = /your system is sending too many[^."\n]*(\.|\s|$)/gi;
+    const noticeRegex2 = /if you need to send more[^."\n]*(\.|\s|$)/gi;
+    const noticeRegex3 = /contact your account manager[^."\n]*(\.|\s|$)/gi;
+
+    const scrubValue = (val: any): any => {
+      if (typeof val === 'string') {
+        if (/your system is sending too many|sending too many of this type|contact your account manager/i.test(val)) {
+          return val
+            .replace(noticeRegex1, '')
+            .replace(noticeRegex2, '')
+            .replace(noticeRegex3, '')
+            .trim();
+        }
+        return val;
+      }
+      if (Array.isArray(val)) {
+        return val.map(scrubValue);
+      }
+      if (val !== null && typeof val === 'object') {
+        const cleanedObj: Record<string, any> = {};
+        for (const [k, v] of Object.entries(val)) {
+          cleanedObj[k] = scrubValue(v);
+        }
+        return cleanedObj;
+      }
+      return val;
+    };
+
+    for (const row of rows) {
+      if (/your system is sending too many|sending too many of this type|contact your account manager/i.test(row.payload)) {
+        try {
+          const parsed = JSON.parse(row.payload);
+          const cleaned = scrubValue(parsed);
+          const newPayload = JSON.stringify(cleaned);
+          if (newPayload !== row.payload) {
+            const cols = extractPromotedLeadColumns(cleaned);
+            updateLead.run(newPayload, cols.fullName, cols.company, cols.title, row.id);
+            leadsScrubbed++;
+          }
+        } catch {
+          // ignore malformed payloads
+        }
+      }
+    }
+  }
+
+  return { leadsScrubbed, cacheDeleted };
 }
 
 export type EnrichmentCacheQuality = 'good' | 'partial' | 'weak' | 'bad';
@@ -544,7 +617,7 @@ export type EnrichmentCacheEntry = {
   publicEmail?: string;
   evidenceBlock: string;
   scrapeQuality: EnrichmentCacheQuality;
-  sourceProvider: 'brightdata' | 'tavily';
+  sourceProvider: 'brightdata' | 'tavily' | 'site_probe' | string;
   intentFingerprint?: string;
   createdAt?: string;
   expiresAt?: string;
@@ -1320,7 +1393,7 @@ export function upsertIntentCacheEntry(
   return upsertEnrichmentCacheEntry(entry, ttlDays, now);
 }
 
-export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date()) {
+export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date(), sourceProvider = 'brightdata') {
   const db = getLeadsDb();
   const cutoff = now.toISOString();
   const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
@@ -1331,14 +1404,14 @@ export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, n
       SELECT * FROM enrichment_cache
       WHERE expires_at > ?
         AND scrape_quality = 'bad'
-        AND source_provider = 'brightdata'
+        AND source_provider = ?
         AND (
           (? != '' AND normalized_url = ?)
           OR (? != '' AND linkedin_username = ?)
         )
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
+    `).get(cutoff, sourceProvider, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
     const match = toCacheRow(row);
     if (match) return match;
   }
@@ -1350,7 +1423,7 @@ export function upsertNegativeEnrichmentCacheEntry(entry: EnrichmentCacheEntry, 
   return upsertEnrichmentCacheEntry({
     ...entry,
     scrapeQuality: 'bad',
-    sourceProvider: 'brightdata'
+    sourceProvider: entry.sourceProvider || 'brightdata'
   }, ttlHours / 24, now);
 }
 

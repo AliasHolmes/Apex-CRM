@@ -724,3 +724,11 @@ test('search telemetry tracking distinguishes Google primary vs Bing rescue accu
   assert.strictEqual(stats.searchBingRecovered, 1);
   assert.strictEqual(callerNotified, true);
 });
+
+test('classifyBrightDataError classifies rate limit notice strings as provider_rate_limit non-retryable', () => {
+  const message = 'Your system is sending too many of this type of request. If you need to send more, contact your Account Manager.';
+  const classified = classifyBrightDataError(message);
+  assert.strictEqual(classified.reasonCode, 'provider_rate_limit');
+  assert.strictEqual(classified.retryable, false);
+  assert.strictEqual(classified.providerDisabled, false);
+});

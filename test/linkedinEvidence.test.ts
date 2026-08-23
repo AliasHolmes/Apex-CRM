@@ -58,6 +58,14 @@ A very long recommendation that should be ignored.
     assert.equal(parsed.rejectionReason, 'blocked_or_login_wall');
   });
 
+  it('rejects rate limit notices as bad quality with provider_rate_limit_notice rejection reason', () => {
+    const rateLimitMarkdown = 'Your system is sending too many of this type of request. If you need to send more, contact your Account Manager.';
+    const parsed = parseLinkedInEvidence(rateLimitMarkdown, { title: 'Jane Doe' });
+    assert.equal(parsed.quality, 'bad');
+    assert.equal(parsed.evidenceBlock, '');
+    assert.equal(parsed.rejectionReason, 'provider_rate_limit_notice');
+  });
+
   it('captures only explicitly published usable emails from profile evidence', () => {
     const markdown = `
 # Jane Doe

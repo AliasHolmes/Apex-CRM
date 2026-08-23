@@ -48,11 +48,19 @@ const PARKED_JUNK_PATTERNS = [
   /security\s+checkpoint/i
 ];
 
+export type DomainProvenance = 'explicit' | 'evidence_url' | 'slug_guess';
+
+export type DerivedDomain = {
+  domain: string;
+  provenance: DomainProvenance;
+};
+
 export type SiteSignals = {
   location?: string;
   headcount?: string;
   services?: string;
   sourceUrl?: string;
+  provenance?: DomainProvenance;
 };
 
 const clean = (val: unknown) => String(val || '').replace(/\s+/g, ' ').trim();
@@ -75,11 +83,11 @@ export function normalizeDomainUrl(rawUrl?: string): string | null {
   }
 }
 
-export function deriveCompanyDomain(lead: Record<string, any>): string | null {
+export function deriveCompanyDomainWithProvenance(lead: Record<string, any>): DerivedDomain | null {
   // 1. Check explicit website fields
   const explicitSite = lead.website || lead.companyWebsite || lead.profile?.website || lead.companyAccount?.website;
   const fromExplicit = normalizeDomainUrl(explicitSite);
-  if (fromExplicit) return fromExplicit;
+  if (fromExplicit) return { domain: fromExplicit, provenance: 'explicit' };
 
   // 2. Scan evidence text and snippets for non-social URLs
   const candidateTexts: string[] = [
@@ -95,7 +103,7 @@ export function deriveCompanyDomain(lead: Record<string, any>): string | null {
     const matches = text.match(urlRegex) || [];
     for (const match of matches) {
       const normalized = normalizeDomainUrl(match);
-      if (normalized) return normalized;
+      if (normalized) return { domain: normalized, provenance: 'evidence_url' };
     }
   }
 
@@ -109,11 +117,52 @@ export function deriveCompanyDomain(lead: Record<string, any>): string | null {
       .trim();
 
     if (slug.length >= 3 && slug.length <= 32) {
-      return `https://${slug}.com`;
+      return { domain: `https://${slug}.com`, provenance: 'slug_guess' };
     }
   }
 
   return null;
+}
+
+export function deriveCompanyDomain(lead: Record<string, any>): string | null {
+  const derived = deriveCompanyDomainWithProvenance(lead);
+  return derived ? derived.domain : null;
+}
+
+export function matchesCompanyIdentity(companyName: string | undefined, markdown: string): boolean {
+  if (!companyName || !markdown) return false;
+  const cleanedCompany = companyName
+    .toLowerCase()
+    .replace(/\b(?:inc|llc|ltd|corp|corporation|gmbh|co|company|group|holdings|services|solutions|agency|consulting|studio|media|technologies|tech)\b/gi, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .trim();
+
+  const tokens = cleanedCompany.split(/\s+/).filter(t => t.length >= 3);
+  if (tokens.length === 0) {
+    const bare = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return bare.length >= 3 && markdown.toLowerCase().includes(bare);
+  }
+
+  const lowerMarkdown = markdown.toLowerCase();
+  return tokens.some(token => {
+    const wordRegex = new RegExp(`\\b${token}\\b`, 'i');
+    return wordRegex.test(lowerMarkdown);
+  });
+}
+
+export function parseSiteSignalsFromEvidenceBlock(block?: string): SiteSignals {
+  const signals: SiteSignals = {};
+  if (!block) return signals;
+  const lines = block.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const locMatch = line.match(/^Location:\s*(.+)$/i);
+    if (locMatch?.[1]) signals.location = locMatch[1].trim();
+    const teamMatch = line.match(/^Team:\s*(.+)$/i);
+    if (teamMatch?.[1]) signals.headcount = teamMatch[1].trim();
+    const srvMatch = line.match(/^Services:\s*(.+)$/i);
+    if (srvMatch?.[1]) signals.services = srvMatch[1].trim();
+  }
+  return signals;
 }
 
 export function extractSiteSignals(markdown: string): SiteSignals | null {
@@ -178,6 +227,8 @@ export function extractSiteSignals(markdown: string): SiteSignals | null {
 export type ProbeTarget = {
   target: EnrichmentTarget;
   domain: string;
+  provenance: DomainProvenance;
+  companyName?: string;
 };
 
 export async function probeCompanySites(
@@ -192,9 +243,15 @@ export async function probeCompanySites(
 
   const validTargets: ProbeTarget[] = [];
   for (const target of targets) {
-    const domain = deriveCompanyDomain(target.lead);
-    if (domain) {
-      validTargets.push({ target, domain });
+    const derived = deriveCompanyDomainWithProvenance(target.lead);
+    if (derived) {
+      const companyName = target.lead.currentCompany || target.lead.company || target.lead.profile?.currentCompany;
+      validTargets.push({
+        target,
+        domain: derived.domain,
+        provenance: derived.provenance,
+        companyName
+      });
     }
   }
 
@@ -202,6 +259,15 @@ export async function probeCompanySites(
 
   // Group unique domains to avoid duplicate probes
   const uniqueDomains = Array.from(new Set(validTargets.map(t => t.domain)));
+  const domainProvenanceMap = new Map<string, DomainProvenance>();
+  const domainCompanyMap = new Map<string, string | undefined>();
+
+  for (const t of validTargets) {
+    if (!domainProvenanceMap.has(t.domain)) {
+      domainProvenanceMap.set(t.domain, t.provenance);
+      domainCompanyMap.set(t.domain, t.companyName);
+    }
+  }
 
   // For each domain, construct probe URLs (root, /about, /team, /contact)
   const probeUrlsToDomain = new Map<string, string>();
@@ -244,9 +310,18 @@ export async function probeCompanySites(
   for (const domain of uniqueDomains) {
     const contents = extractedByDomain.get(domain) || [];
     const combinedMarkdown = contents.join('\n\n');
+    const provenance = domainProvenanceMap.get(domain) || 'slug_guess';
+    const companyName = domainCompanyMap.get(domain);
+
+    // Hardening: Slug-guessed domains require company token match in page content
+    if (provenance === 'slug_guess' && !matchesCompanyIdentity(companyName, combinedMarkdown)) {
+      continue;
+    }
+
     const signals = extractSiteSignals(combinedMarkdown);
     if (signals) {
       signals.sourceUrl = domain;
+      signals.provenance = provenance;
       results.set(domain, signals);
     }
   }
@@ -284,14 +359,20 @@ export function applySiteProbe(
     lead.companyAccount.description = signals.services;
   }
 
-  // 4. Append site evidence line
+  // 4. Append site evidence line with provenance tag
   const evidenceLines: string[] = [];
   if (signals.location) evidenceLines.push(`Location: ${signals.location}`);
   if (signals.headcount) evidenceLines.push(`Team: ${signals.headcount}`);
   if (signals.services) evidenceLines.push(`Services: ${signals.services}`);
 
   if (evidenceLines.length > 0) {
-    const siteEvidence = `[COMPANY SITE: ${sourceUrl}] ${evidenceLines.join(' | ')}`;
+    const provenanceTag = signals.provenance === 'slug_guess'
+      ? 'name-match'
+      : signals.provenance === 'explicit'
+        ? 'verified-site'
+        : 'extracted-url';
+
+    const siteEvidence = `[COMPANY SITE (${provenanceTag}): ${sourceUrl}] ${evidenceLines.join(' | ')}`;
     if (target.evidenceMeta) {
       target.evidenceMeta.evidenceBlock = [target.evidenceMeta.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
     }

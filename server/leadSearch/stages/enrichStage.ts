@@ -15,7 +15,12 @@ import {
   upsertNegativeEnrichmentCacheEntry,
   recordProviderUsage
 } from '../../db.js';
-import { deriveCompanyDomain, probeCompanySites, applySiteProbe } from '../siteProbe.js';
+import {
+  deriveCompanyDomain,
+  probeCompanySites,
+  applySiteProbe,
+  parseSiteSignalsFromEvidenceBlock
+} from '../siteProbe.js';
 import { verifyDecisionMakerFromEvidence } from '../verification.js';
 import { createLeadEvidence } from '../evidence.js';
 import { computeScoreBreakdown } from '../scoring.js';
@@ -503,7 +508,9 @@ export async function executeEnrichStage(
         const posCache = getEnrichmentCacheEntry({ normalizedUrl: domain });
         if (posCache) {
           stats.siteProbe.cacheHits++;
-          applySiteProbe(target, { location: target.lead.location, services: posCache.evidenceBlock }, domain, refreshLeadEvidence);
+          const signals = parseSiteSignalsFromEvidenceBlock(posCache.evidenceBlock);
+          signals.sourceUrl = domain;
+          applySiteProbe(target, signals, domain, refreshLeadEvidence);
           target.enriched = true;
           continue;
         }

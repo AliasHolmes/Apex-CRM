@@ -722,13 +722,13 @@ export default function CrmPipeline({
                                 {lead.profile.currentCompany || 'Independent'}
                               </span>
                             </div>
-                            {lead.companyAccount && (
+                            {Boolean(lead.companyAccount?.buyingSignals?.length) && (
                               <div className="mt-2 flex items-center gap-1.5 text-xs font-bold text-emerald-300">
                                 <Compass aria-hidden="true" className="h-3.5 w-3.5" />
                                 <span>
-                                  {lead.companyAccount.buyingSignals.length}{' '}
+                                  {lead.companyAccount!.buyingSignals.length}{' '}
                                   company signals - pain{' '}
-                                  {lead.companyAccount.operationalPainScore}
+                                  {lead.companyAccount!.operationalPainScore ?? 0}
                                 </span>
                               </div>
                             )}
@@ -1024,7 +1024,7 @@ export default function CrmPipeline({
                     </Badge>
                   </div>
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                    {selectedLead.companyAccount.buyingSignals.map((signal, index) => (
+                    {Array.isArray(selectedLead.companyAccount.buyingSignals) && selectedLead.companyAccount.buyingSignals.map((signal, index) => (
                       <div key={`${signal.label}-${index}`} className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
                         <h4 className="text-xs font-bold text-slate-200">{signal.label}</h4>
                         <p className="mt-1 text-xs leading-relaxed text-slate-400">{signal.evidence}</p>

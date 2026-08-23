@@ -19,19 +19,19 @@ export const getReviewStatus = (lead: Lead): ReviewStatus => lead.reviewStatus |
 export const getNextAction = (lead: Lead): NextAction => lead.nextAction || 'NONE';
 
 export function getLeadProvenance(lead: Lead) {
-  const qualifiedProfile = lead.profile as QualifiedLeadProfile;
-  const scout: ScoutEvidence | undefined = lead.scout || qualifiedProfile.scout;
-  const ci = lead.scoreBreakdown?.confidenceInterval || lead.confidenceInterval || qualifiedProfile.confidenceInterval;
+  const profile = (lead.profile || {}) as Partial<QualifiedLeadProfile>;
+  const scout: ScoutEvidence | undefined = lead.scout || profile.scout;
+  const ci = lead.scoreBreakdown?.confidenceInterval || lead.confidenceInterval || profile.confidenceInterval;
   return {
-    discoveryQuery: lead.evidence?.sourceQuery || qualifiedProfile.evidence?.sourceQuery || '',
+    discoveryQuery: lead.evidence?.sourceQuery || profile.evidence?.sourceQuery || '',
     matchedCriteria: scout?.matchedCriteria || [],
     uncertainties: scout?.uncertainties || [],
-    location: lead.profile.location || '',
-    industry: lead.profile.industry || '',
+    location: profile.location || (lead as any).location || '',
+    industry: profile.industry || (lead as any).industry || '',
     scout,
-    paretoSkyline: lead.paretoSkyline || qualifiedProfile.paretoSkyline || false,
+    paretoSkyline: lead.paretoSkyline || profile.paretoSkyline || false,
     confidenceInterval: ci,
-    postIntentEvidence: lead.postIntentEvidence || qualifiedProfile.postIntentEvidence,
+    postIntentEvidence: lead.postIntentEvidence || profile.postIntentEvidence,
   };
 }
 

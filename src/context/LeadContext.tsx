@@ -35,7 +35,7 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
 
   const data = await response.json();
   return {
-    leads: Array.isArray(data.leads) ? data.leads : [],
+    leads: Array.isArray(data.leads) ? sanitizeLeads(data.leads) : [],
     initialized: Boolean(data.initialized)
   };
 }
@@ -53,13 +53,38 @@ async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
 }
 
 function sanitizeLeads(loadedLeads: unknown[]): Lead[] {
-  return loadedLeads.map((lead) => {
-    const candidate = lead as Lead;
+  return loadedLeads.map((rawLead: any) => {
+    const raw = rawLead || {};
+    const rawProfile = (raw.profile || {}) as Partial<LinkedInProfile>;
+    const sanitizedProfile: LinkedInProfile = {
+      id: rawProfile.id || raw.id || crypto.randomUUID(),
+      fullName: rawProfile.fullName || raw.fullName || 'Unknown',
+      currentTitle: rawProfile.currentTitle || raw.currentTitle || raw.title || '',
+      currentCompany: rawProfile.currentCompany || raw.currentCompany || raw.company || '',
+      headline: rawProfile.headline || raw.headline || '',
+      location: rawProfile.location || raw.location || '',
+      industry: rawProfile.industry || raw.industry || '',
+      summary: rawProfile.summary || raw.summary || '',
+      contactDetails: {
+        email: rawProfile.contactDetails?.email || raw.contactDetails?.email || raw.email || undefined,
+        phone: rawProfile.contactDetails?.phone || raw.contactDetails?.phone || raw.phone || undefined,
+        linkedinUrl: rawProfile.contactDetails?.linkedinUrl || raw.contactDetails?.linkedinUrl || raw.linkedinUrl || undefined,
+        website: rawProfile.contactDetails?.website || raw.contactDetails?.website || raw.website || undefined,
+      },
+      skills: Array.isArray(rawProfile.skills) ? rawProfile.skills : [],
+      experiences: Array.isArray(rawProfile.experiences) ? rawProfile.experiences : [],
+      education: Array.isArray(rawProfile.education) ? rawProfile.education : [],
+      ...rawProfile,
+    };
+
     return {
-      ...candidate,
-      id: candidate.id || crypto.randomUUID(),
-      reviewStatus: candidate.reviewStatus || 'UNREVIEWED',
-      nextAction: candidate.nextAction || 'NONE',
+      ...raw,
+      id: raw.id || sanitizedProfile.id,
+      profile: sanitizedProfile,
+      stage: raw.stage || 'SCRAPED',
+      reviewStatus: raw.reviewStatus || 'UNREVIEWED',
+      nextAction: raw.nextAction || 'NONE',
+      tags: Array.isArray(raw.tags) ? raw.tags : [],
     };
   });
 }

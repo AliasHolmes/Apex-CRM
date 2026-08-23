@@ -699,7 +699,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
               </Badge>
             </div>
             <div className="space-y-2">
-              {targetLead.companyAccount.buyingSignals.slice(0, 3).map((signal, index) => (
+              {Array.isArray(targetLead.companyAccount.buyingSignals) && targetLead.companyAccount.buyingSignals.slice(0, 3).map((signal, index) => (
                 <div key={`${signal.label}-${index}`} className="flex gap-2 text-sm text-slate-300">
                   <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" />
                   <span>{signal.label}</span>

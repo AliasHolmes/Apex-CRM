@@ -202,9 +202,9 @@ const LeadTableRow = React.memo(function LeadTableRow({
             {[provenance.location, provenance.industry].filter(Boolean).join(' - ')}
           </div>
         )}
-        {lead.companyAccount && (
+        {Boolean(lead.companyAccount?.buyingSignals?.length) && (
           <div className="mt-1 truncate text-xs font-bold text-emerald-400">
-            {lead.companyAccount.buyingSignals.length} signals - Pain {lead.companyAccount.operationalPainScore}
+            {lead.companyAccount!.buyingSignals.length} signals - Pain {lead.companyAccount!.operationalPainScore ?? 0}
           </div>
         )}
       </TableCell>
@@ -471,11 +471,11 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   );
   const deferredSearch = useDeferredValue(normalizedSearch);
   const locationOptions = useMemo(
-    () => Array.from(new Set(leads.map(lead => lead.profile.location).filter(Boolean) as string[])).sort(),
+    () => Array.from(new Set(leads.map(lead => lead.profile?.location).filter(Boolean) as string[])).sort(),
     [leads],
   );
   const industryOptions = useMemo(
-    () => Array.from(new Set(leads.map(lead => lead.profile.industry).filter(Boolean) as string[])).sort(),
+    () => Array.from(new Set(leads.map(lead => lead.profile?.industry).filter(Boolean) as string[])).sort(),
     [leads],
   );
   const searchableLeads = useMemo(
@@ -506,8 +506,8 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         (stageFilter === 'All' || lead.stage === stageFilter)
         && (reviewFilter === 'All' || getReviewStatus(lead) === reviewFilter)
         && (nextActionFilter === 'All' || getNextAction(lead) === nextActionFilter)
-        && (locationFilter === 'All' || lead.profile.location === locationFilter)
-        && (industryFilter === 'All' || lead.profile.industry === industryFilter)
+        && (locationFilter === 'All' || lead.profile?.location === locationFilter)
+        && (industryFilter === 'All' || lead.profile?.industry === industryFilter)
         && (!deferredSearch || searchText.includes(deferredSearch))
       ))
       .map(({ lead }) => lead),

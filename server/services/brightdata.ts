@@ -1,30 +1,35 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import path from 'path';
-import { ApiKeyPool, parseApiKeys, type ApiKeyFailureKind, type FailureClassification } from './keyRotator.js';
-import { brightDataFreeTierCapabilities } from '../leadSearch/freeTier.js';
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import path from "path";
+import {
+  ApiKeyPool,
+  parseApiKeys,
+  type ApiKeyFailureKind,
+  type FailureClassification,
+} from "./keyRotator.js";
+import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
 
-type BrightDataTransport = 'hosted' | 'local';
+type BrightDataTransport = "hosted" | "local";
 export type BrightDataReasonCode =
-  | 'none'
-  | 'target_transient'
-  | 'target_blocked'
-  | 'request_invalid'
-  | 'transport_transient'
-  | 'provider_auth'
-  | 'provider_quota'
-  | 'provider_rate_limit'
-  | 'provider_config'
-  | 'unknown';
+  | "none"
+  | "target_transient"
+  | "target_blocked"
+  | "request_invalid"
+  | "transport_transient"
+  | "provider_auth"
+  | "provider_quota"
+  | "provider_rate_limit"
+  | "provider_config"
+  | "unknown";
 
 export type BrightDataHealth =
-  | 'unconfigured'
-  | 'idle'
-  | 'ready'
-  | 'degraded'
-  | 'transport_reconnecting'
-  | 'provider_disabled';
+  | "unconfigured"
+  | "idle"
+  | "ready"
+  | "degraded"
+  | "transport_reconnecting"
+  | "provider_disabled";
 
 export class BrightDataError extends Error {
   reasonCode: BrightDataReasonCode;
@@ -33,16 +38,19 @@ export class BrightDataError extends Error {
   clearClient: boolean;
   statusCode?: number;
 
-  constructor(message: string, options: {
-    reasonCode?: BrightDataReasonCode;
-    retryable?: boolean;
-    providerDisabled?: boolean;
-    clearClient?: boolean;
-    statusCode?: number;
-  } = {}) {
+  constructor(
+    message: string,
+    options: {
+      reasonCode?: BrightDataReasonCode;
+      retryable?: boolean;
+      providerDisabled?: boolean;
+      clearClient?: boolean;
+      statusCode?: number;
+    } = {},
+  ) {
     super(message);
-    this.name = 'BrightDataError';
-    this.reasonCode = options.reasonCode || 'unknown';
+    this.name = "BrightDataError";
+    this.reasonCode = options.reasonCode || "unknown";
     this.retryable = Boolean(options.retryable);
     this.providerDisabled = Boolean(options.providerDisabled);
     this.clearClient = Boolean(options.clearClient);
@@ -53,15 +61,15 @@ export class BrightDataError extends Error {
 let brightDataClient: Client | null = null;
 let brightDataInitPromise: Promise<Client | null> | null = null;
 let activeTransport: BrightDataTransport | null = null;
-let activeApiToken = '';
-let activeApiTokenFingerprint = '';
-let disabledReason = '';
+let activeApiToken = "";
+let activeApiTokenFingerprint = "";
+let disabledReason = "";
 let disabledUntil = 0;
 let clientGeneration = 0;
 let inFlight = 0;
 let consecutiveFailures = 0;
-let lastError = '';
-let lastReasonCode: BrightDataReasonCode = 'none';
+let lastError = "";
+let lastReasonCode: BrightDataReasonCode = "none";
 let lastRetryable = false;
 let healthOverride: BrightDataHealth | null = null;
 let cooldownLogMutedUntil = 0;
@@ -72,7 +80,7 @@ export type BatchToolState = {
   documented: boolean;
   detected: boolean | null;
   runtimeVerified: boolean;
-  fallbackMode: 'none' | 'single_page_parallel';
+  fallbackMode: "none" | "single_page_parallel";
   partialSuccesses: number;
   partialFailures: number;
 };
@@ -81,15 +89,17 @@ let batchToolState: BatchToolState = {
   documented: true,
   detected: null,
   runtimeVerified: false,
-  fallbackMode: 'none',
+  fallbackMode: "none",
   partialSuccesses: 0,
-  partialFailures: 0
+  partialFailures: 0,
 };
 
-const brightDataKeyPool = new ApiKeyPool('Bright Data', () => parseApiKeys(
-  process.env.BRIGHTDATA_API_TOKENS,
-  [process.env.BRIGHTDATA_API_TOKEN, process.env.API_TOKEN]
-));
+const brightDataKeyPool = new ApiKeyPool("Bright Data", () =>
+  parseApiKeys(process.env.BRIGHTDATA_API_TOKENS, [
+    process.env.BRIGHTDATA_API_TOKEN,
+    process.env.API_TOKEN,
+  ]),
+);
 
 // --- Local MCP child stderr filtering -------------------------------------
 // The local @brightdata/mcp server logs every tool call and error to stderr.
@@ -99,20 +109,31 @@ const brightDataKeyPool = new ApiKeyPool('Bright Data', () => parseApiKeys(
 // else (real crashes, zone problems, unhandled HTTP errors) still passes
 // through. Set BRIGHTDATA_MCP_STDERR_DEBUG=true to bypass the filter.
 
-export type BrightDataMcpStderrFilterState = { suppressingStack: boolean; droppedLines: number };
+export type BrightDataMcpStderrFilterState = {
+  suppressingStack: boolean;
+  droppedLines: number;
+};
 
-const MCP_TRANSIENT_ERROR_PATTERN = /\[(?:search_engine|search_engine_batch|scrape_as_markdown|scrape_batch)\] error .*(?:Unexpected non-JSON response from Bright Data|recently failed and cannot be attempted|failed_query_rejected|repeat_query_rejected)/;
+const MCP_TRANSIENT_ERROR_PATTERN =
+  /\[(?:search_engine|search_engine_batch|scrape_as_markdown|scrape_batch)\] error .*(?:Unexpected non-JSON response from Bright Data|recently failed and cannot be attempted|failed_query_rejected|repeat_query_rejected)/;
 const MCP_STACK_FRAME_PATTERN = /^\s+at\s/;
 
-const mcpStderrDebugEnabled = () => String(process.env.BRIGHTDATA_MCP_STDERR_DEBUG || '').trim().toLowerCase() === 'true';
+const mcpStderrDebugEnabled = () =>
+  String(process.env.BRIGHTDATA_MCP_STDERR_DEBUG || "")
+    .trim()
+    .toLowerCase() === "true";
 
-export const createBrightDataMcpStderrFilter = (): BrightDataMcpStderrFilterState => ({
-  suppressingStack: false,
-  droppedLines: 0
-});
+export const createBrightDataMcpStderrFilter =
+  (): BrightDataMcpStderrFilterState => ({
+    suppressingStack: false,
+    droppedLines: 0,
+  });
 
 /** Decide whether one line of the local MCP server's stderr should be forwarded. */
-export function filterBrightDataMcpStderrLine(state: BrightDataMcpStderrFilterState, line: string): boolean {
+export function filterBrightDataMcpStderrLine(
+  state: BrightDataMcpStderrFilterState,
+  line: string,
+): boolean {
   if (state.suppressingStack) {
     if (MCP_STACK_FRAME_PATTERN.test(line)) {
       state.droppedLines++;
@@ -131,62 +152,105 @@ export function filterBrightDataMcpStderrLine(state: BrightDataMcpStderrFilterSt
 
 const attachFilteredMcpStderr = (stderr: any) => {
   const filterState = createBrightDataMcpStderrFilter();
-  let pending = '';
-  stderr.setEncoding('utf8');
-  stderr.on('data', (chunk: string) => {
+  let pending = "";
+  stderr.setEncoding("utf8");
+  stderr.on("data", (chunk: string) => {
     pending += chunk;
     let newlineIndex: number;
-    while ((newlineIndex = pending.indexOf('\n')) >= 0) {
+    while ((newlineIndex = pending.indexOf("\n")) >= 0) {
       const line = pending.slice(0, newlineIndex);
       pending = pending.slice(newlineIndex + 1);
-      if (filterBrightDataMcpStderrLine(filterState, line)) process.stderr.write(line + '\n');
+      if (filterBrightDataMcpStderrLine(filterState, line))
+        process.stderr.write(line + "\n");
     }
   });
-  stderr.on('end', () => {
-    if (pending && filterBrightDataMcpStderrLine(filterState, pending)) process.stderr.write(pending + '\n');
+  stderr.on("end", () => {
+    if (pending && filterBrightDataMcpStderrLine(filterState, pending))
+      process.stderr.write(pending + "\n");
     if (filterState.droppedLines > 0) {
-      console.error(`[brightdata:mcp] suppressed ${filterState.droppedLines} handled transient SERP error line(s)`);
+      console.error(
+        `[brightdata:mcp] suppressed ${filterState.droppedLines} handled transient SERP error line(s)`,
+      );
     }
   });
 };
 
-const boundedNumber = (value: string | undefined, fallback: number, min: number, max: number) => {
+const boundedNumber = (
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(parsed, min), max);
 };
 
-export const baseTimeoutSeconds = () => boundedNumber(process.env.BASE_TIMEOUT || process.env.BRIGHTDATA_BASE_TIMEOUT, 180, 1, 600);
-export const baseMaxRetries = () => boundedNumber(process.env.BASE_MAX_RETRIES, 2, 0, 3);
-export const BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = 5;
+export const baseTimeoutSeconds = () =>
+  boundedNumber(
+    process.env.BASE_TIMEOUT || process.env.BRIGHTDATA_BASE_TIMEOUT,
+    180,
+    1,
+    600,
+  );
+export const baseMaxRetries = () =>
+  boundedNumber(process.env.BASE_MAX_RETRIES, 2, 0, 3);
+export const BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = boundedNumber(
+  process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
+  10,
+  1,
+  20,
+);
 const baseTimeoutMs = () => baseTimeoutSeconds() * 1000;
-const failureCooldownMs = () => Number(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS || 5_000);
+const failureCooldownMs = () =>
+  Number(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS || 5_000);
 
 export function normalizeBrightDataUrl(url: string) {
-  const value = String(url || '').trim();
+  const value = String(url || "").trim();
   if (!value) {
-    throw new BrightDataError('Bright Data URL is empty', { reasonCode: 'request_invalid' });
+    throw new BrightDataError("Bright Data URL is empty", {
+      reasonCode: "request_invalid",
+    });
   }
   try {
-    const parsed = new URL(value.startsWith('http://') || value.startsWith('https://') ? value : 'https://' + value);
-    if (!parsed.hostname) throw new Error('missing hostname');
+    const parsed = new URL(
+      value.startsWith("http://") || value.startsWith("https://")
+        ? value
+        : "https://" + value,
+    );
+    if (!parsed.hostname) throw new Error("missing hostname");
     return parsed.toString();
   } catch {
-    throw new BrightDataError('Bright Data URL is invalid: ' + value, { reasonCode: 'request_invalid' });
+    throw new BrightDataError("Bright Data URL is invalid: " + value, {
+      reasonCode: "request_invalid",
+    });
   }
 }
 
-const withHardTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+const withHardTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new BrightDataError(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`, {
-          reasonCode: 'target_transient',
-          retryable: true
-        })), timeoutMs);
-      })
+        timer = setTimeout(
+          () =>
+            reject(
+              new BrightDataError(
+                `${label} timed out after ${Math.round(timeoutMs / 1000)}s`,
+                {
+                  reasonCode: "target_transient",
+                  retryable: true,
+                },
+              ),
+            ),
+          timeoutMs,
+        );
+      }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
@@ -200,25 +264,29 @@ const resetToolAvailability = () => {
     documented: true,
     detected: null,
     runtimeVerified: false,
-    fallbackMode: 'none',
+    fallbackMode: "none",
     partialSuccesses: 0,
-    partialFailures: 0
+    partialFailures: 0,
   };
 };
 
 const cooldownMsForFailure = () => {
-  const planned = consecutiveFailures <= 1
-    ? 30_000
-    : consecutiveFailures === 2
-      ? 60_000
-      : 5 * 60_000;
+  const planned =
+    consecutiveFailures <= 1
+      ? 30_000
+      : consecutiveFailures === 2
+        ? 60_000
+        : 5 * 60_000;
   return Math.min(planned, failureCooldownMs());
 };
 
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
 
 const statusFromMessage = (message: string) => {
-  const match = message.match(/\b(?:HTTP|status)\s*:?\s*(\d{3})\b/i) || message.match(/\b(4\d{2}|5\d{2})\b/);
+  const match =
+    message.match(/\b(?:HTTP|status)\s*:?\s*(\d{3})\b/i) ||
+    message.match(/\b(4\d{2}|5\d{2})\b/);
   return match ? Number(match[1]) : undefined;
 };
 
@@ -228,49 +296,129 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   const lower = message.toLowerCase();
   const statusCode = statusFromMessage(message);
 
-  if (statusCode === 401 || statusCode === 403 || /unauthorized|forbidden|invalid token|api[_ -]?token|cannot run mcp server without api_token/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'provider_auth', providerDisabled: true, statusCode });
+  if (
+    statusCode === 401 ||
+    statusCode === 403 ||
+    /unauthorized|forbidden|invalid token|api[_ -]?token|cannot run mcp server without api_token/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "provider_auth",
+      providerDisabled: true,
+      statusCode,
+    });
   }
   if (/quota|credit|usage limit|limit exceeded|billing|payment/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'provider_quota', providerDisabled: true, statusCode });
+    return new BrightDataError(message, {
+      reasonCode: "provider_quota",
+      providerDisabled: true,
+      statusCode,
+    });
   }
-  if (/tool .*unavailable|missing tool|invalid configuration|missing config|zone .*not found|required zone|not configured/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'provider_config', providerDisabled: true, statusCode });
+  if (
+    /tool .*unavailable|missing tool|invalid configuration|missing config|zone .*not found|required zone|not configured/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "provider_config",
+      providerDisabled: true,
+      statusCode,
+    });
   }
-  if (statusCode === 400 || /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'request_invalid', statusCode });
+  if (
+    statusCode === 400 ||
+    /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "request_invalid",
+      statusCode,
+    });
   }
-  if (/connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'transport_transient', retryable: true, clearClient: true, statusCode });
+  if (
+    /connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "transport_transient",
+      retryable: true,
+      clearClient: true,
+      statusCode,
+    });
   }
   // Official BD docs: "verifying" (challenge page, HTTP 502) and "failed_query_rejected" / "repeat_query_rejected"
   // (HTTP 429) both require a minimum 15-second wait before retrying the same query.
   // Since a 15s per-query delay is unacceptable in the mining pipeline, we classify all of these
   // as non-retryable. The caller's Tavily fallback fires immediately instead of wasting a retry
   // that is guaranteed to lockout (confirmed: any retry < 15s hits failed_query_rejected).
-  if (/minimum of \d+\s*seconds?|recently failed and cannot be attempted|cannot be attempted at this time|repeat.{0,20}rejected|failed.{0,20}rejected/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
+  if (
+    /minimum of \d+\s*seconds?|recently failed and cannot be attempted|cannot be attempted at this time|repeat.{0,20}rejected|failed.{0,20}rejected/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "target_transient",
+      retryable: false,
+      statusCode,
+    });
   }
   // Non-JSON SERP response = BD returned a challenge/verification page (HTTP 502 "verifying").
   // Per BD docs: wait >=15s before retrying the same query. Mark non-retryable -> Tavily fallback.
   if (/unexpected non-json response from bright data/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'target_transient', retryable: false, statusCode });
+    return new BrightDataError(message, {
+      reasonCode: "target_transient",
+      retryable: false,
+      statusCode,
+    });
   }
-  if (statusCode === 502 || statusCode === 503 || statusCode === 504 || /timed out|request timed out|fetch failed|empty response|empty body|returned no content/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'target_transient', retryable: true, statusCode });
+  if (
+    statusCode === 502 ||
+    statusCode === 503 ||
+    statusCode === 504 ||
+    /timed out|request timed out|fetch failed|empty response|empty body|returned no content/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "target_transient",
+      retryable: true,
+      statusCode,
+    });
   }
-  if (/captcha|login wall|blocked|privacy checkpoint|sign in to view|authwall/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'target_blocked', statusCode });
+  if (
+    /captcha|login wall|blocked|privacy checkpoint|sign in to view|authwall/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "target_blocked",
+      statusCode,
+    });
   }
-  if (/your system is sending too many|sending too many of this type|contact your account manager/.test(lower)) {
-    return new BrightDataError(message, { reasonCode: 'provider_rate_limit', retryable: false, statusCode: statusCode || 429 });
+  if (
+    /your system is sending too many|sending too many of this type|contact your account manager/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "provider_rate_limit",
+      retryable: false,
+      statusCode: statusCode || 429,
+    });
   }
-  return new BrightDataError(message, { reasonCode: 'unknown', statusCode });
+  return new BrightDataError(message, { reasonCode: "unknown", statusCode });
 }
 
-export const isBrightDataRetryableError = (error: unknown) => classifyBrightDataError(error).retryable;
-export const isBrightDataProviderDisabledError = (error: unknown) => classifyBrightDataError(error).providerDisabled;
-export const isBrightDataTransientTargetError = (error: unknown) => classifyBrightDataError(error).reasonCode === 'target_transient';
+export const isBrightDataRetryableError = (error: unknown) =>
+  classifyBrightDataError(error).retryable;
+export const isBrightDataProviderDisabledError = (error: unknown) =>
+  classifyBrightDataError(error).providerDisabled;
+export const isBrightDataTransientTargetError = (error: unknown) =>
+  classifyBrightDataError(error).reasonCode === "target_transient";
 
 export type BrightDataSearchRetryOptions = {
   maxRetries?: number;
@@ -278,17 +426,34 @@ export type BrightDataSearchRetryOptions = {
   jitterMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
   random?: () => number;
-  onRetry?: (context: { error: BrightDataError; attempt: number; nextAttempt: number; delayMs: number }) => void | Promise<void>;
+  onRetry?: (context: {
+    error: BrightDataError;
+    attempt: number;
+    nextAttempt: number;
+    delayMs: number;
+  }) => void | Promise<void>;
 };
 
 export async function executeBrightDataSearchWithRetry<T>(
   operation: (attempt: number) => Promise<T>,
-  options: BrightDataSearchRetryOptions = {}
+  options: BrightDataSearchRetryOptions = {},
 ): Promise<T> {
-  const maxRetries = Math.min(Math.max(Math.floor(Number(options.maxRetries ?? 1)) || 0, 0), 2);
-  const baseDelayMs = Math.min(Math.max(Math.floor(Number(options.baseDelayMs ?? 750)) || 0, 0), 10_000);
-  const jitterMs = Math.min(Math.max(Math.floor(Number(options.jitterMs ?? 250)) || 0, 0), 2_000);
-  const sleep = options.sleep || ((delayMs: number) => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
+  const maxRetries = Math.min(
+    Math.max(Math.floor(Number(options.maxRetries ?? 1)) || 0, 0),
+    2,
+  );
+  const baseDelayMs = Math.min(
+    Math.max(Math.floor(Number(options.baseDelayMs ?? 750)) || 0, 0),
+    10_000,
+  );
+  const jitterMs = Math.min(
+    Math.max(Math.floor(Number(options.jitterMs ?? 250)) || 0, 0),
+    2_000,
+  );
+  const sleep =
+    options.sleep ||
+    ((delayMs: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
   const random = options.random || Math.random;
 
   for (let attempt = 1; ; attempt++) {
@@ -298,17 +463,26 @@ export async function executeBrightDataSearchWithRetry<T>(
       const classified = classifyBrightDataError(error);
       if (!classified.retryable || attempt > maxRetries) throw classified;
 
-      const retryBaseDelayMs = classified.reasonCode === 'transport_transient'
-        ? Math.max(baseDelayMs, 5_000)
-        : baseDelayMs;
-      const delayMs = retryBaseDelayMs * (2 ** (attempt - 1)) + Math.floor(random() * (jitterMs + 1));
-      await options.onRetry?.({ error: classified, attempt, nextAttempt: attempt + 1, delayMs });
+      const retryBaseDelayMs =
+        classified.reasonCode === "transport_transient"
+          ? Math.max(baseDelayMs, 5_000)
+          : baseDelayMs;
+      const delayMs =
+        retryBaseDelayMs * 2 ** (attempt - 1) +
+        Math.floor(random() * (jitterMs + 1));
+      await options.onRetry?.({
+        error: classified,
+        attempt,
+        nextAttempt: attempt + 1,
+        delayMs,
+      });
       await sleep(delayMs);
     }
   }
 }
 
-const EMPTY_BODY_SERP_PATTERN = /unexpected non-json response from bright data/i;
+const EMPTY_BODY_SERP_PATTERN =
+  /unexpected non-json response from bright data/i;
 
 /**
  * True when Bright Data answered HTTP 200 but the SERP body was empty or
@@ -321,16 +495,21 @@ const EMPTY_BODY_SERP_PATTERN = /unexpected non-json response from bright data/i
  */
 export function isEmptyBodySerpTransientError(error: unknown): boolean {
   const classified = classifyBrightDataError(error);
-  return classified.reasonCode === 'target_transient'
-    && EMPTY_BODY_SERP_PATTERN.test(classified.message)
-    && !/response snippet/i.test(classified.message);
+  return (
+    classified.reasonCode === "target_transient" &&
+    EMPTY_BODY_SERP_PATTERN.test(classified.message) &&
+    !/response snippet/i.test(classified.message)
+  );
 }
 
 export type BrightDataEmptyBodyRetryOptions = {
   maxRetries?: number;
   delayMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
-  onRetry?: (context: { error: BrightDataError; attempt: number }) => void | Promise<void>;
+  onRetry?: (context: {
+    error: BrightDataError;
+    attempt: number;
+  }) => void | Promise<void>;
 };
 
 /**
@@ -341,41 +520,77 @@ export type BrightDataEmptyBodyRetryOptions = {
  */
 export async function executeBrightDataSearchWithEmptyBodyRecovery<T>(
   operation: () => Promise<T>,
-  options: BrightDataEmptyBodyRetryOptions = {}
+  options: BrightDataEmptyBodyRetryOptions = {},
 ): Promise<T> {
   const envMax = Number(process.env.BRIGHTDATA_SEARCH_EMPTY_BODY_RETRIES);
-  const envDelay = Number(process.env.BRIGHTDATA_SEARCH_EMPTY_BODY_RETRY_DELAY_MS);
-  const maxRetries = Math.min(Math.max(Math.floor(Number(options.maxRetries ?? (Number.isFinite(envMax) ? envMax : 1))), 0), 2);
-  const delayMs = Math.min(Math.max(Math.floor(Number(options.delayMs ?? (Number.isFinite(envDelay) ? envDelay : 1_500))), 0), 15_000);
-  const sleep = options.sleep || ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const envDelay = Number(
+    process.env.BRIGHTDATA_SEARCH_EMPTY_BODY_RETRY_DELAY_MS,
+  );
+  const maxRetries = Math.min(
+    Math.max(
+      Math.floor(
+        Number(options.maxRetries ?? (Number.isFinite(envMax) ? envMax : 1)),
+      ),
+      0,
+    ),
+    2,
+  );
+  const delayMs = Math.min(
+    Math.max(
+      Math.floor(
+        Number(
+          options.delayMs ?? (Number.isFinite(envDelay) ? envDelay : 1_500),
+        ),
+      ),
+      0,
+    ),
+    15_000,
+  );
+  const sleep =
+    options.sleep ||
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   for (let attempt = 0; ; attempt++) {
     try {
       return await operation();
     } catch (error) {
-      if (attempt >= maxRetries || !isEmptyBodySerpTransientError(error)) throw error;
-      await options.onRetry?.({ error: classifyBrightDataError(error), attempt: attempt + 1 });
+      if (attempt >= maxRetries || !isEmptyBodySerpTransientError(error))
+        throw error;
+      await options.onRetry?.({
+        error: classifyBrightDataError(error),
+        attempt: attempt + 1,
+      });
       await sleep(delayMs);
     }
   }
 }
 
-const keyFailureKindForBrightData = (classified: BrightDataError): ApiKeyFailureKind => {
-  if (classified.reasonCode === 'provider_auth' || classified.reasonCode === 'provider_quota') return 'exhausted';
-  if (classified.reasonCode === 'request_invalid' || classified.reasonCode === 'provider_config') return 'request_invalid';
-  if (classified.reasonCode === 'transport_transient') return 'transient';
-  return 'unknown';
+const keyFailureKindForBrightData = (
+  classified: BrightDataError,
+): ApiKeyFailureKind => {
+  if (
+    classified.reasonCode === "provider_auth" ||
+    classified.reasonCode === "provider_quota"
+  )
+    return "exhausted";
+  if (
+    classified.reasonCode === "request_invalid" ||
+    classified.reasonCode === "provider_config"
+  )
+    return "request_invalid";
+  if (classified.reasonCode === "transport_transient") return "transient";
+  return "unknown";
 };
 
 const markActiveTokenFailure = (classified: BrightDataError) => {
   if (!activeApiToken) return;
   const kind = keyFailureKindForBrightData(classified);
-  if (kind === 'request_invalid' || kind === 'unknown') return;
+  if (kind === "request_invalid" || kind === "unknown") return;
   const failure: FailureClassification = {
     kind,
     statusCode: classified.statusCode,
-    cooldownMs: kind === 'transient' ? 15_000 : undefined,
-    message: classified.message
+    cooldownMs: kind === "transient" ? 15_000 : undefined,
+    message: classified.message,
   };
   brightDataKeyPool.markFailure(activeApiToken, failure);
 };
@@ -395,8 +610,8 @@ const clearCurrentClient = (client?: Client | null) => {
   if (clientToClose && brightDataClient === clientToClose) {
     brightDataClient = null;
     activeTransport = null;
-    activeApiToken = '';
-    activeApiTokenFingerprint = '';
+    activeApiToken = "";
+    activeApiTokenFingerprint = "";
   }
   brightDataInitPromise = null;
   clientGeneration++;
@@ -405,14 +620,21 @@ const clearCurrentClient = (client?: Client | null) => {
   return true;
 };
 
-const markProviderFailure = (label: string, message: string, client?: Client | null, classified = classifyBrightDataError(message)) => {
+const markProviderFailure = (
+  label: string,
+  message: string,
+  client?: Client | null,
+  classified = classifyBrightDataError(message),
+) => {
   consecutiveFailures++;
   lastError = message;
   lastReasonCode = classified.reasonCode;
   lastRetryable = classified.retryable;
   disabledReason = `${label}: ${message}`;
   disabledUntil = Date.now() + cooldownMsForFailure();
-  healthOverride = classified.providerDisabled ? 'provider_disabled' : 'transport_reconnecting';
+  healthOverride = classified.providerDisabled
+    ? "provider_disabled"
+    : "transport_reconnecting";
   markActiveTokenFailure(classified);
   if (classified.clearClient || classified.providerDisabled) {
     resetToolAvailability();
@@ -421,24 +643,29 @@ const markProviderFailure = (label: string, message: string, client?: Client | n
 
   if (Date.now() >= cooldownLogMutedUntil) {
     const seconds = Math.max(1, Math.ceil((disabledUntil - Date.now()) / 1000));
-    console.warn(`[brightdata] ${label} failed; cooling down for ${seconds}s: ${message}`);
+    console.warn(
+      `[brightdata] ${label} failed; cooling down for ${seconds}s: ${message}`,
+    );
     cooldownLogMutedUntil = disabledUntil;
   }
 };
 
-const markToolFailure = (message: string, classified = classifyBrightDataError(message)) => {
+const markToolFailure = (
+  message: string,
+  classified = classifyBrightDataError(message),
+) => {
   lastError = message;
   lastReasonCode = classified.reasonCode;
   lastRetryable = classified.retryable;
-  if (classified.retryable) healthOverride = 'degraded';
+  if (classified.retryable) healthOverride = "degraded";
 };
 
 const markProviderSuccess = () => {
   consecutiveFailures = 0;
-  lastError = '';
-  lastReasonCode = 'none';
+  lastError = "";
+  lastReasonCode = "none";
   lastRetryable = false;
-  disabledReason = '';
+  disabledReason = "";
   disabledUntil = 0;
   healthOverride = null;
   if (activeApiToken) brightDataKeyPool.markSuccess(activeApiToken);
@@ -454,7 +681,7 @@ export function isBrightDataConfigured() {
  * unless a deployment has explicitly opted into a Pro account.
  */
 export function isBrightDataFreeTier() {
-  return (process.env.BRIGHTDATA_PLAN || 'free').trim().toLowerCase() !== 'pro';
+  return (process.env.BRIGHTDATA_PLAN || "free").trim().toLowerCase() !== "pro";
 }
 
 export function getBrightDataCapabilities() {
@@ -463,14 +690,19 @@ export function getBrightDataCapabilities() {
     ...(free
       ? brightDataFreeTierCapabilities()
       : {
-          provider: 'brightdata' as const,
-          plan: 'pro' as const,
-          monthlyUnitLimit: Number(process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET) || undefined,
-          supportedTools: ['search_engine', 'scrape_as_markdown', 'scrape_batch'],
-          unavailableTools: [] as string[]
+          provider: "brightdata" as const,
+          plan: "pro" as const,
+          monthlyUnitLimit:
+            Number(process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET) || undefined,
+          supportedTools: [
+            "search_engine",
+            "scrape_as_markdown",
+            "scrape_batch",
+          ],
+          unavailableTools: [] as string[],
         }),
     configured: isBrightDataConfigured(),
-    rapidModeOnly: free
+    rapidModeOnly: free,
   };
 }
 
@@ -479,7 +711,11 @@ export function isBrightDataCoolingDown() {
 }
 
 export function shouldAttemptBrightData() {
-  return isBrightDataConfigured() && brightDataKeyPool.hasAvailableKey() && !isBrightDataCoolingDown();
+  return (
+    isBrightDataConfigured() &&
+    brightDataKeyPool.hasAvailableKey() &&
+    !isBrightDataCoolingDown()
+  );
 }
 
 export function getBrightDataStatus() {
@@ -490,18 +726,18 @@ export function getBrightDataStatus() {
   const coolingDown = isBrightDataCoolingDown();
   const clientHot = Boolean(brightDataClient);
   const health: BrightDataHealth = !configured
-    ? 'unconfigured'
+    ? "unconfigured"
     : !hasAvailableKey
-      ? 'provider_disabled'
-    : coolingDown && healthOverride === 'provider_disabled'
-      ? 'provider_disabled'
-      : coolingDown
-        ? 'transport_reconnecting'
-        : healthOverride === 'degraded'
-          ? 'degraded'
-          : clientHot
-            ? 'ready'
-            : 'idle';
+      ? "provider_disabled"
+      : coolingDown && healthOverride === "provider_disabled"
+        ? "provider_disabled"
+        : coolingDown
+          ? "transport_reconnecting"
+          : healthOverride === "degraded"
+            ? "degraded"
+            : clientHot
+              ? "ready"
+              : "idle";
   return {
     configured,
     ready: clientHot && !coolingDown && hasAvailableKey,
@@ -520,39 +756,54 @@ export function getBrightDataStatus() {
     baseTimeoutSeconds: baseTimeoutSeconds(),
     baseMaxRetries: baseMaxRetries(),
     clientHot,
-    batchTool: { ...batchToolState }
+    batchTool: { ...batchToolState },
   };
 }
 
 async function connectHostedClient(apiToken: string, generation: number) {
-  const client = new Client({ name: 'apex-crm-brightdata', version: '1.0.0' });
-  const url = new URL('https://mcp.brightdata.com/mcp');
-  url.searchParams.set('token', apiToken);
+  const client = new Client({ name: "apex-crm-brightdata", version: "1.0.0" });
+  const url = new URL("https://mcp.brightdata.com/mcp");
+  url.searchParams.set("token", apiToken);
   const transport = new StreamableHTTPClientTransport(url);
   transport.onerror = (error) => {
     if (generation !== clientGeneration || brightDataClient !== client) {
       void closeClientQuietly(client);
       return;
     }
-    markProviderFailure('hosted transport', error.message, client, new BrightDataError(error.message, {
-      reasonCode: 'transport_transient',
-      retryable: true,
-      clearClient: true
-    }));
+    markProviderFailure(
+      "hosted transport",
+      error.message,
+      client,
+      new BrightDataError(error.message, {
+        reasonCode: "transport_transient",
+        retryable: true,
+        clearClient: true,
+      }),
+    );
   };
-  await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data hosted MCP connect');
+  await withHardTimeout(
+    client.connect(transport, { timeout: baseTimeoutMs() }),
+    baseTimeoutMs(),
+    "Bright Data hosted MCP connect",
+  );
   return client;
 }
 
 async function connectLocalClient(apiToken: string, generation: number) {
-  const client = new Client({ name: 'apex-crm-brightdata', version: '1.0.0' });
-  const serverPath = path.join(process.cwd(), 'node_modules', '@brightdata', 'mcp', 'server.js');
+  const client = new Client({ name: "apex-crm-brightdata", version: "1.0.0" });
+  const serverPath = path.join(
+    process.cwd(),
+    "node_modules",
+    "@brightdata",
+    "mcp",
+    "server.js",
+  );
   const timeoutSeconds = String(baseTimeoutSeconds());
   const maxRetries = String(baseMaxRetries());
   const safeEnv = { ...process.env };
-  delete (safeEnv as any)['PRO_MODE'];
-  delete (safeEnv as any)['GROUPS'];
-  delete (safeEnv as any)['TOOLS'];
+  delete (safeEnv as any)["PRO_MODE"];
+  delete (safeEnv as any)["GROUPS"];
+  delete (safeEnv as any)["TOOLS"];
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
@@ -562,10 +813,10 @@ async function connectLocalClient(apiToken: string, generation: number) {
       BRIGHTDATA_API_TOKEN: apiToken,
       BASE_TIMEOUT: timeoutSeconds,
       BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
-      BASE_MAX_RETRIES: maxRetries
+      BASE_MAX_RETRIES: maxRetries,
     } as Record<string, string>,
-    stderr: mcpStderrDebugEnabled() ? 'inherit' : 'pipe',
-    cwd: process.cwd()
+    stderr: mcpStderrDebugEnabled() ? "inherit" : "pipe",
+    cwd: process.cwd(),
   });
 
   if (transport.stderr) {
@@ -577,31 +828,42 @@ async function connectLocalClient(apiToken: string, generation: number) {
       void closeClientQuietly(client);
       return;
     }
-    markProviderFailure('local transport', error.message, client, new BrightDataError(error.message, {
-      reasonCode: 'transport_transient',
-      retryable: true,
-      clearClient: true
-    }));
+    markProviderFailure(
+      "local transport",
+      error.message,
+      client,
+      new BrightDataError(error.message, {
+        reasonCode: "transport_transient",
+        retryable: true,
+        clearClient: true,
+      }),
+    );
   };
 
-  await withHardTimeout(client.connect(transport, { timeout: baseTimeoutMs() }), baseTimeoutMs(), 'Bright Data local MCP connect');
+  await withHardTimeout(
+    client.connect(transport, { timeout: baseTimeoutMs() }),
+    baseTimeoutMs(),
+    "Bright Data local MCP connect",
+  );
   return client;
 }
 
 async function initBrightDataClient() {
   if (!isBrightDataConfigured()) {
-    disabledReason = 'BRIGHTDATA_API_TOKEN or BRIGHTDATA_API_TOKENS is not configured';
-    healthOverride = 'unconfigured';
+    disabledReason =
+      "BRIGHTDATA_API_TOKEN or BRIGHTDATA_API_TOKENS is not configured";
+    healthOverride = "unconfigured";
     return null;
   }
   if (isBrightDataCoolingDown()) return null;
 
-  const mode = (process.env.BRIGHTDATA_MCP_TRANSPORT || 'hosted').toLowerCase();
-  const attempts: BrightDataTransport[] = mode === 'local'
-    ? ['local']
-    : mode === 'auto'
-      ? ['hosted', 'local']
-      : ['hosted'];
+  const mode = (process.env.BRIGHTDATA_MCP_TRANSPORT || "hosted").toLowerCase();
+  const attempts: BrightDataTransport[] =
+    mode === "local"
+      ? ["local"]
+      : mode === "auto"
+        ? ["hosted", "local"]
+        : ["hosted"];
 
   let lastError: unknown;
   const attemptedTokens = new Set<string>();
@@ -613,9 +875,10 @@ async function initBrightDataClient() {
     for (const attempt of attempts) {
       const generation = ++clientGeneration;
       try {
-        const client = attempt === 'hosted'
-          ? await connectHostedClient(selected.key, generation)
-          : await connectLocalClient(selected.key, generation);
+        const client =
+          attempt === "hosted"
+            ? await connectHostedClient(selected.key, generation)
+            : await connectLocalClient(selected.key, generation);
         if (generation !== clientGeneration) {
           await closeClientQuietly(client);
           return brightDataClient;
@@ -634,19 +897,25 @@ async function initBrightDataClient() {
         lastReasonCode = classified.reasonCode;
         lastRetryable = classified.retryable;
         resetToolAvailability();
-        console.warn(`[brightdata] ${attempt} transport unavailable for ${selected.label}:`, disabledReason);
+        console.warn(
+          `[brightdata] ${attempt} transport unavailable for ${selected.label}:`,
+          disabledReason,
+        );
 
-        if (classified.reasonCode === 'provider_auth' || classified.reasonCode === 'provider_quota') {
+        if (
+          classified.reasonCode === "provider_auth" ||
+          classified.reasonCode === "provider_quota"
+        ) {
           brightDataKeyPool.markFailure(selected.key, {
-            kind: 'exhausted',
+            kind: "exhausted",
             statusCode: classified.statusCode,
-            message: classified.message
+            message: classified.message,
           });
           tokenTransientFailure = null;
           break;
         }
 
-        if (classified.reasonCode === 'transport_transient') {
+        if (classified.reasonCode === "transport_transient") {
           tokenTransientFailure = classified;
         }
       }
@@ -654,28 +923,37 @@ async function initBrightDataClient() {
 
     if (tokenTransientFailure) {
       brightDataKeyPool.markFailure(selected.key, {
-        kind: 'transient',
+        kind: "transient",
         statusCode: tokenTransientFailure.statusCode,
         cooldownMs: 15_000,
-        message: tokenTransientFailure.message
+        message: tokenTransientFailure.message,
       });
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(String(lastError || 'Bright Data initialization failed'));
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(String(lastError || "Bright Data initialization failed"));
 }
 
 export async function getBrightDataClient() {
   if (brightDataClient && !isBrightDataCoolingDown()) return brightDataClient;
   if (isBrightDataCoolingDown()) return null;
   if (!brightDataInitPromise) {
-    brightDataInitPromise = initBrightDataClient().catch((error) => {
-      const classified = classifyBrightDataError(error);
-      markProviderFailure('initialization', classified.message, undefined, classified);
-      return null;
-    }).finally(() => {
-      brightDataInitPromise = null;
-    });
+    brightDataInitPromise = initBrightDataClient()
+      .catch((error) => {
+        const classified = classifyBrightDataError(error);
+        markProviderFailure(
+          "initialization",
+          classified.message,
+          undefined,
+          classified,
+        );
+        return null;
+      })
+      .finally(() => {
+        brightDataInitPromise = null;
+      });
   }
   return brightDataInitPromise;
 }
@@ -686,13 +964,14 @@ export async function closeBrightDataClient(options?: {
   reason?: string;
 }) {
   if (options?.onlyIfIdle && inFlight > 0) return false;
-  if (options?.onlyIfUnhealthy && !isBrightDataCoolingDown() && !disabledReason) return false;
+  if (options?.onlyIfUnhealthy && !isBrightDataCoolingDown() && !disabledReason)
+    return false;
   const client = brightDataClient;
   clearCurrentClient(client);
   if (!client) return false;
   await closeClientQuietly(client);
   if (!options?.onlyIfUnhealthy) {
-    disabledReason = options?.reason || '';
+    disabledReason = options?.reason || "";
     disabledUntil = 0;
     healthOverride = null;
   }
@@ -702,12 +981,17 @@ export async function closeBrightDataClient(options?: {
 async function withBrightDataClient<T>(
   label: string,
   operation: (client: Client) => Promise<T>,
-  options?: { throwOnUnavailable?: boolean; throwOnFailure?: boolean }
+  options?: { throwOnUnavailable?: boolean; throwOnFailure?: boolean },
 ): Promise<T | null> {
   const client = await getBrightDataClient();
   if (!client) {
     if (options?.throwOnUnavailable) {
-      throw new BrightDataError(disabledReason || 'Bright Data MCP unavailable', classifyBrightDataError(disabledReason || 'Bright Data MCP unavailable'));
+      throw new BrightDataError(
+        disabledReason || "Bright Data MCP unavailable",
+        classifyBrightDataError(
+          disabledReason || "Bright Data MCP unavailable",
+        ),
+      );
     }
     return null;
   }
@@ -732,41 +1016,48 @@ async function withBrightDataClient<T>(
 }
 
 const textFromToolResult = (result: any) => {
-  if (typeof result?.structuredContent?.markdown === 'string') return result.structuredContent.markdown;
-  if (typeof result?.structuredContent?.text === 'string') return result.structuredContent.text;
-  if (typeof result?.toolResult === 'string') return result.toolResult;
+  if (typeof result?.structuredContent?.markdown === "string")
+    return result.structuredContent.markdown;
+  if (typeof result?.structuredContent?.text === "string")
+    return result.structuredContent.text;
+  if (typeof result?.toolResult === "string") return result.toolResult;
   if (Array.isArray(result?.content)) {
     return result.content
       .map((part: any) => {
-        if (typeof part?.text === 'string') return part.text;
-        if (typeof part?.resource?.text === 'string') return part.resource.text;
-        return '';
+        if (typeof part?.text === "string") return part.text;
+        if (typeof part?.resource?.text === "string") return part.resource.text;
+        return "";
       })
       .filter(Boolean)
-      .join('\n');
+      .join("\n");
   }
-  return '';
+  return "";
 };
 
-export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs()) {
+export async function scrapeAsMarkdown(
+  url: string,
+  timeoutMs = baseTimeoutMs(),
+) {
   const scrapeUrl = normalizeBrightDataUrl(url);
 
   if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
     try {
       const response = await fetch(scrapeUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
-        signal: AbortSignal.timeout(Math.min(timeoutMs, 12000))
+        signal: AbortSignal.timeout(Math.min(timeoutMs, 12000)),
       });
       if (response.ok) {
         const html = await response.text();
         const textContent = html
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
-          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/\s+/g, ' ')
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
           .trim();
         if (textContent.length > 50) return textContent;
       }
@@ -775,32 +1066,46 @@ export async function scrapeAsMarkdown(url: string, timeoutMs = baseTimeoutMs())
     }
   }
 
-  return withBrightDataClient('scrape_as_markdown', async (client) => {
-    const result = await withHardTimeout(client.callTool(
-      { name: 'scrape_as_markdown', arguments: { url: scrapeUrl } },
-      undefined,
-      { timeout: timeoutMs }
-    ), timeoutMs, 'Bright Data scrape_as_markdown');
+  return withBrightDataClient(
+    "scrape_as_markdown",
+    async (client) => {
+      const result = await withHardTimeout(
+        client.callTool(
+          { name: "scrape_as_markdown", arguments: { url: scrapeUrl } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scrape_as_markdown",
+      );
 
-    if ((result as any)?.isError) {
-      throw new Error(textFromToolResult(result) || 'Bright Data scrape_as_markdown returned an error');
-    }
+      if ((result as any)?.isError) {
+        throw new Error(
+          textFromToolResult(result) ||
+            "Bright Data scrape_as_markdown returned an error",
+        );
+      }
 
-    const markdown = textFromToolResult(result);
-    if (!markdown) {
-      throw new BrightDataError('Bright Data scrape_as_markdown returned empty body', {
-        reasonCode: 'target_transient',
-        retryable: true
-      });
-    }
-    return markdown;
-  }, { throwOnUnavailable: true, throwOnFailure: true });
+      const markdown = textFromToolResult(result);
+      if (!markdown) {
+        throw new BrightDataError(
+          "Bright Data scrape_as_markdown returned empty body",
+          {
+            reasonCode: "target_transient",
+            retryable: true,
+          },
+        );
+      }
+      return markdown;
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
 }
 
 export type BrightDataBatchResult = {
   url: string;
   content: string;
-  sourceProvider: 'brightdata_batch';
+  sourceProvider: "brightdata_batch";
 };
 
 /**
@@ -809,137 +1114,193 @@ export type BrightDataBatchResult = {
  */
 export function chunkBrightDataBatchItems<T>(items: T[]): T[][] {
   const batches: T[][] = [];
-  for (let index = 0; index < items.length; index += BRIGHTDATA_SCRAPE_BATCH_MAX_URLS) {
+  for (
+    let index = 0;
+    index < items.length;
+    index += BRIGHTDATA_SCRAPE_BATCH_MAX_URLS
+  ) {
     batches.push(items.slice(index, index + BRIGHTDATA_SCRAPE_BATCH_MAX_URLS));
   }
   return batches;
 }
 
-export async function scrapeBatchAsMarkdown(urls: string[], timeoutMs = baseTimeoutMs()): Promise<BrightDataBatchResult[]> {
-  const cleanUrls = Array.from(new Set(urls.map(url => {
-    try {
-      return normalizeBrightDataUrl(url);
-    } catch {
-      return '';
-    }
-  }).filter(Boolean))).slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
+export async function scrapeBatchAsMarkdown(
+  urls: string[],
+  timeoutMs = baseTimeoutMs(),
+): Promise<BrightDataBatchResult[]> {
+  const cleanUrls = Array.from(
+    new Set(
+      urls
+        .map((url) => {
+          try {
+            return normalizeBrightDataUrl(url);
+          } catch {
+            return "";
+          }
+        })
+        .filter(Boolean),
+    ),
+  ).slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
   if (cleanUrls.length === 0) return [];
 
   // `scrape_batch` is not exposed by Bright Data's Rapid/free MCP. Keep the
   // explicit deep-enrichment stage functional without probing an unavailable
   // tool, and keep the fallback intentionally small.
-  const result = await withBrightDataClient('scrape_batch', async (client) => {
-    if (scrapeBatchToolAvailable === null) {
-      const tools = await client.listTools();
-      scrapeBatchToolAvailable = tools.tools.some(t => t.name === 'scrape_batch');
-      batchToolState.detected = scrapeBatchToolAvailable;
-    }
+  const result = await withBrightDataClient(
+    "scrape_batch",
+    async (client) => {
+      if (scrapeBatchToolAvailable === null) {
+        const tools = await client.listTools();
+        scrapeBatchToolAvailable = tools.tools.some(
+          (t) => t.name === "scrape_batch",
+        );
+        batchToolState.detected = scrapeBatchToolAvailable;
+      }
 
-    if (!scrapeBatchToolAvailable) {
-      batchToolState.fallbackMode = 'single_page_parallel';
-      console.warn('[brightdata:tool_fallback] scrape_batch not in listTools(); falling back to parallel scrape_as_markdown');
-      const fallbackResults = await Promise.all(
-        cleanUrls.map(async (url) => {
-          try {
-            const content = await scrapeAsMarkdown(url, timeoutMs);
-            return content ? { url, content, sourceProvider: 'brightdata_batch' as const } : null;
-          } catch {
-            return null;
-          }
-        })
+      if (!scrapeBatchToolAvailable) {
+        batchToolState.fallbackMode = "single_page_parallel";
+        console.warn(
+          "[brightdata:tool_fallback] scrape_batch not in listTools(); falling back to parallel scrape_as_markdown",
+        );
+        const fallbackResults = await Promise.all(
+          cleanUrls.map(async (url) => {
+            try {
+              const content = await scrapeAsMarkdown(url, timeoutMs);
+              return content
+                ? { url, content, sourceProvider: "brightdata_batch" as const }
+                : null;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        return fallbackResults.filter((item): item is BrightDataBatchResult =>
+          Boolean(item),
+        );
+      }
+
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scrape_batch", arguments: { urls: cleanUrls } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scrape_batch",
       );
-      return fallbackResults.filter((item): item is BrightDataBatchResult => Boolean(item));
-    }
 
-    const toolResult = await withHardTimeout(client.callTool(
-      { name: 'scrape_batch', arguments: { urls: cleanUrls } },
-      undefined,
-      { timeout: timeoutMs }
-    ), timeoutMs, 'Bright Data scrape_batch');
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scrape_batch returned an error",
+        );
+      }
 
-    if ((toolResult as any)?.isError) {
-      throw new Error(textFromToolResult(toolResult) || 'Bright Data scrape_batch returned an error');
-    }
+      const structured = (toolResult as any)?.structuredContent;
+      const candidates = Array.isArray(structured?.results)
+        ? structured.results
+        : Array.isArray(structured)
+          ? structured
+          : null;
 
-    const structured = (toolResult as any)?.structuredContent;
-    const candidates = Array.isArray(structured?.results)
-      ? structured.results
-      : Array.isArray(structured)
-        ? structured
-        : null;
+      let parsedItems: BrightDataBatchResult[] = [];
 
-    let parsedItems: BrightDataBatchResult[] = [];
+      if (candidates) {
+        parsedItems = candidates
+          .map((item: any) => ({
+            url: item.url || item.source_url || "",
+            content: item.markdown || item.content || item.text || "",
+            sourceProvider: "brightdata_batch" as const,
+          }))
+          .filter((item: BrightDataBatchResult) => item.url);
+      } else {
+        const textResult = textFromToolResult(toolResult);
+        if (textResult) {
+          try {
+            const parsed = JSON.parse(textResult);
+            const items = Array.isArray(parsed) ? parsed : parsed.results || [];
+            parsedItems = items
+              .map((item: any) => ({
+                url: item.url || item.source_url || "",
+                content: item.markdown || item.content || item.text || "",
+                sourceProvider: "brightdata_batch" as const,
+              }))
+              .filter((item: BrightDataBatchResult) => item.url);
+          } catch {
+            parsedItems = cleanUrls.map((url) => ({
+              url,
+              content: textResult,
+              sourceProvider: "brightdata_batch" as const,
+            }));
+          }
+        }
+      }
 
-    if (candidates) {
-      parsedItems = candidates.map((item: any) => ({
-        url: item.url || item.source_url || '',
-        content: item.markdown || item.content || item.text || '',
-        sourceProvider: 'brightdata_batch' as const
-      })).filter((item: BrightDataBatchResult) => item.url);
-    } else {
-      const textResult = textFromToolResult(toolResult);
-      if (textResult) {
+      // A provider can omit a URL entirely, rather than returning it with an
+      // empty body. Match on canonical request URLs so both cases receive the
+      // same single-page recovery attempt.
+      const itemByUrl = new Map<string, BrightDataBatchResult>();
+      for (const item of parsedItems) {
         try {
-          const parsed = JSON.parse(textResult);
-          const items = Array.isArray(parsed) ? parsed : (parsed.results || []);
-          parsedItems = items.map((item: any) => ({
-            url: item.url || item.source_url || '',
-            content: item.markdown || item.content || item.text || '',
-            sourceProvider: 'brightdata_batch' as const
-          })).filter((item: BrightDataBatchResult) => item.url);
+          const canonicalUrl = normalizeBrightDataUrl(item.url);
+          const existing = itemByUrl.get(canonicalUrl);
+          if (!existing || (!existing.content.trim() && item.content.trim())) {
+            itemByUrl.set(canonicalUrl, item);
+          }
         } catch {
-          parsedItems = cleanUrls.map(url => ({ url, content: textResult, sourceProvider: 'brightdata_batch' as const }));
+          // Ignore malformed child results; the corresponding requested URL is
+          // still retried below if it has no usable batch response.
         }
       }
-    }
 
-    // A provider can omit a URL entirely, rather than returning it with an
-    // empty body. Match on canonical request URLs so both cases receive the
-    // same single-page recovery attempt.
-    const itemByUrl = new Map<string, BrightDataBatchResult>();
-    for (const item of parsedItems) {
-      try {
-        const canonicalUrl = normalizeBrightDataUrl(item.url);
-        const existing = itemByUrl.get(canonicalUrl);
-        if (!existing || (!existing.content.trim() && item.content.trim())) {
-          itemByUrl.set(canonicalUrl, item);
-        }
-      } catch {
-        // Ignore malformed child results; the corresponding requested URL is
-        // still retried below if it has no usable batch response.
+      const retryUrls = cleanUrls.filter(
+        (url) => !itemByUrl.get(url)?.content.trim(),
+      );
+      const retries: Promise<BrightDataBatchResult | null>[] = retryUrls.map(
+        (url) =>
+          scrapeAsMarkdown(url, timeoutMs)
+            .then((content) =>
+              content
+                ? { url, content, sourceProvider: "brightdata_batch" as const }
+                : null,
+            )
+            .catch(() => null),
+      );
+      const retryResults = await Promise.all(retries);
+      const retryMap = new Map(
+        retryResults
+          .filter((r): r is BrightDataBatchResult => Boolean(r))
+          .map((r) => [r.url, r]),
+      );
+
+      const finalItems = cleanUrls
+        .map((url) => {
+          const batchItem = itemByUrl.get(url);
+          if (batchItem?.content.trim()) {
+            return batchItem;
+          }
+          return retryMap.get(url) || null;
+        })
+        .filter((item): item is BrightDataBatchResult =>
+          Boolean(item?.content.trim()),
+        );
+
+      const initialSuccessCount = cleanUrls.length - retryUrls.length;
+      const initialFailureCount = retryUrls.length;
+      const retrySuccessCount = retryResults.filter(Boolean).length;
+
+      batchToolState.partialSuccesses +=
+        initialSuccessCount + retrySuccessCount;
+      batchToolState.partialFailures += initialFailureCount;
+
+      if (finalItems.length > 0) {
+        batchToolState.runtimeVerified = true;
       }
-    }
 
-    const retryUrls = cleanUrls.filter(url => !itemByUrl.get(url)?.content.trim());
-    const retries: Promise<BrightDataBatchResult | null>[] = retryUrls.map(url =>
-      scrapeAsMarkdown(url, timeoutMs)
-        .then(content => content ? { url, content, sourceProvider: 'brightdata_batch' as const } : null)
-        .catch(() => null)
-    );
-    const retryResults = await Promise.all(retries);
-    const retryMap = new Map(retryResults.filter((r): r is BrightDataBatchResult => Boolean(r)).map(r => [r.url, r]));
-
-    const finalItems = cleanUrls.map(url => {
-      const batchItem = itemByUrl.get(url);
-      if (batchItem?.content.trim()) {
-        return batchItem;
-      }
-      return retryMap.get(url) || null;
-    }).filter((item): item is BrightDataBatchResult => Boolean(item?.content.trim()));
-
-    const initialSuccessCount = cleanUrls.length - retryUrls.length;
-    const initialFailureCount = retryUrls.length;
-    const retrySuccessCount = retryResults.filter(Boolean).length;
-
-    batchToolState.partialSuccesses += initialSuccessCount + retrySuccessCount;
-    batchToolState.partialFailures += initialFailureCount;
-
-    if (finalItems.length > 0) {
-      batchToolState.runtimeVerified = true;
-    }
-
-    return finalItems;
-  }, { throwOnUnavailable: true, throwOnFailure: true });
+      return finalItems;
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
 
   return result || [];
 }
@@ -948,8 +1309,8 @@ export type BrightDataSearchResult = {
   title: string;
   url: string;
   content: string;
-  sourceProvider: 'brightdata_search';
-  sourceEngine?: 'google' | 'bing' | 'yandex';
+  sourceProvider: "brightdata_search";
+  sourceEngine?: "google" | "bing" | "yandex";
 };
 
 export type BrightDataSearchOptions = {
@@ -957,53 +1318,60 @@ export type BrightDataSearchOptions = {
   geoLocation?: string;
   cursor?: string;
   timeoutMs?: number;
-  engine?: 'google' | 'bing' | 'yandex';
+  engine?: "google" | "bing" | "yandex";
   allowBingFallback?: boolean;
-  onEngineAttempt?: (engine: 'google' | 'bing' | 'yandex') => void;
+  onEngineAttempt?: (engine: "google" | "bing" | "yandex") => void;
   onBingFallback?: (event: { query: string; resultsCount: number }) => void;
 };
 
 /** Bright Data search_engine accepts a two-letter geo_location value. */
 export function normalizeBrightDataGeoLocation(value?: string) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return /^[a-z]{2}$/.test(normalized) ? normalized : '';
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return /^[a-z]{2}$/.test(normalized) ? normalized : "";
 }
 
 /**
  * Parses markdown output returned by @brightdata/mcp for non-Google engines (Bing/Yandex).
  * Extracts [Title](url) markdown links and accompanying description text blocks.
  */
-export function parseBingMarkdownResults(markdownText: string): BrightDataSearchResult[] {
-  if (!markdownText || typeof markdownText !== 'string') return [];
+export function parseBingMarkdownResults(
+  markdownText: string,
+): BrightDataSearchResult[] {
+  if (!markdownText || typeof markdownText !== "string") return [];
   const results: BrightDataSearchResult[] = [];
-  const lines = markdownText.split('\n');
-  let currentTitle = '';
-  let currentUrl = '';
+  const lines = markdownText.split("\n");
+  let currentTitle = "";
+  let currentUrl = "";
   let currentSnippetLines: string[] = [];
 
   const flush = () => {
     if (currentTitle && currentUrl) {
-      const content = currentSnippetLines.join(' ').replace(/\s+/g, ' ').trim();
+      const content = currentSnippetLines.join(" ").replace(/\s+/g, " ").trim();
       results.push({
         title: currentTitle,
         url: currentUrl,
         content: content || currentTitle,
-        sourceProvider: 'brightdata_search' as const,
-        sourceEngine: 'bing' as const
+        sourceProvider: "brightdata_search" as const,
+        sourceEngine: "bing" as const,
       });
     }
-    currentTitle = '';
-    currentUrl = '';
+    currentTitle = "";
+    currentUrl = "";
     currentSnippetLines = [];
   };
 
-  const ignoredHosts = /^(?:www\.)?(?:bing\.com|microsoft\.com|msn\.com|live\.com|bingapis\.com|azure\.com|microsoftedge\.com)/i;
+  const ignoredHosts =
+    /^(?:www\.)?(?:bing\.com|microsoft\.com|msn\.com|live\.com|bingapis\.com|azure\.com|microsoftedge\.com)/i;
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    const linkMatch = line.match(/^#{0,6}\s*\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/);
+    const linkMatch = line.match(
+      /^#{0,6}\s*\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/,
+    );
     if (linkMatch) {
       flush();
       const candidateTitle = linkMatch[1].trim();
@@ -1034,14 +1402,18 @@ export function parseBingMarkdownResults(markdownText: string): BrightDataSearch
     }
 
     if (currentUrl) {
-      if (!line.startsWith('![') && !line.startsWith('---') && !line.startsWith('***')) {
+      if (
+        !line.startsWith("![") &&
+        !line.startsWith("---") &&
+        !line.startsWith("***")
+      ) {
         currentSnippetLines.push(line);
       }
     }
   }
   flush();
 
-  return results.filter(r => r.url && r.title);
+  return results.filter((r) => r.url && r.title);
 }
 
 /**
@@ -1049,95 +1421,142 @@ export function parseBingMarkdownResults(markdownText: string): BrightDataSearch
  * schema: query, engine, cursor, and geo_location. In particular, `country`
  * and `page` are not valid tool arguments in the installed client.
  */
-export function buildBrightDataSearchArguments(query: string, options: BrightDataSearchOptions = {}) {
-  const configuredGeo = options.geoLocation || options.country || process.env.BRIGHTDATA_SEARCH_GEO_LOCATION || 'us';
+export function buildBrightDataSearchArguments(
+  query: string,
+  options: BrightDataSearchOptions = {},
+) {
+  const configuredGeo =
+    options.geoLocation ||
+    options.country ||
+    process.env.BRIGHTDATA_SEARCH_GEO_LOCATION ||
+    "us";
   const geoLocation = normalizeBrightDataGeoLocation(configuredGeo);
-  const engine = options.engine || 'google';
+  const engine = options.engine || "google";
   return {
     query,
     engine,
     ...(options.cursor ? { cursor: options.cursor } : {}),
-    ...(geoLocation ? { geo_location: geoLocation } : {})
+    ...(geoLocation ? { geo_location: geoLocation } : {}),
   };
 }
 
-export async function brightDataSearch(query: string, options?: BrightDataSearchOptions): Promise<BrightDataSearchResult[]> {
+export async function brightDataSearch(
+  query: string,
+  options?: BrightDataSearchOptions,
+): Promise<BrightDataSearchResult[]> {
   const timeoutMs = options?.timeoutMs || baseTimeoutMs();
-  const engine = options?.engine || 'google';
-  const allowBingFallback = (options?.allowBingFallback ?? (process.env.BRIGHTDATA_FALLBACK_ENGINE !== 'false')) && engine === 'google';
+  const engine = options?.engine || "google";
+  const allowBingFallback =
+    (options?.allowBingFallback ??
+      process.env.BRIGHTDATA_FALLBACK_ENGINE !== "false") &&
+    engine === "google";
 
-  const runSearch = async (activeEngine: 'google' | 'bing' | 'yandex'): Promise<BrightDataSearchResult[]> => {
+  const runSearch = async (
+    activeEngine: "google" | "bing" | "yandex",
+  ): Promise<BrightDataSearchResult[]> => {
     options?.onEngineAttempt?.(activeEngine);
-    return withBrightDataClient('search_engine', async (client) => {
-      if (searchToolAvailable === null) {
-        const tools = await client.listTools();
-        searchToolAvailable = tools.tools.some(t => t.name === 'search_engine');
-      }
+    return withBrightDataClient(
+      "search_engine",
+      async (client) => {
+        if (searchToolAvailable === null) {
+          const tools = await client.listTools();
+          searchToolAvailable = tools.tools.some(
+            (t) => t.name === "search_engine",
+          );
+        }
 
-      if (!searchToolAvailable) {
-        throw new BrightDataError('search_engine tool unavailable in Bright Data MCP', {
-          reasonCode: 'provider_config',
-          providerDisabled: true
-        });
-      }
+        if (!searchToolAvailable) {
+          throw new BrightDataError(
+            "search_engine tool unavailable in Bright Data MCP",
+            {
+              reasonCode: "provider_config",
+              providerDisabled: true,
+            },
+          );
+        }
 
-      const toolResult = await withHardTimeout(client.callTool(
-        {
-          name: 'search_engine',
-          arguments: buildBrightDataSearchArguments(query, { ...options, engine: activeEngine })
-        },
-        undefined,
-        { timeout: timeoutMs }
-      ), timeoutMs, `Bright Data search_engine (${activeEngine})`);
+        const toolResult = await withHardTimeout(
+          client.callTool(
+            {
+              name: "search_engine",
+              arguments: buildBrightDataSearchArguments(query, {
+                ...options,
+                engine: activeEngine,
+              }),
+            },
+            undefined,
+            { timeout: timeoutMs },
+          ),
+          timeoutMs,
+          `Bright Data search_engine (${activeEngine})`,
+        );
 
-      if ((toolResult as any)?.isError) {
-        throw new Error(textFromToolResult(toolResult) || `Bright Data search_engine (${activeEngine}) returned an error`);
-      }
+        if ((toolResult as any)?.isError) {
+          throw new Error(
+            textFromToolResult(toolResult) ||
+              `Bright Data search_engine (${activeEngine}) returned an error`,
+          );
+        }
 
-      const textResult = textFromToolResult(toolResult);
-      if (!textResult) return [];
+        const textResult = textFromToolResult(toolResult);
+        if (!textResult) return [];
 
-      if (activeEngine === 'bing' || activeEngine === 'yandex') {
-        return parseBingMarkdownResults(textResult);
-      }
+        if (activeEngine === "bing" || activeEngine === "yandex") {
+          return parseBingMarkdownResults(textResult);
+        }
 
-      let parsed: any;
-      try {
-        parsed = JSON.parse(textResult);
-      } catch {
-        return [];
-      }
+        let parsed: any;
+        try {
+          parsed = JSON.parse(textResult);
+        } catch {
+          return [];
+        }
 
-      const items = Array.isArray(parsed) ? parsed : (parsed.organic || parsed.results || []);
-      return items.map((item: any) => ({
-        title: item.title || '',
-        url: item.link || item.url || '',
-        content: item.snippet || item.description || '',
-        sourceProvider: 'brightdata_search' as const,
-        sourceEngine: activeEngine
-      })).filter((item: BrightDataSearchResult) => item.url && item.title);
-    }, { throwOnUnavailable: true, throwOnFailure: true });
+        const items = Array.isArray(parsed)
+          ? parsed
+          : parsed.organic || parsed.results || [];
+        return items
+          .map((item: any) => ({
+            title: item.title || "",
+            url: item.link || item.url || "",
+            content: item.snippet || item.description || "",
+            sourceProvider: "brightdata_search" as const,
+            sourceEngine: activeEngine,
+          }))
+          .filter((item: BrightDataSearchResult) => item.url && item.title);
+      },
+      { throwOnUnavailable: true, throwOnFailure: true },
+    );
   };
 
-  const result = await executeBrightDataSearchWithEmptyBodyRecovery(async () => {
-    try {
-      return await runSearch(engine);
-    } catch (error) {
-      const classified = classifyBrightDataError(error);
-      if (allowBingFallback && (classified.reasonCode === 'target_transient' || /unexpected non-json response/i.test(classified.message))) {
-        try {
-          const bingResults = await runSearch('bing');
-          if (bingResults && bingResults.length > 0) {
-            options?.onBingFallback?.({ query, resultsCount: bingResults.length });
-            return bingResults;
+  const result = await executeBrightDataSearchWithEmptyBodyRecovery(
+    async () => {
+      try {
+        return await runSearch(engine);
+      } catch (error) {
+        const classified = classifyBrightDataError(error);
+        if (
+          allowBingFallback &&
+          (classified.reasonCode === "target_transient" ||
+            /unexpected non-json response/i.test(classified.message))
+        ) {
+          try {
+            const bingResults = await runSearch("bing");
+            if (bingResults && bingResults.length > 0) {
+              options?.onBingFallback?.({
+                query,
+                resultsCount: bingResults.length,
+              });
+              return bingResults;
+            }
+          } catch {
+            // Bing fallback also failed; proceed to rethrow original classified error for Tavily
           }
-        } catch {
-          // Bing fallback also failed; proceed to rethrow original classified error for Tavily
         }
+        throw error;
       }
-      throw error;
-    }
-  });
+    },
+  );
 
   return result || [];
 }

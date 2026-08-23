@@ -12,6 +12,7 @@ import {
   openAIStructured,
   bulkLeadsArraySchema,
   EXTRACTION_SYSTEM_PROMPT,
+  DEFAULT_PRIMARY_MODEL,
   type LLMProviderAttempt
 } from '../../services/llm.js';
 import { buildTavilyEvidence } from '../../services/linkedinEvidence.js';
@@ -361,7 +362,7 @@ export async function executeExtractStage(
         timestamp: new Date().toISOString(),
         type: 'llm_request',
         label: `extraction_round_${round}_chunk_${chunkIndex}`,
-        model: process.env.OPENAI_MODEL || 'gpt-5.5',
+        model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
         prompt,
         systemInstruction: EXTRACTION_SYSTEM_PROMPT,
         response: extractedLeads

@@ -1,12 +1,17 @@
-import { ApiKeyPool, KeyRotationError, executeWithKeyRotation, parseApiKeys } from './keyRotator.js';
+import {
+  ApiKeyPool,
+  KeyRotationError,
+  executeWithKeyRotation,
+  parseApiKeys,
+} from "./keyRotator.js";
 
 export const Type = {
-  STRING: 'STRING',
-  NUMBER: 'NUMBER',
-  INTEGER: 'INTEGER',
-  BOOLEAN: 'BOOLEAN',
-  ARRAY: 'ARRAY',
-  OBJECT: 'OBJECT',
+  STRING: "STRING",
+  NUMBER: "NUMBER",
+  INTEGER: "INTEGER",
+  BOOLEAN: "BOOLEAN",
+  ARRAY: "ARRAY",
+  OBJECT: "OBJECT",
 };
 
 // -----------------------------------------------------------------------------
@@ -14,12 +19,12 @@ export const Type = {
 // -----------------------------------------------------------------------------
 
 type ChatMessage = {
-  role: 'system' | 'user';
+  role: "system" | "user";
   content: string;
 };
 
 type LLMProvider = {
-  id: 'litellm' | 'primary' | 'openrouter' | 'groq';
+  id: "litellm" | "primary" | "openrouter" | "groq";
   name: string;
   baseUrl: string;
   model: string;
@@ -27,15 +32,15 @@ type LLMProvider = {
   headers?: Record<string, string>;
 };
 
-export type LLMProviderSummary = Omit<LLMProvider, 'apiKey' | 'headers'> & {
+export type LLMProviderSummary = Omit<LLMProvider, "apiKey" | "headers"> & {
   configured: boolean;
 };
 
 export type LLMProviderAttempt = {
-  providerId: LLMProvider['id'];
+  providerId: LLMProvider["id"];
   provider: string;
   model: string;
-  status: 'success' | 'error' | 'skipped';
+  status: "success" | "error" | "skipped";
   statusCode?: number;
   latencyMs: number;
   error?: string;
@@ -51,8 +56,8 @@ export type LLMUsage = {
 
 export type LLMSessionCircuitBreaker = {
   failureThreshold: number;
-  failureCounts: Partial<Record<LLMProvider['id'], number>>;
-  disabledProviderIds: Set<LLMProvider['id']>;
+  failureCounts: Partial<Record<LLMProvider["id"], number>>;
+  disabledProviderIds: Set<LLMProvider["id"]>;
 };
 
 type LLMExecutionOptions = {
@@ -62,94 +67,112 @@ type LLMExecutionOptions = {
   circuitBreaker?: LLMSessionCircuitBreaker;
 };
 
-export function createLLMSessionCircuitBreaker(failureThreshold = 2): LLMSessionCircuitBreaker {
+export function createLLMSessionCircuitBreaker(
+  failureThreshold = 2,
+): LLMSessionCircuitBreaker {
   return {
     failureThreshold: Math.max(1, Math.floor(failureThreshold)),
     failureCounts: {},
-    disabledProviderIds: new Set<LLMProvider['id']>(),
+    disabledProviderIds: new Set<LLMProvider["id"]>(),
   };
 }
 
-const DEFAULT_PRIMARY_BASE = 'https://byesu.com/v1';
-const DEFAULT_PRIMARY_MODEL = 'gpt-5.5';
-const DEFAULT_OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
-const DEFAULT_OPENROUTER_MODEL = 'meta-llama/llama-3.3-70b-instruct:free';
-const DEFAULT_GROQ_BASE = 'https://api.groq.com/openai/v1';
-const DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile';
-const DEFAULT_LITELLM_BASE = 'http://127.0.0.1:4000/v1';
-const DEFAULT_LITELLM_MODEL = 'apex-primary';
+const DEFAULT_PRIMARY_BASE = "https://byesu.com/v1";
+export const DEFAULT_PRIMARY_MODEL = "gpt-5.5";
+const DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+const DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1";
+const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
+const DEFAULT_LITELLM_BASE = "http://127.0.0.1:4000/v1";
+const DEFAULT_LITELLM_MODEL = "apex-primary";
 
-const tavilyKeyPool = new ApiKeyPool('Tavily', () => parseApiKeys(
-  process.env.TAVILY_API_KEYS,
-  [process.env.TAVILY_API_KEY]
-));
+const tavilyKeyPool = new ApiKeyPool("Tavily", () =>
+  parseApiKeys(process.env.TAVILY_API_KEYS, [process.env.TAVILY_API_KEY]),
+);
 
 function cleanBaseUrl(value: string): string {
-  return value.replace(/\/+$/, '');
+  return value.replace(/\/+$/, "");
 }
 
 function getOpenRouterHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
-    'X-Title': process.env.OPENROUTER_APP_TITLE || 'Apex CRM',
+    "X-Title": process.env.OPENROUTER_APP_TITLE || "Apex CRM",
   };
   const referer = process.env.OPENROUTER_HTTP_REFERER || process.env.APP_URL;
-  if (referer && referer !== 'MY_APP_URL') {
-    headers['HTTP-Referer'] = referer;
+  if (referer && referer !== "MY_APP_URL") {
+    headers["HTTP-Referer"] = referer;
   }
   return headers;
 }
 
-function getGatewayMode(): 'litellm' | 'direct' {
-  return (process.env.LLM_GATEWAY_MODE || 'litellm').toLowerCase() === 'direct' ? 'direct' : 'litellm';
+function getGatewayMode(): "litellm" | "direct" {
+  return (process.env.LLM_GATEWAY_MODE || "litellm").toLowerCase() === "direct"
+    ? "direct"
+    : "litellm";
 }
 
 function getLiteLLMProvider(): LLMProvider {
   return {
-    id: 'litellm',
-    name: 'LiteLLM',
-    baseUrl: cleanBaseUrl(process.env.LITELLM_BASE_URL || process.env.LITELLM_BASE || DEFAULT_LITELLM_BASE),
+    id: "litellm",
+    name: "LiteLLM",
+    baseUrl: cleanBaseUrl(
+      process.env.LITELLM_BASE_URL ||
+        process.env.LITELLM_BASE ||
+        DEFAULT_LITELLM_BASE,
+    ),
     model: process.env.LITELLM_MODEL || DEFAULT_LITELLM_MODEL,
-    apiKey: process.env.LITELLM_API_KEY || process.env.LITELLM_MASTER_KEY || process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || 'local-litellm',
+    apiKey:
+      process.env.LITELLM_API_KEY ||
+      process.env.LITELLM_MASTER_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.BYESU_API_KEY ||
+      "local-litellm",
   };
 }
 
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   return [
     {
-      id: 'primary',
-      name: process.env.OPENAI_PROVIDER_NAME || 'Byesu',
+      id: "primary",
+      name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
       baseUrl: cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE),
       model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
-      apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || '',
+      apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
     },
     {
-      id: 'openrouter',
-      name: process.env.OPENROUTER_PROVIDER_NAME || 'OpenRouter',
-      baseUrl: cleanBaseUrl(process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE),
+      id: "openrouter",
+      name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
+      baseUrl: cleanBaseUrl(
+        process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE,
+      ),
       model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
-      apiKey: process.env.OPENROUTER_API_KEY || '',
+      apiKey: process.env.OPENROUTER_API_KEY || "",
       headers: getOpenRouterHeaders(),
     },
     {
-      id: 'groq',
-      name: 'Groq',
+      id: "groq",
+      name: "Groq",
       baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
       model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
-      apiKey: process.env.GROQ_API_KEY || '',
+      apiKey: process.env.GROQ_API_KEY || "",
     },
   ];
 }
 
 function getLLMProviderCandidates(): LLMProvider[] {
-  return getGatewayMode() === 'litellm'
+  return getGatewayMode() === "litellm"
     ? [getLiteLLMProvider(), ...getDirectLLMProviderCandidates()]
     : getDirectLLMProviderCandidates();
 }
 
 function getConfiguredLLMProviders(): LLMProvider[] {
-  const directProviders = getDirectLLMProviderCandidates().filter(provider => !!provider.apiKey);
-  if (getGatewayMode() === 'litellm') {
-    const directFallbacks = directProviders.filter(provider => provider.id !== 'primary');
+  const directProviders = getDirectLLMProviderCandidates().filter(
+    (provider) => !!provider.apiKey,
+  );
+  if (getGatewayMode() === "litellm") {
+    const directFallbacks = directProviders.filter(
+      (provider) => provider.id !== "primary",
+    );
     return [getLiteLLMProvider(), ...directFallbacks];
   }
   return directProviders;
@@ -158,7 +181,8 @@ function getConfiguredLLMProviders(): LLMProvider[] {
 export function getLLMProviderSummaries(): LLMProviderSummary[] {
   return getLLMProviderCandidates().map(({ apiKey, headers, ...provider }) => ({
     ...provider,
-    configured: provider.id === 'litellm' ? getGatewayMode() === 'litellm' : !!apiKey,
+    configured:
+      provider.id === "litellm" ? getGatewayMode() === "litellm" : !!apiKey,
   }));
 }
 
@@ -171,7 +195,7 @@ export function getTavilyKeyStatus() {
 }
 
 export function getAPIKey(): string {
-  return getConfiguredLLMProviders()[0]?.apiKey || '';
+  return getConfiguredLLMProviders()[0]?.apiKey || "";
 }
 /**
  * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
@@ -183,21 +207,22 @@ async function fetchWithRetry(
   url: string,
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 240000),
-  maxRetries = Number(process.env.LLM_MAX_RETRIES || 0)
+  maxRetries = Number(process.env.LLM_MAX_RETRIES || 0),
 ): Promise<Response> {
-  const retry429 = process.env.LLM_RETRY_429 === 'true';
-  
+  const retry429 = process.env.LLM_RETRY_429 === "true";
+
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Connection': 'keep-alive',
-    ...(options.headers as Record<string, string> || {})
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Connection: "keep-alive",
+    ...((options.headers as Record<string, string>) || {}),
   };
   const requestOptions = {
     ...options,
-    headers
+    headers,
   };
 
-  let lastError: Error = new Error('Unknown fetch error');
+  let lastError: Error = new Error("Unknown fetch error");
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const callerSignal = requestOptions.signal;
     const controller = new AbortController();
@@ -206,52 +231,70 @@ async function fetchWithRetry(
     if (callerSignal) {
       if (callerSignal.aborted) {
         clearTimeout(timer);
-        throw new Error('LLM request cancelled');
+        throw new Error("LLM request cancelled");
       }
-      if (typeof AbortSignal.any === 'function') {
+      if (typeof AbortSignal.any === "function") {
         compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
       } else {
-        callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+        callerSignal.addEventListener("abort", () => controller.abort(), {
+          once: true,
+        });
       }
     }
     try {
-      const res = await fetch(url, { ...requestOptions, signal: compositeSignal });
+      const res = await fetch(url, {
+        ...requestOptions,
+        signal: compositeSignal,
+      });
       clearTimeout(timer);
-      
+
       // 413 is a deterministic payload-budget failure and must never be
       // retried unchanged. A 429 is retried only when explicitly enabled.
-      const isRetryableStatus = res.status !== 413 && (
-        (res.status >= 500 && res.status <= 599) || 
-        (res.status === 429 && retry429)
-      );
+      const isRetryableStatus =
+        res.status !== 413 &&
+        ((res.status >= 500 && res.status <= 599) ||
+          (res.status === 429 && retry429));
 
       if (isRetryableStatus && attempt < maxRetries) {
-        const retryAfter = res.headers.get('retry-after');
+        const retryAfter = res.headers.get("retry-after");
         const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
-        const retryAfterDateMs = retryAfter && !Number.isFinite(retryAfterSeconds)
-          ? Date.parse(retryAfter) - Date.now()
-          : Number.NaN;
+        const retryAfterDateMs =
+          retryAfter && !Number.isFinite(retryAfterSeconds)
+            ? Date.parse(retryAfter) - Date.now()
+            : Number.NaN;
         const advertisedWaitMs = Number.isFinite(retryAfterSeconds)
           ? retryAfterSeconds * 1000
           : retryAfterDateMs;
         const waitMs = Math.min(
-          Math.max(Number.isFinite(advertisedWaitMs) ? advertisedWaitMs : Math.pow(2, attempt) * 2000, 0),
-          30_000
+          Math.max(
+            Number.isFinite(advertisedWaitMs)
+              ? advertisedWaitMs
+              : Math.pow(2, attempt) * 2000,
+            0,
+          ),
+          30_000,
         );
-        console.warn(`[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`);
-        await new Promise(r => setTimeout(r, waitMs));
+        console.warn(
+          `[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`,
+        );
+        await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }
       return res;
     } catch (err: any) {
       clearTimeout(timer);
-      lastError = err?.name === 'AbortError'
-        ? new Error(`LLM request timed out after ${timeoutMs / 1000}s`)
-        : (err instanceof Error ? err : new Error(String(err)));
+      lastError =
+        err?.name === "AbortError"
+          ? new Error(`LLM request timed out after ${timeoutMs / 1000}s`)
+          : err instanceof Error
+            ? err
+            : new Error(String(err));
       if (attempt < maxRetries) {
         const waitMs = Math.pow(2, attempt) * 2000;
-        console.warn(`[llm] Fetch error on attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}. Retrying in ${waitMs}ms...`);
-        await new Promise(r => setTimeout(r, waitMs));
+        console.warn(
+          `[llm] Fetch error on attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}. Retrying in ${waitMs}ms...`,
+        );
+        await new Promise((r) => setTimeout(r, waitMs));
       }
     }
   }
@@ -263,38 +306,66 @@ export class LLMProviderError extends Error {
   status?: number;
   isTokenLimit: boolean;
 
-  constructor(provider: LLMProvider, status: number | undefined, message: string) {
+  constructor(
+    provider: LLMProvider,
+    status: number | undefined,
+    message: string,
+  ) {
     super(`[${provider.name}] ${message}`);
-    this.name = 'LLMProviderError';
+    this.name = "LLMProviderError";
     this.provider = provider;
     this.status = status;
-    this.isTokenLimit = status === 413 || /413|tokens|rate_limit_exceeded|payload too large|too many tokens/i.test(message);
+    this.isTokenLimit =
+      status === 413 ||
+      /413|tokens|rate_limit_exceeded|payload too large|too many tokens/i.test(
+        message,
+      );
   }
 }
 
 function truncateProviderError(message: string): string {
-  return message.length > 500 ? `${message.slice(0, 500)}... [truncated]` : message;
+  return message.length > 500
+    ? `${message.slice(0, 500)}... [truncated]`
+    : message;
 }
 
 function formatProviderFailures(errors: Error[]): string {
-  return errors.map(error => error.message).join(' | ');
+  return errors.map((error) => error.message).join(" | ");
 }
 
 function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
-  const isTokenLimit = error instanceof LLMProviderError ? error.isTokenLimit : false;
-  if (status === 408 || status === 413 || status === 429 || status === 502 || status === 503 || status === 504 || isTokenLimit) return true;
-  if (status === 500 && /empty or invalid response|unable to get json response/i.test(error.message)) return true;
-  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|rate_limit_exceeded/i.test(error.message);
+  const isTokenLimit =
+    error instanceof LLMProviderError ? error.isTokenLimit : false;
+  if (
+    status === 408 ||
+    status === 413 ||
+    status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    isTokenLimit
+  )
+    return true;
+  if (
+    status === 500 &&
+    /empty or invalid response|unable to get json response/i.test(error.message)
+  )
+    return true;
+  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|rate_limit_exceeded/i.test(
+    error.message,
+  );
 }
 
 async function withProviderFallback<T>(
   operation: (provider: LLMProvider) => Promise<T>,
-  executionOptions: LLMExecutionOptions = {}
+  executionOptions: LLMExecutionOptions = {},
 ): Promise<T> {
   const providers = getConfiguredLLMProviders();
   if (providers.length === 0) {
-    throw new Error('No LLM provider available. Use LLM_GATEWAY_MODE=litellm for the local LiteLLM proxy, or configure OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY for direct mode.');
+    throw new Error(
+      "No LLM provider available. Use LLM_GATEWAY_MODE=litellm for the local LiteLLM proxy, or configure OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY for direct mode.",
+    );
   }
 
   const failures: Error[] = [];
@@ -304,9 +375,9 @@ async function withProviderFallback<T>(
         providerId: provider.id,
         provider: provider.name,
         model: provider.model,
-        status: 'skipped',
+        status: "skipped",
         latencyMs: 0,
-        error: 'Session circuit breaker open',
+        error: "Session circuit breaker open",
       });
       continue;
     }
@@ -318,105 +389,136 @@ async function withProviderFallback<T>(
         providerId: provider.id,
         provider: provider.name,
         model: provider.model,
-        status: 'success',
+        status: "success",
         latencyMs: Date.now() - startedAt,
       });
       return result;
     } catch (error: any) {
-      const normalized = error instanceof Error ? error : new Error(String(error));
+      const normalized =
+        error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
         model: provider.model,
-        status: 'error',
-        statusCode: normalized instanceof LLMProviderError ? normalized.status : undefined,
+        status: "error",
+        statusCode:
+          normalized instanceof LLMProviderError
+            ? normalized.status
+            : undefined,
         latencyMs: Date.now() - startedAt,
         error: truncateProviderError(normalized.message),
       });
 
       const breaker = executionOptions.circuitBreaker;
       if (breaker && isCircuitBreakingProviderFailure(normalized)) {
-        const failuresForProvider = Number(breaker.failureCounts[provider.id] || 0) + 1;
+        const failuresForProvider =
+          Number(breaker.failureCounts[provider.id] || 0) + 1;
         breaker.failureCounts[provider.id] = failuresForProvider;
         if (failuresForProvider >= breaker.failureThreshold) {
           breaker.disabledProviderIds.add(provider.id);
-          console.warn(`[llm] ${provider.name} disabled for the rest of this mining session after ${failuresForProvider} availability failures.`);
+          console.warn(
+            `[llm] ${provider.name} disabled for the rest of this mining session after ${failuresForProvider} availability failures.`,
+          );
         }
       }
-      console.warn(`[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`);
+      console.warn(
+        `[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`,
+      );
     }
   }
 
-  throw new Error(`All configured LLM providers failed: ${formatProviderFailures(failures)}`);
+  throw new Error(
+    `All configured LLM providers failed: ${formatProviderFailures(failures)}`,
+  );
 }
 
 async function sendChatCompletion(
   provider: LLMProvider,
   messages: ChatMessage[],
-  options?: { maxTokens?: number; temperature?: number; responseFormat?: { type: 'json_object' } } & Pick<LLMExecutionOptions, 'onUsage' | 'timeoutMs'>
+  options?: {
+    maxTokens?: number;
+    temperature?: number;
+    responseFormat?: { type: "json_object" };
+  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs">,
 ): Promise<string> {
   let res: Response;
   try {
-    res = await fetchWithRetry(`${provider.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        ...(provider.headers || {}),
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`,
+    res = await fetchWithRetry(
+      `${provider.baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          ...(provider.headers || {}),
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${provider.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: provider.model,
+          messages,
+          // Some third-party OpenAI-compatible gateways default to SSE when the
+          // flag is omitted. Apex expects one JSON response for structured calls.
+          stream: false,
+          temperature:
+            options?.temperature !== undefined ? options.temperature : 0.1,
+          max_tokens:
+            options?.maxTokens !== undefined ? options.maxTokens : 4000,
+          ...(options?.responseFormat
+            ? { response_format: options.responseFormat }
+            : {}),
+        }),
       },
-      body: JSON.stringify({
-        model: provider.model,
-        messages,
-        // Some third-party OpenAI-compatible gateways default to SSE when the
-        // flag is omitted. Apex expects one JSON response for structured calls.
-        stream: false,
-        temperature: options?.temperature !== undefined ? options.temperature : 0.1,
-        max_tokens: options?.maxTokens !== undefined ? options.maxTokens : 4000,
-        ...(options?.responseFormat ? { response_format: options.responseFormat } : {}),
-      })
-    }, options?.timeoutMs);
+      options?.timeoutMs,
+    );
   } catch (error: any) {
     throw new LLMProviderError(
       provider,
       undefined,
-      error instanceof Error ? error.message : String(error)
+      error instanceof Error ? error.message : String(error),
     );
   }
 
   if (!res.ok) {
     const err = truncateProviderError(await res.text());
-    throw new LLMProviderError(provider, res.status, `chat completion error ${res.status}: ${err}`);
+    throw new LLMProviderError(
+      provider,
+      res.status,
+      `chat completion error ${res.status}: ${err}`,
+    );
   }
 
   const data = await res.json();
   const usage = data?.usage;
-  if (usage && typeof options?.onUsage === 'function') {
+  if (usage && typeof options?.onUsage === "function") {
     const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
-    const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+    const outputTokens = Number(
+      usage.completion_tokens ?? usage.output_tokens ?? 0,
+    );
     const suppliedTotal = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
     options.onUsage({
       inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
       outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
-      totalTokens: Number.isFinite(suppliedTotal) && suppliedTotal > 0 ? suppliedTotal : Math.max(0, inputTokens) + Math.max(0, outputTokens),
+      totalTokens:
+        Number.isFinite(suppliedTotal) && suppliedTotal > 0
+          ? suppliedTotal
+          : Math.max(0, inputTokens) + Math.max(0, outputTokens),
       provider: provider.name,
-      model: provider.model
+      model: provider.model,
     });
   }
-  return data.choices?.[0]?.message?.content || '';
+  return data.choices?.[0]?.message?.content || "";
 }
-
 
 /** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
 function normalizeSchema(schema: any): any {
-  if (!schema || typeof schema !== 'object') return schema;
+  if (!schema || typeof schema !== "object") return schema;
   const out: any = {};
   for (const [k, v] of Object.entries(schema)) {
-    if (k === 'type' && typeof v === 'string') {
+    if (k === "type" && typeof v === "string") {
       out[k] = (v as string).toLowerCase();
     } else if (Array.isArray(v)) {
       out[k] = v.map((item: any) => normalizeSchema(item));
-    } else if (typeof v === 'object' && v !== null) {
+    } else if (typeof v === "object" && v !== null) {
       out[k] = normalizeSchema(v);
     } else {
       out[k] = v;
@@ -430,7 +532,7 @@ function normalizeSchema(schema: any): any {
  * Returns raw text (titles + snippets) + source links for downstream extraction.
  */
 function retryAfterMsFromResponse(res: Response) {
-  const retryAfter = res.headers.get('retry-after');
+  const retryAfter = res.headers.get("retry-after");
   if (!retryAfter) return undefined;
   const seconds = Number(retryAfter);
   if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
@@ -441,9 +543,9 @@ function retryAfterMsFromResponse(res: Response) {
 export type TavilySearchOptions = {
   includeDomains?: string[];
   excludeDomains?: string[];
-  searchDepth?: 'basic' | 'fast' | 'ultra-fast' | 'advanced';
-  topic?: 'general' | 'news';
-  timeRange?: 'day' | 'week' | 'month' | 'year';
+  searchDepth?: "basic" | "fast" | "ultra-fast" | "advanced";
+  topic?: "general" | "news";
+  timeRange?: "day" | "week" | "month" | "year";
   country?: string;
   maxResults?: number;
   includeRawContent?: boolean;
@@ -457,48 +559,68 @@ export type TavilySearchOptions = {
  * the provider boundary instead of sending a path as a supposed domain.
  */
 export function normalizeTavilyDomain(value: string) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
+  const raw = String(value || "").trim();
+  if (!raw) return "";
   try {
     const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
-    return parsed.hostname.toLowerCase().replace(/^www\./, '');
+    return parsed.hostname.toLowerCase().replace(/^www\./, "");
   } catch {
-    return '';
+    return "";
   }
 }
 
 export async function tavilySearch(
   query: string,
-  domainsOrOptions?: string[] | TavilySearchOptions
-): Promise<{ text: string; sources: { title: string; uri: string }[], items: any[] }> {
+  domainsOrOptions?: string[] | TavilySearchOptions,
+): Promise<{
+  text: string;
+  sources: { title: string; uri: string }[];
+  items: any[];
+}> {
   const options: TavilySearchOptions = Array.isArray(domainsOrOptions)
     ? { includeDomains: domainsOrOptions }
-    : (domainsOrOptions || {});
-  const requestedDepth = options.searchDepth || process.env.TAVILY_SEARCH_DEPTH || 'basic';
-  const searchDepth = ['basic', 'fast', 'ultra-fast', 'advanced'].includes(requestedDepth)
-    ? requestedDepth as TavilySearchOptions['searchDepth']
-    : 'basic';
-  const maxResults = Math.min(Math.max(Number(options.maxResults || process.env.TAVILY_MAX_RESULTS || 10), 1), 20);
-  const includeRawContent = options.includeRawContent ?? process.env.TAVILY_INCLUDE_RAW_CONTENT !== 'false';
-  const topic = options.topic === 'news' ? 'news' : 'general';
+    : domainsOrOptions || {};
+  const requestedDepth =
+    options.searchDepth || process.env.TAVILY_SEARCH_DEPTH || "basic";
+  const searchDepth = ["basic", "fast", "ultra-fast", "advanced"].includes(
+    requestedDepth,
+  )
+    ? (requestedDepth as TavilySearchOptions["searchDepth"])
+    : "basic";
+  const maxResults = Math.min(
+    Math.max(
+      Number(options.maxResults || process.env.TAVILY_MAX_RESULTS || 10),
+      1,
+    ),
+    20,
+  );
+  const includeRawContent =
+    options.includeRawContent ??
+    process.env.TAVILY_INCLUDE_RAW_CONTENT !== "false";
+  const topic = options.topic === "news" ? "news" : "general";
   // Tavily documents lowercase country enum values (for example, "united states").
   const country = options.country?.trim().toLowerCase();
-  const chunksPerSource = searchDepth === 'advanced' || searchDepth === 'fast'
-    ? Math.min(Math.max(Number(options.chunksPerSource || 2), 1), 3)
-    : undefined;
-  const includeDomains = Array.from(new Set((options.includeDomains || [])
-    .map(normalizeTavilyDomain)
-    .filter(Boolean))).slice(0, 30);
-  const excludeDomains = Array.from(new Set((options.excludeDomains || [])
-    .map(normalizeTavilyDomain)
-    .filter(Boolean))).slice(0, 30);
+  const chunksPerSource =
+    searchDepth === "advanced" || searchDepth === "fast"
+      ? Math.min(Math.max(Number(options.chunksPerSource || 2), 1), 3)
+      : undefined;
+  const includeDomains = Array.from(
+    new Set(
+      (options.includeDomains || []).map(normalizeTavilyDomain).filter(Boolean),
+    ),
+  ).slice(0, 30);
+  const excludeDomains = Array.from(
+    new Set(
+      (options.excludeDomains || []).map(normalizeTavilyDomain).filter(Boolean),
+    ),
+  ).slice(0, 30);
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
-    const res = await fetch('https://api.tavily.com/search', {
-      method: 'POST',
+    const res = await fetch("https://api.tavily.com/search", {
+      method: "POST",
       signal: options.signal,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         query,
@@ -511,7 +633,9 @@ export async function tavilySearch(
         ...(includeDomains.length ? { include_domains: includeDomains } : {}),
         ...(excludeDomains.length ? { exclude_domains: excludeDomains } : {}),
         ...(options.timeRange ? { time_range: options.timeRange } : {}),
-        ...(topic === 'news' ? { topic } : { topic, ...(country ? { country } : {}) })
+        ...(topic === "news"
+          ? { topic }
+          : { topic, ...(country ? { country } : {}) }),
       }),
     });
 
@@ -520,7 +644,7 @@ export async function tavilySearch(
       throw new KeyRotationError(`Tavily search error ${res.status}: ${err}`, {
         statusCode: res.status,
         responseText: err,
-        retryAfterMs: retryAfterMsFromResponse(res)
+        retryAfterMs: retryAfterMsFromResponse(res),
       });
     }
 
@@ -528,13 +652,13 @@ export async function tavilySearch(
   });
   const items = Array.isArray(data.results) ? data.results : [];
 
-  let text = '';
+  let text = "";
   const sources: { title: string; uri: string }[] = [];
 
   for (const item of items) {
-    const title = item.title || 'Untitled result';
-    const url = item.url || '';
-    const snippet = item.content || item.raw_content || '';
+    const title = item.title || "Untitled result";
+    const url = item.url || "";
+    const snippet = item.content || item.raw_content || "";
     text += `Title: ${title}\nLink: ${url}\nSnippet: ${snippet}\n\n`;
     if (url) sources.push({ title, uri: url });
   }
@@ -552,33 +676,36 @@ export async function tavilyExtract(
   urls: string[],
   query: string,
   options?: {
-    extractDepth?: 'basic' | 'advanced';
+    extractDepth?: "basic" | "advanced";
     chunksPerSource?: number;
     timeout?: number;
     signal?: AbortSignal;
-  }
+  },
 ): Promise<TavilyExtractResult[]> {
   const cleanUrls = Array.from(new Set(urls.filter(Boolean))).slice(0, 20);
   if (cleanUrls.length === 0) return [];
 
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
-    const res = await fetch('https://api.tavily.com/extract', {
-      method: 'POST',
+    const res = await fetch("https://api.tavily.com/extract", {
+      method: "POST",
       signal: options?.signal,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         urls: cleanUrls,
         query,
-        extract_depth: options?.extractDepth || 'basic',
-        chunks_per_source: Math.min(Math.max(Number(options?.chunksPerSource || 5), 1), 5),
-        format: 'markdown',
+        extract_depth: options?.extractDepth || "basic",
+        chunks_per_source: Math.min(
+          Math.max(Number(options?.chunksPerSource || 5), 1),
+          5,
+        ),
+        format: "markdown",
         include_images: false,
         include_favicon: false,
         include_usage: true,
-        timeout: Math.min(Math.max(Number(options?.timeout || 30), 1), 120)
+        timeout: Math.min(Math.max(Number(options?.timeout || 30), 1), 120),
       }),
     });
 
@@ -587,18 +714,20 @@ export async function tavilyExtract(
       throw new KeyRotationError(`Tavily extract error ${res.status}: ${err}`, {
         statusCode: res.status,
         responseText: err,
-        retryAfterMs: retryAfterMsFromResponse(res)
+        retryAfterMs: retryAfterMsFromResponse(res),
       });
     }
 
     return res.json();
   });
   const results = Array.isArray(data.results) ? data.results : [];
-  return results.map((item: any) => ({
-    url: item.url || '',
-    rawContent: item.raw_content || item.content || '',
-    images: Array.isArray(item.images) ? item.images : []
-  })).filter((item: TavilyExtractResult) => item.url && item.rawContent);
+  return results
+    .map((item: any) => ({
+      url: item.url || "",
+      rawContent: item.raw_content || item.content || "",
+      images: Array.isArray(item.images) ? item.images : [],
+    }))
+    .filter((item: TavilyExtractResult) => item.url && item.rawContent);
 }
 
 /**
@@ -607,38 +736,51 @@ export async function tavilyExtract(
 export async function openAIText(
   prompt: string,
   systemInstruction?: string,
-  options?: { maxTokens?: number; temperature?: number } & LLMExecutionOptions
+  options?: { maxTokens?: number; temperature?: number } & LLMExecutionOptions,
 ): Promise<{ text: string; provider: string; model: string; baseUrl: string }> {
   const messages: ChatMessage[] = [];
   if (systemInstruction) {
-    messages.push({ role: 'system', content: (systemInstruction as any).toWellFormed ? (systemInstruction as any).toWellFormed() : systemInstruction });
+    messages.push({
+      role: "system",
+      content: (systemInstruction as any).toWellFormed
+        ? (systemInstruction as any).toWellFormed()
+        : systemInstruction,
+    });
   }
-  messages.push({ role: 'user', content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt });
+  messages.push({
+    role: "user",
+    content: (prompt as any).toWellFormed
+      ? (prompt as any).toWellFormed()
+      : prompt,
+  });
 
-  return withProviderFallback(async (provider) => ({
-    text: await sendChatCompletion(provider, messages, options),
-    provider: provider.name,
-    model: provider.model,
-    baseUrl: provider.baseUrl,
-  }), options);
+  return withProviderFallback(
+    async (provider) => ({
+      text: await sendChatCompletion(provider, messages, options),
+      provider: provider.name,
+      model: provider.model,
+      baseUrl: provider.baseUrl,
+    }),
+    options,
+  );
 }
 
 function stripMarkdownFence(str: string): string {
   let cleaned = str.trim();
-  if (cleaned.startsWith('```')) {
-    const lines = cleaned.split('\n');
-    if (lines[0].startsWith('```')) lines.shift();
-    if (lines[lines.length - 1]?.trim() === '```') lines.pop();
-    cleaned = lines.join('\n').trim();
+  if (cleaned.startsWith("```")) {
+    const lines = cleaned.split("\n");
+    if (lines[0].startsWith("```")) lines.shift();
+    if (lines[lines.length - 1]?.trim() === "```") lines.pop();
+    cleaned = lines.join("\n").trim();
   }
   return cleaned;
 }
 
 function stripReasoningBlocks(str: string): string {
-  let cleaned = str.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  const finalClose = cleaned.toLowerCase().lastIndexOf('</think>');
+  let cleaned = str.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  const finalClose = cleaned.toLowerCase().lastIndexOf("</think>");
   if (finalClose !== -1) {
-    cleaned = cleaned.slice(finalClose + '</think>'.length).trim();
+    cleaned = cleaned.slice(finalClose + "</think>".length).trim();
   }
   return cleaned;
 }
@@ -648,12 +790,19 @@ function getMarkedJSONBlock(str: string): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function findBalancedJSONCandidates(str: string, preferArray: boolean): string[] {
+function findBalancedJSONCandidates(
+  str: string,
+  preferArray: boolean,
+): string[] {
   const candidates: string[] = [];
-  const starts = preferArray ? ['[', '{'] : ['{', '['];
+  const starts = preferArray ? ["[", "{"] : ["{", "["];
 
   for (const startChar of starts) {
-    for (let start = str.indexOf(startChar); start !== -1; start = str.indexOf(startChar, start + 1)) {
+    for (
+      let start = str.indexOf(startChar);
+      start !== -1;
+      start = str.indexOf(startChar, start + 1)
+    ) {
       const stack: string[] = [];
       let inString = false;
       let escaped = false;
@@ -663,7 +812,7 @@ function findBalancedJSONCandidates(str: string, preferArray: boolean): string[]
         if (inString) {
           if (escaped) {
             escaped = false;
-          } else if (ch === '\\') {
+          } else if (ch === "\\") {
             escaped = true;
           } else if (ch === '"') {
             inString = false;
@@ -675,9 +824,9 @@ function findBalancedJSONCandidates(str: string, preferArray: boolean): string[]
           inString = true;
           continue;
         }
-        if (ch === '{') stack.push('}');
-        else if (ch === '[') stack.push(']');
-        else if (ch === '}' || ch === ']') {
+        if (ch === "{") stack.push("}");
+        else if (ch === "[") stack.push("]");
+        else if (ch === "}" || ch === "]") {
           if (stack.pop() !== ch) break;
           if (stack.length === 0) {
             candidates.push(str.slice(start, i + 1));
@@ -696,18 +845,20 @@ function cleanJSONString(str: string): string {
   if (marked) return stripMarkdownFence(marked);
 
   let cleaned = stripMarkdownFence(stripReasoningBlocks(str));
-  const firstBrace = cleaned.indexOf('{');
-  const firstBracket = cleaned.indexOf('[');
+  const firstBrace = cleaned.indexOf("{");
+  const firstBracket = cleaned.indexOf("[");
   let startIdx = -1;
-  if (firstBrace !== -1 && firstBracket !== -1) startIdx = Math.min(firstBrace, firstBracket);
+  if (firstBrace !== -1 && firstBracket !== -1)
+    startIdx = Math.min(firstBrace, firstBracket);
   else if (firstBrace !== -1) startIdx = firstBrace;
   else if (firstBracket !== -1) startIdx = firstBracket;
 
   if (startIdx !== -1) {
-    const lastBrace = cleaned.lastIndexOf('}');
-    const lastBracket = cleaned.lastIndexOf(']');
+    const lastBrace = cleaned.lastIndexOf("}");
+    const lastBracket = cleaned.lastIndexOf("]");
     const endIdx = Math.max(lastBrace, lastBracket);
-    if (endIdx !== -1 && endIdx > startIdx) cleaned = cleaned.slice(startIdx, endIdx + 1);
+    if (endIdx !== -1 && endIdx > startIdx)
+      cleaned = cleaned.slice(startIdx, endIdx + 1);
   }
   return cleaned;
 }
@@ -720,23 +871,28 @@ export async function openAIStructured<T>(
   prompt: string,
   schema: any,
   systemInstruction?: string,
-  options?: { maxTokens?: number; temperature?: number; retryOnParseFailure?: boolean } & LLMExecutionOptions
+  options?: {
+    maxTokens?: number;
+    temperature?: number;
+    retryOnParseFailure?: boolean;
+  } & LLMExecutionOptions,
 ): Promise<T> {
-  const jsonMode = process.env.LLM_JSON_MODE || 'off';
-  const useJsonMode = jsonMode === 'on' || jsonMode === 'auto';
+  const jsonMode = process.env.LLM_JSON_MODE || "off";
+  const useJsonMode = jsonMode === "on" || jsonMode === "auto";
   const normalizedSchema = normalizeSchema(schema);
-  const schemaIsArray = normalizedSchema?.type === 'array';
-  const responseSchema = useJsonMode && schemaIsArray
-    ? {
-        type: 'object',
-        properties: {
-          items: normalizedSchema
-        },
-        required: ['items']
-      }
-    : normalizedSchema;
+  const schemaIsArray = normalizedSchema?.type === "array";
+  const responseSchema =
+    useJsonMode && schemaIsArray
+      ? {
+          type: "object",
+          properties: {
+            items: normalizedSchema,
+          },
+          required: ["items"],
+        }
+      : normalizedSchema;
 
-  let sysPrompt = systemInstruction || '';
+  let sysPrompt = systemInstruction || "";
   if (useJsonMode) {
     sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. Do not include markdown, comments, <think> tags, explanations, or text before/after the JSON. The JSON must exactly match this schema:\n${JSON.stringify(responseSchema, null, 2)}`;
   } else {
@@ -744,30 +900,55 @@ export async function openAIStructured<T>(
   }
 
   const messages: ChatMessage[] = [
-    { role: 'system', content: (sysPrompt as any).toWellFormed ? (sysPrompt as any).toWellFormed() : sysPrompt },
-    { role: 'user', content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt }
+    {
+      role: "system",
+      content: (sysPrompt as any).toWellFormed
+        ? (sysPrompt as any).toWellFormed()
+        : sysPrompt,
+    },
+    {
+      role: "user",
+      content: (prompt as any).toWellFormed
+        ? (prompt as any).toWellFormed()
+        : prompt,
+    },
   ];
 
-  const schemaRequired = Array.isArray(normalizedSchema?.required) ? normalizedSchema.required : [];
+  const schemaRequired = Array.isArray(normalizedSchema?.required)
+    ? normalizedSchema.required
+    : [];
   const coerceParsed = (parsed: any): T | null => {
     if (schemaIsArray) {
-      const value = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.items) ? parsed.items : null);
+      const value = Array.isArray(parsed)
+        ? parsed
+        : parsed && Array.isArray(parsed.items)
+          ? parsed.items
+          : null;
       if (!Array.isArray(value)) return null;
-      if (value.length > 0 && !value.some((item: any) => item && typeof item === 'object' && (
-        typeof item.fullName === 'string' ||
-        typeof item.headline === 'string' ||
-        typeof item.currentTitle === 'string' ||
-        typeof item.currentCompany === 'string' ||
-        item.contactDetails
-      ))) return null;
+      if (
+        value.length > 0 &&
+        !value.some(
+          (item: any) =>
+            item &&
+            typeof item === "object" &&
+            (typeof item.fullName === "string" ||
+              typeof item.headline === "string" ||
+              typeof item.currentTitle === "string" ||
+              typeof item.currentCompany === "string" ||
+              item.contactDetails),
+        )
+      )
+        return null;
       return value as T;
     }
 
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return null;
     for (const key of schemaRequired) {
       if (!(key in parsed)) return null;
       const schemaProperty = normalizedSchema?.properties?.[key];
-      if (schemaProperty?.type === 'array' && !Array.isArray(parsed[key])) return null;
+      if (schemaProperty?.type === "array" && !Array.isArray(parsed[key]))
+        return null;
     }
     return parsed as T;
   };
@@ -776,45 +957,53 @@ export async function openAIStructured<T>(
     const sources = [
       getMarkedJSONBlock(rawText),
       stripReasoningBlocks(rawText),
-      rawText
+      rawText,
     ].filter((source): source is string => Boolean(source && source.trim()));
 
     const parseErrors: string[] = [];
     for (const source of sources) {
-      const directCandidates = [cleanJSONString(source), ...findBalancedJSONCandidates(source, schemaIsArray)];
+      const directCandidates = [
+        cleanJSONString(source),
+        ...findBalancedJSONCandidates(source, schemaIsArray),
+      ];
       for (const candidate of directCandidates) {
         try {
           const parsed = JSON.parse(stripMarkdownFence(candidate));
           const coerced = coerceParsed(parsed);
           if (coerced !== null) return coerced;
         } catch (err: any) {
-          if (parseErrors.length < 3) parseErrors.push(err?.message || String(err));
+          if (parseErrors.length < 3)
+            parseErrors.push(err?.message || String(err));
         }
       }
     }
 
-    throw new Error(parseErrors[0] || 'No schema-matching JSON block found');
+    throw new Error(parseErrors[0] || "No schema-matching JSON block found");
   };
 
   return withProviderFallback(async (provider) => {
-    let text = '';
+    let text = "";
     try {
       text = await sendChatCompletion(provider, messages, {
         ...options,
-        ...(useJsonMode ? { responseFormat: { type: 'json_object' as const } } : {}),
+        ...(useJsonMode
+          ? { responseFormat: { type: "json_object" as const } }
+          : {}),
       });
     } catch (error: any) {
       const isJsonValidationError =
         error instanceof LLMProviderError &&
         (error.status === 400 ||
-        error.status === 422 ||
-        error.message.includes('json_validate_failed') ||
-        error.message.includes('Failed to validate JSON') ||
-        error.message.includes('json_validate') ||
-        error.message.includes('response_format'));
+          error.status === 422 ||
+          error.message.includes("json_validate_failed") ||
+          error.message.includes("Failed to validate JSON") ||
+          error.message.includes("json_validate") ||
+          error.message.includes("response_format"));
 
-      if (jsonMode === 'auto' && isJsonValidationError) {
-        console.warn(`[llm] Structured output call failed for ${provider.name}. Retrying without response_format due to LLM_JSON_MODE=auto...`);
+      if (jsonMode === "auto" && isJsonValidationError) {
+        console.warn(
+          `[llm] Structured output call failed for ${provider.name}. Retrying without response_format due to LLM_JSON_MODE=auto...`,
+        );
         text = await sendChatCompletion(provider, messages, options);
       } else {
         throw error;
@@ -826,34 +1015,42 @@ export async function openAIStructured<T>(
     } catch (firstParseError: any) {
       const shouldRetry = options?.retryOnParseFailure !== false;
       if (!shouldRetry) {
-        throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response (parse_error=${firstParseError?.message || 'unknown'}): ${text.slice(0, 300)}`);
+        throw new Error(
+          `[${provider.name}] Failed to parse OpenAI-compatible JSON response (parse_error=${firstParseError?.message || "unknown"}): ${text.slice(0, 300)}`,
+        );
       }
 
       const retryMaxTokens = Math.max(
         Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
-        Math.min((options?.maxTokens || 4000) * 2, 8000)
+        Math.min((options?.maxTokens || 4000) * 2, 8000),
       );
       const retryMessages: ChatMessage[] = [
         {
-          role: 'system',
-          content: `${sysPrompt}\n\nYour previous response was not usable. You may keep reasoning in <think>...</think>, but then output the final JSON only between FINAL_JSON_START and FINAL_JSON_END. Keep summaries and evidence reasons short enough to finish within the token limit.`
+          role: "system",
+          content: `${sysPrompt}\n\nYour previous response was not usable. You may keep reasoning in <think>...</think>, but then output the final JSON only between FINAL_JSON_START and FINAL_JSON_END. Keep summaries and evidence reasons short enough to finish within the token limit.`,
         },
         {
-          role: 'user',
-          content: (prompt as any).toWellFormed ? (prompt as any).toWellFormed() : prompt
-        }
+          role: "user",
+          content: (prompt as any).toWellFormed
+            ? (prompt as any).toWellFormed()
+            : prompt,
+        },
       ];
       const retryText = await sendChatCompletion(provider, retryMessages, {
         ...options,
         maxTokens: retryMaxTokens,
         temperature: 0,
-        ...(useJsonMode ? { responseFormat: { type: 'json_object' as const } } : {}),
+        ...(useJsonMode
+          ? { responseFormat: { type: "json_object" as const } }
+          : {}),
       });
 
       try {
         return parseStructuredText(retryText);
       } catch {
-        throw new Error(`[${provider.name}] Failed to parse OpenAI-compatible JSON response after retry (first_parse_error=${firstParseError?.message || 'unknown'}): ${retryText.slice(0, 300)}`);
+        throw new Error(
+          `[${provider.name}] Failed to parse OpenAI-compatible JSON response after retry (first_parse_error=${firstParseError?.message || "unknown"}): ${retryText.slice(0, 300)}`,
+        );
       }
     }
   }, options);
@@ -874,7 +1071,12 @@ export type RawExtractedCandidate = {
   location?: string;
   headline?: string;
   seniorityLevel?: string;
-  contactDetails?: { linkedinUrl?: string; email?: string; phone?: string; website?: string };
+  contactDetails?: {
+    linkedinUrl?: string;
+    email?: string;
+    phone?: string;
+    website?: string;
+  };
   experiences?: Array<{ title: string; company: string; duration?: string }>;
   summary?: string;
   extractionConfidence: number; // 1-10
@@ -883,23 +1085,62 @@ export type RawExtractedCandidate = {
 export const singleProfileSchema = {
   type: Type.OBJECT,
   properties: {
-    fullName: { type: Type.STRING, description: "Person's first name and last name" },
-    headline: { type: Type.STRING, description: "Professional headline or current summary statement" },
-    currentCompany: { type: Type.STRING, description: "Name of current employer company" },
+    fullName: {
+      type: Type.STRING,
+      description: "Person's first name and last name",
+    },
+    headline: {
+      type: Type.STRING,
+      description: "Professional headline or current summary statement",
+    },
+    currentCompany: {
+      type: Type.STRING,
+      description: "Name of current employer company",
+    },
     currentTitle: { type: Type.STRING, description: "Current role/title" },
-    seniorityLevel: { type: Type.STRING, description: "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner." },
-    companySizeEst: { type: Type.STRING, description: "1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN" },
+    seniorityLevel: {
+      type: Type.STRING,
+      description:
+        "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner.",
+    },
+    companySizeEst: {
+      type: Type.STRING,
+      description: "1-10 / 11-50 / 51-200 / 201-500 / 500+ / UNKNOWN",
+    },
     location: { type: Type.STRING, description: "City, State or Country" },
-    summary: { type: Type.STRING, description: "A high-quality 2-3 sentence professional summary" },
-    industry: { type: Type.STRING, description: "The industry category (e.g. Software, Finance, Healthcare, Real Estate)" },
+    summary: {
+      type: Type.STRING,
+      description: "A high-quality 2-3 sentence professional summary",
+    },
+    industry: {
+      type: Type.STRING,
+      description:
+        "The industry category (e.g. Software, Finance, Healthcare, Real Estate)",
+    },
     contactDetails: {
       type: Type.OBJECT,
       properties: {
-        email: { type: Type.STRING, description: "Email if found, or INFERRED email pattern based on company data (e.g. jsmith@company.com). Label appropriately." },
-        phone: { type: Type.STRING, description: "Mobile or office contact phone number if found" },
-        linkedinUrl: { type: Type.STRING, description: "Complete LinkedIn profile URL" },
-        twitter: { type: Type.STRING, description: "Twitter/X handle if found" },
-        website: { type: Type.STRING, description: "Company or personal portfolio website" },
+        email: {
+          type: Type.STRING,
+          description:
+            "Email if found, or INFERRED email pattern based on company data (e.g. jsmith@company.com). Label appropriately.",
+        },
+        phone: {
+          type: Type.STRING,
+          description: "Mobile or office contact phone number if found",
+        },
+        linkedinUrl: {
+          type: Type.STRING,
+          description: "Complete LinkedIn profile URL",
+        },
+        twitter: {
+          type: Type.STRING,
+          description: "Twitter/X handle if found",
+        },
+        website: {
+          type: Type.STRING,
+          description: "Company or personal portfolio website",
+        },
       },
     },
     experiences: {
@@ -909,9 +1150,15 @@ export const singleProfileSchema = {
         properties: {
           title: { type: Type.STRING, description: "Role title" },
           company: { type: Type.STRING, description: "Company name" },
-          duration: { type: Type.STRING, description: "E.g., 2021 - Present or Jan 2020 - Dec 2022" },
+          duration: {
+            type: Type.STRING,
+            description: "E.g., 2021 - Present or Jan 2020 - Dec 2022",
+          },
           location: { type: Type.STRING, description: "Role location" },
-          description: { type: Type.STRING, description: "Summary of main tasks/impact" },
+          description: {
+            type: Type.STRING,
+            description: "Summary of main tasks/impact",
+          },
         },
         required: ["title", "company"],
       },
@@ -921,7 +1168,10 @@ export const singleProfileSchema = {
       items: {
         type: Type.OBJECT,
         properties: {
-          school: { type: Type.STRING, description: "University or institution name" },
+          school: {
+            type: Type.STRING,
+            description: "University or institution name",
+          },
           degree: { type: Type.STRING, description: "B.S., M.S., Ph.D, etc." },
           fieldOfStudy: { type: Type.STRING, description: "Major study" },
           duration: { type: Type.STRING, description: "E.g., 2016 - 2020" },
@@ -930,12 +1180,35 @@ export const singleProfileSchema = {
       },
     },
     skills: { type: Type.ARRAY, items: { type: Type.STRING } },
-    yearsInRole: { type: Type.STRING, description: "Calculated if dates available" },
-    careerSignals: { type: Type.ARRAY, items: { type: Type.STRING }, description: "3 bullet points - notable transitions, promotions" },
-    techStackHints: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Tools/software mentioned" },
-    painIndicators: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Quoted phrases or inferred needs" },
-    enrichmentGaps: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List all MISSING fields that block outreach" },
-    extractionConfidence: { type: Type.NUMBER, description: "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10)." },
+    yearsInRole: {
+      type: Type.STRING,
+      description: "Calculated if dates available",
+    },
+    careerSignals: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "3 bullet points - notable transitions, promotions",
+    },
+    techStackHints: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Tools/software mentioned",
+    },
+    painIndicators: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Quoted phrases or inferred needs",
+    },
+    enrichmentGaps: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "List all MISSING fields that block outreach",
+    },
+    extractionConfidence: {
+      type: Type.NUMBER,
+      description:
+        "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10).",
+    },
   },
   required: ["fullName", "extractionConfidence"],
 };
@@ -1009,7 +1282,6 @@ Refuse to generate outreach copy that:
 *End of System Prompt - Apex LinkedIn CRM Intelligence Platform v2.0*
 `;
 
-
 export const leadsArraySchema = {
   type: Type.ARRAY,
   items: singleProfileSchema,
@@ -1020,41 +1292,78 @@ export const searchQueriesSchema = {
   properties: {
     queries: {
       type: Type.ARRAY,
-      description: "Array of targeted query plan objects. Legacy string entries are tolerated by server normalization.",
+      description:
+        "Array of targeted query plan objects. Legacy string entries are tolerated by server normalization.",
       items: {
         type: Type.OBJECT,
         properties: {
-          query: { type: Type.STRING, description: "Plain search phrase. Do not include LinkedIn or site:." },
-          family: { type: Type.STRING, description: "persona_title | industry_vertical | pain_signal | growth_signal | tooling_signal | local_market | company_type" },
-          intent: { type: Type.STRING, description: "find_decision_makers | find_buying_signal | expand_surface_area | recover_from_low_yield | reduce_duplicates" },
-          expectedSignal: { type: Type.STRING, description: "Short reason this query should surface relevant prospects" },
-          priority: { type: Type.NUMBER, description: "Lower numbers run first" },
+          query: {
+            type: Type.STRING,
+            description:
+              "Plain search phrase. Do not include LinkedIn or site:.",
+          },
+          family: {
+            type: Type.STRING,
+            description:
+              "persona_title | industry_vertical | pain_signal | growth_signal | tooling_signal | local_market | company_type",
+          },
+          intent: {
+            type: Type.STRING,
+            description:
+              "find_decision_makers | find_buying_signal | expand_surface_area | recover_from_low_yield | reduce_duplicates",
+          },
+          expectedSignal: {
+            type: Type.STRING,
+            description:
+              "Short reason this query should surface relevant prospects",
+          },
+          priority: {
+            type: Type.NUMBER,
+            description: "Lower numbers run first",
+          },
           lane: { type: Type.STRING, description: "person | account | signal" },
-          providerPreference: { type: Type.STRING, description: "tavily | brightdata | corroborate" },
-          searchDepth: { type: Type.STRING, description: "basic | fast | ultra-fast | advanced. Prefer basic; advanced only for one high-value signal task." },
+          providerPreference: {
+            type: Type.STRING,
+            description: "tavily | brightdata | corroborate",
+          },
+          searchDepth: {
+            type: Type.STRING,
+            description:
+              "basic | fast | ultra-fast | advanced. Prefer basic; advanced only for one high-value signal task.",
+          },
           topic: { type: Type.STRING, description: "general | news" },
-          timeRange: { type: Type.STRING, description: "week | month | year when recency is relevant" },
-          country: { type: Type.STRING, description: "Country name only when explicit geography matters" },
+          timeRange: {
+            type: Type.STRING,
+            description: "week | month | year when recency is relevant",
+          },
+          country: {
+            type: Type.STRING,
+            description: "Country name only when explicit geography matters",
+          },
         },
         required: ["query"],
-      }
-    }
+      },
+    },
   },
-  required: ["queries"]
+  required: ["queries"],
 };
 
 export const searchSpecSchema = {
   type: Type.OBJECT,
   properties: {
-    mode: { type: Type.STRING, description: 'person_first | account_first | signal_first | local_business' },
+    mode: {
+      type: Type.STRING,
+      description:
+        "person_first | account_first | signal_first | local_business",
+    },
     person: {
       type: Type.OBJECT,
       properties: {
         includeTitles: { type: Type.ARRAY, items: { type: Type.STRING } },
         excludeTitles: { type: Type.ARRAY, items: { type: Type.STRING } },
         seniorities: { type: Type.ARRAY, items: { type: Type.STRING } },
-        locations: { type: Type.ARRAY, items: { type: Type.STRING } }
-      }
+        locations: { type: Type.ARRAY, items: { type: Type.STRING } },
+      },
     },
     company: {
       type: Type.OBJECT,
@@ -1062,13 +1371,31 @@ export const searchSpecSchema = {
         industries: { type: Type.ARRAY, items: { type: Type.STRING } },
         keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
         locations: { type: Type.ARRAY, items: { type: Type.STRING } },
-        employeeRange: { type: Type.OBJECT, properties: { min: { type: Type.NUMBER }, max: { type: Type.NUMBER } } }
-      }
+        employeeRange: {
+          type: Type.OBJECT,
+          properties: {
+            min: { type: Type.NUMBER },
+            max: { type: Type.NUMBER },
+          },
+        },
+      },
     },
-    signals: { type: Type.OBJECT, properties: { include: { type: Type.ARRAY, items: { type: Type.STRING } }, recencyDays: { type: Type.NUMBER } } },
-    exclusions: { type: Type.OBJECT, properties: { companies: { type: Type.ARRAY, items: { type: Type.STRING } }, domains: { type: Type.ARRAY, items: { type: Type.STRING } } } },
-    maxPerCompany: { type: Type.NUMBER }
-  }
+    signals: {
+      type: Type.OBJECT,
+      properties: {
+        include: { type: Type.ARRAY, items: { type: Type.STRING } },
+        recencyDays: { type: Type.NUMBER },
+      },
+    },
+    exclusions: {
+      type: Type.OBJECT,
+      properties: {
+        companies: { type: Type.ARRAY, items: { type: Type.STRING } },
+        domains: { type: Type.ARRAY, items: { type: Type.STRING } },
+      },
+    },
+    maxPerCompany: { type: Type.NUMBER },
+  },
 };
 
 // -----------------------------------------------------------------------------
@@ -1105,21 +1432,55 @@ export const bulkSingleProfileSchema = {
     headline: { type: Type.STRING, description: "Professional headline" },
     currentCompany: { type: Type.STRING, description: "Current employer" },
     currentTitle: { type: Type.STRING, description: "Current role/title" },
-    seniorityLevel: { type: Type.STRING, description: "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner." },
-    companySizeEst: { type: Type.STRING, description: "Company size only when the source explicitly provides it; otherwise UNKNOWN" },
+    seniorityLevel: {
+      type: Type.STRING,
+      description:
+        "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner.",
+    },
+    companySizeEst: {
+      type: Type.STRING,
+      description:
+        "Company size only when the source explicitly provides it; otherwise UNKNOWN",
+    },
     location: { type: Type.STRING, description: "City, State or Country" },
-    industry: { type: Type.STRING, description: "Industry category (e.g. Software, Finance, Healthcare)" },
-    summary: { type: Type.STRING, description: "2-sentence professional summary" },
+    industry: {
+      type: Type.STRING,
+      description: "Industry category (e.g. Software, Finance, Healthcare)",
+    },
+    summary: {
+      type: Type.STRING,
+      description: "2-sentence professional summary",
+    },
     contactDetails: {
       type: Type.OBJECT,
       properties: {
-        linkedinUrl: { type: Type.STRING, description: "Full public professional profile URL when supplied by source LINK" },
-        website: { type: Type.STRING, description: "Company or personal website" },
+        linkedinUrl: {
+          type: Type.STRING,
+          description:
+            "Full public professional profile URL when supplied by source LINK",
+        },
+        website: {
+          type: Type.STRING,
+          description: "Company or personal website",
+        },
       },
     },
-    sourceProvider: { type: Type.STRING, description: "tavily or brightdata, copied from SOURCE_PROVIDER when present" },
-    evidenceReasons: { type: Type.ARRAY, items: { type: Type.STRING }, description: "1-3 short evidence-backed reasons this prospect matches the user query" },
-    extractionConfidence: { type: Type.NUMBER, description: "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10)." },
+    sourceProvider: {
+      type: Type.STRING,
+      description:
+        "tavily or brightdata, copied from SOURCE_PROVIDER when present",
+    },
+    evidenceReasons: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description:
+        "1-3 short evidence-backed reasons this prospect matches the user query",
+    },
+    extractionConfidence: {
+      type: Type.NUMBER,
+      description:
+        "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10).",
+    },
   },
   required: ["fullName", "extractionConfidence"],
 };

@@ -1,25 +1,34 @@
-import fs from 'fs';
-import path from 'path';
-import crypto from 'crypto';
-import { DatabaseSync } from 'node:sqlite';
-import dotenv from 'dotenv';
-import { clampSearchLogRetentionLimit, setLlmStageLogger, type LlmStageLogEntry } from './leadSearch/telemetry.js';
-import { REVIEW_STATUS_SET as REVIEW_STATUSES, NEXT_ACTION_SET as NEXT_ACTIONS } from '../src/types.js';
-import { canonicalLinkedInIdentity, normalizeDedupeValue } from '../src/utils/leadDedupe.js';
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+import { DatabaseSync } from "node:sqlite";
+import dotenv from "dotenv";
+import {
+  clampSearchLogRetentionLimit,
+  setLlmStageLogger,
+  type LlmStageLogEntry,
+} from "./leadSearch/telemetry.js";
+import {
+  REVIEW_STATUS_SET as REVIEW_STATUSES,
+  NEXT_ACTION_SET as NEXT_ACTIONS,
+} from "../src/types.js";
+import {
+  canonicalLinkedInIdentity,
+  normalizeDedupeValue,
+} from "../src/utils/leadDedupe.js";
 
 dotenv.config();
 
-const DEFAULT_DATA_DIR = path.join(process.cwd(), '.apex-data');
+const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
 const LATEST_SCHEMA_VERSION = 15;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
-  : path.join(DEFAULT_DATA_DIR, 'apex-crm.sqlite');
+  : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
 
 let leadsDb: DatabaseSync | null = null;
 
-
 const isUsableEmail = (value: unknown): value is string => {
-  if (typeof value !== 'string') return false;
+  if (typeof value !== "string") return false;
   const email = value.trim().toLowerCase();
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 };
@@ -27,25 +36,37 @@ const isUsableEmail = (value: unknown): value is string => {
 function normalizeStoredLead(lead: Record<string, any>) {
   if (!lead) return lead;
 
-  const profile = lead.profile && typeof lead.profile === 'object' ? lead.profile : undefined;
-  const contactDetails = profile?.contactDetails && typeof profile.contactDetails === 'object' ? profile.contactDetails : undefined;
-  const hasLegacyEmail = Boolean(lead.emailDiscovery || profile?.emailDiscovery);
+  const profile =
+    lead.profile && typeof lead.profile === "object" ? lead.profile : undefined;
+  const contactDetails =
+    profile?.contactDetails && typeof profile.contactDetails === "object"
+      ? profile.contactDetails
+      : undefined;
+  const hasLegacyEmail = Boolean(
+    lead.emailDiscovery || profile?.emailDiscovery,
+  );
   const hasLegacyContactStatus = Boolean(
     contactDetails &&
-    ('emailStatus' in contactDetails ||
-      'emailConfidence' in contactDetails ||
-      'emailSources' in contactDetails ||
-      'fallbackChannels' in contactDetails)
+    ("emailStatus" in contactDetails ||
+      "emailConfidence" in contactDetails ||
+      "emailSources" in contactDetails ||
+      "fallbackChannels" in contactDetails),
   );
 
   // Fast path: if already normalized without legacy emailDiscovery / status fields
-  if (!hasLegacyEmail && !hasLegacyContactStatus && REVIEW_STATUSES.has(lead.reviewStatus) && NEXT_ACTIONS.has(lead.nextAction)) {
+  if (
+    !hasLegacyEmail &&
+    !hasLegacyContactStatus &&
+    REVIEW_STATUSES.has(lead.reviewStatus) &&
+    NEXT_ACTIONS.has(lead.nextAction)
+  ) {
     return lead;
   }
 
   const cleanProfile = profile ? { ...profile } : {};
   const cleanContactDetails = contactDetails ? { ...contactDetails } : {};
-  const legacyEmail = lead.emailDiscovery?.bestEmail || cleanProfile.emailDiscovery?.bestEmail;
+  const legacyEmail =
+    lead.emailDiscovery?.bestEmail || cleanProfile.emailDiscovery?.bestEmail;
   if (!isUsableEmail(cleanContactDetails.email) && isUsableEmail(legacyEmail)) {
     cleanContactDetails.email = legacyEmail.trim().toLowerCase();
   } else if (isUsableEmail(cleanContactDetails.email)) {
@@ -61,37 +82,74 @@ function normalizeStoredLead(lead: Record<string, any>) {
   const normalized: Record<string, any> = {
     ...lead,
     profile: { ...cleanProfile, contactDetails: cleanContactDetails },
-    reviewStatus: REVIEW_STATUSES.has(lead.reviewStatus) ? lead.reviewStatus : 'UNREVIEWED',
-    nextAction: NEXT_ACTIONS.has(lead.nextAction) ? lead.nextAction : 'NONE',
+    reviewStatus: REVIEW_STATUSES.has(lead.reviewStatus)
+      ? lead.reviewStatus
+      : "UNREVIEWED",
+    nextAction: NEXT_ACTIONS.has(lead.nextAction) ? lead.nextAction : "NONE",
   };
   delete normalized.emailDiscovery;
   return normalized;
 }
 
 export function extractPromotedLeadColumns(storedLead: Record<string, any>) {
-  const profile = storedLead.profile && typeof storedLead.profile === 'object' ? storedLead.profile : {};
-  const contactDetails = profile.contactDetails && typeof profile.contactDetails === 'object' ? profile.contactDetails : {};
-  const fullName = typeof profile.fullName === 'string' && profile.fullName.trim()
-    ? profile.fullName.trim()
-    : (typeof storedLead.fullName === 'string' && storedLead.fullName.trim() ? storedLead.fullName.trim() : null);
-  const company = typeof profile.currentCompany === 'string' && profile.currentCompany.trim()
-    ? profile.currentCompany.trim()
-    : (typeof storedLead.company === 'string' && storedLead.company.trim()
+  const profile =
+    storedLead.profile && typeof storedLead.profile === "object"
+      ? storedLead.profile
+      : {};
+  const contactDetails =
+    profile.contactDetails && typeof profile.contactDetails === "object"
+      ? profile.contactDetails
+      : {};
+  const fullName =
+    typeof profile.fullName === "string" && profile.fullName.trim()
+      ? profile.fullName.trim()
+      : typeof storedLead.fullName === "string" && storedLead.fullName.trim()
+        ? storedLead.fullName.trim()
+        : null;
+  const company =
+    typeof profile.currentCompany === "string" && profile.currentCompany.trim()
+      ? profile.currentCompany.trim()
+      : typeof storedLead.company === "string" && storedLead.company.trim()
         ? storedLead.company.trim()
-        : (typeof storedLead.currentCompany === 'string' && storedLead.currentCompany.trim() ? storedLead.currentCompany.trim() : null));
-  const title = typeof profile.currentTitle === 'string' && profile.currentTitle.trim()
-    ? profile.currentTitle.trim()
-    : (typeof storedLead.title === 'string' && storedLead.title.trim()
+        : typeof storedLead.currentCompany === "string" &&
+            storedLead.currentCompany.trim()
+          ? storedLead.currentCompany.trim()
+          : null;
+  const title =
+    typeof profile.currentTitle === "string" && profile.currentTitle.trim()
+      ? profile.currentTitle.trim()
+      : typeof storedLead.title === "string" && storedLead.title.trim()
         ? storedLead.title.trim()
-        : (typeof storedLead.currentTitle === 'string' && storedLead.currentTitle.trim() ? storedLead.currentTitle.trim() : null));
-  const stage = typeof storedLead.stage === 'string' && storedLead.stage.trim() ? storedLead.stage.trim() : 'NEW';
-  const reviewStatus = typeof storedLead.reviewStatus === 'string' && storedLead.reviewStatus.trim() ? storedLead.reviewStatus.trim() : 'UNREVIEWED';
-  const nextAction = typeof storedLead.nextAction === 'string' && storedLead.nextAction.trim() ? storedLead.nextAction.trim() : 'NONE';
-  const rawScore = storedLead.qualificationScore ?? storedLead.predictiveScore ?? storedLead.compositeScore ?? storedLead.score;
-  const score = typeof rawScore === 'number' && Number.isFinite(rawScore) ? rawScore : null;
-  const email = typeof contactDetails.email === 'string' && contactDetails.email.trim()
-    ? contactDetails.email.trim().toLowerCase()
-    : (typeof storedLead.email === 'string' && storedLead.email.trim() ? storedLead.email.trim().toLowerCase() : null);
+        : typeof storedLead.currentTitle === "string" &&
+            storedLead.currentTitle.trim()
+          ? storedLead.currentTitle.trim()
+          : null;
+  const stage =
+    typeof storedLead.stage === "string" && storedLead.stage.trim()
+      ? storedLead.stage.trim()
+      : "NEW";
+  const reviewStatus =
+    typeof storedLead.reviewStatus === "string" &&
+    storedLead.reviewStatus.trim()
+      ? storedLead.reviewStatus.trim()
+      : "UNREVIEWED";
+  const nextAction =
+    typeof storedLead.nextAction === "string" && storedLead.nextAction.trim()
+      ? storedLead.nextAction.trim()
+      : "NONE";
+  const rawScore =
+    storedLead.qualificationScore ??
+    storedLead.predictiveScore ??
+    storedLead.compositeScore ??
+    storedLead.score;
+  const score =
+    typeof rawScore === "number" && Number.isFinite(rawScore) ? rawScore : null;
+  const email =
+    typeof contactDetails.email === "string" && contactDetails.email.trim()
+      ? contactDetails.email.trim().toLowerCase()
+      : typeof storedLead.email === "string" && storedLead.email.trim()
+        ? storedLead.email.trim().toLowerCase()
+        : null;
 
   return {
     fullName,
@@ -101,35 +159,53 @@ export function extractPromotedLeadColumns(storedLead: Record<string, any>) {
     reviewStatus,
     nextAction,
     score,
-    email
+    email,
   };
 }
 
 function getTableColumns(db: DatabaseSync, tableName: string) {
-  return new Set((db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]).map((column) => column.name));
+  return new Set(
+    (
+      db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]
+    ).map((column) => column.name),
+  );
 }
 
 function tableExists(db: DatabaseSync, tableName: string) {
-  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+    .get(tableName);
   return Boolean(row);
 }
 
-function addColumnIfMissing(db: DatabaseSync, tableName: string, columnName: string, definition: string) {
-  if (tableExists(db, tableName) && !getTableColumns(db, tableName).has(columnName)) {
+function addColumnIfMissing(
+  db: DatabaseSync,
+  tableName: string,
+  columnName: string,
+  definition: string,
+) {
+  if (
+    tableExists(db, tableName) &&
+    !getTableColumns(db, tableName).has(columnName)
+  ) {
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`);
   }
 }
 
 function backupDatabaseBeforeMigration(previousVersion: number) {
-  if (previousVersion >= LATEST_SCHEMA_VERSION || !fs.existsSync(LEADS_DB_PATH)) return;
+  if (previousVersion >= LATEST_SCHEMA_VERSION || !fs.existsSync(LEADS_DB_PATH))
+    return;
 
   const stats = fs.statSync(LEADS_DB_PATH);
   if (stats.size === 0) return;
 
-  const backupDir = path.join(path.dirname(LEADS_DB_PATH), 'backups');
+  const backupDir = path.join(path.dirname(LEADS_DB_PATH), "backups");
   fs.mkdirSync(backupDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(backupDir, `apex-crm.pre-migration-v${previousVersion}.${timestamp}.sqlite`);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = path.join(
+    backupDir,
+    `apex-crm.pre-migration-v${previousVersion}.${timestamp}.sqlite`,
+  );
 
   // Use VACUUM INTO instead of fs.copyFileSync. When SQLite is in WAL mode,
   // a raw file copy may miss pages that are in the .wal sidecar but not yet
@@ -137,23 +213,62 @@ function backupDatabaseBeforeMigration(previousVersion: number) {
   // always produces a complete, self-contained snapshot regardless of WAL state.
   try {
     const srcDb = new DatabaseSync(LEADS_DB_PATH, { open: true });
-    srcDb.exec('PRAGMA busy_timeout = 10000;');
+    srcDb.exec("PRAGMA busy_timeout = 10000;");
     srcDb.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
     srcDb.close();
-    console.log(`WAL-safe database backup created before migration: ${backupPath}`);
+    console.log(
+      `WAL-safe database backup created before migration: ${backupPath}`,
+    );
   } catch (vacuumError) {
     // Fallback to raw copy if VACUUM INTO is unavailable (very old Node.js versions).
-    console.warn('VACUUM INTO failed, falling back to file copy for backup:', vacuumError);
+    console.warn(
+      "VACUUM INTO failed, falling back to file copy for backup:",
+      vacuumError,
+    );
     fs.copyFileSync(LEADS_DB_PATH, backupPath);
-    console.log(`(Fallback) Database backup created before migration: ${backupPath}`);
+    console.log(
+      `(Fallback) Database backup created before migration: ${backupPath}`,
+    );
+  }
+}
+
+/**
+ * Run a row-by-row backfill in bounded sub-transactions so a large leads table
+ * cannot hold the write lock (and block WAL readers) for one long pass.
+ * Runs inside the outer migration transaction via SAVEPOINT semantics.
+ */
+function batchedBackfill(
+  db: DatabaseSync,
+  rows: { id: string }[],
+  applyRow: (row: any) => void,
+  batchSize = 500,
+) {
+  for (let i = 0; i < rows.length; i += batchSize) {
+    db.exec("SAVEPOINT backfill_batch");
+    try {
+      for (const row of rows.slice(i, i + batchSize)) {
+        applyRow(row);
+      }
+      db.exec("RELEASE backfill_batch");
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK TO backfill_batch");
+      } catch {
+        /* ignore */
+      }
+      throw error;
+    }
   }
 }
 
 function runMigrations(db: DatabaseSync) {
-  const currentVersion = Number((db.prepare('PRAGMA user_version').get() as { user_version?: number }).user_version || 0);
+  const currentVersion = Number(
+    (db.prepare("PRAGMA user_version").get() as { user_version?: number })
+      .user_version || 0,
+  );
   if (currentVersion >= LATEST_SCHEMA_VERSION) return;
 
-  db.exec('BEGIN IMMEDIATE');
+  db.exec("BEGIN IMMEDIATE");
   try {
     if (currentVersion < 1) {
       db.exec(`
@@ -216,13 +331,43 @@ function runMigrations(db: DatabaseSync) {
     }
 
     if (currentVersion < 2) {
-      addColumnIfMissing(db, 'search_logs', 'detailed_logs', 'detailed_logs TEXT');
-      addColumnIfMissing(db, 'search_logs', 'debug_logs', 'debug_logs TEXT');
-      addColumnIfMissing(db, 'search_logs', 'trace_events', 'trace_events TEXT');
-      addColumnIfMissing(db, 'search_logs', 'provider_summary', 'provider_summary TEXT');
-      addColumnIfMissing(db, 'search_logs', 'cost_summary', 'cost_summary TEXT');
-      addColumnIfMissing(db, 'search_logs', 'phase_timeline', 'phase_timeline TEXT');
-      addColumnIfMissing(db, 'search_logs', 'schema_version', 'schema_version INTEGER');
+      addColumnIfMissing(
+        db,
+        "search_logs",
+        "detailed_logs",
+        "detailed_logs TEXT",
+      );
+      addColumnIfMissing(db, "search_logs", "debug_logs", "debug_logs TEXT");
+      addColumnIfMissing(
+        db,
+        "search_logs",
+        "trace_events",
+        "trace_events TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "search_logs",
+        "provider_summary",
+        "provider_summary TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "search_logs",
+        "cost_summary",
+        "cost_summary TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "search_logs",
+        "phase_timeline",
+        "phase_timeline TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "search_logs",
+        "schema_version",
+        "schema_version INTEGER",
+      );
       db.exec(`
         INSERT OR IGNORE INTO enrichment_cache (
           id, normalized_url, linkedin_username, person_name, company_name,
@@ -237,7 +382,12 @@ function runMigrations(db: DatabaseSync) {
     }
 
     if (currentVersion < 3) {
-      addColumnIfMissing(db, 'leads', 'revision', 'revision INTEGER NOT NULL DEFAULT 1');
+      addColumnIfMissing(
+        db,
+        "leads",
+        "revision",
+        "revision INTEGER NOT NULL DEFAULT 1",
+      );
       db.exec(`
         CREATE TABLE IF NOT EXISTS mining_sessions (
           id TEXT PRIMARY KEY,
@@ -343,17 +493,30 @@ function runMigrations(db: DatabaseSync) {
     }
 
     if (currentVersion < 6) {
-      addColumnIfMissing(db, 'enrichment_cache', 'public_email', 'public_email TEXT');
-      const rows = db.prepare('SELECT id, payload FROM leads').all() as { id: string; payload: string }[];
-      const updatePayload = db.prepare('UPDATE leads SET payload = ? WHERE id = ?');
-      for (const row of rows) {
+      addColumnIfMissing(
+        db,
+        "enrichment_cache",
+        "public_email",
+        "public_email TEXT",
+      );
+      const rows = db.prepare("SELECT id, payload FROM leads").all() as {
+        id: string;
+        payload: string;
+      }[];
+      const updatePayload = db.prepare(
+        "UPDATE leads SET payload = ? WHERE id = ?",
+      );
+      batchedBackfill(db, rows, (row) => {
         try {
-          updatePayload.run(JSON.stringify(normalizeStoredLead(JSON.parse(row.payload))), row.id);
+          updatePayload.run(
+            JSON.stringify(normalizeStoredLead(JSON.parse(row.payload))),
+            row.id,
+          );
         } catch (error) {
           console.warn(`Skipping legacy lead cleanup for ${row.id}:`, error);
         }
-      }
-      db.exec('DROP TABLE IF EXISTS email_discovery_cache');
+      });
+      db.exec("DROP TABLE IF EXISTS email_discovery_cache");
     }
 
     if (currentVersion < 7) {
@@ -394,18 +557,63 @@ function runMigrations(db: DatabaseSync) {
     }
 
     if (currentVersion < 9) {
-      addColumnIfMissing(db, 'query_performance', 'outcome_runs', 'outcome_runs INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'qualified_candidates', 'qualified_candidates INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'rescued_candidates', 'rescued_candidates INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'returned_candidates', 'returned_candidates INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'search_latency_ms', 'search_latency_ms INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'provider_units', 'provider_units INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "outcome_runs",
+        "outcome_runs INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "qualified_candidates",
+        "qualified_candidates INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "rescued_candidates",
+        "rescued_candidates INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "returned_candidates",
+        "returned_candidates INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "search_latency_ms",
+        "search_latency_ms INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "provider_units",
+        "provider_units INTEGER NOT NULL DEFAULT 0",
+      );
     }
 
     if (currentVersion < 10) {
-      addColumnIfMissing(db, 'query_performance', 'judged_candidates', 'judged_candidates INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'hard_failed_candidates', 'hard_failed_candidates INTEGER NOT NULL DEFAULT 0');
-      addColumnIfMissing(db, 'query_performance', 'unknown_candidates', 'unknown_candidates INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "judged_candidates",
+        "judged_candidates INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "hard_failed_candidates",
+        "hard_failed_candidates INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "unknown_candidates",
+        "unknown_candidates INTEGER NOT NULL DEFAULT 0",
+      );
     }
 
     if (currentVersion < 11) {
@@ -427,16 +635,22 @@ function runMigrations(db: DatabaseSync) {
         );
       `);
 
-      const rows = db.prepare(`
+      const rows = db
+        .prepare(
+          `
         SELECT id, payload, created_at
         FROM leads
         ORDER BY datetime(COALESCE(created_at, '9999-12-31T23:59:59.999Z')) ASC, id ASC
-      `).all() as { id: string; payload: string; created_at?: string }[];
+      `,
+        )
+        .all() as { id: string; payload: string; created_at?: string }[];
       const insertIdentity = db.prepare(`
         INSERT OR IGNORE INTO lead_identities (identity_key, lead_id, created_at)
         VALUES (?, ?, ?)
       `);
-      const findIdentity = db.prepare('SELECT lead_id FROM lead_identities WHERE identity_key = ?');
+      const findIdentity = db.prepare(
+        "SELECT lead_id FROM lead_identities WHERE identity_key = ?",
+      );
       const recordConflict = db.prepare(`
         INSERT OR IGNORE INTO lead_identity_conflicts
           (identity_key, canonical_lead_id, duplicate_lead_id, detected_at)
@@ -449,35 +663,58 @@ function runMigrations(db: DatabaseSync) {
           const lead = JSON.parse(row.payload) as Record<string, any>;
           const identityKey = canonicalLinkedInIdentity(
             lead?.profile?.contactDetails?.linkedinUrl ||
-            lead?.contactDetails?.linkedinUrl ||
-            lead?.linkedinUrl ||
-            lead?.sourceUrl
+              lead?.contactDetails?.linkedinUrl ||
+              lead?.linkedinUrl ||
+              lead?.sourceUrl,
           );
           if (!identityKey) continue;
           insertIdentity.run(identityKey, row.id, row.created_at || detectedAt);
-          const mapped = findIdentity.get(identityKey) as { lead_id?: string } | undefined;
+          const mapped = findIdentity.get(identityKey) as
+            | { lead_id?: string }
+            | undefined;
           if (mapped?.lead_id && mapped.lead_id !== row.id) {
             recordConflict.run(identityKey, mapped.lead_id, row.id, detectedAt);
           }
-        } catch (error) {
-        }
+        } catch (error) {}
       }
     }
 
     if (currentVersion < 12) {
-      addColumnIfMissing(db, 'enrichment_cache', 'intent_fingerprint', 'intent_fingerprint TEXT');
-      db.exec(`CREATE INDEX IF NOT EXISTS idx_enrichment_cache_intent ON enrichment_cache(normalized_url, intent_fingerprint) WHERE intent_fingerprint IS NOT NULL;`);
+      addColumnIfMissing(
+        db,
+        "enrichment_cache",
+        "intent_fingerprint",
+        "intent_fingerprint TEXT",
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_enrichment_cache_intent ON enrichment_cache(normalized_url, intent_fingerprint) WHERE intent_fingerprint IS NOT NULL;`,
+      );
     }
 
     if (currentVersion < 13) {
-      addColumnIfMissing(db, 'leads', 'full_name', 'full_name TEXT');
-      addColumnIfMissing(db, 'leads', 'company', 'company TEXT');
-      addColumnIfMissing(db, 'leads', 'title', 'title TEXT');
-      addColumnIfMissing(db, 'leads', 'stage', "stage TEXT NOT NULL DEFAULT 'NEW'");
-      addColumnIfMissing(db, 'leads', 'review_status', "review_status TEXT NOT NULL DEFAULT 'UNREVIEWED'");
-      addColumnIfMissing(db, 'leads', 'next_action', "next_action TEXT NOT NULL DEFAULT 'NONE'");
-      addColumnIfMissing(db, 'leads', 'score', 'score REAL');
-      addColumnIfMissing(db, 'leads', 'email', 'email TEXT');
+      addColumnIfMissing(db, "leads", "full_name", "full_name TEXT");
+      addColumnIfMissing(db, "leads", "company", "company TEXT");
+      addColumnIfMissing(db, "leads", "title", "title TEXT");
+      addColumnIfMissing(
+        db,
+        "leads",
+        "stage",
+        "stage TEXT NOT NULL DEFAULT 'NEW'",
+      );
+      addColumnIfMissing(
+        db,
+        "leads",
+        "review_status",
+        "review_status TEXT NOT NULL DEFAULT 'UNREVIEWED'",
+      );
+      addColumnIfMissing(
+        db,
+        "leads",
+        "next_action",
+        "next_action TEXT NOT NULL DEFAULT 'NONE'",
+      );
+      addColumnIfMissing(db, "leads", "score", "score REAL");
+      addColumnIfMissing(db, "leads", "email", "email TEXT");
 
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
@@ -489,14 +726,17 @@ function runMigrations(db: DatabaseSync) {
         CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC);
       `);
 
-      const rows = db.prepare('SELECT id, payload FROM leads').all() as { id: string; payload: string }[];
+      const rows = db.prepare("SELECT id, payload FROM leads").all() as {
+        id: string;
+        payload: string;
+      }[];
       const updateStmt = db.prepare(`
         UPDATE leads
         SET full_name = ?, company = ?, title = ?, stage = ?, review_status = ?, next_action = ?, score = ?, email = ?
         WHERE id = ?
       `);
 
-      for (const row of rows) {
+      batchedBackfill(db, rows, (row) => {
         try {
           const lead = JSON.parse(row.payload);
           const cols = extractPromotedLeadColumns(lead);
@@ -509,16 +749,21 @@ function runMigrations(db: DatabaseSync) {
             cols.nextAction,
             cols.score,
             cols.email,
-            row.id
+            row.id,
           );
         } catch {
           // ignore corrupted payload on backfill
         }
-      }
+      });
     }
 
     if (currentVersion < 14) {
-      addColumnIfMissing(db, 'mining_sessions', 'checkpoint_json', 'checkpoint_json TEXT');
+      addColumnIfMissing(
+        db,
+        "mining_sessions",
+        "checkpoint_json",
+        "checkpoint_json TEXT",
+      );
     }
 
     if (currentVersion < 15) {
@@ -526,48 +771,64 @@ function runMigrations(db: DatabaseSync) {
     }
 
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
-    db.exec('COMMIT');
+    db.exec("COMMIT");
   } catch (error) {
     try {
-      db.exec('ROLLBACK');
+      db.exec("ROLLBACK");
     } catch (rollbackError) {
-      console.error('SQLite migration rollback failed:', rollbackError);
+      console.error("SQLite migration rollback failed:", rollbackError);
     }
     throw error;
   }
 }
 
-export function scrubRateLimitPollution(db: DatabaseSync): { leadsScrubbed: number; cacheDeleted: number } {
+export function scrubRateLimitPollution(db: DatabaseSync): {
+  leadsScrubbed: number;
+  cacheDeleted: number;
+} {
   let cacheDeleted = 0;
   let leadsScrubbed = 0;
 
   // 1. Delete polluted enrichment_cache entries
-  if (tableExists(db, 'enrichment_cache')) {
-    const cacheResult = db.prepare(`
+  if (tableExists(db, "enrichment_cache")) {
+    const cacheResult = db
+      .prepare(
+        `
       DELETE FROM enrichment_cache
       WHERE LOWER(evidence_block) LIKE '%your system is sending too many%'
          OR LOWER(evidence_block) LIKE '%sending too many of this type%'
          OR LOWER(evidence_block) LIKE '%contact your account manager%'
-    `).run();
+    `,
+      )
+      .run();
     cacheDeleted = Number(cacheResult.changes || 0);
   }
 
   // 2. Scrub polluted strings in leads table payloads
-  if (tableExists(db, 'leads')) {
-    const rows = db.prepare('SELECT id, payload FROM leads').all() as { id: string; payload: string }[];
-    const updateLead = db.prepare('UPDATE leads SET payload = ?, full_name = ?, company = ?, title = ? WHERE id = ?');
+  if (tableExists(db, "leads")) {
+    const rows = db.prepare("SELECT id, payload FROM leads").all() as {
+      id: string;
+      payload: string;
+    }[];
+    const updateLead = db.prepare(
+      "UPDATE leads SET payload = ?, full_name = ?, company = ?, title = ? WHERE id = ?",
+    );
 
     const noticeRegex1 = /your system is sending too many[^."\n]*(\.|\s|$)/gi;
     const noticeRegex2 = /if you need to send more[^."\n]*(\.|\s|$)/gi;
     const noticeRegex3 = /contact your account manager[^."\n]*(\.|\s|$)/gi;
 
     const scrubValue = (val: any): any => {
-      if (typeof val === 'string') {
-        if (/your system is sending too many|sending too many of this type|contact your account manager/i.test(val)) {
+      if (typeof val === "string") {
+        if (
+          /your system is sending too many|sending too many of this type|contact your account manager/i.test(
+            val,
+          )
+        ) {
           return val
-            .replace(noticeRegex1, '')
-            .replace(noticeRegex2, '')
-            .replace(noticeRegex3, '')
+            .replace(noticeRegex1, "")
+            .replace(noticeRegex2, "")
+            .replace(noticeRegex3, "")
             .trim();
         }
         return val;
@@ -575,7 +836,7 @@ export function scrubRateLimitPollution(db: DatabaseSync): { leadsScrubbed: numb
       if (Array.isArray(val)) {
         return val.map(scrubValue);
       }
-      if (val !== null && typeof val === 'object') {
+      if (val !== null && typeof val === "object") {
         const cleanedObj: Record<string, any> = {};
         for (const [k, v] of Object.entries(val)) {
           cleanedObj[k] = scrubValue(v);
@@ -586,14 +847,24 @@ export function scrubRateLimitPollution(db: DatabaseSync): { leadsScrubbed: numb
     };
 
     for (const row of rows) {
-      if (/your system is sending too many|sending too many of this type|contact your account manager/i.test(row.payload)) {
+      if (
+        /your system is sending too many|sending too many of this type|contact your account manager/i.test(
+          row.payload,
+        )
+      ) {
         try {
           const parsed = JSON.parse(row.payload);
           const cleaned = scrubValue(parsed);
           const newPayload = JSON.stringify(cleaned);
           if (newPayload !== row.payload) {
             const cols = extractPromotedLeadColumns(cleaned);
-            updateLead.run(newPayload, cols.fullName, cols.company, cols.title, row.id);
+            updateLead.run(
+              newPayload,
+              cols.fullName,
+              cols.company,
+              cols.title,
+              row.id,
+            );
             leadsScrubbed++;
           }
         } catch {
@@ -606,7 +877,7 @@ export function scrubRateLimitPollution(db: DatabaseSync): { leadsScrubbed: numb
   return { leadsScrubbed, cacheDeleted };
 }
 
-export type EnrichmentCacheQuality = 'good' | 'partial' | 'weak' | 'bad';
+export type EnrichmentCacheQuality = "good" | "partial" | "weak" | "bad";
 
 export type EnrichmentCacheEntry = {
   id?: string;
@@ -617,7 +888,7 @@ export type EnrichmentCacheEntry = {
   publicEmail?: string;
   evidenceBlock: string;
   scrapeQuality: EnrichmentCacheQuality;
-  sourceProvider: 'brightdata' | 'tavily' | 'site_probe' | string;
+  sourceProvider: "brightdata" | "tavily" | "site_probe" | string;
   intentFingerprint?: string;
   createdAt?: string;
   expiresAt?: string;
@@ -634,7 +905,13 @@ export function getLeadsDb() {
   if (!leadsDb) {
     fs.mkdirSync(path.dirname(LEADS_DB_PATH), { recursive: true });
     leadsDb = new DatabaseSync(LEADS_DB_PATH);
-    const currentVersion = Number((leadsDb.prepare('PRAGMA user_version').get() as { user_version?: number }).user_version || 0);
+    const currentVersion = Number(
+      (
+        leadsDb.prepare("PRAGMA user_version").get() as {
+          user_version?: number;
+        }
+      ).user_version || 0,
+    );
     backupDatabaseBeforeMigration(currentVersion);
     leadsDb.exec(`
       PRAGMA journal_mode = WAL;
@@ -791,12 +1068,22 @@ export function normalizeIncomingLeads(input: unknown) {
   }
 
   return input
-    .filter((lead): lead is Record<string, any> => !!lead && typeof lead === 'object')
-    .map((lead) => normalizeStoredLead({
-      ...lead,
-      id: typeof lead.id === 'string' && lead.id.trim() ? lead.id : crypto.randomUUID(),
-      createdAt: typeof lead.createdAt === 'string' && lead.createdAt ? lead.createdAt : new Date().toISOString()
-    }));
+    .filter(
+      (lead): lead is Record<string, any> => !!lead && typeof lead === "object",
+    )
+    .map((lead) =>
+      normalizeStoredLead({
+        ...lead,
+        id:
+          typeof lead.id === "string" && lead.id.trim()
+            ? lead.id
+            : crypto.randomUUID(),
+        createdAt:
+          typeof lead.createdAt === "string" && lead.createdAt
+            ? lead.createdAt
+            : new Date().toISOString(),
+      }),
+    );
 }
 
 export type ReadLeadsOptions = {
@@ -824,42 +1111,60 @@ export type LeadSummary = {
   updatedAt: string;
 };
 
-export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]; total: number } {
+export function readLeadsSummary(options: ReadLeadsOptions = {}): {
+  leads: any[];
+  total: number;
+} {
   const db = getLeadsDb();
-  const { stage, reviewStatus, nextAction, search, limit, offset, summaryOnly } = options;
+  const {
+    stage,
+    reviewStatus,
+    nextAction,
+    search,
+    limit,
+    offset,
+    summaryOnly,
+  } = options;
   const conditions: string[] = [];
   const params: any[] = [];
 
-  if (stage && stage !== 'All') {
-    conditions.push('stage = ?');
+  if (stage && stage !== "All") {
+    conditions.push("stage = ?");
     params.push(stage);
   }
-  if (reviewStatus && reviewStatus !== 'All') {
-    conditions.push('review_status = ?');
+  if (reviewStatus && reviewStatus !== "All") {
+    conditions.push("review_status = ?");
     params.push(reviewStatus);
   }
-  if (nextAction && nextAction !== 'All') {
-    conditions.push('next_action = ?');
+  if (nextAction && nextAction !== "All") {
+    conditions.push("next_action = ?");
     params.push(nextAction);
   }
   if (search && search.trim()) {
-    conditions.push('(full_name LIKE ? OR company LIKE ? OR title LIKE ? OR email LIKE ?)');
+    // Payload LIKE covers non-promoted fields (tags, notes, evidence) that
+    // users commonly search but which have no dedicated column.
+    conditions.push(
+      "(full_name LIKE ? OR company LIKE ? OR title LIKE ? OR email LIKE ? OR payload LIKE ?)",
+    );
     const q = `%${search.trim()}%`;
-    params.push(q, q, q, q);
+    params.push(q, q, q, q, q);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM leads ${where}`).get(...params) as { total?: number } | undefined;
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) AS total FROM leads ${where}`)
+    .get(...params) as { total?: number } | undefined;
   const total = Number(totalRow?.total || 0);
 
-  let query = `SELECT ${summaryOnly ? 'id, full_name, company, title, stage, review_status, next_action, score, email, revision, created_at, updated_at' : 'payload, revision'} FROM leads ${where} ORDER BY created_at DESC, updated_at DESC`;
+  let query = `SELECT ${summaryOnly ? "id, full_name, company, title, stage, review_status, next_action, score, email, revision, created_at, updated_at" : "payload, revision"} FROM leads ${where} ORDER BY created_at DESC, updated_at DESC`;
 
   const queryParams = [...params];
-  if (typeof limit === 'number' && limit > 0) {
-    query += ' LIMIT ?';
+  if (typeof limit === "number" && limit > 0) {
+    query += " LIMIT ?";
     queryParams.push(limit);
-    if (typeof offset === 'number' && offset > 0) {
-      query += ' OFFSET ?';
+    if (typeof offset === "number" && offset > 0) {
+      query += " OFFSET ?";
       queryParams.push(offset);
     }
   }
@@ -868,7 +1173,7 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]
 
   if (summaryOnly) {
     return {
-      leads: rows.map(r => ({
+      leads: rows.map((r) => ({
         id: r.id,
         fullName: r.full_name,
         company: r.company,
@@ -882,7 +1187,7 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       })),
-      total
+      total,
     };
   }
 
@@ -893,7 +1198,7 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): { leads: any[]
         parsed.revision = Number(row.revision || parsed.revision || 1);
         return normalizeStoredLead(parsed);
       } catch (error) {
-        console.warn('Skipping unreadable lead record from SQLite:', error);
+        console.warn("Skipping unreadable lead record from SQLite:", error);
         return null;
       }
     })
@@ -910,12 +1215,22 @@ export function readExistingIdentityKeys(): Set<string> {
   const db = getLeadsDb();
   const keys = new Set<string>();
 
-  const idRows = db.prepare('SELECT identity_key FROM lead_identities').all() as { identity_key: string }[];
+  const idRows = db
+    .prepare("SELECT identity_key FROM lead_identities")
+    .all() as { identity_key: string }[];
   for (const r of idRows) {
     if (r.identity_key) keys.add(r.identity_key);
   }
 
-  const leadRows = db.prepare('SELECT email, full_name, company FROM leads WHERE email IS NOT NULL OR full_name IS NOT NULL').all() as { email: string | null; full_name: string | null; company: string | null }[];
+  const leadRows = db
+    .prepare(
+      "SELECT email, full_name, company FROM leads WHERE email IS NOT NULL OR full_name IS NOT NULL",
+    )
+    .all() as {
+    email: string | null;
+    full_name: string | null;
+    company: string | null;
+  }[];
   for (const row of leadRows) {
     if (row.email) {
       const normEmail = normalizeDedupeValue(row.email);
@@ -931,22 +1246,30 @@ export function readExistingIdentityKeys(): Set<string> {
   return keys;
 }
 
-export function readLeadsStageSummary(): { count: number; stageCounts: Record<string, number> } {
+export function readLeadsStageSummary(): {
+  count: number;
+  stageCounts: Record<string, number>;
+} {
   const rows = getLeadsDb()
-    .prepare('SELECT stage, COUNT(*) as n FROM leads GROUP BY stage')
+    .prepare("SELECT stage, COUNT(*) as n FROM leads GROUP BY stage")
     .all() as { stage: string; n: number }[];
-  const stageCounts = Object.fromEntries(rows.map(r => [r.stage, Number(r.n)]));
+  const stageCounts = Object.fromEntries(
+    rows.map((r) => [r.stage, Number(r.n)]),
+  );
   return { count: rows.reduce((s, r) => s + Number(r.n), 0), stageCounts };
 }
 
 export function readStoredLeadById(id: string) {
   const row = getLeadsDb()
-    .prepare('SELECT payload, revision FROM leads WHERE id = ?')
+    .prepare("SELECT payload, revision FROM leads WHERE id = ?")
     .get(id) as { payload: string; revision: number } | undefined;
 
   if (!row) return null;
   try {
-    return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) } as Record<string, any>;
+    return {
+      ...normalizeStoredLead(JSON.parse(row.payload)),
+      revision: Number(row.revision || 1),
+    } as Record<string, any>;
   } catch (error) {
     console.warn(`Skipping unreadable lead ${id} from SQLite:`, error);
     return null;
@@ -958,7 +1281,7 @@ export function hasLeadStoreBeenInitialized() {
     .prepare("SELECT value FROM app_meta WHERE key = 'leads_initialized'")
     .get() as { value: string } | undefined;
 
-  return row?.value === 'true';
+  return row?.value === "true";
 }
 
 export function replaceStoredLeads(leads: Record<string, any>[]) {
@@ -972,16 +1295,18 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  db.exec('BEGIN IMMEDIATE');
+  db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare('DELETE FROM leads').run();
-    db.prepare('DELETE FROM lead_identity_conflicts').run();
+    db.prepare("DELETE FROM leads").run();
+    db.prepare("DELETE FROM lead_identity_conflicts").run();
 
     const claimIdentity = db.prepare(`
       INSERT OR IGNORE INTO lead_identities (identity_key, lead_id, created_at)
       VALUES (?, ?, ?)
     `);
-    const findIdentity = db.prepare('SELECT lead_id FROM lead_identities WHERE identity_key = ?');
+    const findIdentity = db.prepare(
+      "SELECT lead_id FROM lead_identities WHERE identity_key = ?",
+    );
     const recordConflict = db.prepare(`
       INSERT OR IGNORE INTO lead_identity_conflicts
         (identity_key, canonical_lead_id, duplicate_lead_id, detected_at)
@@ -989,13 +1314,19 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
     `);
 
     for (const lead of leads) {
-      const revision = Number.isInteger(lead.revision) && lead.revision > 0 ? lead.revision : 1;
-      const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
+      const revision =
+        Number.isInteger(lead.revision) && lead.revision > 0
+          ? lead.revision
+          : 1;
+      const storedLead: Record<string, any> = {
+        ...normalizeStoredLead(lead),
+        revision,
+      };
       const cols = extractPromotedLeadColumns(storedLead);
       insertLead.run(
         storedLead.id,
         JSON.stringify(storedLead),
-        typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
+        typeof storedLead.createdAt === "string" ? storedLead.createdAt : now,
         now,
         revision,
         cols.fullName,
@@ -1005,30 +1336,38 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
         cols.reviewStatus,
         cols.nextAction,
         cols.score,
-        cols.email
+        cols.email,
       );
       const identityKey = leadIdentityKey(storedLead);
       if (identityKey) {
-        claimIdentity.run(identityKey, storedLead.id, typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now);
-        const mapped = findIdentity.get(identityKey) as { lead_id?: string } | undefined;
+        claimIdentity.run(
+          identityKey,
+          storedLead.id,
+          typeof storedLead.createdAt === "string" ? storedLead.createdAt : now,
+        );
+        const mapped = findIdentity.get(identityKey) as
+          | { lead_id?: string }
+          | undefined;
         if (mapped?.lead_id && mapped.lead_id !== storedLead.id) {
           recordConflict.run(identityKey, mapped.lead_id, storedLead.id, now);
         }
       }
     }
 
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO app_meta (key, value, updated_at)
       VALUES ('leads_initialized', 'true', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(now);
+    `,
+    ).run(now);
 
-    db.exec('COMMIT');
+    db.exec("COMMIT");
   } catch (error) {
     try {
-      db.exec('ROLLBACK');
+      db.exec("ROLLBACK");
     } catch (rollbackError) {
-      console.error('SQLite rollback failed:', rollbackError);
+      console.error("SQLite rollback failed:", rollbackError);
     }
     throw error;
   }
@@ -1036,19 +1375,21 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
 
 export class LeadRevisionConflictError extends Error {
   constructor(public readonly currentLead: Record<string, any>) {
-    super('This lead was changed by a newer request. Reload it before saving again.');
-    this.name = 'LeadRevisionConflictError';
+    super(
+      "This lead was changed by a newer request. Reload it before saving again.",
+    );
+    this.name = "LeadRevisionConflictError";
   }
 }
 
 export class LeadNotFoundError extends Error {
   constructor(public readonly leadId: string) {
-    super('This lead was removed before the update completed.');
-    this.name = 'LeadNotFoundError';
+    super("This lead was removed before the update completed.");
+    this.name = "LeadNotFoundError";
   }
 }
 
-export type LeadWriteDisposition = 'created' | 'updated' | 'duplicate';
+export type LeadWriteDisposition = "created" | "updated" | "duplicate";
 
 export type LeadWriteResult = {
   disposition: LeadWriteDisposition;
@@ -1062,17 +1403,25 @@ type LeadWriteOptions = { requireExisting?: boolean };
 const leadIdentityKey = (lead: Record<string, any>) =>
   canonicalLinkedInIdentity(
     lead?.profile?.contactDetails?.linkedinUrl ||
-    lead?.contactDetails?.linkedinUrl ||
-    lead?.linkedinUrl ||
-    lead?.sourceUrl
+      lead?.contactDetails?.linkedinUrl ||
+      lead?.linkedinUrl ||
+      lead?.sourceUrl,
   );
 
-const readLeadFromRow = (row: { payload: string; revision: number } | undefined) => {
+const readLeadFromRow = (
+  row: { payload: string; revision: number } | undefined,
+) => {
   if (!row) return null;
   try {
-    return { ...normalizeStoredLead(JSON.parse(row.payload)), revision: Number(row.revision || 1) } as Record<string, any>;
+    return {
+      ...normalizeStoredLead(JSON.parse(row.payload)),
+      revision: Number(row.revision || 1),
+    } as Record<string, any>;
   } catch (error) {
-    console.warn('Skipping unreadable canonical lead record from SQLite:', error);
+    console.warn(
+      "Skipping unreadable canonical lead record from SQLite:",
+      error,
+    );
     return null;
   }
 };
@@ -1083,21 +1432,29 @@ export function upsertLeadInExistingTransaction(
   options: LeadWriteOptions = {},
 ): LeadWriteResult {
   const now = new Date().toISOString();
-  const incomingLeadId = String(lead.id || '');
-  const existing = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(incomingLeadId) as { payload: string; revision: number } | undefined;
+  const incomingLeadId = String(lead.id || "");
+  const existing = db
+    .prepare("SELECT payload, revision FROM leads WHERE id = ?")
+    .get(incomingLeadId) as { payload: string; revision: number } | undefined;
   if (!existing && options.requireExisting) {
     throw new LeadNotFoundError(incomingLeadId);
   }
 
   const identityKey = leadIdentityKey(lead);
   if (identityKey) {
-    const identity = db.prepare('SELECT lead_id FROM lead_identities WHERE identity_key = ?').get(identityKey) as { lead_id?: string } | undefined;
+    const identity = db
+      .prepare("SELECT lead_id FROM lead_identities WHERE identity_key = ?")
+      .get(identityKey) as { lead_id?: string } | undefined;
     if (identity?.lead_id && identity.lead_id !== incomingLeadId) {
-      const canonicalRow = db.prepare('SELECT payload, revision FROM leads WHERE id = ?').get(identity.lead_id) as { payload: string; revision: number } | undefined;
+      const canonicalRow = db
+        .prepare("SELECT payload, revision FROM leads WHERE id = ?")
+        .get(identity.lead_id) as
+        | { payload: string; revision: number }
+        | undefined;
       const canonicalLead = readLeadFromRow(canonicalRow);
       if (canonicalLead) {
         return {
-          disposition: 'duplicate',
+          disposition: "duplicate",
           lead: canonicalLead,
           incomingLeadId,
           identityKey,
@@ -1105,20 +1462,37 @@ export function upsertLeadInExistingTransaction(
       }
       // A stale mapping should never survive a normal delete, but recovering it
       // here keeps a corrupted legacy database from blocking the valid lead.
-      db.prepare('DELETE FROM lead_identities WHERE identity_key = ?').run(identityKey);
+      db.prepare("DELETE FROM lead_identities WHERE identity_key = ?").run(
+        identityKey,
+      );
     }
   }
 
-  const expectedRevision = Number.isInteger(lead.revision) ? Number(lead.revision) : undefined;
-  if (existing && expectedRevision !== undefined && expectedRevision !== Number(existing.revision || 1)) {
-    throw new LeadRevisionConflictError(readLeadFromRow(existing) || { ...lead, revision: Number(existing.revision || 1) });
+  const expectedRevision = Number.isInteger(lead.revision)
+    ? Number(lead.revision)
+    : undefined;
+  if (
+    existing &&
+    expectedRevision !== undefined &&
+    expectedRevision !== Number(existing.revision || 1)
+  ) {
+    throw new LeadRevisionConflictError(
+      readLeadFromRow(existing) || {
+        ...lead,
+        revision: Number(existing.revision || 1),
+      },
+    );
   }
 
   const revision = existing ? Number(existing.revision || 1) + 1 : 1;
-  const storedLead: Record<string, any> = { ...normalizeStoredLead(lead), revision };
+  const storedLead: Record<string, any> = {
+    ...normalizeStoredLead(lead),
+    revision,
+  };
   const cols = extractPromotedLeadColumns(storedLead);
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO leads (
       id, payload, created_at, updated_at, revision,
       full_name, company, title, stage, review_status, next_action, score, email
@@ -1136,10 +1510,11 @@ export function upsertLeadInExistingTransaction(
       next_action = excluded.next_action,
       score = excluded.score,
       email = excluded.email
-  `).run(
+  `,
+  ).run(
     storedLead.id,
     JSON.stringify(storedLead),
-    typeof storedLead.createdAt === 'string' ? storedLead.createdAt : now,
+    typeof storedLead.createdAt === "string" ? storedLead.createdAt : now,
     now,
     revision,
     cols.fullName,
@@ -1149,27 +1524,32 @@ export function upsertLeadInExistingTransaction(
     cols.reviewStatus,
     cols.nextAction,
     cols.score,
-    cols.email
+    cols.email,
   );
 
-  db.prepare('DELETE FROM lead_identities WHERE lead_id = ? AND identity_key <> ?')
-    .run(storedLead.id, identityKey || '');
+  db.prepare(
+    "DELETE FROM lead_identities WHERE lead_id = ? AND identity_key <> ?",
+  ).run(storedLead.id, identityKey || "");
   if (identityKey) {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO lead_identities (identity_key, lead_id, created_at)
       VALUES (?, ?, ?)
       ON CONFLICT(identity_key) DO UPDATE SET lead_id = excluded.lead_id
-    `).run(identityKey, storedLead.id, now);
+    `,
+    ).run(identityKey, storedLead.id, now);
   }
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO app_meta (key, value, updated_at)
     VALUES ('leads_initialized', 'true', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(now);
+  `,
+  ).run(now);
 
   return {
-    disposition: existing ? 'updated' : 'created',
+    disposition: existing ? "updated" : "created",
     lead: storedLead,
     incomingLeadId,
     identityKey: identityKey || undefined,
@@ -1181,28 +1561,42 @@ export function upsertLeadWithIdentity(
   options: LeadWriteOptions = {},
 ): LeadWriteResult {
   const db = getLeadsDb();
-  db.exec('BEGIN IMMEDIATE');
+  db.exec("BEGIN IMMEDIATE");
   try {
     const result = upsertLeadInExistingTransaction(db, lead, options);
-    db.exec('COMMIT');
+    db.exec("COMMIT");
     return result;
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore rollback failure */ }
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* ignore rollback failure */
+    }
     throw error;
   }
 }
 
-export function upsertLead(lead: Record<string, any>, options: LeadWriteOptions = {}) {
+export function upsertLead(
+  lead: Record<string, any>,
+  options: LeadWriteOptions = {},
+) {
   return upsertLeadWithIdentity(lead, options).lead;
 }
 
 export function deleteLead(id: string) {
   const db = getLeadsDb();
-  db.prepare('DELETE FROM leads WHERE id = ?').run(id);
+  db.prepare("DELETE FROM leads WHERE id = ?").run(id);
 }
 
-export function transferLeadIdentities(db: DatabaseSync, fromLeadId: string, toLeadId: string) {
-  db.prepare('UPDATE lead_identities SET lead_id = ? WHERE lead_id = ?').run(toLeadId, fromLeadId);
+export function transferLeadIdentities(
+  db: DatabaseSync,
+  fromLeadId: string,
+  toLeadId: string,
+) {
+  db.prepare("UPDATE lead_identities SET lead_id = ? WHERE lead_id = ?").run(
+    toLeadId,
+    fromLeadId,
+  );
 }
 
 export function upsertLeadsWithIdentity(
@@ -1212,28 +1606,32 @@ export function upsertLeadsWithIdentity(
   const db = getLeadsDb();
   const results: LeadWriteResult[] = [];
 
-  db.exec('BEGIN IMMEDIATE');
+  db.exec("BEGIN IMMEDIATE");
   try {
     for (const lead of leads) {
       results.push(upsertLeadInExistingTransaction(db, lead, options));
     }
-    db.exec('COMMIT');
+    db.exec("COMMIT");
     return results;
   } catch (error) {
     try {
-      db.exec('ROLLBACK');
+      db.exec("ROLLBACK");
     } catch (rollbackError) {
-      console.error('SQLite rollback failed:', rollbackError);
+      console.error("SQLite rollback failed:", rollbackError);
     }
     throw error;
   }
 }
 
-export function upsertLeads(leads: Record<string, any>[], options: LeadWriteOptions = {}) {
+export function upsertLeads(
+  leads: Record<string, any>[],
+  options: LeadWriteOptions = {},
+) {
   return upsertLeadsWithIdentity(leads, options).map((result) => result.lead);
 }
 
-const normalizeCacheValue = (value?: string) => (value || '').trim().toLowerCase();
+const normalizeCacheValue = (value?: string) =>
+  (value || "").trim().toLowerCase();
 
 const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
   if (!row) return null;
@@ -1249,18 +1647,23 @@ const toCacheRow = (row: any): EnrichmentCacheEntry | null => {
     sourceProvider: row.source_provider,
     intentFingerprint: row.intent_fingerprint || undefined,
     createdAt: row.created_at,
-    expiresAt: row.expires_at
+    expiresAt: row.expires_at,
   };
 };
 
 export function pruneExpiredEnrichmentCache(now = new Date()) {
   const db = getLeadsDb();
   const cutoff = now.toISOString();
-  const result = db.prepare('DELETE FROM enrichment_cache WHERE expires_at <= ?').run(cutoff);
+  const result = db
+    .prepare("DELETE FROM enrichment_cache WHERE expires_at <= ?")
+    .run(cutoff);
   return Number(result.changes || 0);
 }
 
-export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date()) {
+export function getEnrichmentCacheEntry(
+  lookup: EnrichmentCacheLookup,
+  now = new Date(),
+) {
   const db = getLeadsDb();
   const cutoff = now.toISOString();
   const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
@@ -1269,7 +1672,9 @@ export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new
   const companyName = normalizeCacheValue(lookup.companyName);
 
   if (normalizedUrl || linkedinUsername) {
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT * FROM enrichment_cache
       WHERE expires_at > ?
         AND scrape_quality IN ('good', 'partial')
@@ -1279,13 +1684,23 @@ export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new
         )
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(cutoff, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
+    `,
+      )
+      .get(
+        cutoff,
+        normalizedUrl,
+        normalizedUrl,
+        linkedinUsername,
+        linkedinUsername,
+      );
     const match = toCacheRow(row);
     if (match) return match;
   }
 
   if (personName && companyName) {
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT * FROM enrichment_cache
       WHERE expires_at > ?
         AND scrape_quality IN ('good', 'partial')
@@ -1293,29 +1708,53 @@ export function getEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new
         AND company_name = ?
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(cutoff, personName, companyName);
+    `,
+      )
+      .get(cutoff, personName, companyName);
     return toCacheRow(row);
   }
 
   return null;
 }
 
-export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays = 7, now = new Date()) {
+export function upsertEnrichmentCacheEntry(
+  entry: EnrichmentCacheEntry,
+  ttlDays = 7,
+  now = new Date(),
+) {
   if (!entry.evidenceBlock) return null;
 
   const db = getLeadsDb();
   const createdAt = entry.createdAt || now.toISOString();
-  const expiresAt = entry.expiresAt || new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt =
+    entry.expiresAt ||
+    new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
   const normalizedUrl = normalizeCacheValue(entry.normalizedUrl);
   const linkedinUsername = normalizeCacheValue(entry.linkedinUsername);
   const personName = normalizeCacheValue(entry.personName);
   const companyName = normalizeCacheValue(entry.companyName);
-  const intentFingerprint = entry.intentFingerprint ? entry.intentFingerprint.trim() : null;
-  const id = entry.id || crypto.createHash('sha256')
-    .update([normalizedUrl, linkedinUsername, personName, companyName, intentFingerprint].filter(Boolean).join('|') || crypto.randomUUID())
-    .digest('hex');
+  const intentFingerprint = entry.intentFingerprint
+    ? entry.intentFingerprint.trim()
+    : null;
+  const id =
+    entry.id ||
+    crypto
+      .createHash("sha256")
+      .update(
+        [
+          normalizedUrl,
+          linkedinUsername,
+          personName,
+          companyName,
+          intentFingerprint,
+        ]
+          .filter(Boolean)
+          .join("|") || crypto.randomUUID(),
+      )
+      .digest("hex");
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO enrichment_cache (
       id,
       normalized_url,
@@ -1342,19 +1781,22 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
       intent_fingerprint = excluded.intent_fingerprint,
       created_at = excluded.created_at,
       expires_at = excluded.expires_at
-  `).run(
+  `,
+  ).run(
     id,
     normalizedUrl || null,
     linkedinUsername || null,
     personName || null,
     companyName || null,
-    isUsableEmail(entry.publicEmail) ? entry.publicEmail.trim().toLowerCase() : null,
+    isUsableEmail(entry.publicEmail)
+      ? entry.publicEmail.trim().toLowerCase()
+      : null,
     entry.evidenceBlock,
     entry.scrapeQuality,
     entry.sourceProvider,
     intentFingerprint,
     createdAt,
-    expiresAt
+    expiresAt,
   );
 
   pruneExpiredEnrichmentCache(now);
@@ -1364,23 +1806,27 @@ export function upsertEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlDays 
 export function getIntentCacheEntry(
   normalizedUrl: string,
   intentFingerprint: string,
-  now = new Date()
+  now = new Date(),
 ): EnrichmentCacheEntry | null {
   const db = getLeadsDb();
   const cutoff = now.toISOString();
   const cleanUrl = normalizeCacheValue(normalizedUrl);
-  const cleanFp = (intentFingerprint || '').trim();
+  const cleanFp = (intentFingerprint || "").trim();
 
   if (!cleanUrl || !cleanFp) return null;
 
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT * FROM enrichment_cache
     WHERE expires_at > ?
       AND normalized_url = ?
       AND intent_fingerprint = ?
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(cutoff, cleanUrl, cleanFp);
+  `,
+    )
+    .get(cutoff, cleanUrl, cleanFp);
 
   return toCacheRow(row);
 }
@@ -1388,19 +1834,25 @@ export function getIntentCacheEntry(
 export function upsertIntentCacheEntry(
   entry: EnrichmentCacheEntry & { intentFingerprint: string },
   ttlDays = 7,
-  now = new Date()
+  now = new Date(),
 ) {
   return upsertEnrichmentCacheEntry(entry, ttlDays, now);
 }
 
-export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, now = new Date(), sourceProvider = 'brightdata') {
+export function getNegativeEnrichmentCacheEntry(
+  lookup: EnrichmentCacheLookup,
+  now = new Date(),
+  sourceProvider = "brightdata",
+) {
   const db = getLeadsDb();
   const cutoff = now.toISOString();
   const normalizedUrl = normalizeCacheValue(lookup.normalizedUrl);
   const linkedinUsername = normalizeCacheValue(lookup.linkedinUsername);
 
   if (normalizedUrl || linkedinUsername) {
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT * FROM enrichment_cache
       WHERE expires_at > ?
         AND scrape_quality = 'bad'
@@ -1411,7 +1863,16 @@ export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, n
         )
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(cutoff, sourceProvider, normalizedUrl, normalizedUrl, linkedinUsername, linkedinUsername);
+    `,
+      )
+      .get(
+        cutoff,
+        sourceProvider,
+        normalizedUrl,
+        normalizedUrl,
+        linkedinUsername,
+        linkedinUsername,
+      );
     const match = toCacheRow(row);
     if (match) return match;
   }
@@ -1419,12 +1880,20 @@ export function getNegativeEnrichmentCacheEntry(lookup: EnrichmentCacheLookup, n
   return null;
 }
 
-export function upsertNegativeEnrichmentCacheEntry(entry: EnrichmentCacheEntry, ttlHours = 24, now = new Date()) {
-  return upsertEnrichmentCacheEntry({
-    ...entry,
-    scrapeQuality: 'bad',
-    sourceProvider: entry.sourceProvider || 'brightdata'
-  }, ttlHours / 24, now);
+export function upsertNegativeEnrichmentCacheEntry(
+  entry: EnrichmentCacheEntry,
+  ttlHours = 24,
+  now = new Date(),
+) {
+  return upsertEnrichmentCacheEntry(
+    {
+      ...entry,
+      scrapeQuality: "bad",
+      sourceProvider: entry.sourceProvider || "brightdata",
+    },
+    ttlHours / 24,
+    now,
+  );
 }
 
 export function insertSearchLog(log: any) {
@@ -1471,16 +1940,16 @@ export function insertSearchLog(log: any) {
       log.prompt,
       JSON.stringify(log.generatedQueries || []),
       log.status,
-      log.errorMessage || '',
+      log.errorMessage || "",
       log.rawResultsCount || 0,
       log.leadsFound || 0,
-      log.detailedLogs || '',
-      log.debugLogs || '',
+      log.detailedLogs || "",
+      log.debugLogs || "",
       JSON.stringify(log.traceEvents || []),
       JSON.stringify(log.providerSummary || {}),
       JSON.stringify(log.costSummary || {}),
       JSON.stringify(log.phaseTimeline || []),
-      Number(log.schemaVersion || 1)
+      Number(log.schemaVersion || 1),
     );
 
     const retentionLimit = clampSearchLogRetentionLimit();
@@ -1494,12 +1963,12 @@ export function insertSearchLog(log: any) {
     `);
     cullStmt.run(retentionLimit);
   } catch (err) {
-    console.error('Failed to write search log to DB:', err);
+    console.error("Failed to write search log to DB:", err);
   }
 }
 
 const parseJSONField = <T>(value: unknown, fallback: T): T => {
-  if (typeof value !== 'string' || !value.trim()) return fallback;
+  if (typeof value !== "string" || !value.trim()) return fallback;
   try {
     return JSON.parse(value) as T;
   } catch {
@@ -1516,25 +1985,30 @@ const toSearchLogRecord = (row: any) => ({
   errorMessage: row.error_message,
   rawResultsCount: Number(row.raw_results_count || 0),
   leadsFound: Number(row.leads_found || 0),
-  detailedLogs: row.detailed_logs || '',
-  debugLogs: row.debug_logs || '',
+  detailedLogs: row.detailed_logs || "",
+  debugLogs: row.debug_logs || "",
   traceEvents: parseJSONField<any[]>(row.trace_events, []),
-  providerSummary: parseJSONField<Record<string, any>>(row.provider_summary, {}),
+  providerSummary: parseJSONField<Record<string, any>>(
+    row.provider_summary,
+    {},
+  ),
   costSummary: parseJSONField<Record<string, any>>(row.cost_summary, {}),
   phaseTimeline: parseJSONField<any[]>(row.phase_timeline, []),
-  schemaVersion: Number(row.schema_version || 1)
+  schemaVersion: Number(row.schema_version || 1),
 });
 
 export function readSearchLogs(limit = 30) {
   const rows = getLeadsDb()
-    .prepare('SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?')
+    .prepare(
+      "SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?",
+    )
     .all(limit) as any[];
   return rows.map(toSearchLogRecord);
 }
 
 export function readSearchLogById(id: string) {
   const row = getLeadsDb()
-    .prepare('SELECT * FROM search_logs WHERE id = ?')
+    .prepare("SELECT * FROM search_logs WHERE id = ?")
     .get(id) as any | undefined;
   return row ? toSearchLogRecord(row) : null;
 }
@@ -1551,28 +2025,34 @@ export function insertLlmStageLog(entry: LlmStageLogEntry) {
     insertStmt.run(
       crypto.randomUUID(),
       entry.searchLogId || null,
-      entry.stage || 'unknown',
+      entry.stage || "unknown",
       Number(entry.round || 1),
-      entry.status || 'unknown',
+      entry.status || "unknown",
       Number(entry.inputTokens || 0),
       Number(entry.outputTokens || 0),
       Number(entry.latencyMs || 0),
       entry.modelName || null,
-      entry.provider || 'llm',
-      entry.createdAt || new Date().toISOString()
+      entry.provider || "llm",
+      entry.createdAt || new Date().toISOString(),
     );
   } catch (error) {
-    console.warn('Failed to insert llm_stage_log:', error);
+    console.warn("Failed to insert llm_stage_log:", error);
   }
 }
 
 export function readLlmStageLogs(searchLogId?: string): LlmStageLogEntry[] {
   const db = getLeadsDb();
   if (searchLogId) {
-    const rows = db.prepare('SELECT * FROM llm_stage_logs WHERE search_log_id = ? ORDER BY created_at ASC').all(searchLogId) as any[];
+    const rows = db
+      .prepare(
+        "SELECT * FROM llm_stage_logs WHERE search_log_id = ? ORDER BY created_at ASC",
+      )
+      .all(searchLogId) as any[];
     return rows.map(mapLlmStageLogRow);
   }
-  const rows = db.prepare('SELECT * FROM llm_stage_logs ORDER BY created_at DESC LIMIT 500').all() as any[];
+  const rows = db
+    .prepare("SELECT * FROM llm_stage_logs ORDER BY created_at DESC LIMIT 500")
+    .all() as any[];
   return rows.map(mapLlmStageLogRow);
 }
 
@@ -1587,16 +2067,23 @@ function mapLlmStageLogRow(row: any): LlmStageLogEntry {
     latencyMs: Number(row.latency_ms || 0),
     modelName: row.model_name || undefined,
     provider: row.provider || undefined,
-    createdAt: row.created_at
+    createdAt: row.created_at,
   };
 }
 
 export function getIcpHypothesisCache(query: string): any | null {
   try {
     const db = getLeadsDb();
-    const queryHash = crypto.createHash('sha256').update(query.trim().toLowerCase()).digest('hex');
+    const queryHash = crypto
+      .createHash("sha256")
+      .update(query.trim().toLowerCase())
+      .digest("hex");
     const now = new Date().toISOString();
-    const row = db.prepare('SELECT hypothesis_json FROM icp_hypothesis_cache WHERE query_hash = ? AND expires_at > ?').get(queryHash, now) as any | undefined;
+    const row = db
+      .prepare(
+        "SELECT hypothesis_json FROM icp_hypothesis_cache WHERE query_hash = ? AND expires_at > ?",
+      )
+      .get(queryHash, now) as any | undefined;
     if (!row) return null;
     return JSON.parse(row.hypothesis_json);
   } catch (err) {
@@ -1604,13 +2091,23 @@ export function getIcpHypothesisCache(query: string): any | null {
   }
 }
 
-export function upsertIcpHypothesisCache(query: string, hypothesis: any, ttlDays = 7) {
+export function upsertIcpHypothesisCache(
+  query: string,
+  hypothesis: any,
+  ttlDays = 7,
+) {
   try {
     const db = getLeadsDb();
-    const queryHash = crypto.createHash('sha256').update(query.trim().toLowerCase()).digest('hex');
+    const queryHash = crypto
+      .createHash("sha256")
+      .update(query.trim().toLowerCase())
+      .digest("hex");
     const now = new Date();
-    const expires = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare(`
+    const expires = new Date(
+      now.getTime() + ttlDays * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    db.prepare(
+      `
       INSERT INTO icp_hypothesis_cache (query_hash, raw_query, hypothesis_json, synthesized_at, expires_at)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(query_hash) DO UPDATE SET
@@ -1618,37 +2115,57 @@ export function upsertIcpHypothesisCache(query: string, hypothesis: any, ttlDays
         hypothesis_json = excluded.hypothesis_json,
         synthesized_at = excluded.synthesized_at,
         expires_at = excluded.expires_at
-    `).run(
+    `,
+    ).run(
       queryHash,
       query.trim(),
       JSON.stringify(hypothesis),
       now.toISOString(),
-      expires
+      expires,
     );
   } catch (err) {
-    console.warn('Failed to cache ICP hypothesis:', err);
+    console.warn("Failed to cache ICP hypothesis:", err);
   }
 }
 
-export function getProspectContractCache(cacheKey: string, policyVersion: string): any | null {
+export function getProspectContractCache(
+  cacheKey: string,
+  policyVersion: string,
+): any | null {
   try {
     const db = getLeadsDb();
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT contract_json FROM prospect_contract_cache
       WHERE cache_key = ? AND policy_version = ? AND expires_at > ?
-    `).get(cacheKey, policyVersion, new Date().toISOString()) as { contract_json?: string } | undefined;
+    `,
+      )
+      .get(cacheKey, policyVersion, new Date().toISOString()) as
+      | { contract_json?: string }
+      | undefined;
     return row?.contract_json ? JSON.parse(row.contract_json) : null;
   } catch (error) {
     return null;
   }
 }
 
-export function upsertProspectContractCache(cacheKey: string, rawBrief: string, policyVersion: string, contract: any, ttlDays = 7) {
+export function upsertProspectContractCache(
+  cacheKey: string,
+  rawBrief: string,
+  policyVersion: string,
+  contract: any,
+  ttlDays = 7,
+) {
   try {
     const db = getLeadsDb();
     const createdAt = new Date();
-    const expiresAt = new Date(createdAt.getTime() + Math.min(Math.max(ttlDays, 1), 30) * 24 * 60 * 60 * 1000);
-    db.prepare(`
+    const expiresAt = new Date(
+      createdAt.getTime() +
+        Math.min(Math.max(ttlDays, 1), 30) * 24 * 60 * 60 * 1000,
+    );
+    db.prepare(
+      `
       INSERT INTO prospect_contract_cache (cache_key, raw_brief, policy_version, contract_json, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(cache_key) DO UPDATE SET
@@ -1657,9 +2174,17 @@ export function upsertProspectContractCache(cacheKey: string, rawBrief: string, 
         contract_json = excluded.contract_json,
         created_at = excluded.created_at,
         expires_at = excluded.expires_at
-    `).run(cacheKey, rawBrief.slice(0, 2000), policyVersion, JSON.stringify(contract), createdAt.toISOString(), expiresAt.toISOString());
+    `,
+    ).run(
+      cacheKey,
+      rawBrief.slice(0, 2000),
+      policyVersion,
+      JSON.stringify(contract),
+      createdAt.toISOString(),
+      expiresAt.toISOString(),
+    );
   } catch (error) {
-    console.warn('[db] Failed to cache prospect contract:', error);
+    console.warn("[db] Failed to cache prospect contract:", error);
   }
 }
 
@@ -1684,39 +2209,61 @@ const toSavedSearchRecord = (row: any): SavedSearchRecord => ({
   maxPerCompany: Math.max(1, Number(row.max_per_company || 2)),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
-  lastRunAt: row.last_run_at || undefined
+  lastRunAt: row.last_run_at || undefined,
 });
 
 export function readSavedSearches(limit = 50) {
-  const rows = getLeadsDb().prepare(`
+  const rows = getLeadsDb()
+    .prepare(
+      `
     SELECT * FROM saved_searches ORDER BY datetime(updated_at) DESC LIMIT ?
-  `).all(Math.min(Math.max(Math.floor(limit) || 50, 1), 100)) as any[];
+  `,
+    )
+    .all(Math.min(Math.max(Math.floor(limit) || 50, 1), 100)) as any[];
   return rows.map(toSavedSearchRecord);
 }
 
 export function readSavedSearchById(id: string) {
-  const row = getLeadsDb().prepare('SELECT * FROM saved_searches WHERE id = ?').get(id) as any | undefined;
+  const row = getLeadsDb()
+    .prepare("SELECT * FROM saved_searches WHERE id = ?")
+    .get(id) as any | undefined;
   return row ? toSavedSearchRecord(row) : null;
 }
 
-export function upsertSavedSearch(input: Omit<SavedSearchRecord, 'id' | 'createdAt' | 'updatedAt' | 'lastRunAt'> & { id?: string }) {
+export function upsertSavedSearch(
+  input: Omit<
+    SavedSearchRecord,
+    "id" | "createdAt" | "updatedAt" | "lastRunAt"
+  > & { id?: string },
+) {
   const db = getLeadsDb();
   const now = new Date().toISOString();
   const existing = input.id ? readSavedSearchById(input.id) : null;
   const record: SavedSearchRecord = {
     id: input.id || crypto.randomUUID(),
-    name: String(input.name || '').trim().slice(0, 120),
-    query: String(input.query || '').trim().slice(0, 1000),
-    spec: input.spec && typeof input.spec === 'object' ? input.spec : {},
-    mode: String(input.mode || 'person_first').trim().slice(0, 40),
-    maxPerCompany: Math.min(Math.max(Math.floor(Number(input.maxPerCompany) || 2), 1), 10),
+    name: String(input.name || "")
+      .trim()
+      .slice(0, 120),
+    query: String(input.query || "")
+      .trim()
+      .slice(0, 1000),
+    spec: input.spec && typeof input.spec === "object" ? input.spec : {},
+    mode: String(input.mode || "person_first")
+      .trim()
+      .slice(0, 40),
+    maxPerCompany: Math.min(
+      Math.max(Math.floor(Number(input.maxPerCompany) || 2), 1),
+      10,
+    ),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
-    lastRunAt: existing?.lastRunAt
+    lastRunAt: existing?.lastRunAt,
   };
-  if (!record.name || !record.query) throw new Error('A saved search needs a name and a query.');
+  if (!record.name || !record.query)
+    throw new Error("A saved search needs a name and a query.");
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO saved_searches (
       id, name, query, spec_json, mode, max_per_company, created_at, updated_at, last_run_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1727,7 +2274,8 @@ export function upsertSavedSearch(input: Omit<SavedSearchRecord, 'id' | 'created
       mode = excluded.mode,
       max_per_company = excluded.max_per_company,
       updated_at = excluded.updated_at
-  `).run(
+  `,
+  ).run(
     record.id,
     record.name,
     record.query,
@@ -1736,19 +2284,26 @@ export function upsertSavedSearch(input: Omit<SavedSearchRecord, 'id' | 'created
     record.maxPerCompany,
     record.createdAt,
     record.updatedAt,
-    record.lastRunAt || null
+    record.lastRunAt || null,
   );
   return record;
 }
 
 export function deleteSavedSearch(id: string) {
-  return Number(getLeadsDb().prepare('DELETE FROM saved_searches WHERE id = ?').run(id).changes || 0);
+  return Number(
+    getLeadsDb().prepare("DELETE FROM saved_searches WHERE id = ?").run(id)
+      .changes || 0,
+  );
 }
 
 export function markSavedSearchRun(id: string, now = new Date().toISOString()) {
-  getLeadsDb().prepare(`
+  getLeadsDb()
+    .prepare(
+      `
     UPDATE saved_searches SET last_run_at = ?, updated_at = ? WHERE id = ?
-  `).run(now, now, id);
+  `,
+    )
+    .run(now, now, id);
 }
 
 export type QueryPerformanceUpdate = {
@@ -1773,11 +2328,13 @@ export type QueryPerformanceUpdate = {
 };
 
 export function recordQueryPerformance(update: QueryPerformanceUpdate) {
-  const family = String(update.family || 'general').slice(0, 80);
-  const lane = String(update.lane || 'person').slice(0, 80);
-  const provider = String(update.provider || 'tavily').slice(0, 80);
-  const scopeKey = [family, lane, provider].join('|').toLowerCase();
-  getLeadsDb().prepare(`
+  const family = String(update.family || "general").slice(0, 80);
+  const lane = String(update.lane || "person").slice(0, 80);
+  const provider = String(update.provider || "tavily").slice(0, 80);
+  const scopeKey = [family, lane, provider].join("|").toLowerCase();
+  getLeadsDb()
+    .prepare(
+      `
     INSERT INTO query_performance (
       scope_key, family, lane, provider, runs, raw_candidates, unique_candidates,
       extracted_candidates, accepted_candidates, duplicate_candidates, outcome_runs,
@@ -1801,34 +2358,40 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       hard_failed_candidates = query_performance.hard_failed_candidates + excluded.hard_failed_candidates,
       unknown_candidates = query_performance.unknown_candidates + excluded.unknown_candidates,
       updated_at = excluded.updated_at
-  `).run(
-    scopeKey,
-    family,
-    lane,
-    provider,
-    Math.max(0, Math.floor(update.runs ?? 1)),
-    Math.max(0, Math.floor(update.rawCandidates || 0)),
-    Math.max(0, Math.floor(update.uniqueCandidates || 0)),
-    Math.max(0, Math.floor(update.extractedCandidates || 0)),
-    Math.max(0, Math.floor(update.acceptedCandidates || 0)),
-    Math.max(0, Math.floor(update.duplicateCandidates || 0)),
-    Math.max(0, Math.floor(update.outcomeRuns || 0)),
-    Math.max(0, Math.floor(update.qualifiedCandidates || 0)),
-    Math.max(0, Math.floor(update.rescuedCandidates || 0)),
-    Math.max(0, Math.floor(update.returnedCandidates || 0)),
-    Math.max(0, Math.floor(update.searchLatencyMs || 0)),
-    Math.max(0, Math.floor(update.providerUnits || 0)),
-    Math.max(0, Math.floor(update.judgedCandidates || 0)),
-    Math.max(0, Math.floor(update.hardFailedCandidates || 0)),
-    Math.max(0, Math.floor(update.unknownCandidates || 0)),
-    new Date().toISOString()
-  );
+  `,
+    )
+    .run(
+      scopeKey,
+      family,
+      lane,
+      provider,
+      Math.max(0, Math.floor(update.runs ?? 1)),
+      Math.max(0, Math.floor(update.rawCandidates || 0)),
+      Math.max(0, Math.floor(update.uniqueCandidates || 0)),
+      Math.max(0, Math.floor(update.extractedCandidates || 0)),
+      Math.max(0, Math.floor(update.acceptedCandidates || 0)),
+      Math.max(0, Math.floor(update.duplicateCandidates || 0)),
+      Math.max(0, Math.floor(update.outcomeRuns || 0)),
+      Math.max(0, Math.floor(update.qualifiedCandidates || 0)),
+      Math.max(0, Math.floor(update.rescuedCandidates || 0)),
+      Math.max(0, Math.floor(update.returnedCandidates || 0)),
+      Math.max(0, Math.floor(update.searchLatencyMs || 0)),
+      Math.max(0, Math.floor(update.providerUnits || 0)),
+      Math.max(0, Math.floor(update.judgedCandidates || 0)),
+      Math.max(0, Math.floor(update.hardFailedCandidates || 0)),
+      Math.max(0, Math.floor(update.unknownCandidates || 0)),
+      new Date().toISOString(),
+    );
 }
 
 export function readQueryPerformance(limit = 100) {
-  return getLeadsDb().prepare(`
+  return getLeadsDb()
+    .prepare(
+      `
     SELECT * FROM query_performance ORDER BY datetime(updated_at) DESC LIMIT ?
-  `).all(Math.min(Math.max(Math.floor(limit) || 100, 1), 500)) as any[];
+  `,
+    )
+    .all(Math.min(Math.max(Math.floor(limit) || 100, 1), 500)) as any[];
 }
 
 const usagePeriod = (date = new Date()) => date.toISOString().slice(0, 7);
@@ -1836,11 +2399,30 @@ const usagePeriod = (date = new Date()) => date.toISOString().slice(0, 7);
 export function readProviderUsage(provider?: string, period = usagePeriod()) {
   const db = getLeadsDb();
   if (provider) {
-    const row = db.prepare('SELECT * FROM provider_usage WHERE provider = ? AND period = ?').get(provider, period) as any | undefined;
-    return row ? { provider: row.provider, period: row.period, units: Number(row.units || 0), updatedAt: row.updated_at } : null;
+    const row = db
+      .prepare("SELECT * FROM provider_usage WHERE provider = ? AND period = ?")
+      .get(provider, period) as any | undefined;
+    return row
+      ? {
+          provider: row.provider,
+          period: row.period,
+          units: Number(row.units || 0),
+          updatedAt: row.updated_at,
+        }
+      : null;
   }
-  return (db.prepare('SELECT * FROM provider_usage WHERE period = ? ORDER BY provider').all(period) as any[])
-    .map((row) => ({ provider: row.provider, period: row.period, units: Number(row.units || 0), updatedAt: row.updated_at }));
+  return (
+    db
+      .prepare(
+        "SELECT * FROM provider_usage WHERE period = ? ORDER BY provider",
+      )
+      .all(period) as any[]
+  ).map((row) => ({
+    provider: row.provider,
+    period: row.period,
+    units: Number(row.units || 0),
+    updatedAt: row.updated_at,
+  }));
 }
 
 /**
@@ -1850,28 +2432,44 @@ export function readProviderUsage(provider?: string, period = usagePeriod()) {
 export function recordProviderUsage(provider: string, units: number) {
   const requested = Math.max(0, Math.floor(units || 0));
   if (!requested) {
-    const used = Number((getLeadsDb().prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
-      .get(provider, usagePeriod()) as { units?: number } | undefined)?.units || 0);
+    const used = Number(
+      (
+        getLeadsDb()
+          .prepare(
+            "SELECT units FROM provider_usage WHERE provider = ? AND period = ?",
+          )
+          .get(provider, usagePeriod()) as { units?: number } | undefined
+      )?.units || 0,
+    );
     return { recorded: false, used, requested };
   }
   const period = usagePeriod();
   const db = getLeadsDb();
-  db.exec('BEGIN IMMEDIATE');
+  db.exec("BEGIN IMMEDIATE");
   try {
-    const current = db.prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
+    const current = db
+      .prepare(
+        "SELECT units FROM provider_usage WHERE provider = ? AND period = ?",
+      )
       .get(provider, period) as { units?: number } | undefined;
     const used = Number(current?.units || 0);
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO provider_usage (provider, period, units, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(provider, period) DO UPDATE SET
         units = excluded.units,
         updated_at = excluded.updated_at
-    `).run(provider, period, used + requested, new Date().toISOString());
-    db.exec('COMMIT');
+    `,
+    ).run(provider, period, used + requested, new Date().toISOString());
+    db.exec("COMMIT");
     return { recorded: true, used: used + requested, requested };
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch { /* no-op */ }
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* no-op */
+    }
     throw error;
   }
 }
@@ -1881,44 +2479,75 @@ export function recordProviderUsage(provider: string, units: number) {
  * PROVIDER_CREDIT_RESERVATION=true and monthlyLimit is set; otherwise always
  * allows and records so multi-key rotation can run.
  */
-export function reserveProviderUsage(provider: string, units: number, monthlyLimit?: number) {
-  const reservationEnabled = String(process.env.PROVIDER_CREDIT_RESERVATION || '').trim().toLowerCase() === 'true';
+export function reserveProviderUsage(
+  provider: string,
+  units: number,
+  monthlyLimit?: number,
+) {
+  const reservationEnabled =
+    String(process.env.PROVIDER_CREDIT_RESERVATION || "")
+      .trim()
+      .toLowerCase() === "true";
   const requested = Math.max(0, Math.floor(units || 0));
-  if (!reservationEnabled || monthlyLimit === undefined || monthlyLimit === null) {
+  if (
+    !reservationEnabled ||
+    monthlyLimit === undefined ||
+    monthlyLimit === null
+  ) {
     const recorded = recordProviderUsage(provider, requested);
     return {
       allowed: true,
       used: recorded.used - (recorded.recorded ? requested : 0),
       requested,
-      remaining: undefined as number | undefined
+      remaining: undefined as number | undefined,
     };
   }
   const period = usagePeriod();
   const db = getLeadsDb();
-  db.exec('BEGIN IMMEDIATE');
+  db.exec("BEGIN IMMEDIATE");
   try {
-    const current = db.prepare('SELECT units FROM provider_usage WHERE provider = ? AND period = ?')
+    const current = db
+      .prepare(
+        "SELECT units FROM provider_usage WHERE provider = ? AND period = ?",
+      )
       .get(provider, period) as { units?: number } | undefined;
     const used = Number(current?.units || 0);
     const allowed = used + requested <= monthlyLimit;
     if (allowed && requested) {
-      db.prepare(`
+      db.prepare(
+        `
         INSERT INTO provider_usage (provider, period, units, updated_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(provider, period) DO UPDATE SET
           units = excluded.units,
           updated_at = excluded.updated_at
-      `).run(provider, period, used + requested, new Date().toISOString());
+      `,
+      ).run(provider, period, used + requested, new Date().toISOString());
     }
-    db.exec('COMMIT');
-    return { allowed, used, requested, remaining: Math.max(0, monthlyLimit - used - (allowed ? requested : 0)) };
+    db.exec("COMMIT");
+    return {
+      allowed,
+      used,
+      requested,
+      remaining: Math.max(0, monthlyLimit - used - (allowed ? requested : 0)),
+    };
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch { /* no-op */ }
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* no-op */
+    }
     throw error;
   }
 }
 
-export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
+export type MiningSessionStatus =
+  | "running"
+  | "cancellation_requested"
+  | "success"
+  | "error"
+  | "cancelled"
+  | "interrupted";
 
 export type MiningSessionCheckpoint = {
   sessionId: string;
@@ -1965,15 +2594,24 @@ const toMiningSessionRecord = (row: any): MiningSessionRecord => ({
   completedAt: row.completed_at || undefined,
   cancellationRequestedAt: row.cancellation_requested_at || undefined,
   errorMessage: row.error_message || undefined,
-  stats: parseJSONField<Record<string, unknown> | undefined>(row.stats_json, undefined),
-  traceSummary: parseJSONField<Record<string, unknown> | undefined>(row.trace_summary_json, undefined),
-  checkpoint: parseJSONField<MiningSessionCheckpoint | undefined>(row.checkpoint_json, undefined),
-  updatedAt: row.updated_at
+  stats: parseJSONField<Record<string, unknown> | undefined>(
+    row.stats_json,
+    undefined,
+  ),
+  traceSummary: parseJSONField<Record<string, unknown> | undefined>(
+    row.trace_summary_json,
+    undefined,
+  ),
+  checkpoint: parseJSONField<MiningSessionCheckpoint | undefined>(
+    row.checkpoint_json,
+    undefined,
+  ),
+  updatedAt: row.updated_at,
 });
 
 export function readMiningSessionById(id: string) {
   const row = getLeadsDb()
-    .prepare('SELECT * FROM mining_sessions WHERE id = ?')
+    .prepare("SELECT * FROM mining_sessions WHERE id = ?")
     .get(id) as any | undefined;
   return row ? toMiningSessionRecord(row) : null;
 }
@@ -1981,60 +2619,84 @@ export function readMiningSessionById(id: string) {
 export function readMiningSessions(limit = 25) {
   const boundedLimit = Math.min(Math.max(Math.floor(limit) || 25, 1), 100);
   const rows = getLeadsDb()
-    .prepare('SELECT * FROM mining_sessions ORDER BY datetime(updated_at) DESC LIMIT ?')
+    .prepare(
+      "SELECT * FROM mining_sessions ORDER BY datetime(updated_at) DESC LIMIT ?",
+    )
     .all(boundedLimit) as any[];
   return rows.map(toMiningSessionRecord);
 }
 
 export function readResumableMiningSessions(): MiningSessionRecord[] {
   const rows = getLeadsDb()
-    .prepare(`
+    .prepare(
+      `
       SELECT * FROM mining_sessions
       WHERE status = 'interrupted' AND checkpoint_json IS NOT NULL
       ORDER BY datetime(updated_at) DESC
       LIMIT 20
-    `)
+    `,
+    )
     .all() as any[];
   return rows.map(toMiningSessionRecord);
 }
 
-export function saveMiningSessionCheckpoint(sessionId: string, checkpoint: MiningSessionCheckpoint) {
+export function saveMiningSessionCheckpoint(
+  sessionId: string,
+  checkpoint: MiningSessionCheckpoint,
+) {
   const db = getLeadsDb();
   const now = checkpoint.updatedAt || new Date().toISOString();
-  db.prepare(`
+  db.prepare(
+    `
     UPDATE mining_sessions
     SET checkpoint_json = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(JSON.stringify(checkpoint), now, sessionId);
+  `,
+  ).run(JSON.stringify(checkpoint), now, sessionId);
 }
 
-export function readMiningSessionCheckpoint(sessionId: string): MiningSessionCheckpoint | null {
+export function readMiningSessionCheckpoint(
+  sessionId: string,
+): MiningSessionCheckpoint | null {
   const db = getLeadsDb();
-  const row = db.prepare('SELECT checkpoint_json FROM mining_sessions WHERE id = ?').get(sessionId) as { checkpoint_json: string | null } | undefined;
-  return row?.checkpoint_json ? parseJSONField<MiningSessionCheckpoint | null>(row.checkpoint_json, null) : null;
+  const row = db
+    .prepare("SELECT checkpoint_json FROM mining_sessions WHERE id = ?")
+    .get(sessionId) as { checkpoint_json: string | null } | undefined;
+  return row?.checkpoint_json
+    ? parseJSONField<MiningSessionCheckpoint | null>(row.checkpoint_json, null)
+    : null;
 }
 
-export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Partial<Omit<MiningSessionRecord, 'id' | 'updatedAt'>> & { updatedAt?: string }) {
+export function upsertMiningSession(
+  update: Pick<MiningSessionRecord, "id"> &
+    Partial<Omit<MiningSessionRecord, "id" | "updatedAt">> & {
+      updatedAt?: string;
+    },
+) {
   const db = getLeadsDb();
   const existing = readMiningSessionById(update.id);
   const now = update.updatedAt || new Date().toISOString();
   const record: MiningSessionRecord = {
     id: update.id,
-    status: update.status || existing?.status || 'running',
-    prompt: update.prompt ?? existing?.prompt ?? '',
-    requestedLimit: Number(update.requestedLimit ?? existing?.requestedLimit ?? 0),
+    status: update.status || existing?.status || "running",
+    prompt: update.prompt ?? existing?.prompt ?? "",
+    requestedLimit: Number(
+      update.requestedLimit ?? existing?.requestedLimit ?? 0,
+    ),
     startedAt: update.startedAt ?? existing?.startedAt ?? now,
     completedAt: update.completedAt ?? existing?.completedAt,
-    cancellationRequestedAt: update.cancellationRequestedAt ?? existing?.cancellationRequestedAt,
+    cancellationRequestedAt:
+      update.cancellationRequestedAt ?? existing?.cancellationRequestedAt,
     errorMessage: update.errorMessage ?? existing?.errorMessage,
     stats: update.stats ?? existing?.stats,
     traceSummary: update.traceSummary ?? existing?.traceSummary,
     checkpoint: update.checkpoint ?? existing?.checkpoint,
-    updatedAt: now
+    updatedAt: now,
   };
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO mining_sessions (
       id, status, prompt, requested_limit, started_at, completed_at,
       cancellation_requested_at, error_message, stats_json, trace_summary_json, checkpoint_json, updated_at
@@ -2051,7 +2713,8 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
       trace_summary_json = excluded.trace_summary_json,
       checkpoint_json = COALESCE(excluded.checkpoint_json, mining_sessions.checkpoint_json),
       updated_at = excluded.updated_at
-  `).run(
+  `,
+  ).run(
     record.id,
     record.status,
     record.prompt,
@@ -2063,7 +2726,7 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
     record.stats ? JSON.stringify(record.stats) : null,
     record.traceSummary ? JSON.stringify(record.traceSummary) : null,
     record.checkpoint ? JSON.stringify(record.checkpoint) : null,
-    record.updatedAt
+    record.updatedAt,
   );
 
   return record;
@@ -2071,12 +2734,21 @@ export function upsertMiningSession(update: Pick<MiningSessionRecord, 'id'> & Pa
 
 export function reconcileOrphanedMiningSessions(reason?: string): number {
   const db = getLeadsDb();
-  const defaultMessage = 'Session was active when server process stopped (interrupted).';
-  const rows = db.prepare(`
+  const defaultMessage =
+    "Session was active when server process stopped (interrupted).";
+  const rows = db
+    .prepare(
+      `
     SELECT id, checkpoint_json, error_message
     FROM mining_sessions
     WHERE status IN ('running', 'cancellation_requested')
-  `).all() as { id: string; checkpoint_json: string | null; error_message: string | null }[];
+  `,
+    )
+    .all() as {
+    id: string;
+    checkpoint_json: string | null;
+    error_message: string | null;
+  }[];
 
   for (const row of rows) {
     let msg = reason || row.error_message || defaultMessage;
@@ -2090,14 +2762,16 @@ export function reconcileOrphanedMiningSessions(reason?: string): number {
         // ignore parse error
       }
     }
-    db.prepare(`
+    db.prepare(
+      `
       UPDATE mining_sessions
       SET status = 'interrupted',
           error_message = ?,
           completed_at = COALESCE(completed_at, datetime('now')),
           updated_at = datetime('now')
       WHERE id = ?
-    `).run(msg, row.id);
+    `,
+    ).run(msg, row.id);
   }
 
   return rows.length;
@@ -2105,27 +2779,38 @@ export function reconcileOrphanedMiningSessions(reason?: string): number {
 
 export function deleteMiningSession(sessionId: string): boolean {
   const db = getLeadsDb();
-  const info = db.prepare('DELETE FROM mining_sessions WHERE id = ?').run(sessionId);
+  const info = db
+    .prepare("DELETE FROM mining_sessions WHERE id = ?")
+    .run(sessionId);
   return Number(info.changes) > 0;
 }
 
 export function deleteMiningSessions(sessionIds: string[]): number {
   if (!sessionIds.length) return 0;
   const db = getLeadsDb();
-  const placeholders = sessionIds.map(() => '?').join(',');
-  const info = db.prepare(`DELETE FROM mining_sessions WHERE id IN (${placeholders})`).run(...sessionIds);
+  const placeholders = sessionIds.map(() => "?").join(",");
+  const info = db
+    .prepare(`DELETE FROM mining_sessions WHERE id IN (${placeholders})`)
+    .run(...sessionIds);
   return Number(info.changes);
 }
 
 export function clearInterruptedMiningSessions(): number {
   const db = getLeadsDb();
-  const info = db.prepare("DELETE FROM mining_sessions WHERE status = 'interrupted'").run();
+  const info = db
+    .prepare("DELETE FROM mining_sessions WHERE status = 'interrupted'")
+    .run();
   return Number(info.changes);
 }
 
 // -- Lead Activities ----------------------------------------------------------
 
-export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge';
+export type LeadActivityType =
+  | "stage_change"
+  | "note"
+  | "enrichment"
+  | "import"
+  | "merge";
 
 export type LeadActivityRecord = {
   id: string;
@@ -2139,33 +2824,47 @@ export type LeadActivityRecord = {
 
 // -- Lead Activity Helpers ----------------------------------------------------
 
-export function insertLeadActivity(entry: Omit<LeadActivityRecord, 'id'> & { id?: string }): void {
+export function insertLeadActivity(
+  entry: Omit<LeadActivityRecord, "id"> & { id?: string },
+): void {
   try {
     const db = getLeadsDb();
     const id = entry.id || crypto.randomUUID();
-    db.prepare(`
+    db.prepare(
+      `
       INSERT OR IGNORE INTO lead_activities (id, lead_id, type, from_value, to_value, actor, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
+    ).run(
       id,
       entry.leadId,
       entry.type,
       entry.fromValue || null,
       entry.toValue,
-      entry.actor || 'user',
-      entry.createdAt || new Date().toISOString()
+      entry.actor || "user",
+      entry.createdAt || new Date().toISOString(),
     );
   } catch (err) {
     // Activity logging must never fail silently in a way that breaks the main write path.
-    console.warn('[db] Failed to insert lead activity:', err instanceof Error ? err.message : err);
+    console.warn(
+      "[db] Failed to insert lead activity:",
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
-export function readLeadActivities(leadId: string, limit = 100): LeadActivityRecord[] {
+export function readLeadActivities(
+  leadId: string,
+  limit = 100,
+): LeadActivityRecord[] {
   const db = getLeadsDb();
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT * FROM lead_activities WHERE lead_id = ? ORDER BY created_at DESC LIMIT ?
-  `).all(leadId, Math.min(limit, 500)) as any[];
+  `,
+    )
+    .all(leadId, Math.min(limit, 500)) as any[];
   return rows.map((row) => ({
     id: row.id,
     leadId: row.lead_id,
@@ -2173,7 +2872,7 @@ export function readLeadActivities(leadId: string, limit = 100): LeadActivityRec
     fromValue: row.from_value || undefined,
     toValue: row.to_value,
     actor: row.actor,
-    createdAt: row.created_at
+    createdAt: row.created_at,
   }));
 }
 
@@ -2193,10 +2892,13 @@ export type OutreachDraftRecord = {
   updatedAt: string;
 };
 
-export function upsertOutreachDraft(draft: OutreachDraftRecord): OutreachDraftRecord {
+export function upsertOutreachDraft(
+  draft: OutreachDraftRecord,
+): OutreachDraftRecord {
   const db = getLeadsDb();
   const now = new Date().toISOString();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO outreach_drafts (id, lead_id, lead_name, company_name, tone, medium, sequence_step, word_count, body, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -2208,7 +2910,8 @@ export function upsertOutreachDraft(draft: OutreachDraftRecord): OutreachDraftRe
       word_count    = excluded.word_count,
       body          = excluded.body,
       updated_at    = excluded.updated_at
-  `).run(
+  `,
+  ).run(
     draft.id,
     draft.leadId,
     draft.leadName,
@@ -2219,16 +2922,20 @@ export function upsertOutreachDraft(draft: OutreachDraftRecord): OutreachDraftRe
     Math.round(draft.wordCount || 0),
     draft.body,
     draft.createdAt || now,
-    now
+    now,
   );
   return { ...draft, updatedAt: now };
 }
 
 export function readOutreachDrafts(limit = 50): OutreachDraftRecord[] {
   const db = getLeadsDb();
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT * FROM outreach_drafts ORDER BY created_at DESC LIMIT ?
-  `).all(Math.min(limit, 200)) as any[];
+  `,
+    )
+    .all(Math.min(limit, 200)) as any[];
   return rows.map((row) => ({
     id: row.id,
     leadId: row.lead_id,
@@ -2240,10 +2947,10 @@ export function readOutreachDrafts(limit = 50): OutreachDraftRecord[] {
     wordCount: Number(row.word_count || 0),
     body: row.body,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
   }));
 }
 
 export function deleteOutreachDraft(id: string): void {
-  getLeadsDb().prepare('DELETE FROM outreach_drafts WHERE id = ?').run(id);
+  getLeadsDb().prepare("DELETE FROM outreach_drafts WHERE id = ?").run(id);
 }

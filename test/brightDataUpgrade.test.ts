@@ -1,65 +1,91 @@
-import test from 'node:test';
-import assert from 'node:assert';
-import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.js';
-import { findCompanyWebsite } from '../server/leadSearch/companyIntent.js';
-import { getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../server/db.js';
-import { baseMaxRetries, baseTimeoutSeconds, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, BrightDataError, buildBrightDataSearchArguments, chunkBrightDataBatchItems, classifyBrightDataError, createBrightDataMcpStderrFilter, executeBrightDataSearchWithEmptyBodyRecovery, executeBrightDataSearchWithRetry, filterBrightDataMcpStderrLine, isEmptyBodySerpTransientError, normalizeBrightDataGeoLocation, normalizeBrightDataUrl, parseBingMarkdownResults } from '../server/services/brightdata.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { brightDataFreeTierCapabilities } from '../server/leadSearch/freeTier.js';
+import test from "node:test";
+import assert from "node:assert";
+import { verifyDecisionMakerFromEvidence } from "../server/leadSearch/verification.js";
+import { findCompanyWebsite } from "../server/leadSearch/companyIntent.js";
+import {
+  getNegativeEnrichmentCacheEntry,
+  upsertNegativeEnrichmentCacheEntry,
+} from "../server/db.js";
+import {
+  baseMaxRetries,
+  baseTimeoutSeconds,
+  BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
+  BrightDataError,
+  buildBrightDataSearchArguments,
+  chunkBrightDataBatchItems,
+  classifyBrightDataError,
+  createBrightDataMcpStderrFilter,
+  executeBrightDataSearchWithEmptyBodyRecovery,
+  executeBrightDataSearchWithRetry,
+  filterBrightDataMcpStderrLine,
+  isEmptyBodySerpTransientError,
+  normalizeBrightDataGeoLocation,
+  normalizeBrightDataUrl,
+  parseBingMarkdownResults,
+} from "../server/services/brightdata.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { brightDataFreeTierCapabilities } from "../server/leadSearch/freeTier.js";
 
-test('verifyDecisionMakerFromEvidence accepts founder', (t) => {
+test("verifyDecisionMakerFromEvidence accepts founder", (t) => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'find me some founders',
-    currentTitle: 'Founder and CEO'
+    query: "find me some founders",
+    currentTitle: "Founder and CEO",
   });
   assert.strictEqual(result.titleMatched, true);
   assert.strictEqual(result.ignoredTitle, false);
 });
 
-test('verifyDecisionMakerFromEvidence rejects intern unless requested', (t) => {
+test("verifyDecisionMakerFromEvidence rejects intern unless requested", (t) => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'find me tech leads',
-    currentTitle: 'Software Engineering Intern'
+    query: "find me tech leads",
+    currentTitle: "Software Engineering Intern",
   });
   assert.strictEqual(result.titleMatched, false);
   assert.strictEqual(result.ignoredTitle, true);
 });
 
-test('verifyDecisionMakerFromEvidence accepts intern if requested', (t) => {
+test("verifyDecisionMakerFromEvidence accepts intern if requested", (t) => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'find me interns',
-    currentTitle: 'Software Engineering Intern'
+    query: "find me interns",
+    currentTitle: "Software Engineering Intern",
   });
   assert.strictEqual(result.titleMatched, false);
   assert.strictEqual(result.ignoredTitle, false);
 });
 
-test('negative cache works', (t) => {
-  upsertNegativeEnrichmentCacheEntry({
-    normalizedUrl: 'linkedin.com/in/test-negative',
-    linkedinUsername: 'test-negative',
-    evidenceBlock: 'brightdata_login_wall',
-    scrapeQuality: 'bad',
-    sourceProvider: 'brightdata'
-  }, 1);
-  
-  const cacheHit = getNegativeEnrichmentCacheEntry({ normalizedUrl: 'linkedin.com/in/test-negative' });
+test("negative cache works", (t) => {
+  upsertNegativeEnrichmentCacheEntry(
+    {
+      normalizedUrl: "linkedin.com/in/test-negative",
+      linkedinUsername: "test-negative",
+      evidenceBlock: "brightdata_login_wall",
+      scrapeQuality: "bad",
+      sourceProvider: "brightdata",
+    },
+    1,
+  );
+
+  const cacheHit = getNegativeEnrichmentCacheEntry({
+    normalizedUrl: "linkedin.com/in/test-negative",
+  });
   assert.ok(cacheHit);
-  assert.strictEqual(cacheHit.evidenceBlock, 'brightdata_login_wall');
-  assert.strictEqual(cacheHit.scrapeQuality, 'bad');
+  assert.strictEqual(cacheHit.evidenceBlock, "brightdata_login_wall");
+  assert.strictEqual(cacheHit.scrapeQuality, "bad");
 });
 
-test('post-enrichment decision-maker verification can rescue unclear evidence', () => {
+test("post-enrichment decision-maker verification can rescue unclear evidence", () => {
   const initial = verifyDecisionMakerFromEvidence({
-    query: 'dental clinic owners',
-    currentTitle: 'Professional',
-    evidenceText: 'LINK: https://linkedin.com/in/example\nTITLE: Example Person'
+    query: "dental clinic owners",
+    currentTitle: "Professional",
+    evidenceText:
+      "LINK: https://linkedin.com/in/example\nTITLE: Example Person",
   });
   const enriched = verifyDecisionMakerFromEvidence({
-    query: 'dental clinic owners',
-    currentTitle: 'Professional',
-    currentCompany: 'Bright Smile Dental',
-    evidenceText: 'LINK: https://linkedin.com/in/example\nHEADLINE: Founder and Practice Owner at Bright Smile Dental'
+    query: "dental clinic owners",
+    currentTitle: "Professional",
+    currentCompany: "Bright Smile Dental",
+    evidenceText:
+      "LINK: https://linkedin.com/in/example\nHEADLINE: Founder and Practice Owner at Bright Smile Dental",
   });
 
   assert.ok(initial.confidence < enriched.confidence);
@@ -67,22 +93,29 @@ test('post-enrichment decision-maker verification can rescue unclear evidence', 
   assert.ok(enriched.confidence >= 7);
 });
 
-test('post-enrichment verification rejects confirmed weak title', () => {
+test("post-enrichment verification rejects confirmed weak title", () => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'agency owners',
-    currentTitle: 'Marketing Assistant',
-    evidenceText: 'LINK: https://linkedin.com/in/example\nEXPERIENCE: Marketing Assistant at Growth Co'
+    query: "agency owners",
+    currentTitle: "Marketing Assistant",
+    evidenceText:
+      "LINK: https://linkedin.com/in/example\nEXPERIENCE: Marketing Assistant at Growth Co",
   });
 
   assert.strictEqual(result.ignoredTitle, true);
   assert.ok(result.confidence < 5);
 });
 
-test('decision-maker verification accepts executive acronyms and head roles', () => {
-  for (const currentTitle of ['CRO', 'Chief Revenue Officer', 'CIO', 'Head of Engineering', 'VP of Sales']) {
+test("decision-maker verification accepts executive acronyms and head roles", () => {
+  for (const currentTitle of [
+    "CRO",
+    "Chief Revenue Officer",
+    "CIO",
+    "Head of Engineering",
+    "VP of Sales",
+  ]) {
     const result = verifyDecisionMakerFromEvidence({
-      query: 'find decision makers',
-      currentTitle
+      query: "find decision makers",
+      currentTitle,
     });
 
     assert.strictEqual(result.titleMatched, true, currentTitle);
@@ -91,10 +124,10 @@ test('decision-maker verification accepts executive acronyms and head roles', ()
   }
 });
 
-test('decision-maker verification rejects assistant-to-executive false positive', () => {
+test("decision-maker verification rejects assistant-to-executive false positive", () => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'agency owners and CEOs',
-    currentTitle: 'Assistant to the CEO'
+    query: "agency owners and CEOs",
+    currentTitle: "Assistant to the CEO",
   });
 
   assert.strictEqual(result.titleMatched, true);
@@ -102,10 +135,10 @@ test('decision-maker verification rejects assistant-to-executive false positive'
   assert.ok(result.confidence < 5);
 });
 
-test('decision-maker verification rejects student organization founder false positive', () => {
+test("decision-maker verification rejects student organization founder false positive", () => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'startup founders',
-    currentTitle: 'Co-Founder at Student Club'
+    query: "startup founders",
+    currentTitle: "Co-Founder at Student Club",
   });
 
   assert.strictEqual(result.titleMatched, true);
@@ -113,10 +146,10 @@ test('decision-maker verification rejects student organization founder false pos
   assert.ok(result.confidence < 5);
 });
 
-test('decision-maker verification does not treat product owner as company owner', () => {
+test("decision-maker verification does not treat product owner as company owner", () => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'business owners',
-    currentTitle: 'Product Owner'
+    query: "business owners",
+    currentTitle: "Product Owner",
   });
 
   assert.strictEqual(result.titleMatched, false);
@@ -124,10 +157,10 @@ test('decision-maker verification does not treat product owner as company owner'
   assert.strictEqual(result.confidence, 5);
 });
 
-test('decision-maker verification does not treat principal IC titles as buyers', () => {
+test("decision-maker verification does not treat principal IC titles as buyers", () => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'technology buyers',
-    currentTitle: 'Principal Engineer'
+    query: "technology buyers",
+    currentTitle: "Principal Engineer",
   });
 
   assert.strictEqual(result.titleMatched, false);
@@ -135,11 +168,11 @@ test('decision-maker verification does not treat principal IC titles as buyers',
   assert.strictEqual(result.confidence, 5);
 });
 
-test('decision-maker verification uses extracted seniority as authority evidence', () => {
+test("decision-maker verification uses extracted seniority as authority evidence", () => {
   const result = verifyDecisionMakerFromEvidence({
-    query: 'clinic operators',
-    currentTitle: 'Professional',
-    seniorityLevel: 'Founder-Owner'
+    query: "clinic operators",
+    currentTitle: "Professional",
+    seniorityLevel: "Founder-Owner",
   });
 
   assert.strictEqual(result.titleMatched, true);
@@ -147,152 +180,219 @@ test('decision-maker verification uses extracted seniority as authority evidence
   assert.ok(result.confidence >= 7);
 });
 
-test('findCompanyWebsite rejects social and job-board URLs and chooses official site', async () => {
+test("findCompanyWebsite rejects social and job-board URLs and chooses official site", async () => {
   const website = await findCompanyWebsite({
-    companyName: 'Bright Smile Dental',
-    location: 'Austin',
+    companyName: "Bright Smile Dental",
+    location: "Austin",
     brightDataSearch: async () => [
-      { title: 'Bright Smile Dental | LinkedIn', url: 'https://linkedin.com/company/bright-smile-dental', content: 'Company page' },
-      { title: 'Bright Smile Dental jobs', url: 'https://indeed.com/cmp/bright-smile-dental', content: 'Jobs' },
-      { title: 'Bright Smile Dental - Family Dentistry', url: 'https://brightsmiledental.com', content: 'Official website for Bright Smile Dental in Austin' }
-    ]
+      {
+        title: "Bright Smile Dental | LinkedIn",
+        url: "https://linkedin.com/company/bright-smile-dental",
+        content: "Company page",
+      },
+      {
+        title: "Bright Smile Dental jobs",
+        url: "https://indeed.com/cmp/bright-smile-dental",
+        content: "Jobs",
+      },
+      {
+        title: "Bright Smile Dental - Family Dentistry",
+        url: "https://brightsmiledental.com",
+        content: "Official website for Bright Smile Dental in Austin",
+      },
+    ],
   });
 
-  assert.strictEqual(website, 'https://brightsmiledental.com');
+  assert.strictEqual(website, "https://brightsmiledental.com");
 });
 
-test('findCompanyWebsite returns null when only blocked domains are present', async () => {
+test("findCompanyWebsite returns null when only blocked domains are present", async () => {
   const website = await findCompanyWebsite({
-    companyName: 'Blocked Co',
+    companyName: "Blocked Co",
     brightDataSearch: async () => [
-      { title: 'Blocked Co | LinkedIn', url: 'https://linkedin.com/company/blocked-co', content: 'Company page' },
-      { title: 'Blocked Co reviews', url: 'https://yelp.com/biz/blocked-co', content: 'Reviews' }
-    ]
+      {
+        title: "Blocked Co | LinkedIn",
+        url: "https://linkedin.com/company/blocked-co",
+        content: "Company page",
+      },
+      {
+        title: "Blocked Co reviews",
+        url: "https://yelp.com/biz/blocked-co",
+        content: "Reviews",
+      },
+    ],
   });
 
   assert.strictEqual(website, null);
 });
 
-test('findCompanyWebsite rejects one-label and news-article domains that only mention the company', async () => {
+test("findCompanyWebsite rejects one-label and news-article domains that only mention the company", async () => {
   const website = await findCompanyWebsite({
-    companyName: 'Cal AI',
-    location: 'Miami',
+    companyName: "Cal AI",
+    location: "Miami",
     brightDataSearch: async () => [
-      { title: 'Cal AI founder profile', url: 'https://cnbc.com/young-founder-cal-ai', content: 'Cal AI founder interview' },
-      { title: 'GoTo official', url: 'https://goto/', content: 'Cal AI partner' },
-      { title: 'Cal AI official website', url: 'https://cal.ai', content: 'Official Cal AI product site' }
-    ]
+      {
+        title: "Cal AI founder profile",
+        url: "https://cnbc.com/young-founder-cal-ai",
+        content: "Cal AI founder interview",
+      },
+      {
+        title: "GoTo official",
+        url: "https://goto/",
+        content: "Cal AI partner",
+      },
+      {
+        title: "Cal AI official website",
+        url: "https://cal.ai",
+        content: "Official Cal AI product site",
+      },
+    ],
   });
 
-  assert.strictEqual(website, 'https://cal.ai');
+  assert.strictEqual(website, "https://cal.ai");
 });
 
-test('Bright Data classifies target gateway and malformed search responses as retryable target transients', () => {
-  for (const message of ['HTTP 502 Bad Gateway', 'status 503 Service Unavailable', '504 Gateway Timeout', 'fetch failed', 'Bright Data scrape_as_markdown returned empty body']) {
+test("Bright Data classifies target gateway and malformed search responses as retryable target transients", () => {
+  for (const message of [
+    "HTTP 502 Bad Gateway",
+    "status 503 Service Unavailable",
+    "504 Gateway Timeout",
+    "fetch failed",
+    "Bright Data scrape_as_markdown returned empty body",
+  ]) {
     const classified = classifyBrightDataError(new Error(message));
-    assert.strictEqual(classified.reasonCode, 'target_transient');
+    assert.strictEqual(classified.reasonCode, "target_transient");
     assert.strictEqual(classified.retryable, true);
     assert.strictEqual(classified.providerDisabled, false);
     assert.strictEqual(classified.clearClient, false);
   }
 });
 
-test('Bright Data classifies SERP non-JSON response (challenge page) as non-retryable target transient', () => {
+test("Bright Data classifies SERP non-JSON response (challenge page) as non-retryable target transient", () => {
   // Per official BD docs: HTTP 502 "verifying" (challenge page) requires >=15s wait before retry.
   // Any retry < 15s triggers failed_query_rejected lockout. Mark non-retryable -> Tavily fallback.
   for (const message of [
-    'Unexpected non-JSON response from Bright Data for search_engine.',
-    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',
+    "Unexpected non-JSON response from Bright Data for search_engine.",
+    "Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>",
   ]) {
     const classified = classifyBrightDataError(new Error(message));
-    assert.strictEqual(classified.reasonCode, 'target_transient');
+    assert.strictEqual(classified.reasonCode, "target_transient");
     assert.strictEqual(classified.retryable, false);
     assert.strictEqual(classified.providerDisabled, false);
   }
 });
 
-test('Bright Data search retry recovers one transient gateway error', async () => {
+test("Bright Data search retry recovers one transient gateway error", async () => {
   let attempts = 0;
   const retries: number[] = [];
   let retryNotifications = 0;
-  const result = await executeBrightDataSearchWithRetry(async attempt => {
-    attempts = attempt;
-    if (attempt === 1) throw new Error("HTTP 502 Bad Gateway");
-    return ['recovered'];
-  }, {
-    maxRetries: 1,
-    baseDelayMs: 0,
-    jitterMs: 0,
-    sleep: async delayMs => { retries.push(delayMs); },
-    onRetry: () => { retryNotifications++; }
-  });
+  const result = await executeBrightDataSearchWithRetry(
+    async (attempt) => {
+      attempts = attempt;
+      if (attempt === 1) throw new Error("HTTP 502 Bad Gateway");
+      return ["recovered"];
+    },
+    {
+      maxRetries: 1,
+      baseDelayMs: 0,
+      jitterMs: 0,
+      sleep: async (delayMs) => {
+        retries.push(delayMs);
+      },
+      onRetry: () => {
+        retryNotifications++;
+      },
+    },
+  );
 
-  assert.deepStrictEqual(result, ['recovered']);
+  assert.deepStrictEqual(result, ["recovered"]);
   assert.strictEqual(attempts, 2);
   assert.deepStrictEqual(retries, [0]);
   assert.strictEqual(retryNotifications, 1);
 });
 
-test('Bright Data search retry stops after two physical attempts on retryable gateway error', async () => {
+test("Bright Data search retry stops after two physical attempts on retryable gateway error", async () => {
   let attempts = 0;
   await assert.rejects(
-    executeBrightDataSearchWithRetry(async attempt => {
-      attempts = attempt;
-      throw new Error("HTTP 502 Bad Gateway");
-    }, { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} }),
-    (error: unknown) => error instanceof BrightDataError && error.reasonCode === 'target_transient'
+    executeBrightDataSearchWithRetry(
+      async (attempt) => {
+        attempts = attempt;
+        throw new Error("HTTP 502 Bad Gateway");
+      },
+      { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} },
+    ),
+    (error: unknown) =>
+      error instanceof BrightDataError &&
+      error.reasonCode === "target_transient",
   );
   assert.strictEqual(attempts, 2);
 });
 
-test('Bright Data search retry never repeats non-retryable failures', async () => {
+test("Bright Data search retry never repeats non-retryable failures", async () => {
   for (const message of [
-    '401 unauthorized invalid token',
-    'quota credits exhausted',
-    'HTTP 400 Request validation failed',
+    "401 unauthorized invalid token",
+    "quota credits exhausted",
+    "HTTP 400 Request validation failed",
     // Non-JSON SERP = BD challenge/verification page. Per official docs: 15s wait required before
     // retry, so we mark it non-retryable and fall back to Tavily immediately.
-    'Unexpected non-JSON response from Bright Data for search_engine.',
-    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',
-    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds.'
+    "Unexpected non-JSON response from Bright Data for search_engine.",
+    "Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>",
+    "Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds.",
   ]) {
     let attempts = 0;
     await assert.rejects(
-      executeBrightDataSearchWithRetry(async () => {
-        attempts++;
-        throw new Error(message);
-      }, { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} })
+      executeBrightDataSearchWithRetry(
+        async () => {
+          attempts++;
+          throw new Error(message);
+        },
+        { maxRetries: 1, baseDelayMs: 0, jitterMs: 0, sleep: async () => {} },
+      ),
     );
     assert.strictEqual(attempts, 1, message);
   }
 });
 
-test('Bright Data classifies transport failures as retryable client resets', () => {
-  for (const message of ['Connection closed', 'SSE stream disconnected', 'MCP error -32000: process exited']) {
+test("Bright Data classifies transport failures as retryable client resets", () => {
+  for (const message of [
+    "Connection closed",
+    "SSE stream disconnected",
+    "MCP error -32000: process exited",
+  ]) {
     const classified = classifyBrightDataError(new Error(message));
-    assert.strictEqual(classified.reasonCode, 'transport_transient');
+    assert.strictEqual(classified.reasonCode, "transport_transient");
     assert.strictEqual(classified.retryable, true);
     assert.strictEqual(classified.providerDisabled, false);
     assert.strictEqual(classified.clearClient, true);
   }
 });
 
-test('Bright Data classifies auth and quota failures as provider disabled', () => {
-  for (const message of ['401 unauthorized invalid token', '403 forbidden', 'quota credits exhausted']) {
+test("Bright Data classifies auth and quota failures as provider disabled", () => {
+  for (const message of [
+    "401 unauthorized invalid token",
+    "403 forbidden",
+    "quota credits exhausted",
+  ]) {
     const classified = classifyBrightDataError(new Error(message));
     assert.strictEqual(classified.providerDisabled, true);
-    assert.ok(['provider_auth', 'provider_quota'].includes(classified.reasonCode));
+    assert.ok(
+      ["provider_auth", "provider_quota"].includes(classified.reasonCode),
+    );
   }
 });
 
-test('Bright Data timeout and retry env defaults and clamps match MCP recommendations', (t) => {
+test("Bright Data timeout and retry env defaults and clamps match MCP recommendations", (t) => {
   const oldBaseTimeout = process.env.BASE_TIMEOUT;
   const oldBrightDataTimeout = process.env.BRIGHTDATA_BASE_TIMEOUT;
   const oldRetries = process.env.BASE_MAX_RETRIES;
   t.after(() => {
-    if (oldBaseTimeout === undefined) delete process.env.BASE_TIMEOUT; else process.env.BASE_TIMEOUT = oldBaseTimeout;
-    if (oldBrightDataTimeout === undefined) delete process.env.BRIGHTDATA_BASE_TIMEOUT; else process.env.BRIGHTDATA_BASE_TIMEOUT = oldBrightDataTimeout;
-    if (oldRetries === undefined) delete process.env.BASE_MAX_RETRIES; else process.env.BASE_MAX_RETRIES = oldRetries;
+    if (oldBaseTimeout === undefined) delete process.env.BASE_TIMEOUT;
+    else process.env.BASE_TIMEOUT = oldBaseTimeout;
+    if (oldBrightDataTimeout === undefined)
+      delete process.env.BRIGHTDATA_BASE_TIMEOUT;
+    else process.env.BRIGHTDATA_BASE_TIMEOUT = oldBrightDataTimeout;
+    if (oldRetries === undefined) delete process.env.BASE_MAX_RETRIES;
+    else process.env.BASE_MAX_RETRIES = oldRetries;
   });
 
   delete process.env.BASE_TIMEOUT;
@@ -301,57 +401,77 @@ test('Bright Data timeout and retry env defaults and clamps match MCP recommenda
   assert.strictEqual(baseTimeoutSeconds(), 180);
   assert.strictEqual(baseMaxRetries(), 2);
 
-  process.env.BRIGHTDATA_BASE_TIMEOUT = '90';
+  process.env.BRIGHTDATA_BASE_TIMEOUT = "90";
   assert.strictEqual(baseTimeoutSeconds(), 90);
-  process.env.BASE_TIMEOUT = '240';
+  process.env.BASE_TIMEOUT = "240";
   assert.strictEqual(baseTimeoutSeconds(), 240);
-  process.env.BASE_MAX_RETRIES = '9';
+  process.env.BASE_MAX_RETRIES = "9";
   assert.strictEqual(baseMaxRetries(), 3);
-  process.env.BASE_MAX_RETRIES = '-1';
+  process.env.BASE_MAX_RETRIES = "-1";
   assert.strictEqual(baseMaxRetries(), 0);
 });
 
-test('Bright DataError preserves explicit classifier metadata', () => {
-  const original = new BrightDataError('empty response', { reasonCode: 'target_transient', retryable: true });
+test("Bright DataError preserves explicit classifier metadata", () => {
+  const original = new BrightDataError("empty response", {
+    reasonCode: "target_transient",
+    retryable: true,
+  });
   assert.strictEqual(classifyBrightDataError(original), original);
 });
 
-test('Bright Data treats MCP request validation as non-provider failure', () => {
+test("Bright Data treats MCP request validation as non-provider failure", () => {
   for (const message of [
-    'MCP error -32602: Tool scrape_batch parameter validation failed: urls: Array must contain at most 5 element(s)',
-    'HTTP 400: {"error":"Request validation failed","details":[{"message":"\"url\" must be a valid uri","type":"string.uri"}]}'
+    "MCP error -32602: Tool scrape_batch parameter validation failed: urls: Array must contain at most 5 element(s)",
+    'HTTP 400: {"error":"Request validation failed","details":[{"message":"\"url\" must be a valid uri","type":"string.uri"}]}',
   ]) {
     const classified = classifyBrightDataError(new Error(message));
-    assert.strictEqual(classified.reasonCode, 'request_invalid');
+    assert.strictEqual(classified.reasonCode, "request_invalid");
     assert.strictEqual(classified.retryable, false);
     assert.strictEqual(classified.providerDisabled, false);
     assert.strictEqual(classified.clearClient, false);
   }
 });
 
-test('Bright Data URL normalization encodes LinkedIn unicode slugs before MCP validation', () => {
-  const unicodeUrl = 'https://www.linkedin.com/in/james-pe' + String.fromCharCode(241) + 'as-758a841b';
+test("Bright Data URL normalization encodes LinkedIn unicode slugs before MCP validation", () => {
+  const unicodeUrl =
+    "https://www.linkedin.com/in/james-pe" +
+    String.fromCharCode(241) +
+    "as-758a841b";
   assert.strictEqual(
     normalizeBrightDataUrl(unicodeUrl),
-    'https://www.linkedin.com/in/james-pe%C3%B1as-758a841b'
+    "https://www.linkedin.com/in/james-pe%C3%B1as-758a841b",
   );
-  assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 5);
+  assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 10);
 });
 
-test('Bright Data evidence batching keeps every target within the five-URL tool contract', () => {
-  const urls = Array.from({ length: 11 }, (_, index) => `https://example.com/${index + 1}`);
+test("Bright Data evidence batching keeps every target within the ten-URL tool contract", () => {
+  const urls = Array.from(
+    { length: 21 },
+    (_, index) => `https://example.com/${index + 1}`,
+  );
   const batches = chunkBrightDataBatchItems(urls);
 
-  assert.deepStrictEqual(batches.map(batch => batch.length), [5, 5, 1]);
+  assert.deepStrictEqual(
+    batches.map((batch) => batch.length),
+    [10, 10, 1],
+  );
   assert.deepStrictEqual(batches.flat(), urls);
 });
 
-test('Bright Data search arguments match the installed MCP search_engine schema', () => {
-  assert.strictEqual(normalizeBrightDataGeoLocation('US'), 'us');
-  assert.strictEqual(normalizeBrightDataGeoLocation('United States'), '');
+test("Bright Data search arguments match the installed MCP search_engine schema", () => {
+  assert.strictEqual(normalizeBrightDataGeoLocation("US"), "us");
+  assert.strictEqual(normalizeBrightDataGeoLocation("United States"), "");
   assert.deepStrictEqual(
-    buildBrightDataSearchArguments('AI founders', { country: 'US', cursor: 'next-page' }),
-    { query: 'AI founders', engine: 'google', cursor: 'next-page', geo_location: 'us' }
+    buildBrightDataSearchArguments("AI founders", {
+      country: "US",
+      cursor: "next-page",
+    }),
+    {
+      query: "AI founders",
+      engine: "google",
+      cursor: "next-page",
+      geo_location: "us",
+    },
   );
 });
 
@@ -370,268 +490,409 @@ function restoreMocks() {
   Object.assign(process.env, originalEnv);
 }
 
-test('scrape_batch actually invoked on free tier when listTools() advertises it', async (t) => {
+test("scrape_batch actually invoked on free tier when listTools() advertises it", async (t) => {
   t.after(restoreMocks);
-  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
-  process.env.BRIGHTDATA_PLAN = 'free';
-  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
 
   Client.prototype.connect = async () => {};
   Client.prototype.listTools = async () => {
-    return { tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }] };
+    return {
+      tools: [
+        {
+          name: "scrape_batch",
+          description: "Scrape batch of URLs",
+          inputSchema: {} as any,
+        },
+      ],
+    };
   };
 
-  let callToolName = '';
+  let callToolName = "";
   let callToolArgs: any = null;
   Client.prototype.callTool = async (params) => {
     callToolName = params.name;
     callToolArgs = params.arguments;
     return {
-      content: [{ type: 'text', text: JSON.stringify([{ url: 'https://example.com/1', markdown: 'content 1' }]) }]
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify([
+            { url: "https://example.com/1", markdown: "content 1" },
+          ]),
+        },
+      ],
     } as any;
   };
 
-  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-batch-success`);
-  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1']);
+  const bd = await import(
+    `../server/services/brightdata.ts?t=${Date.now()}-batch-success`
+  );
+  const results = await bd.scrapeBatchAsMarkdown(["https://example.com/1"]);
 
-  assert.strictEqual(callToolName, 'scrape_batch');
-  assert.deepStrictEqual(callToolArgs, { urls: ['https://example.com/1'] });
+  assert.strictEqual(callToolName, "scrape_batch");
+  assert.deepStrictEqual(callToolArgs, { urls: ["https://example.com/1"] });
   assert.strictEqual(results.length, 1);
-  assert.strictEqual(results[0].url, 'https://example.com/1');
-  assert.strictEqual(results[0].content, 'content 1');
+  assert.strictEqual(results[0].url, "https://example.com/1");
+  assert.strictEqual(results[0].content, "content 1");
 
   const status = bd.getBrightDataStatus();
   assert.strictEqual(status.batchTool.detected, true);
   assert.strictEqual(status.batchTool.runtimeVerified, true);
 });
 
-test('Free-mode isBrightDataFreeTier guard no longer short-circuits batch scraping', async (t) => {
+test("Free-mode isBrightDataFreeTier guard no longer short-circuits batch scraping", async (t) => {
   t.after(restoreMocks);
-  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
-  process.env.BRIGHTDATA_PLAN = 'free';
-  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
 
   let listToolsCalled = false;
   Client.prototype.connect = async () => {};
   Client.prototype.listTools = async () => {
     listToolsCalled = true;
-    return { tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }] };
+    return {
+      tools: [
+        {
+          name: "scrape_batch",
+          description: "Scrape batch of URLs",
+          inputSchema: {} as any,
+        },
+      ],
+    };
   };
   Client.prototype.callTool = async () => {
     return {
-      content: [{ type: 'text', text: JSON.stringify([{ url: 'https://example.com/1', markdown: 'content 1' }]) }]
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify([
+            { url: "https://example.com/1", markdown: "content 1" },
+          ]),
+        },
+      ],
     } as any;
   };
 
-  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-batch-no-short-circuit`);
-  await bd.scrapeBatchAsMarkdown(['https://example.com/1']);
+  const bd = await import(
+    `../server/services/brightdata.ts?t=${Date.now()}-batch-no-short-circuit`
+  );
+  await bd.scrapeBatchAsMarkdown(["https://example.com/1"]);
 
   assert.strictEqual(listToolsCalled, true);
 });
 
-test('scrape_batch falls back to parallel single-page when scrape_batch is NOT advertised', async (t) => {
+test("scrape_batch falls back to parallel single-page when scrape_batch is NOT advertised", async (t) => {
   t.after(restoreMocks);
-  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
-  process.env.BRIGHTDATA_PLAN = 'free';
-  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
 
   Client.prototype.connect = async () => {};
   Client.prototype.listTools = async () => {
-    return { tools: [{ name: 'scrape_as_markdown', description: 'Scrape single URL', inputSchema: {} as any }] };
+    return {
+      tools: [
+        {
+          name: "scrape_as_markdown",
+          description: "Scrape single URL",
+          inputSchema: {} as any,
+        },
+      ],
+    };
   };
 
   const toolCalls: string[] = [];
   Client.prototype.callTool = async (params) => {
     toolCalls.push(params.name);
     return {
-      content: [{ type: 'text', text: 'single page content' }]
+      content: [{ type: "text", text: "single page content" }],
     } as any;
   };
 
-  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-batch-fallback`);
-  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1', 'https://example.com/2']);
+  const bd = await import(
+    `../server/services/brightdata.ts?t=${Date.now()}-batch-fallback`
+  );
+  const results = await bd.scrapeBatchAsMarkdown([
+    "https://example.com/1",
+    "https://example.com/2",
+  ]);
 
-  assert.ok(toolCalls.includes('scrape_as_markdown'));
-  assert.strictEqual(toolCalls.includes('scrape_batch'), false);
+  assert.ok(toolCalls.includes("scrape_as_markdown"));
+  assert.strictEqual(toolCalls.includes("scrape_batch"), false);
   assert.strictEqual(results.length, 2);
-  assert.strictEqual(results[0].content, 'single page content');
-  
+  assert.strictEqual(results[0].content, "single page content");
+
   const status = bd.getBrightDataStatus();
   assert.strictEqual(status.batchTool.detected, false);
-  assert.strictEqual(status.batchTool.fallbackMode, 'single_page_parallel');
+  assert.strictEqual(status.batchTool.fallbackMode, "single_page_parallel");
 });
 
-test('Per-child partial-failure retry in batch scrape path', async (t) => {
+test("Per-child partial-failure retry in batch scrape path", async (t) => {
   t.after(restoreMocks);
-  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
-  process.env.BRIGHTDATA_PLAN = 'free';
-  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
 
   Client.prototype.connect = async () => {};
   Client.prototype.listTools = async () => {
-    return { tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }] };
+    return {
+      tools: [
+        {
+          name: "scrape_batch",
+          description: "Scrape batch of URLs",
+          inputSchema: {} as any,
+        },
+      ],
+    };
   };
 
   const toolCalls: string[] = [];
   Client.prototype.callTool = async (params) => {
     toolCalls.push(params.name);
-    if (params.name === 'scrape_batch') {
+    if (params.name === "scrape_batch") {
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify([
-            { url: 'https://example.com/1', markdown: 'valid content' },
-            { url: 'https://example.com/2', markdown: '' } // failed/empty child
-          ])
-        }]
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              { url: "https://example.com/1", markdown: "valid content" },
+              { url: "https://example.com/2", markdown: "" }, // failed/empty child
+            ]),
+          },
+        ],
       } as any;
     }
-    if (params.name === 'scrape_as_markdown') {
+    if (params.name === "scrape_as_markdown") {
       return {
-        content: [{ type: 'text', text: 'retried single page content' }]
+        content: [{ type: "text", text: "retried single page content" }],
       } as any;
     }
     return { content: [] } as any;
   };
 
-  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-partial-retry`);
-  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1', 'https://example.com/2']);
+  const bd = await import(
+    `../server/services/brightdata.ts?t=${Date.now()}-partial-retry`
+  );
+  const results = await bd.scrapeBatchAsMarkdown([
+    "https://example.com/1",
+    "https://example.com/2",
+  ]);
 
-  assert.ok(toolCalls.includes('scrape_batch'));
-  assert.ok(toolCalls.includes('scrape_as_markdown'));
+  assert.ok(toolCalls.includes("scrape_batch"));
+  assert.ok(toolCalls.includes("scrape_as_markdown"));
   assert.strictEqual(results.length, 2);
-  assert.strictEqual(results[0].url, 'https://example.com/1');
-  assert.strictEqual(results[0].content, 'valid content');
-  assert.strictEqual(results[1].url, 'https://example.com/2');
-  assert.strictEqual(results[1].content, 'retried single page content');
+  assert.strictEqual(results[0].url, "https://example.com/1");
+  assert.strictEqual(results[0].content, "valid content");
+  assert.strictEqual(results[1].url, "https://example.com/2");
+  assert.strictEqual(results[1].content, "retried single page content");
 
   const status = bd.getBrightDataStatus();
   assert.strictEqual(status.batchTool.partialFailures, 1);
   assert.strictEqual(status.batchTool.partialSuccesses, 2);
 });
 
-test('Batch scraping retries a requested URL that the provider omits entirely', async (t) => {
+test("Batch scraping retries a requested URL that the provider omits entirely", async (t) => {
   t.after(restoreMocks);
-  process.env.BRIGHTDATA_API_TOKEN = 'test-token';
-  process.env.BRIGHTDATA_PLAN = 'free';
-  process.env.BRIGHTDATA_MCP_TRANSPORT = 'local';
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
 
   Client.prototype.connect = async () => {};
   Client.prototype.listTools = async () => ({
-    tools: [{ name: 'scrape_batch', description: 'Scrape batch of URLs', inputSchema: {} as any }]
+    tools: [
+      {
+        name: "scrape_batch",
+        description: "Scrape batch of URLs",
+        inputSchema: {} as any,
+      },
+    ],
   });
 
   const toolCalls: string[] = [];
   Client.prototype.callTool = async (params) => {
     toolCalls.push(params.name);
-    if (params.name === 'scrape_batch') {
+    if (params.name === "scrape_batch") {
       return {
-        content: [{ type: 'text', text: JSON.stringify([
-          { url: 'https://example.com/1', markdown: 'valid content' }
-        ]) }]
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              { url: "https://example.com/1", markdown: "valid content" },
+            ]),
+          },
+        ],
       } as any;
     }
-    return { content: [{ type: 'text', text: 'recovered omitted page' }] } as any;
+    return {
+      content: [{ type: "text", text: "recovered omitted page" }],
+    } as any;
   };
 
-  const bd = await import(`../server/services/brightdata.ts?t=${Date.now()}-omitted-retry`);
-  const results = await bd.scrapeBatchAsMarkdown(['https://example.com/1', 'https://example.com/2']);
+  const bd = await import(
+    `../server/services/brightdata.ts?t=${Date.now()}-omitted-retry`
+  );
+  const results = await bd.scrapeBatchAsMarkdown([
+    "https://example.com/1",
+    "https://example.com/2",
+  ]);
 
-  assert.deepStrictEqual(toolCalls, ['scrape_batch', 'scrape_as_markdown']);
-  assert.deepStrictEqual(results.map((result: { url: string }) => result.url), ['https://example.com/1', 'https://example.com/2']);
-  assert.strictEqual(results[1].content, 'recovered omitted page');
+  assert.deepStrictEqual(toolCalls, ["scrape_batch", "scrape_as_markdown"]);
+  assert.deepStrictEqual(
+    results.map((result: { url: string }) => result.url),
+    ["https://example.com/1", "https://example.com/2"],
+  );
+  assert.strictEqual(results[1].content, "recovered omitted page");
 
   const status = bd.getBrightDataStatus();
   assert.strictEqual(status.batchTool.partialFailures, 1);
   assert.strictEqual(status.batchTool.partialSuccesses, 2);
 });
 
-test('brightDataFreeTierCapabilities unavailable no longer lists scrape_batch', () => {
+test("brightDataFreeTierCapabilities unavailable no longer lists scrape_batch", () => {
   const cap = brightDataFreeTierCapabilities();
-  assert.strictEqual(cap.unavailable.includes('scrape_batch'), false);
-  assert.strictEqual(cap.supported.includes('scrape_batch'), true);
+  assert.strictEqual(cap.unavailable.includes("scrape_batch"), false);
+  assert.strictEqual(cap.supported.includes("scrape_batch"), true);
 });
 
-test('empty-body SERP transients are detected separately from challenge pages', () => {
+test("empty-body SERP transients are detected separately from challenge pages", () => {
   // Empty 200 body: no "Response snippet" -> momentary hiccup the service can self-heal.
-  assert.strictEqual(isEmptyBodySerpTransientError(new Error("Tool 'search_engine' execution failed: Unexpected non-JSON response from Bright Data for search_engine.")), true);
-  assert.strictEqual(isEmptyBodySerpTransientError(new Error('Unexpected non-JSON response from Bright Data for search_engine.')), true);
+  assert.strictEqual(
+    isEmptyBodySerpTransientError(
+      new Error(
+        "Tool 'search_engine' execution failed: Unexpected non-JSON response from Bright Data for search_engine.",
+      ),
+    ),
+    true,
+  );
+  assert.strictEqual(
+    isEmptyBodySerpTransientError(
+      new Error(
+        "Unexpected non-JSON response from Bright Data for search_engine.",
+      ),
+    ),
+    true,
+  );
   // Challenge page / lockout snippets must NOT be retried (>=15s BD per-query lockout).
-  assert.strictEqual(isEmptyBodySerpTransientError(new Error('Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>')), false);
-  assert.strictEqual(isEmptyBodySerpTransientError(new Error('Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time.')), false);
-  assert.strictEqual(isEmptyBodySerpTransientError(new Error('HTTP 502 Bad Gateway')), false);
+  assert.strictEqual(
+    isEmptyBodySerpTransientError(
+      new Error(
+        "Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>",
+      ),
+    ),
+    false,
+  );
+  assert.strictEqual(
+    isEmptyBodySerpTransientError(
+      new Error(
+        "Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time.",
+      ),
+    ),
+    false,
+  );
+  assert.strictEqual(
+    isEmptyBodySerpTransientError(new Error("HTTP 502 Bad Gateway")),
+    false,
+  );
 });
 
-test('empty-body recovery retries once internally then succeeds silently', async () => {
+test("empty-body recovery retries once internally then succeeds silently", async () => {
   let attempts = 0;
   const sleeps: number[] = [];
   const retried: number[] = [];
-  const result = await executeBrightDataSearchWithEmptyBodyRecovery(async () => {
-    attempts++;
-    if (attempts === 1) throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
-    return ['recovered'];
-  }, { delayMs: 5, sleep: async ms => { sleeps.push(ms); }, onRetry: ({ attempt }) => { retried.push(attempt); } });
+  const result = await executeBrightDataSearchWithEmptyBodyRecovery(
+    async () => {
+      attempts++;
+      if (attempts === 1)
+        throw new Error(
+          "Unexpected non-JSON response from Bright Data for search_engine.",
+        );
+      return ["recovered"];
+    },
+    {
+      delayMs: 5,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      onRetry: ({ attempt }) => {
+        retried.push(attempt);
+      },
+    },
+  );
 
-  assert.deepStrictEqual(result, ['recovered']);
+  assert.deepStrictEqual(result, ["recovered"]);
   assert.strictEqual(attempts, 2);
   assert.deepStrictEqual(sleeps, [5]);
   assert.deepStrictEqual(retried, [1]);
 });
 
-test('empty-body recovery never retries challenge or lockout variants', async () => {
+test("empty-body recovery never retries challenge or lockout variants", async () => {
   for (const message of [
-    'Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>',
-    "Tool 'search_engine' execution failed: Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds."
+    "Unexpected non-JSON response from Bright Data for search_engine. Response snippet: <html>",
+    "Tool 'search_engine' execution failed: Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time. Please try again later, after a minimum of 15 seconds.",
   ]) {
     let attempts = 0;
     await assert.rejects(
-      executeBrightDataSearchWithEmptyBodyRecovery(async () => {
-        attempts++;
-        throw new Error(message);
-      }, { maxRetries: 1, delayMs: 0 })
+      executeBrightDataSearchWithEmptyBodyRecovery(
+        async () => {
+          attempts++;
+          throw new Error(message);
+        },
+        { maxRetries: 1, delayMs: 0 },
+      ),
     );
     assert.strictEqual(attempts, 1, message);
   }
 });
 
-test('empty-body recovery respects maxRetries=0 and passes other errors straight through', async () => {
+test("empty-body recovery respects maxRetries=0 and passes other errors straight through", async () => {
   let emptyAttempts = 0;
   await assert.rejects(
-    executeBrightDataSearchWithEmptyBodyRecovery(async () => {
-      emptyAttempts++;
-      throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
-    }, { maxRetries: 0, delayMs: 0 })
+    executeBrightDataSearchWithEmptyBodyRecovery(
+      async () => {
+        emptyAttempts++;
+        throw new Error(
+          "Unexpected non-JSON response from Bright Data for search_engine.",
+        );
+      },
+      { maxRetries: 0, delayMs: 0 },
+    ),
   );
   assert.strictEqual(emptyAttempts, 1);
 
   let otherAttempts = 0;
   await assert.rejects(
-    executeBrightDataSearchWithEmptyBodyRecovery(async () => {
-      otherAttempts++;
-      throw new Error('HTTP 502 Bad Gateway');
-    }, { maxRetries: 2, delayMs: 0 })
+    executeBrightDataSearchWithEmptyBodyRecovery(
+      async () => {
+        otherAttempts++;
+        throw new Error("HTTP 502 Bad Gateway");
+      },
+      { maxRetries: 2, delayMs: 0 },
+    ),
   );
   assert.strictEqual(otherAttempts, 1);
 });
 
-test('MCP stderr filter drops handled transient error blocks including stack frames', () => {
+test("MCP stderr filter drops handled transient error blocks including stack frames", () => {
   const state = createBrightDataMcpStderrFilter();
   const lines = [
     '[search_engine] executing (client=apex-crm-brightdata) {"query":"x","engine":"google","geo_location":"us"}',
-    '[search_engine] error Error: Unexpected non-JSON response from Bright Data for search_engine.',
-    '    at parse_google_search_response (file:///D:/work/AI/Apex%20crm/node_modules/@brightdata/mcp/search_utils.js:38:15)',
-    '    at async Object.execute (file:///D:/work/AI/Apex%20crm/node_modules/@brightdata/mcp/server.js:1318:22)',
-    '[search_engine] tool finished in 11122ms',
+    "[search_engine] error Error: Unexpected non-JSON response from Bright Data for search_engine.",
+    "    at parse_google_search_response (file:///D:/work/AI/Apex%20crm/node_modules/@brightdata/mcp/search_utils.js:38:15)",
+    "    at async Object.execute (file:///D:/work/AI/Apex%20crm/node_modules/@brightdata/mcp/server.js:1318:22)",
+    "[search_engine] tool finished in 11122ms",
     '[search_engine] executing (client=apex-crm-brightdata) {"query":"y"}',
-    '[search_engine] error Error: Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time.',
-    '[brightdata] zone check failed: real problem kept visible'
+    "[search_engine] error Error: Unexpected non-JSON response from Bright Data for search_engine. Response snippet: This query recently failed and cannot be attempted at this time.",
+    "[brightdata] zone check failed: real problem kept visible",
   ];
-  const kept = lines.filter(line => filterBrightDataMcpStderrLine(state, line));
+  const kept = lines.filter((line) =>
+    filterBrightDataMcpStderrLine(state, line),
+  );
   assert.deepStrictEqual(kept, [lines[0], lines[4], lines[5], lines[7]]);
   assert.strictEqual(state.droppedLines, 4);
 });
 
-test('parseBingMarkdownResults extracts organic search results and ignores navigation links', () => {
+test("parseBingMarkdownResults extracts organic search results and ignores navigation links", () => {
   const markdown = `
 # Bing Search Results
 
@@ -649,25 +910,37 @@ Experienced AI and Machine Learning leader. Currently scaling generative workflo
 
   const results = parseBingMarkdownResults(markdown);
   assert.strictEqual(results.length, 2);
-  assert.strictEqual(results[0].title, 'Alex Smith - Founder & CEO - TechCorp | LinkedIn');
-  assert.strictEqual(results[0].url, 'https://www.linkedin.com/in/alexsmith');
-  assert.strictEqual(results[0].sourceEngine, 'bing');
-  assert.ok(results[0].content.includes('Founder and CEO of TechCorp'));
-  assert.strictEqual(results[1].title, 'Jane Doe - Head of AI - DataFlow | LinkedIn');
-  assert.strictEqual(results[1].url, 'https://www.linkedin.com/in/janedoe');
-  assert.strictEqual(results[1].sourceEngine, 'bing');
-  assert.ok(results[1].content.includes('Experienced AI and Machine Learning leader'));
+  assert.strictEqual(
+    results[0].title,
+    "Alex Smith - Founder & CEO - TechCorp | LinkedIn",
+  );
+  assert.strictEqual(results[0].url, "https://www.linkedin.com/in/alexsmith");
+  assert.strictEqual(results[0].sourceEngine, "bing");
+  assert.ok(results[0].content.includes("Founder and CEO of TechCorp"));
+  assert.strictEqual(
+    results[1].title,
+    "Jane Doe - Head of AI - DataFlow | LinkedIn",
+  );
+  assert.strictEqual(results[1].url, "https://www.linkedin.com/in/janedoe");
+  assert.strictEqual(results[1].sourceEngine, "bing");
+  assert.ok(
+    results[1].content.includes("Experienced AI and Machine Learning leader"),
+  );
 });
 
-test('buildBrightDataSearchArguments preserves explicit engine choice', () => {
-  const googleArgs = buildBrightDataSearchArguments('test query', { engine: 'google' });
-  assert.strictEqual(googleArgs.engine, 'google');
+test("buildBrightDataSearchArguments preserves explicit engine choice", () => {
+  const googleArgs = buildBrightDataSearchArguments("test query", {
+    engine: "google",
+  });
+  assert.strictEqual(googleArgs.engine, "google");
 
-  const bingArgs = buildBrightDataSearchArguments('test query', { engine: 'bing' });
-  assert.strictEqual(bingArgs.engine, 'bing');
+  const bingArgs = buildBrightDataSearchArguments("test query", {
+    engine: "bing",
+  });
+  assert.strictEqual(bingArgs.engine, "bing");
 });
 
-test('search telemetry tracking distinguishes Google primary vs Bing rescue accurately', async () => {
+test("search telemetry tracking distinguishes Google primary vs Bing rescue accurately", async () => {
   const stats = {
     searchAttempted: 0,
     searchSucceeded: 0,
@@ -675,16 +948,28 @@ test('search telemetry tracking distinguishes Google primary vs Bing rescue accu
     searchGoogleSucceeded: 0,
     searchBingAttempted: 0,
     searchBingSucceeded: 0,
-    searchBingRecovered: 0
+    searchBingRecovered: 0,
   };
 
   const mockBrightDataSearch = async (query: string, options: any = {}) => {
-    options.onEngineAttempt?.('google');
-    options.onEngineAttempt?.('bing');
+    options.onEngineAttempt?.("google");
+    options.onEngineAttempt?.("bing");
     options.onBingFallback?.({ query, resultsCount: 2 });
     return [
-      { title: 'Result 1', url: 'https://linkedin.com/in/1', content: '...', sourceProvider: 'brightdata_search' as const, sourceEngine: 'bing' as const },
-      { title: 'Result 2', url: 'https://linkedin.com/in/2', content: '...', sourceProvider: 'brightdata_search' as const, sourceEngine: 'bing' as const }
+      {
+        title: "Result 1",
+        url: "https://linkedin.com/in/1",
+        content: "...",
+        sourceProvider: "brightdata_search" as const,
+        sourceEngine: "bing" as const,
+      },
+      {
+        title: "Result 2",
+        url: "https://linkedin.com/in/2",
+        content: "...",
+        sourceProvider: "brightdata_search" as const,
+        sourceEngine: "bing" as const,
+      },
     ];
   };
 
@@ -693,25 +978,27 @@ test('search telemetry tracking distinguishes Google primary vs Bing rescue accu
     const results = await mockBrightDataSearch(query, {
       ...options,
       onEngineAttempt: (engine: string) => {
-        if (engine === 'google') stats.searchGoogleAttempted++;
-        else if (engine === 'bing') stats.searchBingAttempted++;
+        if (engine === "google") stats.searchGoogleAttempted++;
+        else if (engine === "bing") stats.searchBingAttempted++;
         options.onEngineAttempt?.(engine);
       },
       onBingFallback: (evt: any) => {
         stats.searchBingRecovered++;
         options.onBingFallback?.(evt);
-      }
+      },
     });
     stats.searchSucceeded++;
-    const isBing = results.some(r => r.sourceEngine === 'bing');
+    const isBing = results.some((r) => r.sourceEngine === "bing");
     if (isBing) stats.searchBingSucceeded++;
     else stats.searchGoogleSucceeded++;
     return results;
   };
 
   let callerNotified = false;
-  const results = await trackableSearch('query', {
-    onBingFallback: () => { callerNotified = true; }
+  const results = await trackableSearch("query", {
+    onBingFallback: () => {
+      callerNotified = true;
+    },
   });
 
   assert.strictEqual(results.length, 2);
@@ -725,10 +1012,11 @@ test('search telemetry tracking distinguishes Google primary vs Bing rescue accu
   assert.strictEqual(callerNotified, true);
 });
 
-test('classifyBrightDataError classifies rate limit notice strings as provider_rate_limit non-retryable', () => {
-  const message = 'Your system is sending too many of this type of request. If you need to send more, contact your Account Manager.';
+test("classifyBrightDataError classifies rate limit notice strings as provider_rate_limit non-retryable", () => {
+  const message =
+    "Your system is sending too many of this type of request. If you need to send more, contact your Account Manager.";
   const classified = classifyBrightDataError(message);
-  assert.strictEqual(classified.reasonCode, 'provider_rate_limit');
+  assert.strictEqual(classified.reasonCode, "provider_rate_limit");
   assert.strictEqual(classified.retryable, false);
   assert.strictEqual(classified.providerDisabled, false);
 });

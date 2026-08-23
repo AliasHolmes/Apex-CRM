@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-6.0-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v14-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v14" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v15-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v15" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
     <img src="https://img.shields.io/badge/Lead_Engine-180_Tests_Passing-10B981" alt="Lead Engine 180 Tests" />
   </p>
@@ -44,7 +44,7 @@ flowchart TD
     Classifier -->|Compound Brief| StreamDual["Dual-Stream Mode (Decoupled Specs)"]
     StreamDual --> StreamA["Stream A: Identity Plane (Role, Geo, Firm)"]
     StreamDual --> StreamB["Stream B: Intent Plane (Tools, Jobs, Pain)"]
-    
+
     subgraph Stages ["Pipelined 7-Stage Engine Architecture"]
         Plan["1. planStage (Adaptive Batch Derivation)"]
         Retrieve["2. retrieveStage (Two-Wave Parallel Lanes)"]
@@ -53,7 +53,7 @@ flowchart TD
         Verify["5. verifyStage (Hard Requirement Verification)"]
         Enrich["6. enrichStage (TF-IDF & Post-Intent Decay)"]
         Judge["7. judgeStage (3-Tier Finalist Evaluation & Pareto Front)"]
-        
+
         Plan --> Retrieve --> Fuse --> Extract --> Verify --> Enrich --> Judge
         Extract -.->|Pipelined Overlap| PlanNext["planStage (Round N+1 Speculative Plan)"]
     end
@@ -61,41 +61,47 @@ flowchart TD
     StreamIdentity --> Plan
     StreamA --> Plan
     StreamB --> Plan
-    
-    Judge --> Checkpoint[("Durable SQLite Checkpoint (Schema v14)")]
+
+    Judge --> Checkpoint[("Durable SQLite Checkpoint (Schema v15)")]
     Judge --> Inventory["Local Prospect Inventory"]
 ```
 
 ### Key Architectural Capabilities
 
 #### 1. Two-Wave Concurrent Parallel Retrieval Lanes
+
 - **Wave 1 (Parallel Dispatch)**: Executes all unconditional Tavily and Bright Data queries concurrently via `Promise.all([executeTavilyLane(), executeBrightDataLane()])`.
 - **Wave 2 (Conditional Supplemental)**: Settle Wave 1, evaluates Tavily yield, and triggers supplemental Bright Data fallback searches only when Tavily yield is low (`< 5`), preserving 100% of hybrid-mode credit policies.
 - **Safety & Error Isolation**: Shared abort signals, race-free in-task credit reservations, and per-task error containment.
 
 #### 2. Speculative Stage Overlap ($\text{Plan}_{N+1}$ over $\text{Extract}_N$)
+
 - While Round $N$ is executing LLM extraction chunking, profile verification, and intent enrichment, the LLM strategist pre-computes queries for Round $N+1$ in the background.
 - `planStage` remains pure: queries and stats are committed to session state only at boundary $N+1$, ensuring early session stops never pollute state.
 
 #### 3. Durable Checkpoints & Session Resumption (ADR-0002)
+
 - **Stage Boundaries**: Persists a compact Tier-A snapshot (`MiningSessionCheckpoint`) to SQLite `checkpoint_json` after each round's enrichment stage and before judging.
 - **Boot Sweep**: Automatically reconciles orphaned sessions on server restart into `resumable` status.
 - **One-Click Recovery UI**: `ResumableSessionsBanner` in the UI alerts users of interrupted searches and resumes them from checkpoint with zero duplicate queries.
 - **Dual-Mode HTTP**: Supports synchronous HTTP 200 execution or immediate HTTP 202 Accepted (`?mode=job` / `Prefer: respond-async`) with SSE stream URLs.
 
 #### 4. Interactive Lead Revision Conflict Resolution (B2 Dialog)
+
 - **Revision Locking**: Optimistic concurrency on `leads.revision`.
 - **Side-by-Side Diff Modal**: Caught `LeadPatchConflictError` (HTTP 409) prompts the user with an interactive diff comparing local edits vs. server updates.
 - **Three Resolution Pathways**:
-  - *Overwrite With My Changes*: Applies local edits with the current server revision.
-  - *Accept Server Version*: Discards local dirty state and syncs server canonical.
-  - *Smart Merge*: Field-level union of changes and tags.
+  - _Overwrite With My Changes_: Applies local edits with the current server revision.
+  - _Accept Server Version_: Discards local dirty state and syncs server canonical.
+  - _Smart Merge_: Field-level union of changes and tags.
 
 #### 5. High-Frequency Streaming Trace Store
+
 - Built on React 18/19's `useSyncExternalStore` (`miningTraceStore`).
 - Telemetry events and terminal logs stream into an isolated `<TraceTerminal>` outside React's render tree, eliminating layout shifts and typing lag during fast search rounds.
 
 #### 6. Multi-Source Intent Research & Freshness Decay
+
 - **Phase 4 (Company Website TF-IDF)**: Scrapes company websites against categorized intent dictionaries with session-scoped IDF corpus weighting.
 - **Phase 5 (LinkedIn Post SERP Intent)**: Queries Google for indexed prospect post snippets (`site:linkedin.com/posts <handle>`), classifies intent categories (`hiring`, `evaluating_tools`, `pain_signal`, `growth_signal`), and renders "Why Now" badges.
 - **Temporal Freshness Decay**: Parses SERP snippet recency markers (`"2 days ago"`, `"3 weeks ago"`) and applies exponential half-life decay ($e^{-0.02 \times \text{days}}$) so newly published intent triggers receive full boost.
@@ -107,7 +113,7 @@ flowchart TD
 ```mermaid
 graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
-    API --> DB[("SQLite Database (node:sqlite, Schema v14, WAL mode)")]
+    API --> DB[("SQLite Database (node:sqlite, Schema v15, WAL mode)")]
 
     API --> Gateway["LiteLLM Gateway (127.0.0.1:4000)"]
     API --> Direct["Direct OpenAI-Compatible Fallback Chain"]
@@ -136,6 +142,7 @@ graph TD
 ## Getting Started
 
 ### Prerequisites
+
 - Node.js 24 or newer (for native `node:sqlite`).
 - At least one OpenAI-compatible LLM endpoint/key.
 - At least one search provider: Tavily or Bright Data (both recommended for hybrid discovery).
@@ -198,50 +205,50 @@ npm run start
 
 All API routes are mounted under `/api`:
 
-| Group | Method & Route | Description |
-| --- | --- | --- |
-| **Health & Status** | `GET /health` | Application status and uptime |
-| | `GET /llm-health` | LLM gateway and provider latency status |
-| | `GET /key-rotation-status` | Sanitized provider key pool health |
-| | `GET /provider-capabilities` | Supported scraper and search features |
-| **Discovery** | `POST /lead-search/preview` | Preview compiled contract and query plan |
-| | `POST /find-leads` | Execute discovery session (supports synchronous HTTP 200 or async HTTP 202 via `?mode=job`) |
-| | `POST /scrape-url` | Scrape public web page markdown |
-| | `POST /scrape-pasted` | Parse raw pasted text into prospect leads |
-| **Mining Sessions** | `GET /mining-sessions` | List historical mining sessions |
-| | `GET /mining-sessions/resumable` | List interrupted sessions available for 1-click resumption |
-| | `GET /mining-sessions/:sessionId` | Get specific mining session details |
-| | `GET /mining-sessions/:sessionId/stream` | High-frequency SSE execution trace and logs |
-| | `POST /mining-sessions/:sessionId/resume` | Resume interrupted mining session from checkpoint |
-| | `POST /mining-sessions/:sessionId/cancel` | Cancel active mining run |
-| **Search Logs** | `GET /search-logs` | Query performance and cost summaries |
-| | `GET /search-logs/:id/live` | Live log stream for active search |
-| **Prospects & CRM** | `GET /leads` | List stored prospects with filtering |
-| | `POST /leads/bulk` | Bulk insert or update prospect records |
-| | `PATCH /leads/:id` | Update lead stage, review status, or notes (returns 409 with server lead on revision conflict) |
-| | `DELETE /leads/:id` | Soft-delete or archive prospect |
-| | `POST /leads/:id/enrich` | Enrich specific lead via Bright Data |
-| **Saved Searches** | `GET /saved-searches` | List saved search specifications |
-| | `POST /saved-searches` | Create or update saved search |
-| | `DELETE /saved-searches/:id` | Delete saved search |
-| **Outreach** | `POST /generate-outbound` | Generate contextual outreach message |
-| | `POST /chat` | CRM conversational assistant |
+| Group               | Method & Route                            | Description                                                                                    |
+| ------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Health & Status** | `GET /health`                             | Application status and uptime                                                                  |
+|                     | `GET /llm-health`                         | LLM gateway and provider latency status                                                        |
+|                     | `GET /key-rotation-status`                | Sanitized provider key pool health                                                             |
+|                     | `GET /provider-capabilities`              | Supported scraper and search features                                                          |
+| **Discovery**       | `POST /lead-search/preview`               | Preview compiled contract and query plan                                                       |
+|                     | `POST /find-leads`                        | Execute discovery session (supports synchronous HTTP 200 or async HTTP 202 via `?mode=job`)    |
+|                     | `POST /scrape-url`                        | Scrape public web page markdown                                                                |
+|                     | `POST /scrape-pasted`                     | Parse raw pasted text into prospect leads                                                      |
+| **Mining Sessions** | `GET /mining-sessions`                    | List historical mining sessions                                                                |
+|                     | `GET /mining-sessions/resumable`          | List interrupted sessions available for 1-click resumption                                     |
+|                     | `GET /mining-sessions/:sessionId`         | Get specific mining session details                                                            |
+|                     | `GET /mining-sessions/:sessionId/stream`  | High-frequency SSE execution trace and logs                                                    |
+|                     | `POST /mining-sessions/:sessionId/resume` | Resume interrupted mining session from checkpoint                                              |
+|                     | `POST /mining-sessions/:sessionId/cancel` | Cancel active mining run                                                                       |
+| **Search Logs**     | `GET /search-logs`                        | Query performance and cost summaries                                                           |
+|                     | `GET /search-logs/:id/live`               | Live log stream for active search                                                              |
+| **Prospects & CRM** | `GET /leads`                              | List stored prospects with filtering                                                           |
+|                     | `POST /leads/bulk`                        | Bulk insert or update prospect records                                                         |
+|                     | `PATCH /leads/:id`                        | Update lead stage, review status, or notes (returns 409 with server lead on revision conflict) |
+|                     | `DELETE /leads/:id`                       | Soft-delete or archive prospect                                                                |
+|                     | `POST /leads/:id/enrich`                  | Enrich specific lead via Bright Data                                                           |
+| **Saved Searches**  | `GET /saved-searches`                     | List saved search specifications                                                               |
+|                     | `POST /saved-searches`                    | Create or update saved search                                                                  |
+|                     | `DELETE /saved-searches/:id`              | Delete saved search                                                                            |
+| **Outreach**        | `POST /generate-outbound`                 | Generate contextual outreach message                                                           |
+|                     | `POST /chat`                              | CRM conversational assistant                                                                   |
 
 ---
 
-## Database & Schema (v14)
+## Database & Schema (v15)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
 ### Schema Capabilities:
+
 - **`leads`**: Core prospect records, LinkedIn canonical identities, matched criteria, postIntentEvidence, uncertainty scores, and revision locks.
 - **`mining_sessions`**: Durable execution sessions, target progress, phase summaries, and stage-boundary **`checkpoint_json`** snapshots.
-- **`mining_traces`**: Granular event streams for real-time observability.
+- **`search_logs` / `llm_stage_logs`**: Granular event streams and per-stage LLM telemetry for real-time observability.
 - **`query_performance`**: Historical yield, latency, and provider unit accounting per query family and lane.
-- **`prospect_contracts`**: Versioned requirement contracts, decomposition modes, and compilation metadata.
-- **`intent_cache`**: Dynamic company intent signals and observation fingerprints.
-- **`enrichment_cache`**: Positive and negative profile scraping caches.
-- **`search_specs` & `saved_searches`**: Reusable prospecting configurations.
+- **`prospect_contract_cache`**: Versioned requirement contracts, decomposition modes, and compilation metadata.
+- **`enrichment_cache`**: Positive and negative profile scraping caches (incl. intent fingerprints).
+- **`saved_searches`**: Reusable prospecting configurations.
 - **`lead_activities` & `outreach_drafts`**: Audit trails and draft messaging.
 
 Automated backups are created under `.apex-data/backups/` before schema migrations run.

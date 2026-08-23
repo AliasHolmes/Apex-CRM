@@ -1,61 +1,48 @@
 import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
-  parseLinkedInEvidence
-} from '../../services/linkedinEvidence.js';
+  parseLinkedInEvidence,
+} from "../../services/linkedinEvidence.js";
 import {
   classifyBrightDataError,
   isBrightDataRetryableError,
-  getBrightDataStatus
-} from '../../services/brightdata.js';
+  getBrightDataStatus,
+  BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
+} from "../../services/brightdata.js";
 import {
   getEnrichmentCacheEntry,
   upsertEnrichmentCacheEntry,
   getNegativeEnrichmentCacheEntry,
   upsertNegativeEnrichmentCacheEntry,
-  recordProviderUsage
-} from '../../db.js';
+  recordProviderUsage,
+} from "../../db.js";
 import {
   deriveCompanyDomain,
   probeCompanySites,
   applySiteProbe,
-  parseSiteSignalsFromEvidenceBlock
-} from '../siteProbe.js';
-import { verifyDecisionMakerFromEvidence } from '../verification.js';
-import { createLeadEvidence } from '../evidence.js';
-import { computeScoreBreakdown } from '../scoring.js';
-import { incrementRejection, mapBrightDataRejection, type RejectionReason } from '../rejections.js';
-import { runIntentEnrichment } from '../intentEnrichment.js';
-import { hasTavilyKey } from '../../services/llm.js';
-import { buildProfileDedupeKeys } from '../../../src/utils/leadDedupe.js';
-import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
-import type { PostFilterLead } from './verifyStage.js';
-import type { EvidenceMeta } from './extractStage.js';
-import type { QueryRunStats } from '../strategist.js';
-import type { ProspectContract } from '../prospectContract.js';
-
-const incrementCounter = (map: Record<string, number>, key: string) => {
-  map[key] = (map[key] || 0) + 1;
-};
-
-const BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = 10;
-
-const sleepWithAbort = (ms: number, signal?: AbortSignal): Promise<void> => {
-  if (ms <= 0) return Promise.resolve();
-  if (signal?.aborted) return Promise.reject(new Error('Session aborted'));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      reject(new Error('Session aborted'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-};
+  parseSiteSignalsFromEvidenceBlock,
+} from "../siteProbe.js";
+import { verifyDecisionMakerFromEvidence } from "../verification.js";
+import { createLeadEvidence } from "../evidence.js";
+import { computeScoreBreakdown } from "../scoring.js";
+import {
+  incrementRejection,
+  mapBrightDataRejection,
+  type RejectionReason,
+} from "../rejections.js";
+import { runIntentEnrichment } from "../intentEnrichment.js";
+import { hasTavilyKey } from "../../services/llm.js";
+import { buildProfileDedupeKeys } from "../../../src/utils/leadDedupe.js";
+import {
+  effectiveScore as sharedEffectiveScore,
+  incrementCounter,
+  sleepWithAbort,
+} from "../sessionHelpers.js";
+import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
+import type { PostFilterLead } from "./verifyStage.js";
+import type { EvidenceMeta } from "./extractStage.js";
+import type { QueryRunStats } from "../strategist.js";
+import type { ProspectContract } from "../prospectContract.js";
 
 export type EnrichmentTarget = {
   lead: any;
@@ -85,8 +72,14 @@ export type EnrichStageInput = {
   brightDataProviderDisabled: boolean;
   brightDataTransportRetryAfter: number;
   stats: any;
-  leadQueryRuns: LeadQueryRunTracker | WeakMap<Record<string, any>, QueryRunStats>;
-  trackableBrightDataSearch: (query: string, options?: any, lane?: string) => Promise<any[]>;
+  leadQueryRuns:
+    | LeadQueryRunTracker
+    | WeakMap<Record<string, any>, QueryRunStats>;
+  trackableBrightDataSearch: (
+    query: string,
+    options?: any,
+    lane?: string,
+  ) => Promise<any[]>;
 };
 
 export type EnrichStageOutput = {
@@ -96,7 +89,7 @@ export type EnrichStageOutput = {
 
 export async function executeEnrichStage(
   ctx: SessionContext,
-  input: EnrichStageInput
+  input: EnrichStageInput,
 ): Promise<EnrichStageOutput> {
   const {
     round,
@@ -112,7 +105,7 @@ export async function executeEnrichStage(
     contract,
     stats,
     leadQueryRuns,
-    trackableBrightDataSearch
+    trackableBrightDataSearch,
   } = input;
 
   let brightDataProviderDisabled = input.brightDataProviderDisabled;
@@ -132,35 +125,38 @@ export async function executeEnrichStage(
     if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
   };
 
-  const effectiveScore = (lead: any) => {
-    const score = Number(lead.scoreBreakdown?.finalScore || 0);
-    if (score > 0) return score;
-    const fit = Number(lead.fitScore || 0);
-    const composite = Number(lead.compositeScore || 0);
-    return Math.max(fit, composite);
-  };
+  const effectiveScore = sharedEffectiveScore;
 
   const addProfileKeys = (profile: any, existingKeysSet: Set<string>) => {
-    buildProfileDedupeKeys(profile || {}).forEach(key => existingKeysSet.add(key));
+    buildProfileDedupeKeys(profile || {}).forEach((key) =>
+      existingKeysSet.add(key),
+    );
   };
 
   // 1. Post-Filter Bright Data Profile Enrichment (Deep Scrape)
-  if (profileEnrichmentStage === 'post_filter') {
+  if (profileEnrichmentStage === "post_filter") {
     let brightDataToolDegraded = false;
-    const selectedRows = postFilterLeads.filter(({ lead, evidenceMeta }) => {
-      const score = effectiveScore(lead);
-      return (score >= minScore - 1 && score <= minScore + 1) || evidenceMeta.evidenceQuality !== 'good';
-    }).slice(0, profileMaxPerSearch);
+    const selectedRows = postFilterLeads
+      .filter(({ lead, evidenceMeta }) => {
+        const score = effectiveScore(lead);
+        return (
+          (score >= minScore - 1 && score <= minScore + 1) ||
+          evidenceMeta.evidenceQuality !== "good"
+        );
+      })
+      .slice(0, profileMaxPerSearch);
 
-    logEvent(`Round ${round}: ${selectedRows.length} leads selected for deep profile enrichment.`);
+    logEvent(
+      `Round ${round}: ${selectedRows.length} leads selected for deep profile enrichment.`,
+    );
     recordTrace({
-      phase: 'enrichment',
-      operation: 'brightdata_profile_selection',
-      status: selectedRows.length > 0 ? 'started' : 'skipped',
-      provider: 'brightdata',
+      phase: "enrichment",
+      operation: "brightdata_profile_selection",
+      status: selectedRows.length > 0 ? "started" : "skipped",
+      provider: "brightdata",
       round,
       counts: { selectedForEnrichment: selectedRows.length },
-      brightData: getTraceBrightDataStatus()
+      brightData: getTraceBrightDataStatus(),
     });
 
     const refreshLeadEvidence = (target: EnrichmentTarget) => {
@@ -172,28 +168,39 @@ export async function executeEnrichStage(
         currentCompany: lead.currentCompany,
         headline: lead.headline,
         seniorityLevel: lead.seniorityLevel,
-        evidenceText: evidenceMeta.evidenceBlock
+        evidenceText: evidenceMeta.evidenceBlock,
       });
       lead.evidence = createLeadEvidence({
-        sourceUrl: evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl || '',
+        sourceUrl:
+          evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl || "",
         sourceProvider: evidenceMeta.sourceProvider,
         sourceQuery: evidenceMeta.sourceQuery,
         sourceRound: evidenceMeta.sourceRound,
         evidenceQuality: evidenceMeta.evidenceQuality,
         evidenceBlock: evidenceMeta.evidenceBlock,
-        whyThisLead: lead.evidenceReasons[0]
+        whyThisLead: lead.evidenceReasons[0],
       });
-      lead.scoreBreakdown = computeScoreBreakdown(lead, evidenceMeta.evidenceQuality, evidenceMeta.sourceProvider, lead.decisionMakerVerification);
+      lead.scoreBreakdown = computeScoreBreakdown(
+        lead,
+        evidenceMeta.evidenceQuality,
+        evidenceMeta.sourceProvider,
+        lead.decisionMakerVerification,
+      );
       lead.scoreOverride = lead.scoreBreakdown.finalScore;
     };
 
-    const classifyAndRecordBrightDataFailure = (error: unknown, operation: string, url?: string) => {
+    const classifyAndRecordBrightDataFailure = (
+      error: unknown,
+      operation: string,
+      url?: string,
+    ) => {
       const classified = classifyBrightDataError(error);
       stats.brightDataFailures++;
       brightDataStats.failed++;
       incrementCounter(brightDataStats.failureReasons, classified.reasonCode);
-      if (classified.reasonCode === 'target_transient') brightDataStats.transientFailures++;
-      if (classified.reasonCode === 'transport_transient') {
+      if (classified.reasonCode === "target_transient")
+        brightDataStats.transientFailures++;
+      if (classified.reasonCode === "transport_transient") {
         brightDataStats.transportFailures++;
         brightDataStats.processRestarts++;
         brightDataTransportRetryAfter = Date.now() + 5_000;
@@ -202,7 +209,10 @@ export async function executeEnrichStage(
         brightDataStats.providerDisabled++;
         brightDataProviderDisabled = true;
       }
-      if (classified.reasonCode === 'target_transient' || classified.reasonCode === 'target_blocked') {
+      if (
+        classified.reasonCode === "target_transient" ||
+        classified.reasonCode === "target_blocked"
+      ) {
         brightDataToolDegraded = true;
       }
       debugLogs.push({
@@ -212,7 +222,7 @@ export async function executeEnrichStage(
         reasonCode: classified.reasonCode,
         retryable: classified.retryable,
         providerDisabled: classified.providerDisabled,
-        error: classified.message
+        error: classified.message,
       });
       return classified;
     };
@@ -224,50 +234,68 @@ export async function executeEnrichStage(
       brightDataStats.profileRetryQueued++;
       debugLogs.push({
         timestamp: new Date().toISOString(),
-        type: 'brightdata_profile_retry',
+        type: "brightdata_profile_retry",
         url: target.url,
-        status: 'queued',
-        reason
+        status: "queued",
+        reason,
       });
     };
 
-    const applyMarkdownToTarget = (target: EnrichmentTarget, markdown: string, source: 'batch' | 'retry') => {
+    const applyMarkdownToTarget = (
+      target: EnrichmentTarget,
+      markdown: string,
+      source: "batch" | "retry",
+    ) => {
       if (!markdown || markdown.trim().length === 0) {
         brightDataStats.emptyResponses++;
         brightDataStats.negativeCacheSkippedTransient++;
-        queueRetry(target, 'empty_body');
-        debugLogs.push({ timestamp: new Date().toISOString(), type: 'brightdata_transient_skip_cache', url: target.url, reason: 'empty_body' });
+        queueRetry(target, "empty_body");
+        debugLogs.push({
+          timestamp: new Date().toISOString(),
+          type: "brightdata_transient_skip_cache",
+          url: target.url,
+          reason: "empty_body",
+        });
         return false;
       }
 
-      const title = target.lead.currentTitle || target.lead.headline || 'Untitled';
+      const title =
+        target.lead.currentTitle || target.lead.headline || "Untitled";
       const snippet = target.evidenceMeta.evidenceBlock;
-      const parsed = parseLinkedInEvidence(markdown, { title, url: target.url, snippet });
+      const parsed = parseLinkedInEvidence(markdown, {
+        title,
+        url: target.url,
+        snippet,
+      });
       debugLogs.push({
         timestamp: new Date().toISOString(),
-        type: source === 'batch' ? 'brightdata_batch_parse' : 'brightdata_parse',
+        type:
+          source === "batch" ? "brightdata_batch_parse" : "brightdata_parse",
         url: target.url,
         quality: parsed.quality,
         rejectionReason: parsed.rejectionReason,
-        evidenceBlock: parsed.evidenceBlock
+        evidenceBlock: parsed.evidenceBlock,
       });
 
-      if (parsed.quality === 'good' || parsed.quality === 'partial') {
-        target.evidenceMeta.sourceProvider = 'brightdata';
+      if (parsed.quality === "good" || parsed.quality === "partial") {
+        target.evidenceMeta.sourceProvider = "brightdata";
         target.evidenceMeta.evidenceQuality = parsed.quality;
         target.evidenceMeta.evidenceBlock = parsed.evidenceBlock;
         target.enriched = true;
         brightDataStats.profileScrapesSucceeded++;
-        if (source === 'retry') brightDataStats.profileRetrySucceeded++;
-        upsertEnrichmentCacheEntry({
-          normalizedUrl: target.normalizedUrl,
-          linkedinUsername: target.username,
-          personName: parsed.personName,
-          companyName: parsed.companyName,
-          evidenceBlock: parsed.evidenceBlock,
-          scrapeQuality: parsed.quality,
-          sourceProvider: 'brightdata'
-        }, ttlDays);
+        if (source === "retry") brightDataStats.profileRetrySucceeded++;
+        upsertEnrichmentCacheEntry(
+          {
+            normalizedUrl: target.normalizedUrl,
+            linkedinUsername: target.username,
+            personName: parsed.personName,
+            companyName: parsed.companyName,
+            evidenceBlock: parsed.evidenceBlock,
+            scrapeQuality: parsed.quality,
+            sourceProvider: "brightdata",
+          },
+          ttlDays,
+        );
         stats.cacheWrites++;
         refreshLeadEvidence(target);
         return true;
@@ -276,15 +304,20 @@ export async function executeEnrichStage(
       const mappedReason = mapBrightDataRejection(parsed.rejectionReason);
       incrementRejection(brightDataStats.rejectionReasons, mappedReason);
       noteRejection(mappedReason, target.queryRun);
-      logEvent(`Bright Data scrape rejected for ${target.username}: ${parsed.rejectionReason || 'low quality'}`);
+      logEvent(
+        `Bright Data scrape rejected for ${target.username}: ${parsed.rejectionReason || "low quality"}`,
+      );
 
-      upsertNegativeEnrichmentCacheEntry({
-        normalizedUrl: target.normalizedUrl,
-        linkedinUsername: target.username,
-        evidenceBlock: mappedReason,
-        scrapeQuality: 'bad',
-        sourceProvider: 'brightdata'
-      }, parsed.rejectionReason === 'blocked_or_login_wall' ? 0.25 : undefined);
+      upsertNegativeEnrichmentCacheEntry(
+        {
+          normalizedUrl: target.normalizedUrl,
+          linkedinUsername: target.username,
+          evidenceBlock: mappedReason,
+          scrapeQuality: "bad",
+          sourceProvider: "brightdata",
+        },
+        parsed.rejectionReason === "blocked_or_login_wall" ? 0.25 : undefined,
+      );
       brightDataStats.negativeCacheWrites++;
       return false;
     };
@@ -296,21 +329,40 @@ export async function executeEnrichStage(
       if (!rawUrl) continue;
       const normalizedUrl = normalizeLinkedInUrl(rawUrl);
       const username = extractLinkedInUsername(rawUrl);
-      if (!normalizedUrl || !username || targetsByUrl.has(normalizedUrl)) continue;
+      if (!normalizedUrl || !username || targetsByUrl.has(normalizedUrl))
+        continue;
 
-      const positiveCache = getEnrichmentCacheEntry({ normalizedUrl, linkedinUsername: username });
+      const positiveCache = getEnrichmentCacheEntry({
+        normalizedUrl,
+        linkedinUsername: username,
+      });
       if (positiveCache) {
         stats.cacheHits++;
         brightDataStats.cacheHits++;
-        evidenceMeta.sourceProvider = 'cache';
-        evidenceMeta.evidenceQuality = positiveCache.scrapeQuality === 'good' ? 'good' : 'partial';
+        evidenceMeta.sourceProvider = "cache";
+        evidenceMeta.evidenceQuality =
+          positiveCache.scrapeQuality === "good" ? "good" : "partial";
         evidenceMeta.evidenceBlock = positiveCache.evidenceBlock;
-        const cachedTarget: EnrichmentTarget = { lead, evidenceMeta, queryRun, url: rawUrl, normalizedUrl, username, reserved: false, enriched: true, retryAttempts: 0, highValue: true };
+        const cachedTarget: EnrichmentTarget = {
+          lead,
+          evidenceMeta,
+          queryRun,
+          url: rawUrl,
+          normalizedUrl,
+          username,
+          reserved: false,
+          enriched: true,
+          retryAttempts: 0,
+          highValue: true,
+        };
         refreshLeadEvidence(cachedTarget);
         continue;
       }
 
-      const negativeCache = getNegativeEnrichmentCacheEntry({ normalizedUrl, linkedinUsername: username });
+      const negativeCache = getNegativeEnrichmentCacheEntry({
+        normalizedUrl,
+        linkedinUsername: username,
+      });
       if (negativeCache) {
         brightDataStats.negativeCacheHits++;
         const reason = negativeCache.evidenceBlock as RejectionReason;
@@ -331,7 +383,7 @@ export async function executeEnrichStage(
         reserved: true,
         enriched: false,
         retryAttempts: 0,
-        highValue: score >= minScore - 1
+        highValue: score >= minScore - 1,
       };
       reservedSlots++;
       stats.enriched++;
@@ -344,10 +396,18 @@ export async function executeEnrichStage(
     }
 
     const batchSize = BRIGHTDATA_SCRAPE_BATCH_MAX_URLS;
-    for (let i = 0; i < uncachedTargets.length && !brightDataProviderDisabled; i += batchSize) {
-      if (brightDataTransportRetryAfter && Date.now() < brightDataTransportRetryAfter) break;
+    for (
+      let i = 0;
+      i < uncachedTargets.length && !brightDataProviderDisabled;
+      i += batchSize
+    ) {
+      if (
+        brightDataTransportRetryAfter &&
+        Date.now() < brightDataTransportRetryAfter
+      )
+        break;
       const batchTargets = uncachedTargets.slice(i, i + batchSize);
-      const batchUrls = batchTargets.map(target => target.url);
+      const batchUrls = batchTargets.map((target) => target.url);
       const started = Date.now();
       brightDataStats.attempted++;
       brightDataStats.profileScrapesAttempted += batchTargets.length;
@@ -364,11 +424,15 @@ export async function executeEnrichStage(
 
         let successCount = 0;
         for (const target of batchTargets) {
-          const markdown = resultByKey.get(target.normalizedUrl) || resultByKey.get(`user:${target.username}`) || '';
-          if (markdown && applyMarkdownToTarget(target, markdown, 'batch')) successCount++;
+          const markdown =
+            resultByKey.get(target.normalizedUrl) ||
+            resultByKey.get(`user:${target.username}`) ||
+            "";
+          if (markdown && applyMarkdownToTarget(target, markdown, "batch"))
+            successCount++;
           if (!markdown) {
             brightDataStats.emptyResponses++;
-            queueRetry(target, 'batch_miss');
+            queueRetry(target, "batch_miss");
           }
         }
 
@@ -378,102 +442,157 @@ export async function executeEnrichStage(
         } else if (successCount > 0) {
           brightDataStats.batchScrapesPartial++;
           brightDataStats.succeeded++;
-          debugLogs.push({ timestamp: new Date().toISOString(), type: 'brightdata_batch_partial', urls: batchUrls, successCount, expectedCount: batchTargets.length });
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: "brightdata_batch_partial",
+            urls: batchUrls,
+            successCount,
+            expectedCount: batchTargets.length,
+          });
         } else {
           brightDataStats.batchScrapesFailed++;
-          for (const target of batchTargets) queueRetry(target, 'batch_no_successes');
+          for (const target of batchTargets)
+            queueRetry(target, "batch_no_successes");
         }
 
         debugLogs.push({
           timestamp: new Date().toISOString(),
-          type: 'brightdata_batch_scrape',
+          type: "brightdata_batch_scrape",
           urls: batchUrls,
           resultCount: batchResults.length,
-          successCount
+          successCount,
         });
         recordTrace({
-          phase: 'enrichment',
-          operation: 'brightdata_batch_scrape',
-          status: successCount > 0 ? 'success' : 'skipped',
-          provider: 'brightdata',
+          phase: "enrichment",
+          operation: "brightdata_batch_scrape",
+          status: successCount > 0 ? "success" : "skipped",
+          provider: "brightdata",
           round,
           latencyMs: Date.now() - started,
-          counts: { requestedUrls: batchTargets.length, returnedUrls: batchResults.length, enrichedProfiles: successCount },
-          brightData: getTraceBrightDataStatus()
+          counts: {
+            requestedUrls: batchTargets.length,
+            returnedUrls: batchResults.length,
+            enrichedProfiles: successCount,
+          },
+          brightData: getTraceBrightDataStatus(),
         });
       } catch (error) {
         brightDataStats.batchScrapesFailed++;
-        const classified = classifyAndRecordBrightDataFailure(error, 'brightdata_batch_error');
+        const classified = classifyAndRecordBrightDataFailure(
+          error,
+          "brightdata_batch_error",
+        );
         recordTrace({
-          phase: 'enrichment',
-          operation: 'brightdata_batch_scrape',
-          status: 'error',
-          provider: 'brightdata',
+          phase: "enrichment",
+          operation: "brightdata_batch_scrape",
+          status: "error",
+          provider: "brightdata",
           round,
           latencyMs: Date.now() - started,
           error: { message: `${classified.reasonCode}: ${classified.message}` },
-          brightData: getTraceBrightDataStatus()
+          brightData: getTraceBrightDataStatus(),
         });
         if (classified.providerDisabled) break;
         for (const target of batchTargets) {
           if (isBrightDataRetryableError(classified)) {
             brightDataStats.negativeCacheSkippedTransient++;
             queueRetry(target, classified.reasonCode);
-          } else if (classified.reasonCode === 'target_blocked') {
-            upsertNegativeEnrichmentCacheEntry({
-              normalizedUrl: target.normalizedUrl,
-              linkedinUsername: target.username,
-              evidenceBlock: 'brightdata_login_wall',
-              scrapeQuality: 'bad',
-              sourceProvider: 'brightdata'
-            }, 0.25);
+          } else if (classified.reasonCode === "target_blocked") {
+            upsertNegativeEnrichmentCacheEntry(
+              {
+                normalizedUrl: target.normalizedUrl,
+                linkedinUsername: target.username,
+                evidenceBlock: "brightdata_login_wall",
+                scrapeQuality: "bad",
+                sourceProvider: "brightdata",
+              },
+              0.25,
+            );
             brightDataStats.negativeCacheWrites++;
           }
         }
       }
     }
 
-    const retryMax = Math.min(Math.max(Number(process.env.BRIGHTDATA_PROFILE_RETRY_MAX || 2), 0), 3);
+    const retryMax = Math.min(
+      Math.max(Number(process.env.BRIGHTDATA_PROFILE_RETRY_MAX || 2), 0),
+      3,
+    );
     const retryDelays = [3_000, 10_000, 20_000];
-    const retryTargets = uncachedTargets.filter(target => urlRetryQueue.has(target.normalizedUrl) && !target.enriched);
+    const retryTargets = uncachedTargets.filter(
+      (target) => urlRetryQueue.has(target.normalizedUrl) && !target.enriched,
+    );
     for (const target of retryTargets) {
       if (brightDataProviderDisabled) break;
-      for (let attempt = 0; attempt < retryMax && !target.enriched && !brightDataProviderDisabled; attempt++) {
-        if (brightDataTransportRetryAfter && Date.now() < brightDataTransportRetryAfter) {
-          await sleepWithAbort(Math.max(0, brightDataTransportRetryAfter - Date.now()), state.abortController.signal);
+      for (
+        let attempt = 0;
+        attempt < retryMax && !target.enriched && !brightDataProviderDisabled;
+        attempt++
+      ) {
+        if (
+          brightDataTransportRetryAfter &&
+          Date.now() < brightDataTransportRetryAfter
+        ) {
+          await sleepWithAbort(
+            Math.max(0, brightDataTransportRetryAfter - Date.now()),
+            state.abortController.signal,
+          );
         }
-        if (attempt > 0) await sleepWithAbort(retryDelays[Math.min(attempt - 1, retryDelays.length - 1)], state.abortController.signal);
+        if (attempt > 0)
+          await sleepWithAbort(
+            retryDelays[Math.min(attempt - 1, retryDelays.length - 1)],
+            state.abortController.signal,
+          );
         const started = Date.now();
         target.retryAttempts++;
         brightDataStats.profileRetryAttempted++;
         brightDataStats.profileScrapesAttempted++;
         try {
           const markdown = await ports.scrapeMarkdown(target.url);
-          debugLogs.push({ timestamp: new Date().toISOString(), type: 'brightdata_profile_retry', url: target.url, status: 'success', attempt: attempt + 1, response: markdown ? { length: markdown.length, preview: markdown.slice(0, 300) } : null });
-          applyMarkdownToTarget(target, markdown || '', 'retry');
+          debugLogs.push({
+            timestamp: new Date().toISOString(),
+            type: "brightdata_profile_retry",
+            url: target.url,
+            status: "success",
+            attempt: attempt + 1,
+            response: markdown
+              ? { length: markdown.length, preview: markdown.slice(0, 300) }
+              : null,
+          });
+          applyMarkdownToTarget(target, markdown || "", "retry");
           recordTrace({
-            phase: 'enrichment',
-            operation: 'brightdata_profile_retry',
-            status: target.enriched ? 'success' : 'skipped',
-            provider: 'brightdata',
+            phase: "enrichment",
+            operation: "brightdata_profile_retry",
+            status: target.enriched ? "success" : "skipped",
+            provider: "brightdata",
             round,
             latencyMs: Date.now() - started,
-            counts: { attempt: attempt + 1, markdownChars: markdown?.length || 0 },
-            brightData: { ...getTraceBrightDataStatus(), target: target.url }
+            counts: {
+              attempt: attempt + 1,
+              markdownChars: markdown?.length || 0,
+            },
+            brightData: { ...getTraceBrightDataStatus(), target: target.url },
           });
           if (!target.enriched) break;
         } catch (error) {
-          const classified = classifyAndRecordBrightDataFailure(error, 'brightdata_profile_retry', target.url);
-          if (classified.retryable) brightDataStats.negativeCacheSkippedTransient++;
+          const classified = classifyAndRecordBrightDataFailure(
+            error,
+            "brightdata_profile_retry",
+            target.url,
+          );
+          if (classified.retryable)
+            brightDataStats.negativeCacheSkippedTransient++;
           recordTrace({
-            phase: 'enrichment',
-            operation: 'brightdata_profile_retry',
-            status: 'error',
-            provider: 'brightdata',
+            phase: "enrichment",
+            operation: "brightdata_profile_retry",
+            status: "error",
+            provider: "brightdata",
             round,
             latencyMs: Date.now() - started,
-            error: { message: `${classified.reasonCode}: ${classified.message}` },
-            brightData: { ...getTraceBrightDataStatus(), target: target.url }
+            error: {
+              message: `${classified.reasonCode}: ${classified.message}`,
+            },
+            brightData: { ...getTraceBrightDataStatus(), target: target.url },
           });
           if (classified.providerDisabled || !classified.retryable) break;
         }
@@ -481,18 +600,34 @@ export async function executeEnrichStage(
       urlRetryQueue.delete(target.normalizedUrl);
     }
 
-    const reservedButUnenriched = uncachedTargets.filter(target => target.reserved && !target.enriched).length;
-    if (reservedButUnenriched > 0) stats.enriched = Math.max(0, stats.enriched - reservedButUnenriched);
-    if (brightDataToolDegraded) logEvent('Bright Data profile enrichment had target-level failures, but provider remains available for other Bright Data work.');
+    const reservedButUnenriched = uncachedTargets.filter(
+      (target) => target.reserved && !target.enriched,
+    ).length;
+    if (reservedButUnenriched > 0)
+      stats.enriched = Math.max(0, stats.enriched - reservedButUnenriched);
+    if (brightDataToolDegraded)
+      logEvent(
+        "Bright Data profile enrichment had target-level failures, but provider remains available for other Bright Data work.",
+      );
 
     // 1b. Company Site Probe Fallback for candidates missing rich profile data
-    const siteProbeEnabled = process.env.LEAD_SITE_PROBE_ENABLED !== 'false';
-    const siteProbeMax = Math.min(Math.max(Number(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND) || 12, 1), 30);
-    stats.siteProbe = stats.siteProbe || { attempted: 0, succeeded: 0, cacheHits: 0, negativeHits: 0, skippedDisabled: 0, skippedCap: 0 };
+    const siteProbeEnabled = process.env.LEAD_SITE_PROBE_ENABLED !== "false";
+    const siteProbeMax = Math.min(
+      Math.max(Number(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND) || 12, 1),
+      30,
+    );
+    stats.siteProbe = stats.siteProbe || {
+      attempted: 0,
+      succeeded: 0,
+      cacheHits: 0,
+      negativeHits: 0,
+      skippedDisabled: 0,
+      skippedCap: 0,
+    };
 
     if (siteProbeEnabled && uncachedTargets.length > 0) {
       const probeCandidateTargets = uncachedTargets
-        .filter(t => !t.enriched)
+        .filter((t) => !t.enriched)
         .sort((a, b) => (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0));
 
       const targetsToProbe: EnrichmentTarget[] = [];
@@ -508,7 +643,9 @@ export async function executeEnrichStage(
         const posCache = getEnrichmentCacheEntry({ normalizedUrl: domain });
         if (posCache) {
           stats.siteProbe.cacheHits++;
-          const signals = parseSiteSignalsFromEvidenceBlock(posCache.evidenceBlock);
+          const signals = parseSiteSignalsFromEvidenceBlock(
+            posCache.evidenceBlock,
+          );
           signals.sourceUrl = domain;
           applySiteProbe(target, signals, domain, refreshLeadEvidence);
           target.enriched = true;
@@ -516,7 +653,11 @@ export async function executeEnrichStage(
         }
 
         // Check negative cache
-        const negCache = getNegativeEnrichmentCacheEntry({ normalizedUrl: domain }, new Date(), 'site_probe');
+        const negCache = getNegativeEnrichmentCacheEntry(
+          { normalizedUrl: domain },
+          new Date(),
+          "site_probe",
+        );
         if (negCache) {
           stats.siteProbe.negativeHits++;
           continue;
@@ -529,14 +670,16 @@ export async function executeEnrichStage(
         stats.siteProbe.attempted += targetsToProbe.length;
         const probeStarted = Date.now();
         try {
-          state.freeTierBudget.reserveTavilySearch('basic');
-          if (!config.creditReservationEnabled) recordProviderUsage('tavily', 1);
+          state.freeTierBudget.reserveTavilySearch("basic");
+          if (!config.creditReservationEnabled)
+            recordProviderUsage("tavily", 1);
 
           const probeResults = await probeCompanySites(targetsToProbe, {
             abortSignal: state.abortController.signal,
             onProviderUsage: (units) => {
-              if (!config.creditReservationEnabled) recordProviderUsage('tavily', units);
-            }
+              if (!config.creditReservationEnabled)
+                recordProviderUsage("tavily", units);
+            },
           });
 
           let probeSucceeded = 0;
@@ -548,55 +691,78 @@ export async function executeEnrichStage(
               probeSucceeded++;
             } else if (domain) {
               // Negative cache dead / failed domain
-              upsertNegativeEnrichmentCacheEntry({
-                normalizedUrl: domain,
-                scrapeQuality: 'bad',
-                evidenceBlock: 'site_probe_no_signals',
-                sourceProvider: 'site_probe'
-              }, 24);
+              upsertNegativeEnrichmentCacheEntry(
+                {
+                  normalizedUrl: domain,
+                  scrapeQuality: "bad",
+                  evidenceBlock: "site_probe_no_signals",
+                  sourceProvider: "site_probe",
+                },
+                24,
+              );
             }
           }
           stats.siteProbe.succeeded += probeSucceeded;
-          logEvent(`Round ${round}: company site probe enriched ${probeSucceeded}/${targetsToProbe.length} candidates with location/headcount.`);
+          logEvent(
+            `Round ${round}: company site probe enriched ${probeSucceeded}/${targetsToProbe.length} candidates with location/headcount.`,
+          );
           recordTrace({
-            phase: 'enrichment',
-            operation: 'site_probe',
-            status: probeSucceeded > 0 ? 'success' : 'skipped',
-            provider: 'tavily',
+            phase: "enrichment",
+            operation: "site_probe",
+            status: probeSucceeded > 0 ? "success" : "skipped",
+            provider: "tavily",
             round,
             latencyMs: Date.now() - probeStarted,
-            counts: { attempted: targetsToProbe.length, succeeded: probeSucceeded }
+            counts: {
+              attempted: targetsToProbe.length,
+              succeeded: probeSucceeded,
+            },
           });
         } catch (err: any) {
-          logEvent(`WARN: Company site probe failed in round ${round}: ${err.message || String(err)}`);
+          logEvent(
+            `WARN: Company site probe failed in round ${round}: ${err.message || String(err)}`,
+          );
         }
       }
     } else if (!siteProbeEnabled) {
-      stats.siteProbe.skippedDisabled += uncachedTargets.filter(t => !t.enriched).length;
+      stats.siteProbe.skippedDisabled += uncachedTargets.filter(
+        (t) => !t.enriched,
+      ).length;
     }
   }
 
   // 2. Final Acceptance for candidates in this round
   for (const { lead, queryRun } of postFilterLeads) {
     if (acceptedLeads.length >= rerankPoolTarget) break;
-    const finalDecisionMaker = lead.decisionMakerVerification || verifyDecisionMakerFromEvidence({
-      query: promptQuery,
-      fullName: lead.fullName,
-      currentTitle: lead.currentTitle,
-      currentCompany: lead.currentCompany,
-      headline: lead.headline,
-      seniorityLevel: lead.seniorityLevel,
-      evidenceText: lead.evidence?.snippets?.join(' ') || ''
-    });
+    const finalDecisionMaker =
+      lead.decisionMakerVerification ||
+      verifyDecisionMakerFromEvidence({
+        query: promptQuery,
+        fullName: lead.fullName,
+        currentTitle: lead.currentTitle,
+        currentCompany: lead.currentCompany,
+        headline: lead.headline,
+        seniorityLevel: lead.seniorityLevel,
+        evidenceText: lead.evidence?.snippets?.join(" ") || "",
+      });
     lead.decisionMakerVerification = finalDecisionMaker;
     if (finalDecisionMaker.ignoredTitle || finalDecisionMaker.confidence < 5) {
-      noteRejection('not_decision_maker', queryRun);
+      noteRejection("not_decision_maker", queryRun);
       continue;
     }
-    lead.scoreBreakdown = computeScoreBreakdown(lead, lead.evidence?.evidenceQuality || 'weak', lead.evidence?.sourceProvider === 'cache' ? 'cache' : lead.evidence?.sourceProvider === 'brightdata' ? 'brightdata' : 'tavily', finalDecisionMaker);
+    lead.scoreBreakdown = computeScoreBreakdown(
+      lead,
+      lead.evidence?.evidenceQuality || "weak",
+      lead.evidence?.sourceProvider === "cache"
+        ? "cache"
+        : lead.evidence?.sourceProvider === "brightdata"
+          ? "brightdata"
+          : "tavily",
+      finalDecisionMaker,
+    );
     lead.scoreOverride = lead.scoreBreakdown.finalScore;
     if (effectiveScore(lead) < minScore) {
-      noteRejection('score_below_minimum', queryRun);
+      noteRejection("score_below_minimum", queryRun);
       continue;
     }
 
@@ -610,24 +776,38 @@ export async function executeEnrichStage(
   }
 
   // 3. Optional company intent enrichment via canonical runIntentEnrichment module
-  if (companyIntentEnabled && acceptedLeads.length > 0 && companyIntentMaxPerSearch > 0) {
-    const qualifiedMap = new Map<string, any>(acceptedLeads.map((l, idx) => [l.id || `lead-${idx}`, l]));
+  if (
+    companyIntentEnabled &&
+    acceptedLeads.length > 0 &&
+    companyIntentMaxPerSearch > 0
+  ) {
+    const qualifiedMap = new Map<string, any>(
+      acceptedLeads.map((l, idx) => [l.id || `lead-${idx}`, l]),
+    );
     await runIntentEnrichment({
       qualifiedLeads: qualifiedMap,
       contract,
       companyIntentMaxPerSearch,
       companyIntentConcurrency: profileConcurrency,
       ttlDays,
-      brightDataSearch: (q) => trackableBrightDataSearch(q, {}, 'phase_4_company_website'),
-      tavilySearchFallback: hasTavilyKey() ? async (q) => (await ports.tavilySearch(q, { signal: state.abortController.signal })).items : undefined,
+      brightDataSearch: (q) =>
+        trackableBrightDataSearch(q, {}, "phase_4_company_website"),
+      tavilySearchFallback: hasTavilyKey()
+        ? async (q) =>
+            (
+              await ports.tavilySearch(q, {
+                signal: state.abortController.signal,
+              })
+            ).items
+        : undefined,
       sessionAbortSignal: state.abortController.signal,
       logEvent,
-      recordTrace
+      recordTrace,
     });
   }
 
   return {
     brightDataProviderDisabled,
-    brightDataTransportRetryAfter
+    brightDataTransportRetryAfter,
   };
 }

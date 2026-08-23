@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// ---------------------------------------------------------------------------
+// ISOLATION GUARD - must execute before ANY server module is imported.
+// server/db.ts resolves LEADS_DB_PATH from APEX_DB_PATH at import time, so
+// without this override every fixture below is written into the LIVE
+// .apex-data/apex-crm.sqlite database and shows up in the UI as resumable
+// sessions that "keep coming back" after deletion.
+// ---------------------------------------------------------------------------
+const testDbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-engine-test-'));
+process.env.APEX_DB_PATH = path.join(testDbDir, 'test.sqlite');
+
+const {
   saveMiningSessionCheckpoint,
   readMiningSessionCheckpoint,
   readResumableMiningSessions,
@@ -9,10 +23,10 @@ import {
   readMiningSessionById,
   deleteMiningSession,
   deleteMiningSessions,
-  clearInterruptedMiningSessions,
-  type MiningSessionCheckpoint
-} from '../server/db.js';
-import { discoveryEngine } from '../server/leadSearch/discoveryEngine.js';
+  clearInterruptedMiningSessions
+} = await import('../server/db.js');
+type MiningSessionCheckpoint = import('../server/db.js').MiningSessionCheckpoint;
+const { discoveryEngine } = await import('../server/leadSearch/discoveryEngine.js');
 
 test('saveMiningSessionCheckpoint and readMiningSessionCheckpoint round-trip correctly', () => {
   const sessionId = `test-persist-${Date.now()}`;

@@ -181,8 +181,20 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   const hintedRoles = roleHints.filter(term => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i').test(brief));
   const rolePattern = roleHints.map(term => term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
 
+  // Guard rails: free-text briefs routinely contain buying-signal timeframes
+  // ("from the last 45 days seeking...") and role modifiers ("Managing
+  // Partners", "Operations Directors"). The naive extractors below mistake
+  // these for geographic locations and company types, producing unsatisfiable
+  // hard requirements that silently zero out judge qualification rates.
+  const JUNK_TERM_PATTERN = /\b(last|past|within|over|next|during|days?|weeks?|months?|years?|hours?|today|yesterday|seeking|hiring|recruiting|using|tools?|workflows?|signals?|employees|budget)\b/i;
+  const isCleanRequirementTerm = (value: unknown) => {
+    const v = String(value || '').trim();
+    return v.length > 1 && v.length <= 48 && !JUNK_TERM_PATTERN.test(v);
+  };
+  const TITLE_MODIFIER_PATTERN = /^(?:managing|operations?|technical|executive|senior|junior|lead|principal|chief|global|regional|fractional|founding|head|director|directors|vp|vice|deputy|sales|marketing|revops|finance|co-?\s*founder|co-?\s*owner)\b/i;
+
   const rawLocMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120})/i)?.[1] || '';
-  const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\//).map(s => s.trim()).filter(Boolean) : [];
+  const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\//).map(s => s.trim()).filter(isCleanRequirementTerm) : [];
 
   const companyTypeMatch = clean(brief).match(new RegExp('([A-Za-z0-9\\s-]{2,30}?)\\s+(?:' + rolePattern + ')\\b', 'i'))?.[1]?.trim() || '';
   const explicitCompanyKeywords = spec.company.keywords.filter(keyword => lower(keyword) !== lower(brief));
@@ -199,9 +211,11 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   // even when an LLM omitted them from its contract.
   addWithAlternatives('person_role', ownerMatch, ['owner', 'owners', 'firm owner', 'firm owners']);
   addWithAlternatives('person_role', professionMatch, [professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`]);
-  add('person_location', [...spec.person.locations, ...spec.company.locations, ...extractedLocations]);
-  addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
-  if (companyTypeMatch && !/^(with|and|or|in|from|at|the|a|an)$/i.test(companyTypeMatch)) {
+  add('person_location', [...spec.person.locations, ...spec.company.locations, ...extractedLocations].filter(isCleanRequirementTerm));
+  if (firmMatch && isCleanRequirementTerm(firmMatch)) {
+    addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
+  }
+  if (companyTypeMatch && !TITLE_MODIFIER_PATTERN.test(companyTypeMatch) && !/^(with|and|or|in|from|at|the|a|an)$/i.test(companyTypeMatch)) {
     addWithAlternatives('company_type', companyTypeMatch, [companyTypeMatch]);
   }
   add('company_type', explicitCompanyKeywords);

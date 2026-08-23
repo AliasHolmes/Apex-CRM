@@ -389,3 +389,54 @@ test('parallel two-wave retrieval produces identical fused candidate output to s
   assert.ok(fusedOutput.candidateItems.some((c: any) => c.title.includes('John Doe')));
   assert.equal(fusedOutput.roundCandidateKeys.size, 2);
 });
+
+test('executeFuseStage does not emit session-killing stopReason on zero unique candidates', async () => {
+  const mockPlans = [
+    {
+      item: {
+        query: 'test query',
+        family: 'person',
+        lane: 'person',
+        intent: 'person',
+        priority: 1,
+        providerPreference: 'tavily',
+        tavily: { searchDepth: 'basic', maxResults: 5 }
+      } as any,
+      executableQuery: 'test query'
+    }
+  ];
+
+  const ctx = createMockContext();
+  // Simulate duplicate / non-profile items that yield 0 unique candidates
+  const roundItems = [
+    {
+      item: {
+        title: 'Random Article',
+        url: 'https://example.com/some-article-not-linkedin',
+        content: 'Just an article with no linkedin profile.',
+        sourceProvider: 'tavily'
+      },
+      resultIndex: 0
+    }
+  ];
+
+  const queryRuns = mockPlans.map(p => ({
+    round: 2, query: p.executableQuery, family: p.item.family, intent: p.item.intent,
+    rawCandidates: 0, uniqueCandidates: 0, evidenceBlocks: 0, extractedLeads: 0, acceptedLeads: 0,
+    rejectionReasons: {}, lane: p.item.lane, providerPreference: p.item.providerPreference,
+    tavilySearchDepth: 'basic', corroboratedCandidates: 0, searchLatencyMs: 0, providerUnits: 0,
+    qualifiedFinalists: 0, rescuedFinalists: 0, returnedFinalists: 0
+  }));
+
+  const fusedOutput = await executeFuseStage(ctx, {
+    round: 2,
+    roundItems,
+    roundPlans: mockPlans,
+    queryRuns,
+    stats: { rejectionReasons: {} }
+  });
+
+  assert.equal(fusedOutput.candidateItems.length, 0);
+  assert.equal(fusedOutput.uniqueRoundItemsCount, 0);
+  assert.equal(fusedOutput.stopReason, undefined, 'Zero-yield round must not return stopReason: exhausted');
+});

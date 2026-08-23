@@ -5,7 +5,8 @@ import {
   validateFinalistJudgments,
   finalistJudgeSchema,
   FINALIST_JUDGE_SYSTEM_PROMPT,
-  type FinalistCandidate
+  type FinalistCandidate,
+  type FinalistOutcomeStatus
 } from '../finalistJudge.js';
 import {
   openAIStructured,
@@ -49,6 +50,12 @@ export async function executeJudgeStage(
 
   stats.rerank = stats.rerank || {};
   stats.rerank.poolSize = acceptedLeads.length;
+
+  // Graded judge output must influence final composition even when verdicts
+  // fall short of 'qualified': rescue fills prefer judge-ranked candidates and
+  // never resurrect candidates the judge explicitly hard-failed.
+  const judgmentInsight = new Map<string, { status: FinalistOutcomeStatus; score: number; reason?: string }>();
+  const judgeOutcomeTotals = { qualified: 0, hardFail: 0, unknown: 0, unjudged: 0 };
 
   const fallbackEvidenceForLead = (lead: any): EvidenceMeta => {
     const sourceUrl = lead.contactDetails?.linkedinUrl || '';
@@ -134,6 +141,7 @@ export async function executeJudgeStage(
     return candidate.lead;
   }));
   logEvent(`Finalist Judge: ${autoQualified.length} strict direct-profile qualifications; ${needsJudge.length} candidates need semantic review.`);
+  judgeOutcomeTotals.qualified += autoQualified.length;
 
   if (judgeBatches.length) {
     logEvent(`Running evidence-validated Finalist Judge on ${needsJudge.length} candidates in ${judgeBatches.length} prompt-aware batch(es), up to ${maxBatchInputTokens} input tokens each.`);
@@ -156,6 +164,17 @@ export async function executeJudgeStage(
           onUsage: usage => { judgeUsage = usage; }
         });
         const validation = validateFinalistJudgments(judgmentResult, contract, batch);
+        for (const [judgedId, outcome] of validation.outcomes) {
+          judgmentInsight.set(judgedId, {
+            status: outcome.status,
+            score: outcome.qualification?.finalScore ?? (outcome.status === 'hard_fail' ? -100 : -1),
+            reason: outcome.reason
+          });
+        }
+        judgeOutcomeTotals.qualified += validation.counts.qualified;
+        judgeOutcomeTotals.hardFail += validation.counts.hardFail;
+        judgeOutcomeTotals.unknown += validation.counts.unknown;
+        judgeOutcomeTotals.unjudged += validation.counts.unjudged;
         const minimumValid = Math.ceil(batch.length * 0.60);
         if (validation.validJudgmentCount < minimumValid) {
           recordTrace({
@@ -231,34 +250,47 @@ export async function executeJudgeStage(
     qualifiedLeads.push(...judgeResults.flat());
   }
 
+  stats.rerank.judge = { ...judgeOutcomeTotals };
+
   // Safety net: if qualifiedLeads falls short of targetLimit, promote acceptedLeads up to the limit
   const qualifiedUrls = new Set<string>(qualifiedLeads.map(lead => lead.contactDetails?.linkedinUrl || lead.sourceUrl || ''));
   let rescuedCount = 0;
-  const maxRescueRatio = Math.min(Math.max(Number(process.env.SAFETY_NET_MAX_RESCUE_RATIO ?? 0.5), 0), 1.0);
+  // Default to 1.0: the judge (not the cap) is now responsible for quality.
+  // A 0.5 default silently turned every low-yield session into "half the target".
+  const maxRescueRatio = Math.min(Math.max(Number(process.env.SAFETY_NET_MAX_RESCUE_RATIO ?? 1.0), 0), 1.0);
   const maxRescuesAllowed = Math.ceil(targetLimit * maxRescueRatio);
 
   if (qualifiedLeads.length < targetLimit) {
     const needed = targetLimit - qualifiedLeads.length;
     const rescueCap = Math.min(needed, maxRescuesAllowed);
-    logEvent(`Safety Net: Finalist Judge qualified ${qualifiedLeads.length}/${targetLimit} leads. Rescuing top remaining accepted candidates (cap: ${rescueCap}).`);
-    acceptedLeads.forEach(lead => {
-      lead.finalSelectionScore = rankLeadForFinalSelection(lead);
+    logEvent(`Safety Net: Finalist Judge qualified ${qualifiedLeads.length}/${targetLimit} leads. Rescuing judge-ranked remaining candidates (cap: ${rescueCap}).`);
+    const rescuePool = acceptedLeads
+      .map((lead, index) => ({ lead, index, url: lead.contactDetails?.linkedinUrl || lead.sourceUrl || '' }))
+      .filter(entry => !qualifiedUrls.has(entry.url))
+      // The judge said no on hard requirements; the safety net must not override that.
+      .filter(entry => judgmentInsight.get(`c${entry.index}`)?.status !== 'hard_fail');
+    for (const entry of rescuePool) {
+      entry.lead.finalSelectionScore = rankLeadForFinalSelection(entry.lead);
+    }
+    rescuePool.sort((a, b) => {
+      // Judge-graded candidates fill first (highest judged score wins), then
+      // deterministic selection rank, then raw score.
+      const judgeDelta = Number(judgmentInsight.get(`c${b.index}`)?.score ?? -1) - Number(judgmentInsight.get(`c${a.index}`)?.score ?? -1);
+      if (judgeDelta !== 0) return judgeDelta;
+      const rankDelta = Number(b.lead.finalSelectionScore || 0) - Number(a.lead.finalSelectionScore || 0);
+      if (rankDelta !== 0) return rankDelta;
+      return effectiveScore(b.lead) - effectiveScore(a.lead);
     });
-    acceptedLeads.sort((a, b) => {
-      const rankDelta = Number(b.finalSelectionScore || 0) - Number(a.finalSelectionScore || 0);
-      return rankDelta !== 0 ? rankDelta : effectiveScore(b) - effectiveScore(a);
-    });
-    for (const lead of acceptedLeads) {
+    for (const entry of rescuePool) {
       if (rescuedCount >= rescueCap || qualifiedLeads.length >= targetLimit) break;
-      const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || '';
-      if (!qualifiedUrls.has(url)) {
-        lead.qualification = { verdict: 'rescued', reason: 'Safety Net: identity-verified, signal evidence unavailable', finalScore: lead.finalSelectionScore };
-        lead.whyThisLead = 'Safety Net: identity verified, buying signal not confirmed';
-        lead.isRescued = true;
-        qualifiedLeads.push(lead);
-        qualifiedUrls.add(url);
-        rescuedCount++;
-      }
+      entry.lead.qualification = { verdict: 'rescued', reason: 'Safety Net: identity-verified, signal evidence unavailable', finalScore: entry.lead.finalSelectionScore };
+      entry.lead.whyThisLead = 'Safety Net: identity verified, buying signal not confirmed';
+      const insight = judgmentInsight.get(`c${entry.index}`);
+      if (insight) entry.lead.judgmentInsight = { status: insight.status, score: insight.score, reason: insight.reason };
+      entry.lead.isRescued = true;
+      qualifiedLeads.push(entry.lead);
+      qualifiedUrls.add(entry.url);
+      rescuedCount++;
     }
     logEvent(`Safety Net: Promoted ${rescuedCount} candidates to reach target.`);
   }

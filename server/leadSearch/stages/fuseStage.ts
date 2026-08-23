@@ -113,12 +113,11 @@ export async function executeFuseStage(
   stats.rawCandidates = rawResultsCount;
 
   if (uniqueRoundItems.length === 0) {
-    logEvent(`Round ${round}: no new unique candidates.`);
+    logEvent(`Round ${round}: no new unique candidates (stalled round, continuing collection budget).`);
     return {
       candidateItems: [],
       roundCandidateKeys,
-      uniqueRoundItemsCount: 0,
-      stopReason: 'exhausted'
+      uniqueRoundItemsCount: 0
     };
   }
 

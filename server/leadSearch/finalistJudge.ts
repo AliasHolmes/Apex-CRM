@@ -11,6 +11,8 @@ export type RequirementAssessment = {
   evidenceId?: string;
   evidenceQuote?: string;
   reason?: string;
+  /** True when the model claimed a pass but the cited quote was not found in the candidate evidence. */
+  fabricatedPass?: boolean;
 };
 
 export type FinalistJudgment = {
@@ -142,6 +144,7 @@ const normalizeAssessment = (raw: any, candidate: FinalistCandidate, requirement
   return {
     requirementId: requirement.id,
     status: quoteValid ? status : 'unknown',
+    fabricatedPass: status === 'pass' && !quoteValid,
     evidenceId: quoteValid ? evidenceId || undefined : undefined,
     evidenceQuote: quoteValid ? evidenceQuote || undefined : undefined,
     reason: clean(raw?.reason, 280) || undefined
@@ -149,11 +152,17 @@ const normalizeAssessment = (raw: any, candidate: FinalistCandidate, requirement
 };
 
 /**
- * Validate judgments and assign precise outcome statuses:
- * - Any valid failed hard profile requirement -> hard_fail
+ * Validate judgments and assign tiered outcome statuses:
+ * - Any failed hard requirement (identity or context) -> hard_fail
  * - All hard profile requirements pass + all hard signal requirements pass -> qualified
- * - All hard profile requirements pass + hard signal requirements unknown -> qualified_partial
- * - Insufficient evidence for a hard profile requirement -> unknown
+ * - Identity (person_role) verified, but context attributes (location, company
+ *   type, industry, size) and/or hard signals merely unknown -> qualified_partial
+ *   (15% score discount). Search snippets routinely omit context fields, so an
+ *   unverifiable context no longer discards a verified decision-maker.
+ * - Identity unverifiable but the judge rates semantic fit >= 7 and authority
+ *   fit >= 8 (>= 7 when authority is not required) -> qualified_partial
+ * - A "pass" whose evidence quote is absent from the packet is treated as a
+ *   fabrication signal and blocks qualification entirely -> unknown
  * - Omitted or malformed candidate result -> unjudged
  */
 export function validateFinalistJudgments(
@@ -193,38 +202,62 @@ export function validateFinalistJudgments(
     const requirements = contract.requirements.map(requirement => normalizeAssessment(assessmentById.get(requirement.id), candidate, requirement));
     validJudgmentCount++;
 
-    const profileFails = requirements.filter(req => {
+    // Tiered evaluation. person_role is the identity requirement that must be
+    // positively verified. Context requirements (location, company type,
+    // industry, size) tolerate "unknown" because search snippets routinely
+    // omit them; unknown context demotes to qualified_partial instead of
+    // discarding a verified decision-maker.
+    let identityFails = 0, identityPasses = 0;
+    let contextFails = 0, contextPasses = 0;
+    let signalPasses = 0;
+    let fabricatedHardPass = false;
+    for (const req of requirements) {
       const contractReq = contract.requirements.find(item => item.id === req.requirementId);
-      const isSignal = (contractReq?.evidenceModality || (contractReq?.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
-      return contractReq?.importance === 'hard' && !isSignal && req.status === 'fail';
-    }).length;
-
-    const profilePasses = requirements.filter(req => {
-      const contractReq = contract.requirements.find(item => item.id === req.requirementId);
-      const isSignal = (contractReq?.evidenceModality || (contractReq?.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
-      return contractReq?.importance === 'hard' && !isSignal && req.status === 'pass';
-    }).length;
-
-    const signalPasses = requirements.filter(req => {
-      const contractReq = contract.requirements.find(item => item.id === req.requirementId);
-      const isSignal = (contractReq?.evidenceModality || (contractReq?.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
-      return contractReq?.importance === 'hard' && isSignal && req.status === 'pass';
-    }).length;
+      if (!contractReq || contractReq.importance !== 'hard') continue;
+      if (req.fabricatedPass) fabricatedHardPass = true;
+      const isSignal = (contractReq.evidenceModality || (contractReq.scope === 'signal' ? 'open_web_signal' : 'structured_profile')) === 'open_web_signal';
+      if (isSignal) {
+        if (req.status === 'pass') signalPasses++;
+        continue;
+      }
+      const isIdentity = contractReq.scope === 'person_role';
+      if (req.status === 'pass') {
+        if (isIdentity) identityPasses++; else contextPasses++;
+      } else if (req.status === 'fail') {
+        if (isIdentity) identityFails++; else contextFails++;
+      }
+    }
 
     const semanticFit = normalizeScoreTo10(judgment.semanticFit, 7);
     const authorityFit = normalizeScoreTo10(judgment.authorityFit, 7);
     const evidenceConfidence = normalizeScoreTo10(judgment.evidenceConfidence, 7);
     const reason = clean(judgment.reason, 500) || 'Matches the prospect contract with cited public evidence.';
 
+    const identityHardTotal = profileHardReqs.filter(req => req.scope === 'person_role').length;
+    const contextHardTotal = profileHardReqs.length - identityHardTotal;
+    const identityVerified = identityFails === 0 && identityPasses === identityHardTotal;
+    const contextVerified = contextFails === 0 && contextPasses === contextHardTotal;
+    const signalsSatisfied = signalHardReqs.length === 0 || signalPasses === signalHardReqs.length;
+    // When evidence packets are too thin to verify identity outright, the
+    // judge's graded scores still carry decision weight instead of being
+    // discarded: strong semantic + authority ratings qualify as partial.
+    const stronglyRatedIdentity = semanticFit >= 7 && authorityFit >= (contract.authorityRequired ? 8 : 7);
+
     let status: FinalistOutcomeStatus = 'unknown';
-    if (profileFails > 0) {
+    if (fabricatedHardPass) {
+      // A "pass" whose cited quote does not exist in the evidence packet is a
+      // fabrication signal; it blocks qualification entirely.
+      status = 'unknown';
+      counts.unknown++;
+    } else if (identityFails > 0 || contextFails > 0) {
       status = 'hard_fail';
       counts.hardFail++;
-    } else if (profilePasses === profileHardReqs.length && (signalHardReqs.length === 0 || signalPasses === signalHardReqs.length)) {
+    } else if (identityVerified && contextVerified && signalsSatisfied) {
       status = 'qualified';
       counts.qualified++;
-    } else if (profilePasses === profileHardReqs.length) {
-      // Identity and role fully verified; signal uncorroborated but candidate is genuine
+    } else if (identityVerified || (identityFails === 0 && stronglyRatedIdentity)) {
+      // Identity verified (or strongly rated); context attributes or dynamic
+      // signals are uncorroborated but the candidate is genuine.
       status = 'qualified_partial';
       counts.qualified++;
     } else {

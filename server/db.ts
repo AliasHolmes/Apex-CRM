@@ -109,8 +109,13 @@ function getTableColumns(db: DatabaseSync, tableName: string) {
   return new Set((db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]).map((column) => column.name));
 }
 
+function tableExists(db: DatabaseSync, tableName: string) {
+  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+  return Boolean(row);
+}
+
 function addColumnIfMissing(db: DatabaseSync, tableName: string, columnName: string, definition: string) {
-  if (!getTableColumns(db, tableName).has(columnName)) {
+  if (tableExists(db, tableName) && !getTableColumns(db, tableName).has(columnName)) {
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition}`);
   }
 }

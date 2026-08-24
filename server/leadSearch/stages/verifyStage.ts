@@ -180,6 +180,9 @@ export async function executeVerifyStage(
       dmVerification,
     );
     lead.scoreOverride = lead.scoreBreakdown.finalScore;
+    // Mark the score as current so enrichStage's acceptance loop can skip a
+    // redundant recompute for leads that were not enriched this round.
+    lead._scoreCurrent = true;
 
     if (
       dmVerification.ignoredTitle &&

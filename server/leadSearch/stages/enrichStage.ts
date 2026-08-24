@@ -11,8 +11,10 @@ import {
 } from "../../services/brightdata.js";
 import {
   getEnrichmentCacheEntry,
+  getEnrichmentCacheEntriesBatch,
   upsertEnrichmentCacheEntry,
   getNegativeEnrichmentCacheEntry,
+  getNegativeEnrichmentCacheEntriesBatch,
   upsertNegativeEnrichmentCacheEntry,
   recordProviderUsage,
 } from "../../db.js";
@@ -187,6 +189,9 @@ export async function executeEnrichStage(
         lead.decisionMakerVerification,
       );
       lead.scoreOverride = lead.scoreBreakdown.finalScore;
+      // Evidence changed, so the acceptance loop must re-derive the score
+      // from the (possibly different) provider/quality inputs.
+      lead._scoreCurrent = false;
     };
 
     const classifyAndRecordBrightDataFailure = (
@@ -324,6 +329,36 @@ export async function executeEnrichStage(
 
     const targetsByUrl = new Map<string, EnrichmentTarget>();
     let reservedSlots = 0;
+
+    // Batch cache lookups: one positive + one negative query for all targets
+    // instead of two sequential gets per target (N+1 elimination).
+    const candidateLookups = selectedRows
+      .map(({ lead, evidenceMeta }) => {
+        const rawUrl =
+          evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl;
+        if (!rawUrl) return null;
+        return {
+          rawUrl,
+          normalizedUrl: normalizeLinkedInUrl(rawUrl),
+          username: extractLinkedInUsername(rawUrl),
+        };
+      })
+      .filter((v): v is NonNullable<typeof v> =>
+        Boolean(v && v.normalizedUrl && v.username),
+      );
+    const positiveCacheMap = getEnrichmentCacheEntriesBatch(
+      candidateLookups.map(({ normalizedUrl, username }) => ({
+        normalizedUrl,
+        linkedinUsername: username,
+      })),
+    );
+    const negativeCacheMap = getNegativeEnrichmentCacheEntriesBatch(
+      candidateLookups.map(({ normalizedUrl, username }) => ({
+        normalizedUrl,
+        linkedinUsername: username,
+      })),
+    );
+
     for (const { lead, evidenceMeta, queryRun } of selectedRows) {
       const rawUrl = evidenceMeta.sourceUrl || lead.contactDetails?.linkedinUrl;
       if (!rawUrl) continue;
@@ -332,10 +367,8 @@ export async function executeEnrichStage(
       if (!normalizedUrl || !username || targetsByUrl.has(normalizedUrl))
         continue;
 
-      const positiveCache = getEnrichmentCacheEntry({
-        normalizedUrl,
-        linkedinUsername: username,
-      });
+      const positiveCache =
+        positiveCacheMap.get(normalizedUrl) || positiveCacheMap.get(username);
       if (positiveCache) {
         stats.cacheHits++;
         brightDataStats.cacheHits++;
@@ -359,10 +392,8 @@ export async function executeEnrichStage(
         continue;
       }
 
-      const negativeCache = getNegativeEnrichmentCacheEntry({
-        normalizedUrl,
-        linkedinUsername: username,
-      });
+      const negativeCache =
+        negativeCacheMap.get(normalizedUrl) || negativeCacheMap.get(username);
       if (negativeCache) {
         brightDataStats.negativeCacheHits++;
         const reason = negativeCache.evidenceBlock as RejectionReason;
@@ -750,17 +781,24 @@ export async function executeEnrichStage(
       noteRejection("not_decision_maker", queryRun);
       continue;
     }
-    lead.scoreBreakdown = computeScoreBreakdown(
-      lead,
-      lead.evidence?.evidenceQuality || "weak",
-      lead.evidence?.sourceProvider === "cache"
-        ? "cache"
-        : lead.evidence?.sourceProvider === "brightdata"
-          ? "brightdata"
-          : "tavily",
-      finalDecisionMaker,
-    );
-    lead.scoreOverride = lead.scoreBreakdown.finalScore;
+    // Recompute only when the score is stale (evidence changed during
+    // enrichment). verifyStage already scored untouched leads, and
+    // refreshLeadEvidence re-scored enriched ones with fresh inputs - so an
+    // unconditional recompute here would triple the scoring work per lead.
+    if (!lead._scoreCurrent) {
+      lead.scoreBreakdown = computeScoreBreakdown(
+        lead,
+        lead.evidence?.evidenceQuality || "weak",
+        lead.evidence?.sourceProvider === "cache"
+          ? "cache"
+          : lead.evidence?.sourceProvider === "brightdata"
+            ? "brightdata"
+            : "tavily",
+        finalDecisionMaker,
+      );
+      lead.scoreOverride = lead.scoreBreakdown.finalScore;
+      lead._scoreCurrent = true;
+    }
     if (effectiveScore(lead) < minScore) {
       noteRejection("score_below_minimum", queryRun);
       continue;

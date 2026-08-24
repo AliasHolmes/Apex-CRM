@@ -392,8 +392,18 @@ export async function executeDiscoverySession(
   };
   const traceLogFields = () => {
     const trace = telemetry.getTrace();
+    // Size guard: trace_events can reach megabytes on long sessions. If the
+    // serialized payload exceeds ~2MB, persist summary fields only - the
+    // summaries (provider/cost/phase) carry the aggregate signal anyway.
+    let events = trace.events;
+    if (JSON.stringify(events).length > 2_000_000) {
+      console.warn(
+        `[find-leads] ${sessionId}: trace_events exceeded 2MB; persisting summary-only.`,
+      );
+      events = [];
+    }
     return {
-      traceEvents: trace.events,
+      traceEvents: events,
       providerSummary: trace.providerSummary,
       costSummary: trace.costSummary,
       phaseTimeline: trace.phaseTimeline,
@@ -987,6 +997,10 @@ export async function executeDiscoverySession(
       judgeConcurrency: Number(process.env.FINALIST_JUDGE_CONCURRENCY || 2),
     };
 
+    // Delta-serialization cursor: how many queryRuns previous checkpoints
+    // already captured. Checkpoints serialize only the tail beyond this.
+    let checkpointedQueryRunCount = 0;
+
     const sessionState: PipelineSessionState = {
       round: 1,
       seenCandidateKeys,
@@ -1029,13 +1043,20 @@ export async function executeDiscoverySession(
         `[Resume] Resuming session ${sessionId} from round ${cp.round} (${(cp.acceptedLeads || []).length} accepted leads).`,
       );
       stats.rounds = cp.round;
-      if (Array.isArray(cp.queryRuns)) {
+      // Restore query runs from either format: legacy checkpoints carry the
+      // full array in `queryRuns`; delta checkpoints carry only new runs in
+      // `queryRunsDelta`. Both merge through the same dedupe guard.
+      const restoredRuns = [
+        ...(Array.isArray(cp.queryRuns) ? cp.queryRuns : []),
+        ...(Array.isArray(cp.queryRunsDelta) ? cp.queryRunsDelta : []),
+      ];
+      if (restoredRuns.length > 0) {
         // Guard against double-counting when a checkpoint was saved twice at the
         // same round boundary (crash between checkpoint write and next stage).
         const restoredKeys = new Set(
           stats.queryRuns.map((run) => `${run.round}:${run.query}`),
         );
-        for (const run of cp.queryRuns) {
+        for (const run of restoredRuns) {
           const key = `${run.round}:${run.query}`;
           if (restoredKeys.has(key)) continue;
           restoredKeys.add(key);
@@ -1342,7 +1363,8 @@ export async function executeDiscoverySession(
           targetLimit,
           contract,
           searchSpec,
-          queryRuns: stats.queryRuns,
+          queryRuns: [],
+          queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
           acceptedLeads: acceptedLeads.slice(0, 240),
           qualifiedLeads: qualifiedLeads.slice(0, 240),
           finalLeads: [],
@@ -1358,6 +1380,7 @@ export async function executeDiscoverySession(
           debugLogsTail: debugLogs.slice(-100),
           updatedAt: new Date().toISOString(),
         });
+        checkpointedQueryRunCount = stats.queryRuns.length;
 
         // Early shortlist termination:
         // If we already have >= target * 1.33 accepted leads AND at least target viable candidates showing all hard requirements,
@@ -1414,7 +1437,8 @@ export async function executeDiscoverySession(
       targetLimit,
       contract,
       searchSpec,
-      queryRuns: stats.queryRuns,
+      queryRuns: [],
+      queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
       acceptedLeads: acceptedLeads.slice(0, 240),
       qualifiedLeads: qualifiedLeads.slice(0, 240),
       finalLeads: [],
@@ -1430,6 +1454,7 @@ export async function executeDiscoverySession(
       debugLogsTail: debugLogs.slice(-100),
       updatedAt: new Date().toISOString(),
     });
+    checkpointedQueryRunCount = stats.queryRuns.length;
 
     await executeJudgeStage(sessionCtx, {
       contract,

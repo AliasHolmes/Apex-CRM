@@ -1839,6 +1839,137 @@ export function upsertIntentCacheEntry(
   return upsertEnrichmentCacheEntry(entry, ttlDays, now);
 }
 
+/**
+ * Batch positive-cache lookup: one query for many targets. Returns a map
+ * keyed by both normalized_url and linkedin_username forms pointing at the
+ * best (newest) entry per key. Semantically equivalent to calling
+ * getEnrichmentCacheEntry per lookup, minus the N+1 round-trips.
+ */
+export function getEnrichmentCacheEntriesBatch(
+  lookups: EnrichmentCacheLookup[],
+  now = new Date(),
+): Map<string, EnrichmentCacheEntry> {
+  const result = new Map<string, EnrichmentCacheEntry>();
+  if (!lookups.length) return result;
+
+  const urls = Array.from(
+    new Set(
+      lookups.map((l) => normalizeCacheValue(l.normalizedUrl)).filter(Boolean),
+    ),
+  );
+  const usernames = Array.from(
+    new Set(
+      lookups
+        .map((l) => normalizeCacheValue(l.linkedinUsername))
+        .filter(Boolean),
+    ),
+  );
+  if (!urls.length && !usernames.length) return result;
+
+  const clauses: string[] = [];
+  const params: any[] = [now.toISOString()];
+  if (urls.length) {
+    clauses.push(`normalized_url IN (${urls.map(() => "?").join(",")})`);
+    params.push(...urls);
+  }
+  if (usernames.length) {
+    clauses.push(
+      `linkedin_username IN (${usernames.map(() => "?").join(",")})`,
+    );
+    params.push(...usernames);
+  }
+
+  const rows = getLeadsDb()
+    .prepare(
+      `
+      SELECT * FROM enrichment_cache
+      WHERE expires_at > ?
+        AND scrape_quality IN ('good', 'partial')
+        AND (${clauses.join(" OR ")})
+      ORDER BY created_at DESC
+    `,
+    )
+    .all(...params) as any[];
+
+  for (const row of rows) {
+    const entry = toCacheRow(row);
+    if (!entry) continue;
+    // Rows are newest-first; first write per key wins.
+    if (entry.normalizedUrl && !result.has(entry.normalizedUrl)) {
+      result.set(entry.normalizedUrl, entry);
+    }
+    if (entry.linkedinUsername && !result.has(entry.linkedinUsername)) {
+      result.set(entry.linkedinUsername, entry);
+    }
+  }
+  return result;
+}
+
+/**
+ * Batch negative-cache lookup: one query for many targets, keyed the same way
+ * as getEnrichmentCacheEntriesBatch.
+ */
+export function getNegativeEnrichmentCacheEntriesBatch(
+  lookups: EnrichmentCacheLookup[],
+  now = new Date(),
+  sourceProvider = "brightdata",
+): Map<string, EnrichmentCacheEntry> {
+  const result = new Map<string, EnrichmentCacheEntry>();
+  if (!lookups.length) return result;
+
+  const urls = Array.from(
+    new Set(
+      lookups.map((l) => normalizeCacheValue(l.normalizedUrl)).filter(Boolean),
+    ),
+  );
+  const usernames = Array.from(
+    new Set(
+      lookups
+        .map((l) => normalizeCacheValue(l.linkedinUsername))
+        .filter(Boolean),
+    ),
+  );
+  if (!urls.length && !usernames.length) return result;
+
+  const clauses: string[] = [];
+  const params: any[] = [now.toISOString(), sourceProvider];
+  if (urls.length) {
+    clauses.push(`normalized_url IN (${urls.map(() => "?").join(",")})`);
+    params.push(...urls);
+  }
+  if (usernames.length) {
+    clauses.push(
+      `linkedin_username IN (${usernames.map(() => "?").join(",")})`,
+    );
+    params.push(...usernames);
+  }
+
+  const rows = getLeadsDb()
+    .prepare(
+      `
+      SELECT * FROM enrichment_cache
+      WHERE expires_at > ?
+        AND scrape_quality = 'bad'
+        AND source_provider = ?
+        AND (${clauses.join(" OR ")})
+      ORDER BY created_at DESC
+    `,
+    )
+    .all(...params) as any[];
+
+  for (const row of rows) {
+    const entry = toCacheRow(row);
+    if (!entry) continue;
+    if (entry.normalizedUrl && !result.has(entry.normalizedUrl)) {
+      result.set(entry.normalizedUrl, entry);
+    }
+    if (entry.linkedinUsername && !result.has(entry.linkedinUsername)) {
+      result.set(entry.linkedinUsername, entry);
+    }
+  }
+  return result;
+}
+
 export function getNegativeEnrichmentCacheEntry(
   lookup: EnrichmentCacheLookup,
   now = new Date(),
@@ -2567,6 +2698,8 @@ export type MiningSessionCheckpoint = {
   previousRoundSummary?: any;
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
+  /** Runs added since the previous checkpoint (delta serialization). */
+  queryRunsDelta?: any[];
   /** Last N debug-log entries, persisted so crash context survives resume. */
   debugLogsTail?: any[];
   updatedAt: string;

@@ -64,12 +64,16 @@ export async function executeFuseStage(
   const uniqueRoundItems: any[] = [];
   const roundCandidateKeys = new Set<string>();
 
+  // Prebuild lookup maps: queries are unique within a round (planStage
+  // dedupes via seenQueryTexts), so map lookups replace the O(n*m) findIndex.
+  const planByQuery = new Map(
+    roundPlans.map((plan) => [plan.executableQuery, plan]),
+  );
+  const queryRunByQuery = new Map(queryRuns.map((run) => [run.query, run]));
+
   for (const observation of fusedObservations) {
-    const planIndex = roundPlans.findIndex(
-      (plan) => plan.executableQuery === observation.query,
-    );
-    const queryRun = planIndex >= 0 ? queryRuns[planIndex] : undefined;
-    const plan = planIndex >= 0 ? roundPlans[planIndex] : undefined;
+    const plan = planByQuery.get(observation.query);
+    const queryRun = queryRunByQuery.get(observation.query);
     const item = { ...observation.raw };
     const url = observation.url;
     const username = extractLinkedInUsername(url);

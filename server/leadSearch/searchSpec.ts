@@ -1,7 +1,11 @@
-export type DiscoveryMode = 'person_first' | 'account_first' | 'signal_first' | 'local_business';
-export type QueryLane = 'person' | 'account' | 'signal' | 'archetype';
-export type ProviderPreference = 'tavily' | 'brightdata' | 'corroborate';
-export type TavilySearchDepth = 'basic' | 'fast' | 'ultra-fast' | 'advanced';
+export type DiscoveryMode =
+  | "person_first"
+  | "account_first"
+  | "signal_first"
+  | "local_business";
+export type QueryLane = "person" | "account" | "signal" | "archetype";
+export type ProviderPreference = "tavily" | "brightdata" | "corroborate";
+export type TavilySearchDepth = "basic" | "fast" | "ultra-fast" | "advanced";
 
 export type SearchSpec = {
   version: 1;
@@ -30,21 +34,21 @@ export type SearchSpec = {
 };
 
 export type QueryFamily =
-  | 'persona_title'
-  | 'industry_vertical'
-  | 'pain_signal'
-  | 'growth_signal'
-  | 'tooling_signal'
-  | 'local_market'
-  | 'company_type'
-  | 'archetype_exploration';
+  | "persona_title"
+  | "industry_vertical"
+  | "pain_signal"
+  | "growth_signal"
+  | "tooling_signal"
+  | "local_market"
+  | "company_type"
+  | "archetype_exploration";
 
 export type QueryIntent =
-  | 'find_decision_makers'
-  | 'find_buying_signal'
-  | 'expand_surface_area'
-  | 'recover_from_low_yield'
-  | 'reduce_duplicates';
+  | "find_decision_makers"
+  | "find_buying_signal"
+  | "expand_surface_area"
+  | "recover_from_low_yield"
+  | "reduce_duplicates";
 
 export type SearchQueryPlanItem = {
   query: string;
@@ -57,8 +61,8 @@ export type SearchQueryPlanItem = {
   lane?: QueryLane;
   providerPreference?: ProviderPreference;
   searchDepth?: TavilySearchDepth;
-  topic?: 'general' | 'news';
-  timeRange?: 'week' | 'month' | 'year';
+  topic?: "general" | "news";
+  timeRange?: "week" | "month" | "year";
   country?: string;
 };
 
@@ -68,51 +72,74 @@ export type RetrievalTask = {
   coveredRequirementIds?: string[];
   lane: QueryLane;
   providerPreference: ProviderPreference;
-  family?: SearchQueryPlanItem['family'];
-  intent?: SearchQueryPlanItem['intent'];
+  family?: SearchQueryPlanItem["family"];
+  intent?: SearchQueryPlanItem["intent"];
   expectedSignal?: string;
   priority: number;
   tavily: {
     includeDomains?: string[];
     excludeDomains?: string[];
     searchDepth: TavilySearchDepth;
-    topic: 'general' | 'news';
-    timeRange?: 'week' | 'month' | 'year';
+    topic: "general" | "news";
+    timeRange?: "week" | "month" | "year";
     country?: string;
     maxResults: number;
     minimumScore: number;
   };
 };
 
-const boundedNumber = (value: unknown, fallback: number, min: number, max: number) => {
+const boundedNumber = (
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.floor(parsed), min), max);
 };
 
-const asArray = (value: unknown, max = 20) => Array.isArray(value)
-  ? Array.from(new Set(value.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean))).slice(0, max)
-  : [];
+const asArray = (value: unknown, max = 20) =>
+  Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value
+            .filter((item) => typeof item === "string")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        ),
+      ).slice(0, max)
+    : [];
 
-const clean = (value: unknown) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+const clean = (value: unknown) =>
+  typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 
 export const normalizeSearchSpec = (
   input: unknown,
   query: string,
-  forcedMode?: DiscoveryMode
+  forcedMode?: DiscoveryMode,
 ): SearchSpec => {
-  const source = input && typeof input === 'object' ? input as Record<string, any> : {};
+  const source =
+    input && typeof input === "object" ? (input as Record<string, any>) : {};
   const requestedMode = clean(source.mode) as DiscoveryMode;
-  const mode: DiscoveryMode = forcedMode
-    || (['person_first', 'account_first', 'signal_first', 'local_business'].includes(requestedMode)
+  const mode: DiscoveryMode =
+    forcedMode ||
+    ([
+      "person_first",
+      "account_first",
+      "signal_first",
+      "local_business",
+    ].includes(requestedMode)
       ? requestedMode
-      : 'person_first');
-  const employeeRange = source.company?.employeeRange && typeof source.company.employeeRange === 'object'
-    ? {
-      min: boundedNumber(source.company.employeeRange.min, 0, 0, 1_000_000),
-      max: boundedNumber(source.company.employeeRange.max, 0, 0, 1_000_000)
-    }
-    : undefined;
+      : "person_first");
+  const employeeRange =
+    source.company?.employeeRange &&
+    typeof source.company.employeeRange === "object"
+      ? {
+          min: boundedNumber(source.company.employeeRange.min, 0, 0, 1_000_000),
+          max: boundedNumber(source.company.employeeRange.max, 0, 0, 1_000_000),
+        }
+      : undefined;
 
   return {
     version: 1,
@@ -121,53 +148,97 @@ export const normalizeSearchSpec = (
       includeTitles: asArray(source.person?.includeTitles),
       excludeTitles: asArray(source.person?.excludeTitles),
       seniorities: asArray(source.person?.seniorities),
-      locations: asArray(source.person?.locations)
+      locations: asArray(source.person?.locations),
     },
     company: {
       industries: asArray(source.company?.industries),
-      keywords: asArray(source.company?.keywords).length ? asArray(source.company?.keywords) : [clean(query)].filter(Boolean),
+      keywords: asArray(source.company?.keywords).length
+        ? asArray(source.company?.keywords)
+        : [clean(query)].filter(Boolean),
       locations: asArray(source.company?.locations),
-      employeeRange: employeeRange && (employeeRange.min || employeeRange.max) ? employeeRange : undefined
+      employeeRange:
+        employeeRange && (employeeRange.min || employeeRange.max)
+          ? employeeRange
+          : undefined,
     },
     signals: {
       include: asArray(source.signals?.include),
-      recencyDays: source.signals?.recencyDays ? boundedNumber(source.signals.recencyDays, 30, 1, 365) : undefined
+      recencyDays: source.signals?.recencyDays
+        ? boundedNumber(source.signals.recencyDays, 30, 1, 365)
+        : undefined,
     },
     exclusions: {
       companies: asArray(source.exclusions?.companies, 100),
-      domains: asArray(source.exclusions?.domains, 100)
+      domains: asArray(source.exclusions?.domains, 100),
     },
-    maxPerCompany: boundedNumber(source.maxPerCompany, 2, 1, 5)
+    maxPerCompany: boundedNumber(source.maxPerCompany, 2, 1, 5),
   };
 };
 
-export const buildFallbackSearchSpec = (query: string, mode: DiscoveryMode = 'person_first'): SearchSpec => {
+export const buildFallbackSearchSpec = (
+  query: string,
+  mode: DiscoveryMode = "person_first",
+): SearchSpec => {
   const normalized = clean(query);
   const lower = normalized.toLowerCase();
-  const hasLocalHint = /\b(local|near me|city|austin|dallas|houston|miami|chicago|new york|london|toronto|canada|usa|united states)\b/.test(lower);
-  const hasSignalHint = /\b(hiring|funding|raised|growing|growth|automation|crm|new patients|booking|expanding)\b/.test(lower);
-  return normalizeSearchSpec({
-    mode: mode === 'person_first' && hasLocalHint ? 'local_business' : mode === 'person_first' && hasSignalHint ? 'signal_first' : mode,
-    company: { keywords: [normalized] },
-    signals: { include: hasSignalHint ? [normalized] : [], recencyDays: hasSignalHint ? 90 : undefined },
-    maxPerCompany: 2
-  }, normalized);
+  const hasLocalHint =
+    /\b(local|near me|city|austin|dallas|houston|miami|chicago|new york|london|toronto|canada|usa|united states)\b/.test(
+      lower,
+    );
+  const hasSignalHint =
+    /\b(hiring|funding|raised|growing|growth|automation|crm|new patients|booking|expanding)\b/.test(
+      lower,
+    );
+  return normalizeSearchSpec(
+    {
+      mode:
+        mode === "person_first" && hasLocalHint
+          ? "local_business"
+          : mode === "person_first" && hasSignalHint
+            ? "signal_first"
+            : mode,
+      company: { keywords: [normalized] },
+      signals: {
+        include: hasSignalHint ? [normalized] : [],
+        recencyDays: hasSignalHint ? 90 : undefined,
+      },
+      maxPerCompany: 2,
+    },
+    normalized,
+  );
 };
 
-const familyFor = (item: SearchQueryPlanItem, spec: SearchSpec) => item.family || (
-  spec.mode === 'account_first' ? 'company_type' : spec.mode === 'signal_first' ? 'growth_signal' : 'persona_title'
-);
+const familyFor = (item: SearchQueryPlanItem, spec: SearchSpec) =>
+  item.family ||
+  (spec.mode === "account_first"
+    ? "company_type"
+    : spec.mode === "signal_first"
+      ? "growth_signal"
+      : "persona_title");
 
 const laneFor = (item: SearchQueryPlanItem, spec: SearchSpec): QueryLane => {
   if (item.lane) return item.lane;
   const family = familyFor(item, spec);
-  if (family === 'archetype_exploration') return 'archetype';
-  if (family === 'pain_signal' || family === 'growth_signal' || family === 'tooling_signal') return 'signal';
-  if (family === 'company_type' || family === 'industry_vertical' || family === 'local_market') return 'account';
-  return spec.mode === 'account_first' ? 'account' : 'person';
+  if (family === "archetype_exploration") return "archetype";
+  if (
+    family === "pain_signal" ||
+    family === "growth_signal" ||
+    family === "tooling_signal"
+  )
+    return "signal";
+  if (
+    family === "company_type" ||
+    family === "industry_vertical" ||
+    family === "local_market"
+  )
+    return "account";
+  return spec.mode === "account_first" ? "account" : "person";
 };
 
-export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSpec): RetrievalTask[] => {
+export const buildRetrievalTasks = (
+  items: SearchQueryPlanItem[],
+  spec: SearchSpec,
+): RetrievalTask[] => {
   const maxResults = boundedNumber(process.env.TAVILY_MAX_RESULTS, 10, 1, 20);
   const configuredCountry = clean(process.env.TAVILY_COUNTRY);
   const seen = new Set<string>();
@@ -176,22 +247,31 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
     .sort((a, b) => (a.priority || 99) - (b.priority || 99))
     .map((item, index) => {
       const rawLane = laneFor(item, spec);
-      const lane: QueryLane = rawLane === 'archetype' ? 'person' : rawLane;
+      const lane: QueryLane = rawLane === "archetype" ? "person" : rawLane;
       const family = familyFor(item, spec);
-      const isSignal = lane === 'signal';
-      const isPerson = lane === 'person';
+      const isSignal = lane === "signal";
+      const isPerson = lane === "person";
       // Enforce basic depth for person discovery to optimize recall and cost (1 credit),
       // while escalating top signal tasks to advanced for rich job/tooling context.
-      const requestedDepth = isPerson ? 'basic' : (item.searchDepth || (isSignal && (item.priority || index + 1) <= 2 ? 'advanced' : 'basic'));
-      const providerPreference = item.providerPreference || (lane === 'account' || isSignal ? 'corroborate' : 'tavily');
+      const requestedDepth = isPerson
+        ? "basic"
+        : item.searchDepth ||
+          (isSignal && (item.priority || index + 1) <= 2
+            ? "advanced"
+            : "basic");
+      const providerPreference =
+        item.providerPreference ||
+        (lane === "account" || isSignal ? "corroborate" : "tavily");
       // Tavily's country parameter is a strict lowercase enum. Do not let an
       // LLM substitute a metro area or differently-cased country name here;
       // the documented, operator-controlled value from .env is the only
       // country boost that reaches the API.
-      const country = configuredCountry ? configuredCountry.toLowerCase() : undefined;
+      const country = configuredCountry
+        ? configuredCountry.toLowerCase()
+        : undefined;
       // Person/account lanes collect LinkedIn identity anchors. Signal lanes
       // search the open web and are retained only as company evidence.
-      const includeDomains = isSignal ? undefined : ['linkedin.com'];
+      const includeDomains = isSignal ? undefined : ["linkedin.com"];
       const task: RetrievalTask = {
         id: `q-${index + 1}-${family}`,
         query: clean(item.query),
@@ -206,16 +286,16 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
           includeDomains,
           excludeDomains: spec.exclusions.domains,
           searchDepth: requestedDepth,
-          topic: isSignal ? (item.topic || 'general') : 'general',
+          topic: isSignal ? item.topic || "general" : "general",
           timeRange: isSignal ? item.timeRange : undefined,
           country,
           maxResults: isPerson ? maxResults : Math.min(maxResults, 8),
-          minimumScore: isPerson ? 0.35 : 0.25
-        }
+          minimumScore: isPerson ? 0.35 : 0.25,
+        },
       };
       return task;
     })
-    .filter(task => {
+    .filter((task) => {
       const key = `${task.lane}:${task.query.toLowerCase()}`;
       if (!task.query || seen.has(key)) return false;
       seen.add(key);
@@ -223,23 +303,65 @@ export const buildRetrievalTasks = (items: SearchQueryPlanItem[], spec: SearchSp
     });
 };
 
-import type { ProspectContract } from './prospectContract.js';
+import type { ProspectContract } from "./prospectContract.js";
 
-export const buildFallbackQueryPlan = (query: string, spec?: SearchSpec): SearchQueryPlanItem[] => {
+export const buildFallbackQueryPlan = (
+  query: string,
+  spec?: SearchSpec,
+): SearchQueryPlanItem[] => {
   const base = clean(query);
   const effectiveSpec = spec || buildFallbackSearchSpec(query);
-  const titles = effectiveSpec.person.includeTitles.length ? effectiveSpec.person.includeTitles : ['founder', 'owner'];
-  const signal = effectiveSpec.signals.include[0] || 'growth automation';
+  const titles = effectiveSpec.person.includeTitles.length
+    ? effectiveSpec.person.includeTitles
+    : ["founder", "owner"];
+  const signal = effectiveSpec.signals.include[0] || "growth automation";
   const plans: SearchQueryPlanItem[] = [
-    { query: `${base} ${titles.join(' ')}`, family: 'persona_title', intent: 'find_decision_makers', expectedSignal: 'Decision-maker profiles', priority: 1, lane: 'person', providerPreference: 'tavily', searchDepth: 'basic' },
-    { query: `${base} company founder owner`, family: 'company_type', intent: 'expand_surface_area', expectedSignal: 'Qualified company and leadership evidence', priority: 2, lane: 'account', providerPreference: 'brightdata', searchDepth: 'basic' },
-    { query: `${base} ${signal}`, family: 'growth_signal', intent: 'find_buying_signal', expectedSignal: 'Recent public business signals', priority: 3, lane: 'signal', providerPreference: 'brightdata', searchDepth: 'basic' },
-    { query: `${base} automation CRM`, family: 'tooling_signal', intent: 'find_buying_signal', expectedSignal: 'Tooling or automation context', priority: 4, lane: 'signal', providerPreference: 'corroborate', searchDepth: 'basic' }
+    {
+      query: `${base} ${titles.join(" ")}`,
+      family: "persona_title",
+      intent: "find_decision_makers",
+      expectedSignal: "Decision-maker profiles",
+      priority: 1,
+      lane: "person",
+      providerPreference: "tavily",
+      searchDepth: "basic",
+    },
+    {
+      query: `${base} company founder owner`,
+      family: "company_type",
+      intent: "expand_surface_area",
+      expectedSignal: "Qualified company and leadership evidence",
+      priority: 2,
+      lane: "account",
+      providerPreference: "brightdata",
+      searchDepth: "basic",
+    },
+    {
+      query: `${base} ${signal}`,
+      family: "growth_signal",
+      intent: "find_buying_signal",
+      expectedSignal: "Recent public business signals",
+      priority: 3,
+      lane: "signal",
+      providerPreference: "brightdata",
+      searchDepth: "basic",
+    },
+    {
+      query: `${base} automation CRM`,
+      family: "tooling_signal",
+      intent: "find_buying_signal",
+      expectedSignal: "Tooling or automation context",
+      priority: 4,
+      lane: "signal",
+      providerPreference: "corroborate",
+      searchDepth: "basic",
+    },
   ];
-  return plans.filter(item => item.query.trim().length > 0);
+  return plans.filter((item) => item.query.trim().length > 0);
 };
 
-export const buildSearchSpecPrompt = (query: string) => `Convert this prospecting brief into an editable scouting specification.\n\nBrief:\n${query}\n\nUse only explicit criteria. Do not invent firmographics, emails, or buying intent. A mode is one of person_first, account_first, signal_first, local_business. Keep title and company keyword lists concise. Return the requested JSON schema.`;
+export const buildSearchSpecPrompt = (query: string) =>
+  `Convert this prospecting brief into an editable scouting specification.\n\nBrief:\n${query}\n\nUse only explicit criteria. Do not invent firmographics, emails, or buying intent. A mode is one of person_first, account_first, signal_first, local_business. Keep title and company keyword lists concise. Return the requested JSON schema.`;
 
 export const buildStrategistPrompt = (params: {
   query: string;
@@ -256,32 +378,87 @@ export const buildStrategistPrompt = (params: {
   discoveredCompanies?: string[];
   logEvent?: (msg: string) => void;
 }) => {
-  const previousNote = params.previousQueries.length ? `Avoid repeats: ${params.previousQueries.join(' | ')}` : 'No previous queries.';
-  const discoveryMode = params.discoveryMode || 'hybrid';
+  // Token diet: by late rounds the full query history dominates the prompt.
+  // Send only the most recent queries plus a compact family-coverage digest.
+  const recentQueries = params.previousQueries.slice(-5);
+  const familyCounts: Record<string, number> = {};
+  for (const q of params.previousQueries) {
+    const family = q.split(" ").slice(0, 3).join(" ").toLowerCase();
+    familyCounts[family] = (familyCounts[family] || 0) + 1;
+  }
+  const previousNote = params.previousQueries.length
+    ? `Avoid repeats. Already explored ${params.previousQueries.length} queries; most recent: ${recentQueries.join(" | ")}. Covered query prefixes: ${Object.entries(
+        familyCounts,
+      )
+        .map(([family, count]) => `${family} x${count}`)
+        .join("; ")}.`
+    : "No previous queries.";
+  const discoveryMode = params.discoveryMode || "hybrid";
 
   const requirementDigest = params.contract?.requirements?.length
     ? `\nCompiled prospect requirements:
-${params.contract.requirements.map(r => `  - [${r.importance}/${r.scope}/${r.evidenceModality || 'structured_profile'}] ${r.description} (terms: ${r.acceptableTerms.slice(0, 3).join(', ')})`).join('\n')}`
-    : '';
+${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.evidenceModality || "structured_profile"}] ${r.description} (terms: ${r.acceptableTerms.slice(0, 3).join(", ")})`).join("\n")}`
+    : "";
 
-  const missingNote = params.missingRequirementIds && params.missingRequirementIds.length > 0
-    ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(', ')}`
-    : '';
+  const missingNote =
+    params.missingRequirementIds && params.missingRequirementIds.length > 0
+      ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(", ")}`
+      : "";
 
-  const flywheelNote = params.discoveredCompanies && params.discoveredCompanies.length > 0
-    ? `\nDISCOVERED COMPANIES WITH ACTIVE SIGNALS (generate person queries targeting decision makers at these companies): ${params.discoveredCompanies.slice(0, 5).join(', ')}`
-    : '';
+  const flywheelNote =
+    params.discoveredCompanies && params.discoveredCompanies.length > 0
+      ? `\nDISCOVERED COMPANIES WITH ACTIVE SIGNALS (generate person queries targeting decision makers at these companies): ${params.discoveredCompanies.slice(0, 5).join(", ")}`
+      : "";
 
-  if (params.logEvent && params.missingRequirementIds && params.missingRequirementIds.length > 0) {
-    params.logEvent(`[Strategist] Injected unmet hard requirements into prompt: [${params.missingRequirementIds.join(', ')}]`);
+  if (
+    params.logEvent &&
+    params.missingRequirementIds &&
+    params.missingRequirementIds.length > 0
+  ) {
+    params.logEvent(
+      `[Strategist] Injected unmet hard requirements into prompt: [${params.missingRequirementIds.join(", ")}]`,
+    );
   }
-  if (params.logEvent && params.discoveredCompanies && params.discoveredCompanies.length > 0) {
-    params.logEvent(`[Strategist] Injected reverse flywheel target companies into prompt: [${params.discoveredCompanies.slice(0, 5).join(', ')}]`);
+  if (
+    params.logEvent &&
+    params.discoveredCompanies &&
+    params.discoveredCompanies.length > 0
+  ) {
+    params.logEvent(
+      `[Strategist] Injected reverse flywheel target companies into prompt: [${params.discoveredCompanies.slice(0, 5).join(", ")}]`,
+    );
   }
 
-  const roundSummaryStr = JSON.stringify(params.previousRoundSummary || {}).slice(0, 800);
-  const performanceStr = JSON.stringify(params.queryPerformance || {}).slice(0, 800);
-  const specStr = params.spec ? JSON.stringify(params.spec) : '{}';
+  const roundSummaryRaw = { ...(params.previousRoundSummary || {}) };
+  // Strip verbose fields; keep only the ids the model actually needs.
+  if (
+    Array.isArray(roundSummaryRaw.missingHardRequirementIds) &&
+    roundSummaryRaw.missingHardRequirementIds.length > 10
+  ) {
+    roundSummaryRaw.missingHardRequirementIds =
+      roundSummaryRaw.missingHardRequirementIds.slice(0, 10);
+  }
+  const roundSummaryStr = JSON.stringify(roundSummaryRaw).slice(0, 800);
+  // Compact yield digest: top scope keys by accepted-per-run instead of raw JSON.
+  const performanceEntries = Object.entries(params.queryPerformance || {})
+    .map(([scopeKey, data]: [string, any]) => ({
+      scopeKey,
+      accepted: Number(data?.accepted || 0),
+      runs: Number(data?.runs || 0),
+      unique: Number(data?.unique || 0),
+    }))
+    .filter((entry) => entry.runs > 0)
+    .sort((a, b) => b.accepted / b.runs - a.accepted / a.runs)
+    .slice(0, 8);
+  const performanceStr = performanceEntries.length
+    ? performanceEntries
+        .map(
+          (entry) =>
+            `${entry.scopeKey} accepted=${entry.accepted}/${entry.runs} runs, ${entry.unique} unique`,
+        )
+        .join("; ")
+    : "no history yet";
+  const specStr = params.spec ? JSON.stringify(params.spec) : "{}";
 
   return `You are a dual-provider B2B prospecting strategist for Apex CRM.
 

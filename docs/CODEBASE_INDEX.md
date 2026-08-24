@@ -301,6 +301,7 @@ Typecheck gate: `npm run lint` (= `tsc --noEmit`).
 ## 10. Configuration surface
 
 - `.env.example` — full template: LLM gateway mode (`direct`/`litellm`), `OPENAI_*`, `TAVILY_API_KEYS` (+ singular), `BRIGHTDATA_API_TOKENS` (+ singular/`API_TOKEN`), `DISCOVERY_PROVIDER_MODE` (`bd_primary`/`hybrid`/`tavily_primary`), `BRIGHTDATA_MCP_TRANSPORT`, timeouts/retries, `SEARCH_LOG_RETENTION_LIMIT`
+- Engine tunables: `LEAD_SEARCH_TIMEOUT_MS` (default 15 min, 0 disables), `LEAD_EXTRACTION_CHUNK_RETRIES`, `LEAD_TELEMETRY_MAX_EVENTS`, `FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` / `FINALIST_JUDGE_EVIDENCE_CHARS` (judge prompt token diet), `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` (1-20, default 10), `APEX_STRUCTURED_LOGS`
 - `APEX_DB_PATH` — overrides default DB location (`db.ts`)
 - `litellm.config.yaml` — LiteLLM proxy model routing
 - Runtime artifacts: `.apex-data/` (DB + backups), log files in repo root (`apex-dev.*.log`, `adaptive_mining_terminal.log`)

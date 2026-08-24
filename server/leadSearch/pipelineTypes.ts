@@ -110,6 +110,8 @@ export type MiningSessionCheckpoint = {
   previousRoundSummary?: any;
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
+  /** Runs added since the previous checkpoint (delta serialization). */
+  queryRunsDelta?: QueryRunStats[];
   /** Last N debug-log entries, persisted so crash context survives resume. */
   debugLogsTail?: any[];
   updatedAt: string;

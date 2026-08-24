@@ -872,5 +872,63 @@ describe('evidence-grounded prospect quality', () => {
     assert.equal(postFilterLeads.find(l => l.name === 'Borderline 2')._borderlineEvidence, true);
     assert.equal(postFilterLeads.some(l => l.name === 'Too Low'), false);
   });
+
+  it('F3: attributes requirement failures to leadQueryRuns during judge evaluation', () => {
+    const queryRun = {
+      round: 1,
+      query: 'founders',
+      family: 'persona_title',
+      lane: 'person',
+      rawCandidates: 1,
+      uniqueCandidates: 1,
+      evidenceBlocks: 1,
+      extractedLeads: 1,
+      acceptedLeads: 1,
+      rejectionReasons: {},
+      searchLatencyMs: 100,
+      providerUnits: 1,
+      qualifiedFinalists: 0,
+      rescuedFinalists: 0,
+      returnedFinalists: 0,
+      requirementFailCounts: undefined as Record<string, number> | undefined,
+    };
+
+    const candidateLead = { id: 'c1', fullName: 'Alice' };
+    const leadQueryRuns = new Map<any, any>();
+    leadQueryRuns.set(candidateLead, queryRun);
+
+    const rawJudgments = [
+      {
+        candidateId: 'c1',
+        requirements: [
+          { requirementId: 'person_role', status: 'fail' },
+          { requirementId: 'company_location', status: 'pass' },
+        ],
+      },
+    ];
+
+    const batch = [{ candidateId: 'c1', lead: candidateLead }];
+    for (const candidate of batch) {
+      const qRun = leadQueryRuns.get(candidate.lead);
+      if (qRun) {
+        const jm = rawJudgments.find(
+          j => String(j?.candidateId || '').trim() === candidate.candidateId,
+        );
+        if (Array.isArray(jm?.requirements)) {
+          if (!qRun.requirementFailCounts) qRun.requirementFailCounts = {};
+          for (const req of jm.requirements) {
+            if (req && req.status === 'fail' && req.requirementId) {
+              qRun.requirementFailCounts[req.requirementId] =
+                (qRun.requirementFailCounts[req.requirementId] || 0) + 1;
+            }
+          }
+        }
+      }
+    }
+
+    assert.ok(queryRun.requirementFailCounts);
+    assert.equal(queryRun.requirementFailCounts['person_role'], 1);
+    assert.equal(queryRun.requirementFailCounts['company_location'], undefined);
+  });
 });
 

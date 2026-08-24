@@ -1539,6 +1539,7 @@ export async function executeDiscoverySession(
       contract,
       evidenceByUrl,
       stats,
+      leadQueryRuns,
       checkpointAcceptedLeads,
     });
 

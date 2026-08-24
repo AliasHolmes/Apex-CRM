@@ -940,31 +940,60 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
+  // Guard against unhandled socket/stream errors (e.g. EPIPE, ECONNRESET)
+  res.on("error", (err) => {
+    // Ignore expected client disconnect errors
+  });
+
+  const safeWrite = (chunk: string): boolean => {
+    if (res.writableEnded || res.closed) return false;
+    try {
+      return res.write(chunk);
+    } catch {
+      return false;
+    }
+  };
+
   // Initial snapshot frame so late joiners catch up without polling.
   const logs = discoveryEngine.getLiveLogs(sessionId) || [];
   const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
-  res.write(
+  safeWrite(
     `data: ${JSON.stringify({ logs, traceEvents, session: readMiningSessionById(sessionId) })}\n\n`,
   );
 
+  let unsubscribed = false;
+  let unsubscribe: (() => void) | null = null;
+  const doUnsubscribe = () => {
+    if (unsubscribed) return;
+    unsubscribed = true;
+    if (unsubscribe) unsubscribe();
+  };
+
   // Hub fans out one poll interval + one DB read per session to all
   // subscribers, instead of each connection polling independently.
-  const unsubscribe = sessionStreamHub.subscribe(sessionId, (frame) => {
+  unsubscribe = sessionStreamHub.subscribe(sessionId, (frame) => {
+    if (res.writableEnded || res.closed) {
+      doUnsubscribe();
+      return;
+    }
     if (
       frame.logs.length > 0 ||
       frame.traceEvents.length > 0 ||
       frame.session
     ) {
-      res.write(`data: ${JSON.stringify(frame)}\n\n`);
+      safeWrite(`data: ${JSON.stringify(frame)}\n\n`);
     }
     const status = frame.session?.status;
     if (status && status !== "running" && status !== "cancellation_requested") {
-      res.write("event: end\ndata: {}\n\n");
-      res.end();
+      doUnsubscribe();
+      safeWrite("event: end\ndata: {}\n\n");
+      if (!res.writableEnded) {
+        res.end();
+      }
     }
   });
 
-  req.on("close", unsubscribe);
+  req.on("close", doUnsubscribe);
 });
 
 router.get("/mining-sessions", (req, res): any => {

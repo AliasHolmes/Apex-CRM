@@ -173,6 +173,12 @@ const attachFilteredMcpStderr = (stderr: any) => {
       );
     }
   });
+  stderr.on("error", (error: any) => {
+    console.warn(
+      `[brightdata:mcp] stderr stream error:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  });
 };
 
 const boundedNumber = (

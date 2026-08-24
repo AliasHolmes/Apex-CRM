@@ -387,7 +387,16 @@ export async function executeDiscoverySession(
     event: Omit<MiningTraceEvent, "id" | "timestamp"> & { timestamp?: string },
   ) => {
     const recorded = telemetry.record(event);
-    if (options.listener?.onTraceEvent) options.listener.onTraceEvent(recorded);
+    if (options.listener?.onTraceEvent) {
+      try {
+        options.listener.onTraceEvent(recorded);
+      } catch (err) {
+        console.warn(
+          `[find-leads] ${sessionId}: listener.onTraceEvent threw error:`,
+          err,
+        );
+      }
+    }
     return recorded;
   };
   const traceLogFields = () => {

@@ -72,47 +72,47 @@ class SessionStreamHub {
     const broadcast = this.broadcasts.get(sessionId);
     if (!broadcast) return;
 
-    const logs = discoveryEngine.getLiveLogs(sessionId) || [];
-    const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
-    const session = readMiningSessionById(sessionId);
+    try {
+      const logs = discoveryEngine.getLiveLogs(sessionId) || [];
+      const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
+      const session = readMiningSessionById(sessionId);
 
-    const newLogs = logs.slice(broadcast.lastLogCount);
-    const newTrace = traceEvents.slice(broadcast.lastTraceCount);
-    broadcast.lastLogCount = logs.length;
-    broadcast.lastTraceCount = traceEvents.length;
+      const newLogs = logs.slice(broadcast.lastLogCount);
+      const newTrace = traceEvents.slice(broadcast.lastTraceCount);
+      broadcast.lastLogCount = logs.length;
+      broadcast.lastTraceCount = traceEvents.length;
 
-    const hasNewContent = newLogs.length > 0 || newTrace.length > 0;
-    const isTerminal =
-      Boolean(session) &&
-      session!.status !== "running" &&
-      session!.status !== "cancellation_requested";
+      const hasNewContent = newLogs.length > 0 || newTrace.length > 0;
+      const isTerminal =
+        Boolean(session) &&
+        session!.status !== "running" &&
+        session!.status !== "cancellation_requested";
 
-    if (hasNewContent || isTerminal || Boolean(session)) {
-      const frame: SessionStreamFrame = {
-        logs: newLogs,
-        traceEvents: newTrace,
-        session,
-      };
-      for (const subscriber of broadcast.subscribers) {
-        try {
-          subscriber(frame);
-        } catch {
-          // A broken subscriber pipe must not kill the fan-out loop.
+      if (hasNewContent || isTerminal || Boolean(session)) {
+        const frame: SessionStreamFrame = {
+          logs: newLogs,
+          traceEvents: newTrace,
+          session,
+        };
+        for (const subscriber of Array.from(broadcast.subscribers)) {
+          try {
+            subscriber(frame);
+          } catch {
+            // A broken subscriber pipe must not kill the fan-out loop.
+          }
         }
       }
-    }
 
-    if (isTerminal) {
-      for (const subscriber of broadcast.subscribers) {
-        try {
-          subscriber({ logs: [], traceEvents: [], session });
-        } catch {
-          // ignore
+      if (isTerminal) {
+        for (const subscriber of Array.from(broadcast.subscribers)) {
+          this.unsubscribe(sessionId, subscriber);
         }
       }
-      for (const subscriber of Array.from(broadcast.subscribers)) {
-        this.unsubscribe(sessionId, subscriber);
-      }
+    } catch (error) {
+      console.warn(
+        `[sessionStreamHub] Error polling session ${sessionId}:`,
+        error,
+      );
     }
   }
 

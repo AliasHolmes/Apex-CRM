@@ -111,23 +111,23 @@ export const TraceSummaryViewer = ({
     <div className="p-4 border-t border-slate-800 bg-slate-950/70 space-y-3 text-xs text-slate-400">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Events</div>
+          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Events</div>
           <div className="text-sm text-slate-200 font-semibold mt-0.5">{eventCount}</div>
         </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Model tokens</div>
+          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Model tokens</div>
           <div className="text-sm text-indigo-300 font-semibold mt-0.5">
             {totalTokens.toLocaleString()}
           </div>
         </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Est. Cost</div>
+          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Est. Cost</div>
           <div className="text-sm text-emerald-300 font-semibold mt-0.5">
             ${estimatedUsd.toFixed(4)}
           </div>
         </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider">Cost / Lead</div>
+          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Cost / Lead</div>
           <div className="text-sm text-slate-200 font-semibold mt-0.5">
             {costPerLead !== undefined ? `$${costPerLead.toFixed(4)}` : '-'}
           </div>
@@ -156,7 +156,7 @@ export const TraceSummaryViewer = ({
                   />
                   {provider}
                 </span>
-                <span className="text-slate-500 text-[11px]">
+                <span className="text-slate-500 text-xs">
                   avg {formatDuration(item.avgLatencyMs)}
                 </span>
               </div>
@@ -184,7 +184,7 @@ export const TraceSummaryViewer = ({
           {phases.map((phase) => (
             <span
               key={phase.phase}
-              className={`px-2 py-1 rounded-md border text-[11px] font-semibold flex items-center gap-1.5 ${
+              className={`px-2 py-1 rounded-md border text-xs font-semibold flex items-center gap-1.5 ${
                 phase.status === 'error'
                   ? 'border-rose-500/30 text-rose-300 bg-rose-500/5'
                   : 'border-slate-800 text-slate-300 bg-slate-900/70'
@@ -203,7 +203,7 @@ export const TraceSummaryViewer = ({
 
       {recent.length > 0 && (
         <div className="space-y-1 pt-1">
-          <div className="text-[10px] uppercase text-slate-500 font-bold tracking-wider mb-1">
+          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider mb-1">
             Recent tool calls
           </div>
           {recent.map((event) => (
@@ -225,7 +225,7 @@ export const TraceSummaryViewer = ({
                 )}
               </span>
               <span
-                className={`shrink-0 text-[11px] font-semibold px-1.5 py-0.5 rounded ${
+                className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded ${
                   event.status === 'error'
                     ? 'text-rose-400 bg-rose-500/10'
                     : event.status === 'success'

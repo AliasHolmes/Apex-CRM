@@ -1,4 +1,9 @@
-import { fuseObservations, type ScoutObservation } from "../observations.js";
+import {
+  fuseObservations,
+  extractCompanyHintDeterministic,
+  type ScoutObservation,
+} from "../observations.js";
+import { normalizeCompanyName } from "../signalStore.js";
 import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
@@ -7,12 +12,14 @@ import { incrementRejection, type RejectionReason } from "../rejections.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { ExecutableQueryPlan } from "./planStage.js";
 import type { QueryRunStats } from "../strategist.js";
+import type { SearchSpec } from "../searchSpec.js";
 
 export type FuseStageInput = {
   round: number;
   roundItems: { item: any; resultIndex: number }[];
   roundPlans: ExecutableQueryPlan[];
   queryRuns: QueryRunStats[];
+  searchSpec?: SearchSpec;
   stats: any;
 };
 
@@ -27,9 +34,26 @@ export async function executeFuseStage(
   ctx: SessionContext,
   input: FuseStageInput,
 ): Promise<FuseStageOutput> {
-  const { round, roundItems, roundPlans, queryRuns, stats } = input;
+  const { round, roundItems, roundPlans, queryRuns, searchSpec, stats } = input;
   const { config, state, logEvent } = ctx;
   const { seenCandidateKeys, existingKeys } = state;
+
+  const maxPerCompany = Math.max(
+    1,
+    Number(searchSpec?.maxPerCompany || 2),
+  );
+  const acceptedCompanyCounts = new Map<string, number>();
+  for (const lead of state.acceptedLeads || []) {
+    const comp = normalizeCompanyName(
+      lead?.company || lead?.currentCompany || lead?.companyName || "",
+    );
+    if (comp) {
+      acceptedCompanyCounts.set(
+        comp,
+        (acceptedCompanyCounts.get(comp) || 0) + 1,
+      );
+    }
+  }
 
   const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
     incrementRejection(stats.rejectionReasons, reason);
@@ -124,6 +148,8 @@ export async function executeFuseStage(
     item._sourceCount = observation.sourceCount;
     item._lanes = observation.lanes;
     item._corroborated = observation.corroborated;
+    const rawHint = extractCompanyHintDeterministic(observation) || "";
+    item._companyHint = normalizeCompanyName(rawHint);
 
     if (queryRun) {
       queryRun.uniqueCandidates++;
@@ -149,13 +175,21 @@ export async function executeFuseStage(
   }
 
   uniqueRoundItems.sort((a, b) => {
-    const scoreItem = (item: any) =>
-      `${item.title || ""} ${item.content || ""} ${item.raw_content || ""}`
-        .length +
-      (extractLinkedInUsername(item.url) ? 180 : 0) +
-      Number(item._sourceCount || 1) * 160 +
-      (item._corroborated ? 180 : 0) +
-      (Array.isArray(item._lanes) && item._lanes.includes("signal") ? 40 : 0);
+    const scoreItem = (item: any) => {
+      const companyCount = item._companyHint
+        ? acceptedCompanyCounts.get(item._companyHint) || 0
+        : 0;
+      const overCapPenalty = companyCount >= maxPerCompany ? -500 : 0;
+      return (
+        `${item.title || ""} ${item.content || ""} ${item.raw_content || ""}`
+          .length +
+        (extractLinkedInUsername(item.url) ? 180 : 0) +
+        Number(item._sourceCount || 1) * 160 +
+        (item._corroborated ? 180 : 0) +
+        (Array.isArray(item._lanes) && item._lanes.includes("signal") ? 40 : 0) +
+        overCapPenalty
+      );
+    };
     return scoreItem(b) - scoreItem(a);
   });
 

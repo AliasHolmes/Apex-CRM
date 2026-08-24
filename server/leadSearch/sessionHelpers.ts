@@ -23,6 +23,30 @@ export type SessionEvidenceMeta = {
 const normalizeDedupeValue = (value?: string) =>
   (value || "").trim().toLowerCase();
 
+export function clampEnvInt(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw >= min
+    ? Math.min(Math.max(Math.floor(raw), min), max)
+    : fallback;
+}
+
+export function clampEnvFloat(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw >= min
+    ? Math.min(Math.max(raw, min), max)
+    : fallback;
+}
+
 /** Resolve a lead's effective score from its breakdown with legacy fallbacks. */
 export function effectiveScore(lead: any): number {
   const score = Number(lead?.scoreBreakdown?.finalScore || 0);
@@ -208,4 +232,41 @@ export function buildCheckpointEvidence<E extends SessionEvidenceMeta>(
     }
   }
   return result;
+}
+
+/**
+ * Compute the dynamic candidate threshold required for early stopping before
+ * judging. When the judge is assumed or observed to reject a fraction of leads,
+ * the collection engine must accumulate target / passRate candidates so final
+ * fulfillment meets the user's requested limit.
+ */
+export function computeEarlyStopThreshold(
+  targetLimit: number,
+  passRateAssumption = 0.7,
+): number {
+  const safeTarget = Math.max(1, Math.floor(targetLimit || 1));
+  const safeRate = Math.min(
+    Math.max(Number(passRateAssumption) || 0.7, 0.3),
+    1.0,
+  );
+  return Math.ceil((safeTarget * 1.33) / safeRate);
+}
+
+/**
+ * Map evidence quality to an ordinal rank for deficit-based sorting.
+ * Lower ranks represent higher information deficits (weakest evidence first).
+ */
+export function evidenceQualityRank(quality?: string): number {
+  switch (quality) {
+    case "weak":
+      return 0;
+    case "partial":
+      return 1;
+    case "cache":
+      return 2;
+    case "good":
+      return 3;
+    default:
+      return 1;
+  }
 }

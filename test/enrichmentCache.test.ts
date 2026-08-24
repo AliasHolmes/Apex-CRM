@@ -11,7 +11,7 @@ const { enrichLeadProfile } = await import('../server/leadSearch/profileEnrichme
 describe('enrichment cache', () => {
   it('initializes a versioned database schema', () => {
     const version = db.getLeadsDb().prepare('PRAGMA user_version').get() as { user_version: number };
-    assert.equal(version.user_version, 15);
+    assert.equal(version.user_version, 16);
     const emailCache = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'email_discovery_cache'").get();
     assert.equal(emailCache, undefined);
     const cacheColumns = db.getLeadsDb().prepare('PRAGMA table_info(enrichment_cache)').all() as { name: string }[];
@@ -20,9 +20,11 @@ describe('enrichment cache', () => {
     const sessionColumns = db.getLeadsDb().prepare('PRAGMA table_info(mining_sessions)').all() as { name: string }[];
     assert.ok(sessionColumns.some(column => column.name === 'checkpoint_json'));
     const performanceColumns = db.getLeadsDb().prepare('PRAGMA table_info(query_performance)').all() as { name: string }[];
-    for (const column of ['outcome_runs', 'qualified_candidates', 'rescued_candidates', 'returned_candidates', 'search_latency_ms', 'provider_units', 'judged_candidates', 'hard_failed_candidates', 'unknown_candidates']) {
+    for (const column of ['outcome_runs', 'qualified_candidates', 'rescued_candidates', 'returned_candidates', 'search_latency_ms', 'provider_units', 'judged_candidates', 'hard_failed_candidates', 'unknown_candidates', 'requirement_fail_digest']) {
       assert.ok(performanceColumns.some(candidate => candidate.name === column));
     }
+    const savedSearchColumns = db.getLeadsDb().prepare('PRAGMA table_info(saved_searches)').all() as { name: string }[];
+    assert.ok(savedSearchColumns.some(column => column.name === 'exclude_list_json'));
     const identityTable = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'lead_identities'").get();
     assert.ok(identityTable);
   });

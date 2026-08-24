@@ -22,6 +22,9 @@ const {
   upsertLeads,
   upsertLeadsWithIdentity,
   upsertMiningSession,
+  getSavedSearchExcludeList,
+  updateSavedSearchExcludeList,
+  upsertSavedSearch,
 } = await import('../server/db.ts');
 
 const { mapCandidateToPersistedLead } = await import('../server/leadSearch/discoveryEngine.ts');
@@ -293,4 +296,51 @@ test('multi-stage progressive checkpointing updates the same lead in-place with 
   // Verify that only 1 single row exists in the database for this person
   const countRow = db.prepare("SELECT COUNT(*) as count FROM leads WHERE full_name = 'Progressive Candidate'").get() as { count: number };
   assert.equal(countRow.count, 1);
+});
+
+test('F3: records and updates requirement_fail_digest in query_performance', () => {
+  const digest = JSON.stringify({ 'person_role': 3, 'company_industry': 1 });
+  recordQueryPerformance({
+    family: 'persona_title',
+    lane: 'person',
+    provider: 'tavily',
+    runs: 1,
+    outcomeRuns: 1,
+    qualifiedCandidates: 2,
+    requirementFailDigest: digest,
+  });
+
+  const performance = readQueryPerformance(10);
+  const row = performance.find(r => r.scope_key === 'persona_title|person|tavily');
+  assert.ok(row, 'Query performance row should exist');
+  assert.equal(row.requirement_fail_digest, digest);
+});
+
+test('F6: persists and accumulates saved search exclude lists up to maxLimit', () => {
+  const search = upsertSavedSearch({
+    name: 'AI Founders Test',
+    query: 'AI founders UK',
+    spec: { mode: 'person_first', maxPerCompany: 2 } as any,
+    mode: 'person_first',
+    maxPerCompany: 2,
+  });
+
+  assert.ok(search?.id);
+  const initialExclusions = getSavedSearchExcludeList(search.id);
+  assert.deepEqual(initialExclusions, []);
+
+  // Update with first batch of returned leads
+  updateSavedSearchExcludeList(search.id, ['linkedin:alice', 'linkedin:bob']);
+  const firstUpdate = getSavedSearchExcludeList(search.id);
+  assert.deepEqual(firstUpdate.sort(), ['linkedin:alice', 'linkedin:bob']);
+
+  // Update with second batch including duplicate
+  updateSavedSearchExcludeList(search.id, ['linkedin:bob', 'linkedin:charlie']);
+  const secondUpdate = getSavedSearchExcludeList(search.id);
+  assert.deepEqual(secondUpdate.sort(), ['linkedin:alice', 'linkedin:bob', 'linkedin:charlie']);
+
+  // Bounded capacity check
+  updateSavedSearchExcludeList(search.id, ['linkedin:david'], 2);
+  const boundedUpdate = getSavedSearchExcludeList(search.id);
+  assert.equal(boundedUpdate.length, 2);
 });

@@ -39,12 +39,15 @@ import {
   effectiveScore as sharedEffectiveScore,
   incrementCounter,
   sleepWithAbort,
+  evidenceQualityRank,
 } from "../sessionHelpers.js";
+import { normalizeCompanyName } from "../signalStore.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { PostFilterLead } from "./verifyStage.js";
 import type { EvidenceMeta } from "./extractStage.js";
 import type { QueryRunStats } from "../strategist.js";
 import type { ProspectContract } from "../prospectContract.js";
+import type { SearchSpec } from "../searchSpec.js";
 
 export type EnrichmentTarget = {
   lead: any;
@@ -71,6 +74,7 @@ export type EnrichStageInput = {
   profileConcurrency: number;
   ttlDays: number;
   contract: ProspectContract;
+  searchSpec?: SearchSpec;
   brightDataProviderDisabled: boolean;
   brightDataTransportRetryAfter: number;
   stats: any;
@@ -105,6 +109,7 @@ export async function executeEnrichStage(
     profileConcurrency,
     ttlDays,
     contract,
+    searchSpec,
     stats,
     leadQueryRuns,
     trackableBrightDataSearch,
@@ -138,15 +143,55 @@ export async function executeEnrichStage(
   // 1. Post-Filter Bright Data Profile Enrichment (Deep Scrape)
   if (profileEnrichmentStage === "post_filter") {
     let brightDataToolDegraded = false;
-    const selectedRows = postFilterLeads
-      .filter(({ lead, evidenceMeta }) => {
+    const candidateRows = postFilterLeads.filter(
+      ({ lead, evidenceMeta }) => {
         const score = effectiveScore(lead);
+        const isBorderline = Boolean((lead as any)._borderlineEvidence);
         return (
-          (score >= minScore - 1 && score <= minScore + 1) ||
-          evidenceMeta.evidenceQuality !== "good"
+          isBorderline ||
+          evidenceMeta.evidenceQuality !== "good" ||
+          (score >= minScore - 1 && score <= minScore + 1)
         );
-      })
-      .slice(0, profileMaxPerSearch);
+      },
+    );
+
+    // Deficit-based sorting: allocate expensive paid scrapes to high-potential
+    // leads with the widest evidence deficits (weak < partial < cache < good).
+    candidateRows.sort((a, b) => {
+      const qA = evidenceQualityRank(a.evidenceMeta.evidenceQuality);
+      const qB = evidenceQualityRank(b.evidenceMeta.evidenceQuality);
+      if (qA !== qB) return qA - qB;
+      return effectiveScore(b.lead) - effectiveScore(a.lead);
+    });
+
+    const maxPerCompany = Math.max(1, Number(searchSpec?.maxPerCompany || 2));
+    const acceptedCompanyCounts = new Map<string, number>();
+    for (const lead of acceptedLeads || []) {
+      const comp = normalizeCompanyName(
+        lead?.company || lead?.currentCompany || lead?.companyName || "",
+      );
+      if (comp) {
+        acceptedCompanyCounts.set(
+          comp,
+          (acceptedCompanyCounts.get(comp) || 0) + 1,
+        );
+      }
+    }
+
+    // Company soft-cap: skip candidates whose company is already saturated
+    // unless the overall accepted pool is starved (<80% of rerankPoolTarget).
+    const isPoolStarved = acceptedLeads.length < rerankPoolTarget * 0.8;
+    const unconstrainedRows = isPoolStarved
+      ? candidateRows
+      : candidateRows.filter(({ lead }) => {
+          const comp = normalizeCompanyName(
+            lead?.company || lead?.currentCompany || lead?.companyName || "",
+          );
+          if (!comp) return true;
+          return (acceptedCompanyCounts.get(comp) || 0) < maxPerCompany;
+        });
+
+    const selectedRows = unconstrainedRows.slice(0, profileMaxPerSearch);
 
     logEvent(
       `Round ${round}: ${selectedRows.length} leads selected for deep profile enrichment.`,

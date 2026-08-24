@@ -20,7 +20,7 @@ import {
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 15;
+const LATEST_SCHEMA_VERSION = 16;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
@@ -768,6 +768,21 @@ function runMigrations(db: DatabaseSync) {
 
     if (currentVersion < 15) {
       scrubRateLimitPollution(db);
+    }
+
+    if (currentVersion < 16) {
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "requirement_fail_digest",
+        "requirement_fail_digest TEXT",
+      );
+      addColumnIfMissing(
+        db,
+        "saved_searches",
+        "exclude_list_json",
+        "exclude_list_json TEXT",
+      );
     }
 
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
@@ -2437,6 +2452,45 @@ export function markSavedSearchRun(id: string, now = new Date().toISOString()) {
     .run(now, now, id);
 }
 
+export function getSavedSearchExcludeList(id: string): string[] {
+  try {
+    const row = getLeadsDb()
+      .prepare("SELECT exclude_list_json FROM saved_searches WHERE id = ?")
+      .get(id) as { exclude_list_json?: string } | undefined;
+    if (!row?.exclude_list_json) return [];
+    const parsed = JSON.parse(row.exclude_list_json);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function updateSavedSearchExcludeList(
+  id: string,
+  newIdentities: string[],
+  maxLimit = 5000,
+) {
+  try {
+    const existing = getSavedSearchExcludeList(id);
+    const set = new Set(existing);
+    for (const identity of newIdentities) {
+      if (identity && typeof identity === "string") {
+        set.add(identity.trim().toLowerCase());
+      }
+    }
+    const combined = Array.from(set).slice(-maxLimit);
+    getLeadsDb()
+      .prepare(
+        "UPDATE saved_searches SET exclude_list_json = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(JSON.stringify(combined), new Date().toISOString(), id);
+  } catch (error) {
+    console.warn("Failed to update saved search exclude list:", error);
+  }
+}
+
 export type QueryPerformanceUpdate = {
   family: string;
   lane: string;
@@ -2456,6 +2510,7 @@ export type QueryPerformanceUpdate = {
   unknownCandidates?: number;
   searchLatencyMs?: number;
   providerUnits?: number;
+  requirementFailDigest?: string;
 };
 
 export function recordQueryPerformance(update: QueryPerformanceUpdate) {
@@ -2470,8 +2525,9 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       scope_key, family, lane, provider, runs, raw_candidates, unique_candidates,
       extracted_candidates, accepted_candidates, duplicate_candidates, outcome_runs,
       qualified_candidates, rescued_candidates, returned_candidates, search_latency_ms,
-      provider_units, judged_candidates, hard_failed_candidates, unknown_candidates, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      provider_units, judged_candidates, hard_failed_candidates, unknown_candidates,
+      requirement_fail_digest, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_key) DO UPDATE SET
       runs = query_performance.runs + excluded.runs,
       raw_candidates = query_performance.raw_candidates + excluded.raw_candidates,
@@ -2488,6 +2544,7 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       judged_candidates = query_performance.judged_candidates + excluded.judged_candidates,
       hard_failed_candidates = query_performance.hard_failed_candidates + excluded.hard_failed_candidates,
       unknown_candidates = query_performance.unknown_candidates + excluded.unknown_candidates,
+      requirement_fail_digest = COALESCE(excluded.requirement_fail_digest, query_performance.requirement_fail_digest),
       updated_at = excluded.updated_at
   `,
     )
@@ -2511,6 +2568,7 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       Math.max(0, Math.floor(update.judgedCandidates || 0)),
       Math.max(0, Math.floor(update.hardFailedCandidates || 0)),
       Math.max(0, Math.floor(update.unknownCandidates || 0)),
+      update.requirementFailDigest || null,
       new Date().toISOString(),
     );
 }

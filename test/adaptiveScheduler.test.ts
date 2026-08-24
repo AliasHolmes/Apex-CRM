@@ -150,4 +150,30 @@ describe('provider-aware promise queue', () => {
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(startedSecond, false);
   });
+
+  it('F5: promotes top deferred arm on exploration floor rounds', () => {
+    const history = [
+      { family: 'persona_title', lane: 'person', provider: 'tavily', outcome_runs: 8, qualified_candidates: 6, returned_candidates: 5 },
+      { family: 'local_market', lane: 'account', provider: 'brightdata', outcome_runs: 8, qualified_candidates: 0, returned_candidates: 0 },
+      { family: 'growth_signal', lane: 'signal', provider: 'corroborate', outcome_runs: 8, qualified_candidates: 4, returned_candidates: 3 },
+      { family: 'tooling_signal', lane: 'signal', provider: 'brightdata', outcome_runs: 8, qualified_candidates: 0, rescued_candidates: 1 }
+    ];
+
+    // On round 2 (not multiple of 3): exactly 2 tasks selected
+    const nonExploration = scheduleAdaptiveRetrievalTasks(tasks, history, {
+      maxTasks: 2, minOutcomeRuns: 4, round: 2, explorationFloorEvery: 3
+    });
+    assert.equal(nonExploration.tasks.length, 2);
+    assert.equal(nonExploration.decisions.some(d => d.promoted), false);
+
+    // On round 3 (multiple of 3): top deferred arm is promoted
+    const exploration = scheduleAdaptiveRetrievalTasks(tasks, history, {
+      maxTasks: 2, minOutcomeRuns: 4, round: 3, explorationFloorEvery: 3
+    });
+    assert.equal(exploration.tasks.length, 3, 'Exploration floor should promote 1 deferred arm');
+    const promotedDecision = exploration.decisions.find(d => d.promoted);
+    assert.ok(promotedDecision, 'Should have a promoted decision');
+    assert.equal(promotedDecision.selected, true);
+    assert.equal(promotedDecision.reason, 'exploration');
+  });
 });

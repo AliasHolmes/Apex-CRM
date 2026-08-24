@@ -22,6 +22,11 @@ import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verificati
 import { computeMMRDiversitySelection, computeScoreBreakdown } from '../server/leadSearch/scoring.ts';
 import { createLeadEvidence } from '../server/leadSearch/evidence.ts';
 import { mapCandidateToPersistedLead } from '../server/leadSearch/discoveryEngine.ts';
+import {
+  computeEarlyStopThreshold,
+  evidenceQualityRank,
+  effectiveScore
+} from '../server/leadSearch/sessionHelpers.ts';
 
 const spec: any = {
   version: 1,
@@ -774,6 +779,98 @@ describe('evidence-grounded prospect quality', () => {
     assert.equal(qualifiedLeads.length, 6); // 2 qualified + 4 rescued (bounded by cap)
     assert.equal(qualifiedLeads.filter(l => l.isRescued).length, 4);
     assert.equal(qualifiedLeads.filter(l => l.qualification.verdict === 'rescued').length, 4);
+  });
+
+  it('F4: computes dynamic early-stop threshold based on assumed judge pass rate', () => {
+    // 20 target at 70% default judge pass rate => ceil((20 * 1.33) / 0.7) = ceil(26.6 / 0.7) = 38
+    assert.equal(computeEarlyStopThreshold(20, 0.7), 39);
+    // 10 target at 50% pass rate => ceil(13.3 / 0.5) = 27
+    assert.equal(computeEarlyStopThreshold(10, 0.5), 27);
+    // 10 target at 100% pass rate => ceil(13.3 / 1.0) = 14
+    assert.equal(computeEarlyStopThreshold(10, 1.0), 14);
+    // Rate clamping: below 0.3 clamps to 0.3; above 1.0 clamps to 1.0
+    assert.equal(computeEarlyStopThreshold(10, 0.1), computeEarlyStopThreshold(10, 0.3));
+    assert.equal(computeEarlyStopThreshold(10, 1.5), computeEarlyStopThreshold(10, 1.0));
+  });
+
+  it('F7: evidence-deficit enrichment targeting prioritizes weakest evidence and higher scores', () => {
+    const minScore = 6;
+    const profileMaxPerSearch = 3;
+
+    const candidates = [
+      {
+        lead: { fullName: 'Good Alice', scoreBreakdown: { finalScore: 9 } },
+        evidenceMeta: { evidenceQuality: 'good' }
+      },
+      {
+        lead: { fullName: 'Partial Bob', scoreBreakdown: { finalScore: 6.5 } },
+        evidenceMeta: { evidenceQuality: 'partial' }
+      },
+      {
+        lead: { fullName: 'Weak Charlie', scoreBreakdown: { finalScore: 8.5 } },
+        evidenceMeta: { evidenceQuality: 'weak' }
+      },
+      {
+        lead: { fullName: 'Weak Dave', scoreBreakdown: { finalScore: 7 } },
+        evidenceMeta: { evidenceQuality: 'weak' }
+      }
+    ];
+
+    const candidateRows = candidates.filter(({ lead, evidenceMeta }) => {
+      const score = effectiveScore(lead);
+      const isBorderline = Boolean((lead as any)._borderlineEvidence);
+      return (
+        isBorderline ||
+        evidenceMeta.evidenceQuality !== 'good' ||
+        (score >= minScore - 1 && score <= minScore + 1)
+      );
+    });
+
+    candidateRows.sort((a, b) => {
+      const qA = evidenceQualityRank(a.evidenceMeta.evidenceQuality);
+      const qB = evidenceQualityRank(b.evidenceMeta.evidenceQuality);
+      if (qA !== qB) return qA - qB;
+      return effectiveScore(b.lead) - effectiveScore(a.lead);
+    });
+
+    const selected = candidateRows.slice(0, profileMaxPerSearch);
+    assert.equal(selected.length, 3);
+    // Weak Charlie (weak, 8.5) -> Weak Dave (weak, 7.0) -> Partial Bob (partial, 6.5)
+    assert.equal(selected[0].lead.fullName, 'Weak Charlie');
+    assert.equal(selected[1].lead.fullName, 'Weak Dave');
+    assert.equal(selected[2].lead.fullName, 'Partial Bob');
+  });
+
+  it('F1: allows borderline leads (minScore - 3 to minScore - 1) to survive verify with _borderlineEvidence', () => {
+    const minScore = 7;
+    const maxBorderlinePerRound = 5;
+    let borderlineAdmittedThisRound = 0;
+
+    const leads = [
+      { id: '1', score: 8, name: 'High' },
+      { id: '2', score: 5.5, name: 'Borderline 1' },
+      { id: '3', score: 4.2, name: 'Borderline 2' },
+      { id: '4', score: 3.5, name: 'Too Low' },
+    ];
+
+    const postFilterLeads: any[] = [];
+    for (const lead of leads) {
+      const score = lead.score;
+      const isBorderline = score >= minScore - 3 && score < minScore - 1;
+      if (isBorderline && borderlineAdmittedThisRound < maxBorderlinePerRound) {
+        (lead as any)._borderlineEvidence = true;
+        borderlineAdmittedThisRound++;
+      } else if (score < minScore - 1) {
+        continue;
+      }
+      postFilterLeads.push(lead);
+    }
+
+    assert.equal(postFilterLeads.length, 3);
+    assert.equal(postFilterLeads.find(l => l.name === 'High')._borderlineEvidence, undefined);
+    assert.equal(postFilterLeads.find(l => l.name === 'Borderline 1')._borderlineEvidence, true);
+    assert.equal(postFilterLeads.find(l => l.name === 'Borderline 2')._borderlineEvidence, true);
+    assert.equal(postFilterLeads.some(l => l.name === 'Too Low'), false);
   });
 });
 

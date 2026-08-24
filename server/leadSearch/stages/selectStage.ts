@@ -65,6 +65,11 @@ export async function executeSelectStage(
     if (queryRun) queryRun.returnedFinalists++;
   }
   for (const run of stats.queryRuns) {
+    const failDigest =
+      run.requirementFailCounts &&
+      Object.keys(run.requirementFailCounts).length > 0
+        ? JSON.stringify(run.requirementFailCounts)
+        : undefined;
     recordQueryPerformance({
       family: run.family || 'general',
       lane: run.lane || 'person',
@@ -73,7 +78,8 @@ export async function executeSelectStage(
       outcomeRuns: 1,
       qualifiedCandidates: run.qualifiedFinalists,
       rescuedCandidates: run.rescuedFinalists,
-      returnedCandidates: run.returnedFinalists
+      returnedCandidates: run.returnedFinalists,
+      requirementFailDigest: failDigest,
     });
   }
 

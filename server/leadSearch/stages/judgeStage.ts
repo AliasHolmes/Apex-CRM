@@ -24,9 +24,10 @@ import {
   findEvidenceForLead,
   type SessionEvidenceMeta,
 } from "../sessionHelpers.js";
-import type { SessionContext } from "../pipelineTypes.js";
+import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { ProspectContract } from "../prospectContract.js";
 import type { EvidenceMeta } from "./extractStage.js";
+import type { QueryRunStats } from "../strategist.js";
 
 const normalizeDedupeValue = (value?: string) =>
   (value || "").trim().toLowerCase();
@@ -35,6 +36,9 @@ export type JudgeStageInput = {
   contract: ProspectContract;
   evidenceByUrl: Map<string, EvidenceMeta>;
   stats: any;
+  leadQueryRuns?:
+    | LeadQueryRunTracker
+    | WeakMap<Record<string, any>, QueryRunStats>;
   checkpointAcceptedLeads: (leads: any[], stageLabel: string) => void;
 };
 
@@ -46,7 +50,13 @@ export async function executeJudgeStage(
   ctx: SessionContext,
   input: JudgeStageInput,
 ): Promise<JudgeStageOutput> {
-  const { contract, evidenceByUrl, stats, checkpointAcceptedLeads } = input;
+  const {
+    contract,
+    evidenceByUrl,
+    stats,
+    leadQueryRuns,
+    checkpointAcceptedLeads,
+  } = input;
   const { config, state, logEvent, recordTrace } = ctx;
   const { acceptedLeads, qualifiedLeads, llmCircuitBreaker, debugLogs } = state;
   const { targetLimit } = config;
@@ -271,6 +281,31 @@ export async function executeJudgeStage(
           candidate.lead.scoreOverride = qualification.finalScore;
           return [candidate.lead];
         });
+
+        const rawJudgments = Array.isArray(judgmentResult?.judgments)
+          ? judgmentResult.judgments
+          : [];
+        for (const candidate of batch) {
+          const queryRun = leadQueryRuns?.get?.(candidate.lead);
+          if (queryRun) {
+            const jm = rawJudgments.find(
+              (j: any) =>
+                String(j?.candidateId || "").trim() === candidate.candidateId,
+            );
+            if (Array.isArray(jm?.requirements)) {
+              if (!queryRun.requirementFailCounts) {
+                queryRun.requirementFailCounts = {};
+              }
+              for (const req of jm.requirements) {
+                if (req && req.status === "fail" && req.requirementId) {
+                  queryRun.requirementFailCounts[req.requirementId] =
+                    (queryRun.requirementFailCounts[req.requirementId] || 0) +
+                    1;
+                }
+              }
+            }
+          }
+        }
         debugLogs.push({
           timestamp: new Date().toISOString(),
           type: "llm_response",

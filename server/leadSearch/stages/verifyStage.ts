@@ -16,6 +16,7 @@ import {
   effectiveScore as sharedEffectiveScore,
   buildFallbackEvidence,
   findEvidenceForLead,
+  clampEnvInt,
   type SessionEvidenceMeta,
 } from "../sessionHelpers.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -69,18 +70,35 @@ export async function executeVerifyStage(
   const excludedValues = new Set<string>();
   for (const exclusion of excludeList) {
     const normalized = normalizeDedupeValue(exclusion);
-    if (normalized) excludedValues.add(normalized);
+    if (!normalized) continue;
+    excludedValues.add(normalized);
+    if (normalized.startsWith("linkedin:")) {
+      const handle = normalized.slice("linkedin:".length);
+      if (handle) excludedValues.add(handle);
+    } else if (normalized.includes("linkedin.com/in/")) {
+      const handle = extractLinkedInUsername(normalized);
+      if (handle) {
+        excludedValues.add(`linkedin:${handle}`);
+        excludedValues.add(handle);
+      }
+    }
   }
 
   const matchesExcludeList = (lead: any) => {
+    const rawUrl = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
+    const username = rawUrl ? extractLinkedInUsername(rawUrl) : "";
+    const canonicalKey = username ? `linkedin:${username}` : "";
     const keys = [
       lead.fullName,
       lead.currentCompany,
       lead.contactDetails?.linkedinUrl,
       lead.contactDetails?.email,
       lead.contactDetails?.workEmail,
+      canonicalKey,
+      username,
     ];
     for (const key of keys) {
+      if (!key) continue;
       const normalized = normalizeDedupeValue(key);
       if (normalized && excludedValues.has(normalized)) return true;
     }
@@ -105,6 +123,7 @@ export async function executeVerifyStage(
   });
 
   const postFilterLeads: PostFilterLead[] = [];
+  let borderlineAdmittedThisRound = 0;
   for (const lead of provisionalLeads) {
     const rawUrl = lead.contactDetails?.linkedinUrl;
     if (rawUrl && !extractLinkedInUsername(rawUrl)) {
@@ -184,6 +203,13 @@ export async function executeVerifyStage(
     // redundant recompute for leads that were not enriched this round.
     lead._scoreCurrent = true;
 
+    const maxBorderlinePerRound = clampEnvInt(
+      "LEAD_VERIFY_BORDERLINE_PER_ROUND",
+      5,
+      0,
+      20,
+    );
+
     if (
       dmVerification.ignoredTitle &&
       dmVerification.confidence < 4 &&
@@ -193,7 +219,12 @@ export async function executeVerifyStage(
       continue;
     }
 
-    if (effectiveScore(lead) < minScore - 1) {
+    const leadScore = effectiveScore(lead);
+    const isBorderline = leadScore >= minScore - 3 && leadScore < minScore - 1;
+    if (isBorderline && borderlineAdmittedThisRound < maxBorderlinePerRound) {
+      lead._borderlineEvidence = true;
+      borderlineAdmittedThisRound++;
+    } else if (leadScore < minScore - 1) {
       noteRejection("score_below_minimum", queryRun);
       continue;
     }

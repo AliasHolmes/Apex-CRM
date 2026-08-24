@@ -53,6 +53,7 @@ import {
   deleteOutreachDraft,
   readSavedSearches,
   readSavedSearchById,
+  getSavedSearchExcludeList,
   upsertSavedSearch,
   deleteSavedSearch,
   markSavedSearchRun,
@@ -1364,6 +1365,26 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     return res.status(400).json({ error: "Invalid sessionId." });
   }
 
+  const savedSearchId =
+    typeof req.body?.savedSearchId === "string" && req.body.savedSearchId.trim()
+      ? req.body.savedSearchId.trim()
+      : undefined;
+
+  let mergedExcludeList: string[] | undefined = Array.isArray(
+    req.body?.excludeList,
+  )
+    ? [...req.body.excludeList]
+    : undefined;
+
+  if (savedSearchId) {
+    const savedExclusions = getSavedSearchExcludeList(savedSearchId);
+    if (savedExclusions.length > 0) {
+      mergedExcludeList = Array.from(
+        new Set([...(mergedExcludeList || []), ...savedExclusions]),
+      );
+    }
+  }
+
   const isAsyncMode =
     req.query.mode === "job" || req.headers["prefer"] === "respond-async";
   const targetSessionId = suppliedSessionId || `session-${crypto.randomUUID()}`;
@@ -1377,7 +1398,8 @@ router.post("/find-leads", async (req, res): Promise<any> => {
         discoveryProviderMode:
           req.body?.discoveryMode || req.body?.discoveryProviderMode,
         searchSpec: req.body?.searchSpec,
-        excludeList: req.body?.excludeList,
+        excludeList: mergedExcludeList,
+        savedSearchId,
       })
       .catch((err) => {
         if (err instanceof SessionAlreadyActiveError) return;
@@ -1411,7 +1433,8 @@ router.post("/find-leads", async (req, res): Promise<any> => {
       discoveryProviderMode:
         req.body?.discoveryMode || req.body?.discoveryProviderMode,
       searchSpec: req.body?.searchSpec,
-      excludeList: req.body?.excludeList,
+      excludeList: mergedExcludeList,
+      savedSearchId,
     });
     return res.status(200).json(result);
   } catch (error: any) {

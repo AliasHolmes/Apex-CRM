@@ -21,6 +21,7 @@ export type AdaptiveScheduleDecision = {
   score: number;
   outcomeRuns: number;
   reason: 'quality_history' | 'exploration' | 'person_lane_guard' | 'contract_guard' | 'cold_start';
+  promoted?: boolean;
 };
 
 export type AdaptiveScheduleResult = {
@@ -35,6 +36,8 @@ export type AdaptiveSchedulerOptions = {
   maxTasks?: number;
   minOutcomeRuns?: number;
   explorationStrength?: number;
+  round?: number;
+  explorationFloorEvery?: number;
 };
 
 const finiteCount = (value: unknown) => {
@@ -220,6 +223,20 @@ export function scheduleAdaptiveRetrievalTasks(
     addSelected(item);
   }
 
+  const explorationFloorEvery = Math.max(0, Math.floor(options.explorationFloorEvery ?? 3));
+  const round = Math.max(1, Math.floor(options.round ?? 1));
+  const promotedOriginalIndexes = new Set<number>();
+
+  // Exploration floor: every Nth round (default 3), ensure the top deferred arm is promoted
+  // into the active task list if deferred tasks exist and haven't been selected yet.
+  if (explorationFloorEvery > 0 && round % explorationFloorEvery === 0) {
+    const topDeferred = ranked.find(item => !selectedIndexes.has(item.originalIndex));
+    if (topDeferred) {
+      addSelected(topDeferred, 'exploration');
+      promotedOriginalIndexes.add(topDeferred.originalIndex);
+    }
+  }
+
   const selectedTasks = selected
     .sort((a, b) => b.score - a.score || a.task.priority - b.task.priority)
     .map((item, index) => ({ ...item.task, priority: index + 1 }));
@@ -235,7 +252,8 @@ export function scheduleAdaptiveRetrievalTasks(
       selected: selectedQueries.has(item.task.query),
       score: Number(item.score.toFixed(4)),
       outcomeRuns: item.outcomeRuns,
-      reason: guardedReasons.get(item.originalIndex) || item.reason
+      reason: guardedReasons.get(item.originalIndex) || item.reason,
+      promoted: promotedOriginalIndexes.has(item.originalIndex) ? true : undefined
     }))
   };
 }

@@ -3,7 +3,9 @@ import {
   upsertMiningSession,
   readSavedSearchById,
   markSavedSearchRun,
+  updateSavedSearchExcludeList,
 } from "../../db.js";
+import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
 import { mapCandidateToPersistedLead } from "../leadMapping.js";
 import type { SessionContext } from "../pipelineTypes.js";
 
@@ -143,6 +145,15 @@ export async function executePersistStage(
 
   if (typeof savedSearchId === "string" && readSavedSearchById(savedSearchId)) {
     markSavedSearchRun(savedSearchId);
+    const returnedIdentities = mappedLeads.flatMap((lead) => {
+      const url =
+        lead?.profile?.contactDetails?.linkedinUrl || lead?.sourceUrl || "";
+      const username = extractLinkedInUsername(url);
+      return username ? [`linkedin:${username}`] : [];
+    });
+    if (returnedIdentities.length > 0) {
+      updateSavedSearchExcludeList(savedSearchId, returnedIdentities);
+    }
   }
 
   const result = {

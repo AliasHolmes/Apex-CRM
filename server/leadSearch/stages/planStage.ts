@@ -21,6 +21,7 @@ import {
 } from "../searchSpec.js";
 import { enforceContractQueries } from "../prospectContract.js";
 import { scheduleAdaptiveRetrievalTasks } from "../adaptiveScheduler.js";
+import { clampEnvInt } from "../sessionHelpers.js";
 import { summarizeLLM } from "../telemetry.js";
 import type { SessionContext } from "../pipelineTypes.js";
 
@@ -212,6 +213,13 @@ export async function executePlanStage(
       minOutcomeRuns: Number(process.env.LEAD_ADAPTIVE_MIN_OUTCOME_RUNS || 8),
       explorationStrength: Number(
         process.env.LEAD_ADAPTIVE_EXPLORATION_STRENGTH || 1.25,
+      ),
+      round,
+      explorationFloorEvery: clampEnvInt(
+        "LEAD_ADAPTIVE_EXPLORATION_FLOOR_EVERY",
+        3,
+        0,
+        10,
       ),
     },
   );

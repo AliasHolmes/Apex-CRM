@@ -458,6 +458,34 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
         )
         .join("; ")
     : "no history yet";
+  const requirementFails: string[] = [];
+  if (params.queryPerformance) {
+    for (const [scopeKey, data] of Object.entries(
+      params.queryPerformance as any,
+    )) {
+      const digest =
+        (data as any)?.requirementFailDigest ||
+        (data as any)?.requirement_fail_digest;
+      if (digest) {
+        try {
+          const parsed =
+            typeof digest === "string" ? JSON.parse(digest) : digest;
+          if (parsed && typeof parsed === "object") {
+            const topFails = Object.entries(parsed)
+              .sort((a: any, b: any) => Number(b[1]) - Number(a[1]))
+              .slice(0, 2)
+              .map(([req, count]) => `${req} (${count} fails)`)
+              .join(", ");
+            if (topFails) requirementFails.push(`${scopeKey}: ${topFails}`);
+          }
+        } catch {}
+      }
+    }
+  }
+  const failNote = requirementFails.length
+    ? `\nFREQUENT JUDGE REQUIREMENT FAILS (avoid query patterns that trigger these):\n${requirementFails.slice(0, 4).map((f) => `  - ${f}`).join("\n")}`
+    : "";
+
   const specStr = params.spec ? JSON.stringify(params.spec) : "{}";
 
   return `You are a dual-provider B2B prospecting strategist for Apex CRM.
@@ -468,6 +496,7 @@ Discovery mode: ${discoveryMode}
 ${requirementDigest}
 ${missingNote}
 ${flywheelNote}
+${failNote}
 
 Generate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.
 ${previousNote}

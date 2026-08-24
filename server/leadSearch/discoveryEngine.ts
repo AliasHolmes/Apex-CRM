@@ -215,6 +215,9 @@ import {
   incrementCounter,
   sleepWithAbort,
   buildCheckpointEvidence,
+  computeEarlyStopThreshold,
+  clampEnvFloat,
+  clampEnvInt,
   type SessionEvidenceMeta,
 } from "./sessionHelpers.js";
 
@@ -879,10 +882,26 @@ export async function executeDiscoverySession(
       const normalized = normalizeDedupeValue(exclusion);
       if (!normalized) continue;
       excludedValues.add(normalized);
-      existingKeys.add(`email:${normalized}`);
-      if (normalized.includes("linkedin.com/in/"))
-        existingKeys.add(`linkedin:${extractLinkedInUsername(normalized)}`);
-      existingKeys.add(`name:${normalized}`);
+      if (normalized.startsWith("linkedin:")) {
+        existingKeys.add(normalized);
+        const handle = normalized.slice("linkedin:".length);
+        if (handle) excludedValues.add(handle);
+      } else if (normalized.startsWith("email:")) {
+        existingKeys.add(normalized);
+        const email = normalized.slice("email:".length);
+        if (email) excludedValues.add(email);
+      } else {
+        existingKeys.add(`email:${normalized}`);
+        if (normalized.includes("linkedin.com/in/")) {
+          const user = extractLinkedInUsername(normalized);
+          if (user) {
+            existingKeys.add(`linkedin:${user}`);
+            excludedValues.add(`linkedin:${user}`);
+            excludedValues.add(user);
+          }
+        }
+        existingKeys.add(`name:${normalized}`);
+      }
     }
 
     const matchesExcludeList = (lead: any) => {
@@ -890,10 +909,23 @@ export async function executeDiscoverySession(
       const name = normalizeDedupeValue(lead?.fullName);
       const email = normalizeDedupeValue(lead?.contactDetails?.email);
       const linkedin = normalizeDedupeValue(lead?.contactDetails?.linkedinUrl);
+      const username = extractLinkedInUsername(
+        lead?.contactDetails?.linkedinUrl || "",
+      );
+      const canonicalKey = username ? `linkedin:${username}` : "";
       for (const exclusion of excludedValues) {
         if (email && email === exclusion) return true;
-        if (linkedin && linkedin.includes(exclusion)) return true;
-        if (name && name.includes(exclusion)) return true;
+        if (
+          linkedin &&
+          (linkedin === exclusion || linkedin.includes(exclusion))
+        )
+          return true;
+        if (name && name === exclusion) return true;
+        if (
+          username &&
+          (username === exclusion || exclusion === canonicalKey)
+        )
+          return true;
       }
       return false;
     };
@@ -977,7 +1009,14 @@ export async function executeDiscoverySession(
     }
 
     let consecutiveStalledRounds = 0;
+    let providerImpairedStallRounds = 0;
     let acceptedCountBeforeRound = 0;
+    const defaultJudgePassRate = clampEnvFloat(
+      "LEAD_JUDGE_PASS_RATE_ASSUMPTION",
+      0.7,
+      0.3,
+      1.0,
+    );
 
     const qualifiedLeads: any[] = [];
 
@@ -1217,6 +1256,7 @@ export async function executeDiscoverySession(
           roundItems,
           roundPlans,
           queryRuns,
+          searchSpec,
           stats,
         });
 
@@ -1293,6 +1333,7 @@ export async function executeDiscoverySession(
           profileConcurrency,
           ttlDays,
           contract,
+          searchSpec,
           brightDataProviderDisabled,
           brightDataTransportRetryAfter,
           stats,
@@ -1392,9 +1433,16 @@ export async function executeDiscoverySession(
         checkpointedQueryRunCount = stats.queryRuns.length;
 
         // Early shortlist termination:
-        // If we already have >= target * 1.33 accepted leads AND at least target viable candidates showing all hard requirements,
-        // stop immediately and proceed to Finalist Judging rather than burning unnecessary query rounds.
-        const earlyStopTargetThreshold = Math.ceil(targetLimit * 1.33);
+        // Dynamic early-stop threshold based on assumed or observed judge pass rate.
+        const judgePassRateEstimate =
+          Number(previousRoundSummary?.judgePassRateEstimate) ||
+          defaultJudgePassRate;
+        const earlyStopTargetThreshold = computeEarlyStopThreshold(
+          targetLimit,
+          judgePassRateEstimate,
+        );
+        previousRoundSummary.judgePassRateEstimate = judgePassRateEstimate;
+
         if (
           acceptedLeads.length >= earlyStopTargetThreshold &&
           previousRoundSummary.viableCandidates >= targetLimit &&
@@ -1402,32 +1450,54 @@ export async function executeDiscoverySession(
             previousRoundSummary.missingHardRequirementIds.length === 0)
         ) {
           logEvent(
-            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}) collected with all hard criteria met. Stopping discovery loop early.`,
+            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}, earlyStopThreshold=${earlyStopTargetThreshold}, passRateEstimate=${judgePassRateEstimate}) collected with all hard criteria met. Stopping discovery loop early.`,
           );
           stats.stopReason = "target_fulfilled_early";
           break;
         }
 
+        const lastRoundProviderImpaired =
+          extractResult.consecutiveFailedExtractionRounds > 0 ||
+          brightDataProviderDisabled === true ||
+          (candidateItems.length === 0 &&
+            brightDataStats.searchAttempted > 0 &&
+            (brightDataStats.searchSucceeded || 0) === 0);
+
         const newAcceptedInRound =
           acceptedLeads.length - acceptedCountBeforeRound;
         if (newAcceptedInRound === 0) {
-          consecutiveStalledRounds++;
-          if (consecutiveStalledRounds >= 2 && acceptedLeads.length > 0) {
+          if (lastRoundProviderImpaired) {
+            providerImpairedStallRounds++;
             logEvent(
-              `Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Early exiting round loop with ${acceptedLeads.length} leads.`,
+              `Round ${round}: Stalled due to provider impairment (not query exhaustion); not counting toward stall exit (${providerImpairedStallRounds}/3).`,
             );
-            stats.stopReason = "early_exit_stalled";
-            break;
-          }
-          if (consecutiveStalledRounds >= 3 && acceptedLeads.length === 0) {
-            logEvent(
-              `Round ${round}: 3 consecutive rounds produced 0 candidates. Early exiting round loop to prevent endless API token burning.`,
-            );
-            stats.stopReason = "exhausted";
-            break;
+            if (providerImpairedStallRounds >= 3) {
+              logEvent(
+                `Round ${round}: 3 consecutive provider-impaired rounds. Stopping discovery loop due to provider exhaustion.`,
+              );
+              stats.stopReason = "provider_exhausted";
+              break;
+            }
+          } else {
+            consecutiveStalledRounds++;
+            if (consecutiveStalledRounds >= 2 && acceptedLeads.length > 0) {
+              logEvent(
+                `Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Early exiting round loop with ${acceptedLeads.length} leads.`,
+              );
+              stats.stopReason = "early_exit_stalled";
+              break;
+            }
+            if (consecutiveStalledRounds >= 3 && acceptedLeads.length === 0) {
+              logEvent(
+                `Round ${round}: 3 consecutive rounds produced 0 candidates. Early exiting round loop to prevent endless API token burning.`,
+              );
+              stats.stopReason = "exhausted";
+              break;
+            }
           }
         } else {
           consecutiveStalledRounds = 0;
+          providerImpairedStallRounds = 0;
         }
       }
     }
@@ -1471,6 +1541,16 @@ export async function executeDiscoverySession(
       stats,
       checkpointAcceptedLeads,
     });
+
+    if (acceptedLeads.length > 0 && qualifiedLeads.length > 0) {
+      const observedPassRate = Number(
+        (qualifiedLeads.length / acceptedLeads.length).toFixed(2),
+      );
+      previousRoundSummary.judgePassRateEstimate = Math.min(
+        Math.max(observedPassRate, 0.3),
+        1.0,
+      );
+    }
 
     const selectResult = await executeSelectStage(sessionCtx, {
       contract,

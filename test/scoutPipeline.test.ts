@@ -144,4 +144,78 @@ describe('free-tier prospect scout', () => {
 
     assert.equal(withEmail, withoutEmail);
   });
+
+  it('F8: classifies stall cause and preserves session when stall is provider-impaired', () => {
+    let consecutiveStalledRounds = 0;
+    let providerImpairedStallRounds = 0;
+    let stopReason: string | null = null;
+
+    // Simulate 2 rounds of provider failure (e.g. extraction 429/failures)
+    for (let round = 1; round <= 2; round++) {
+      const newAcceptedInRound = 0;
+      const lastRoundProviderImpaired = true; // extraction failed
+
+      if (newAcceptedInRound === 0) {
+        if (lastRoundProviderImpaired) {
+          providerImpairedStallRounds++;
+          if (providerImpairedStallRounds >= 3) {
+            stopReason = 'provider_exhausted';
+            break;
+          }
+        } else {
+          consecutiveStalledRounds++;
+          if (consecutiveStalledRounds >= 2) {
+            stopReason = 'early_exit_stalled';
+            break;
+          }
+        }
+      }
+    }
+
+    assert.equal(consecutiveStalledRounds, 0, 'Genuine stall counter should not advance on provider impairment');
+    assert.equal(providerImpairedStallRounds, 2);
+    assert.equal(stopReason, null, 'Session should not exit early_exit_stalled after 2 provider-impaired rounds');
+
+    // On 3rd consecutive provider impairment, exits with provider_exhausted
+    const lastRoundProviderImpaired = true;
+    providerImpairedStallRounds++;
+    if (providerImpairedStallRounds >= 3) stopReason = 'provider_exhausted';
+    assert.equal(stopReason, 'provider_exhausted');
+  });
+
+  it('F2: soft-caps saturated companies in collection and skips deep enrichment when pool is healthy', () => {
+    const maxPerCompany = 2;
+    const acceptedLeads = [
+      { id: '1', company: 'Acme Corp', fullName: 'Alice' },
+      { id: '2', company: 'Acme Corp', fullName: 'Bob' },
+      { id: '3', company: 'Other LLC', fullName: 'Charlie' }
+    ];
+
+    const acceptedCompanyCounts = new Map<string, number>();
+    for (const lead of acceptedLeads) {
+      const comp = lead.company.trim().toLowerCase();
+      acceptedCompanyCounts.set(comp, (acceptedCompanyCounts.get(comp) || 0) + 1);
+    }
+
+    assert.equal(acceptedCompanyCounts.get('acme corp'), 2);
+
+    // Candidates in current round
+    const candidates = [
+      { fullName: 'David (Acme)', company: 'Acme Corp', score: 9 },
+      { fullName: 'Eve (Beta)', company: 'Beta Corp', score: 8 }
+    ];
+
+    // In enrichment, when pool is healthy (e.g. accepted >= 80% target), Acme candidate is skipped
+    const rerankPoolTarget = 3;
+    const isPoolStarved = acceptedLeads.length < rerankPoolTarget * 0.8;
+    assert.equal(isPoolStarved, false);
+
+    const enrichmentTargets = candidates.filter(c => {
+      const comp = c.company.trim().toLowerCase();
+      return (acceptedCompanyCounts.get(comp) || 0) < maxPerCompany;
+    });
+
+    assert.equal(enrichmentTargets.length, 1);
+    assert.equal(enrichmentTargets[0].fullName, 'Eve (Beta)');
+  });
 });

@@ -259,15 +259,17 @@ Verified against `server/routes/api.ts`:
 | POST   | `/generate-outbound`                 | Generate contextual outreach message                                               |
 | POST   | `/chat`                              | Conversational CRM assistant                                                       |
 
-## 8. Database schema (SQLite v15, `.apex-data/apex-crm.sqlite`)
+## 8. Database schema (SQLite v16, `.apex-data/apex-crm.sqlite`)
 
-15 tables created in `db.ts` (`LATEST_SCHEMA_VERSION = 15`):
+15 tables created in `db.ts` (`LATEST_SCHEMA_VERSION = 16`):
 
 `leads` · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts`
 
 Key columns added by recent migrations:
 
-- `mining_sessions.checkpoint_json` — compact `MiningSessionCheckpoint` Tier-A snapshot written at stage boundaries (ADR-0002); powers boot-sweep reconciliation of `interrupted` sessions into `resumable` status.
+- `mining_sessions.checkpoint_json` (v14) — compact `MiningSessionCheckpoint` Tier-A snapshot written at stage boundaries (ADR-0002); powers boot-sweep reconciliation of `interrupted` sessions into `resumable` status.
+- `query_performance.requirement_fail_digest` (v16) — serialized breakdown of requirement failure frequencies per query family/lane.
+- `saved_searches.exclude_list_json` (v16) — accumulated canonical identities already returned for a saved search to prevent duplicate rediscovery across runs.
 
 WAL mode, foreign keys on, busy timeouts set, auto-backup under `.apex-data/backups/` before migrations. Canonical identity dedupe via `lead_identities` with conflict tracking.
 
@@ -301,7 +303,7 @@ Typecheck gate: `npm run lint` (= `tsc --noEmit`).
 ## 10. Configuration surface
 
 - `.env.example` — full template: LLM gateway mode (`direct`/`litellm`), `OPENAI_*`, `TAVILY_API_KEYS` (+ singular), `BRIGHTDATA_API_TOKENS` (+ singular/`API_TOKEN`), `DISCOVERY_PROVIDER_MODE` (`bd_primary`/`hybrid`/`tavily_primary`), `BRIGHTDATA_MCP_TRANSPORT`, timeouts/retries, `SEARCH_LOG_RETENTION_LIMIT`
-- Engine tunables: `LEAD_SEARCH_TIMEOUT_MS` (default 15 min, 0 disables), `LEAD_EXTRACTION_CHUNK_RETRIES`, `LEAD_TELEMETRY_MAX_EVENTS`, `FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` / `FINALIST_JUDGE_EVIDENCE_CHARS` (judge prompt token diet), `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` (1-20, default 10), `APEX_STRUCTURED_LOGS`
+- Engine tunables: `LEAD_SEARCH_TIMEOUT_MS` (default 15 min, 0 disables), `LEAD_EXTRACTION_CHUNK_RETRIES`, `LEAD_TELEMETRY_MAX_EVENTS`, `FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` / `FINALIST_JUDGE_EVIDENCE_CHARS` (judge prompt token diet), `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` (1-20, default 10), `APEX_STRUCTURED_LOGS`, `LEAD_ADAPTIVE_EXPLORATION_FLOOR_EVERY`, `LEAD_JUDGE_PASS_RATE_ASSUMPTION`, `LEAD_VERIFY_BORDERLINE_PER_ROUND`
 - `APEX_DB_PATH` — overrides default DB location (`db.ts`)
 - `litellm.config.yaml` — LiteLLM proxy model routing
 - Runtime artifacts: `.apex-data/` (DB + backups), log files in repo root (`apex-dev.*.log`, `adaptive_mining_terminal.log`)

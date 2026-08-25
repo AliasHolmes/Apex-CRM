@@ -136,6 +136,8 @@ export class LeadQueryRunTracker {
     const usernameMatch = String(url).match(/linkedin\.com\/in\/([^/?#]+)/i);
     if (usernameMatch?.[1]) return `linkedin:${usernameMatch[1].toLowerCase()}`;
     if (lead.id) return `id:${lead.id}`;
+    if (lead.candidateId) return `id:${lead.candidateId}`;
+    if (lead.stableId) return `id:${lead.stableId}`;
     const name = (lead.fullName || lead.profile?.fullName || "")
       .trim()
       .toLowerCase();

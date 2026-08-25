@@ -514,7 +514,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     [deferredSearch, industryFilter, locationFilter, nextActionFilter, reviewFilter, searchableLeads, stageFilter],
   );
 
-  // Consolidated single-pass duplicate analysis on filteredLeads
+  // Consolidated single-pass duplicate analysis on all leads
   const duplicateAnalysis = useMemo(() => {
     const duplicateIdSet = new Set<string>();
     const redundantIdsToDelete: string[] = [];
@@ -522,7 +522,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     const seenLinks = new Map<string, string>();
     const seenNames = new Map<string, string>();
 
-    for (const lead of filteredLeads) {
+    for (const lead of leads) {
       const p = (lead.profile || {}) as Partial<any>;
       const email = p.contactDetails?.email?.toLowerCase();
       const linkedin = p.contactDetails?.linkedinUrl?.toLowerCase();
@@ -558,7 +558,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       duplicateIdSet,
       redundantIdsToDelete,
     };
-  }, [filteredLeads]);
+  }, [leads]);
 
   const duplicateIds = duplicateAnalysis.duplicateIdSet;
 

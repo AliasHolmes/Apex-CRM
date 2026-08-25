@@ -591,10 +591,16 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
     if (!draftLead || !outreachCopy) return '#';
     const email = draftLead.profile.contactDetails?.email || '';
     let subject = 'Connecting with you';
-    const subjectLine = outreachCopy.split('\n').find((line) => line.toLowerCase().includes('subject:'));
-    if (subjectLine) subject = subjectLine.replace(/subject:/i, '').trim();
-    const cleanBody = outreachCopy
-      .replace(/subject:.*\n/i, '')
+    const lines = outreachCopy.split(/\r?\n/);
+    const subjectIndex = lines.findIndex((line) => line.toLowerCase().startsWith('subject:'));
+    let bodyLines = lines;
+    if (subjectIndex !== -1) {
+      const extracted = lines[subjectIndex].replace(/^subject:\s*/i, '').trim();
+      if (extracted) subject = extracted;
+      bodyLines = lines.filter((_, idx) => idx !== subjectIndex);
+    }
+    const cleanBody = bodyLines
+      .join('\n')
       .replace(/<br\s*\/?>/gi, '\n')
       .trim();
     return `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(cleanBody)}`;

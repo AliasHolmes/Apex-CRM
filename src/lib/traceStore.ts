@@ -120,11 +120,33 @@ class MiningTraceStore {
 
       sse.onerror = () => {
         const state = this.getState(sessionId);
-        if (state.status === 'running') {
-          this.sessions.set(sessionId, { ...state, status: 'completed' });
-          this.notify();
+        if (sse.readyState === EventSource.CLOSED) {
+          this.disconnect(sessionId);
+          void fetch(`/api/mining-sessions/${sessionId}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+              const session = data?.session;
+              const termStatus = session?.status;
+              const finalStatus =
+                termStatus === 'success'
+                  ? 'completed'
+                  : termStatus === 'error'
+                    ? 'error'
+                    : termStatus === 'cancelled'
+                      ? 'cancelled'
+                      : state.status;
+              const updatedState = this.getState(sessionId);
+              this.sessions.set(sessionId, {
+                ...updatedState,
+                sessionMeta: session || updatedState.sessionMeta,
+                status: finalStatus as any,
+              });
+              this.notify();
+            })
+            .catch(() => {
+              // Silently ignore status fetch error
+            });
         }
-        this.disconnect(sessionId);
       };
     } catch (err: any) {
       const state = this.getState(sessionId);

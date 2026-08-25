@@ -76,10 +76,12 @@ app.use(
     const colonIdx = rawHost.lastIndexOf(":");
     const hostname = colonIdx !== -1 ? rawHost.slice(0, colonIdx) : rawHost;
     const portStr = colonIdx !== -1 ? rawHost.slice(colonIdx + 1) : "";
-    const port = portStr ? Number(portStr) : 80;
+    const port = portStr ? Number(portStr) : (req.socket?.localPort || 80);
 
     const isLoopbackHost = hostname === "localhost" || hostname === "127.0.0.1";
-    const isCorrectPort = !portStr || port === PORT;
+    const isCorrectPort = portStr
+      ? port === PORT
+      : PORT === 80 || PORT === 443 || req.socket?.localPort === PORT;
 
     if (!isLoopbackHost || !isCorrectPort) {
       return res

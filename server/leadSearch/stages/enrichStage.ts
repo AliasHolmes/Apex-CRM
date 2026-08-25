@@ -849,11 +849,11 @@ export async function executeEnrichStage(
       continue;
     }
 
+    lead.id = lead.id || `lead-${crypto.randomUUID()}`;
     if (queryRun) {
       queryRun.acceptedLeads++;
       leadQueryRuns.set(lead, queryRun);
     }
-    lead.id = lead.id || `lead-${crypto.randomUUID()}`;
     addProfileKeys(lead, existingKeys);
     acceptedLeads.push(lead);
   }

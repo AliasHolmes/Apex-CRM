@@ -286,7 +286,9 @@ export async function executeJudgeStage(
           ? judgmentResult.judgments
           : [];
         for (const candidate of batch) {
-          const queryRun = leadQueryRuns?.get?.(candidate.lead);
+          const queryRun =
+            leadQueryRuns?.get?.(candidate.lead) ||
+            leadQueryRuns?.get?.(candidate);
           if (queryRun) {
             const jm = rawJudgments.find(
               (j: any) =>

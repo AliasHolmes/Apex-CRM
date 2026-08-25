@@ -88,7 +88,7 @@ class SessionStreamHub {
         session!.status !== "running" &&
         session!.status !== "cancellation_requested";
 
-      if (hasNewContent || isTerminal || Boolean(session)) {
+      if (hasNewContent || isTerminal) {
         const frame: SessionStreamFrame = {
           logs: newLogs,
           traceEvents: newTrace,

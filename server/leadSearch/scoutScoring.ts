@@ -84,7 +84,7 @@ export function buildScoutEvidence(
   };
 }
 
-import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool, computeParetoFrontier } from './scoring.js';
+import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool, computeParetoFrontier, rankLeadForFinalSelection } from './scoring.js';
 
 const candidateKey = (c: any): string => {
   return String(
@@ -108,20 +108,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   maxPerCompany: number,
   logEvent?: (msg: string) => void
 ) {
-  // --- Step 0: Pareto Skyline Optimization ---
-  // Identify non-dominated candidates across (authority, company intent, post intent, evidence quality)
-  // to protect specialist outlier leads from aggregate linear score washout.
-  const { skyline } = computeParetoFrontier(candidates);
-  if (logEvent && skyline.length > 0) {
-    logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, company intent, post intent, and evidence quality.`);
-  }
-
-  // Reserve up to 30% of slots for top Pareto non-dominated candidates
-  const paretoReservation = Math.max(0, Math.ceil(limit * 0.30));
-  const paretoGuaranteed = skyline.slice(0, paretoReservation);
-  const paretoIds = new Set(paretoGuaranteed.map(candidateKey));
-
-  // --- Step 1: Shannon Entropy Normalization ---
+  // --- Step 0: Shannon Entropy Normalization & Sigmoid Scaling ---
   // Widen score distribution when candidates cluster tightly (low entropy),
   // so MMR and Sigmoid can meaningfully differentiate them.
   const rawScores = candidates.map(c => {
@@ -136,27 +123,56 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   }
   const scoredCandidates = candidates.map((c, i) => {
     const normalized_score = entropyNormalizedScores[i];
-    return typeof normalized_score === 'number' && Number.isFinite(normalized_score)
-      ? { ...c, finalSelectionScore: normalized_score }
-      : c;
+    const baseScore = typeof normalized_score === 'number' && Number.isFinite(normalized_score)
+      ? normalized_score
+      : rawScores[i] || 5;
+    const finalSelectionScore = applySigmoidScaling(baseScore);
+    return { ...c, finalSelectionScore };
   }) as T[];
 
-  // --- Step 2: Per-company cap + Sigmoid scaling ---
+  // --- Step 1: Pareto Skyline Optimization ---
+  // Identify non-dominated candidates across (authority, company intent, post intent, evidence quality)
+  // to protect specialist outlier leads from aggregate linear score washout.
+  const { skyline } = computeParetoFrontier(scoredCandidates);
+  if (logEvent && skyline.length > 0) {
+    logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, company intent, post intent, and evidence quality.`);
+  }
+
+  const extractCompanyKey = (candidate: any, cKey: string) => normalized(
+    candidate.currentCompany ||
+    candidate.company ||
+    candidate.profile?.currentCompany ||
+    candidate.profile?.company ||
+    candidate.companyAccount?.name
+  ) || `unknown:${cKey}`;
+
+  // Sort skyline by candidate rank to take top-scoring non-dominated candidates first
+  const sortedSkyline = [...skyline].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
+
+  // Reserve up to 30% of slots for top Pareto non-dominated candidates, respecting maxPerCompany
+  const paretoReservation = Math.max(0, Math.ceil(limit * 0.30));
   const perCompany = new Map<string, number>();
+  const paretoGuaranteed: T[] = [];
+
+  for (const candidate of sortedSkyline) {
+    if (paretoGuaranteed.length >= paretoReservation) break;
+    const cKey = candidateKey(candidate);
+    const compKey = extractCompanyKey(candidate, cKey);
+    const currentCount = perCompany.get(compKey) || 0;
+    if (currentCount < maxPerCompany) {
+      paretoGuaranteed.push(candidate);
+      perCompany.set(compKey, currentCount + 1);
+    }
+  }
+  const paretoIds = new Set(paretoGuaranteed.map(candidateKey));
+
+  // --- Step 2: Per-company cap on remaining candidates ---
   const filtered: T[] = [];
   const ordered = [...scoredCandidates].sort((a, b) => Number((b as any).finalSelectionScore || 0) - Number((a as any).finalSelectionScore || 0));
   for (const candidate of ordered) {
-    if ((candidate as any).finalSelectionScore !== undefined) {
-      (candidate as any).finalSelectionScore = applySigmoidScaling(Number((candidate as any).finalSelectionScore));
-    }
     const cKey = candidateKey(candidate);
-    const companyKey = normalized(
-      candidate.currentCompany ||
-      candidate.company ||
-      candidate.profile?.currentCompany ||
-      candidate.profile?.company ||
-      candidate.companyAccount?.name
-    ) || `unknown:${cKey}`;
+    if (paretoIds.has(cKey)) continue; // Already guaranteed and counted in perCompany
+    const companyKey = extractCompanyKey(candidate, cKey);
     const currentCount = perCompany.get(companyKey) || 0;
     if (currentCount >= maxPerCompany) continue;
     filtered.push(candidate);
@@ -164,9 +180,8 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   }
 
   // --- Step 3: MMR Diversity Selection ---
-  const mmrPool = filtered.filter((c: any) => !paretoIds.has(candidateKey(c)));
   const mmrLimit = Math.max(0, limit - paretoGuaranteed.length);
-  const mmrSelected = computeMMRDiversitySelection(mmrPool, mmrLimit, 0.75);
+  const mmrSelected = computeMMRDiversitySelection(filtered, mmrLimit, 0.75);
   const finalSelected = [...paretoGuaranteed, ...mmrSelected].slice(0, limit);
 
   if (logEvent) {

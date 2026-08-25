@@ -43,7 +43,7 @@ export function ConflictDialog({
     };
 
     checkField('Full Name', localLead.profile?.fullName, serverLead.profile?.fullName);
-    checkField('Title', localLead.profile?.headline || localLead.profile?.currentCompany, serverLead.profile?.headline || serverLead.profile?.currentCompany);
+    checkField('Title', localLead.profile?.currentTitle || localLead.profile?.headline, serverLead.profile?.currentTitle || serverLead.profile?.headline);
     checkField('Company', localLead.profile?.currentCompany, serverLead.profile?.currentCompany);
     checkField('Stage', localLead.stage, serverLead.stage);
     checkField('Review Status', localLead.reviewStatus, serverLead.reviewStatus);

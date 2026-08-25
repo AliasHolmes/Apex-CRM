@@ -20,7 +20,7 @@ import {
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 16;
+const LATEST_SCHEMA_VERSION = 17;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
@@ -785,6 +785,90 @@ function runMigrations(db: DatabaseSync) {
       );
     }
 
+    if (currentVersion < 17) {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS leads_fts USING fts5(
+          id UNINDEXED,
+          full_name,
+          company,
+          title,
+          email,
+          notes,
+          tags,
+          tokenize='porter unicode61'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS leads_ai AFTER INSERT ON leads BEGIN
+          INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+          VALUES (
+            new.id,
+            COALESCE(new.full_name, ''),
+            COALESCE(new.company, ''),
+            COALESCE(new.title, ''),
+            COALESCE(new.email, ''),
+            COALESCE(json_extract(new.payload, '$.notes'), ''),
+            COALESCE(json_extract(new.payload, '$.tags'), '')
+          );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS leads_ad AFTER DELETE ON leads BEGIN
+          DELETE FROM leads_fts WHERE id = old.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS leads_au AFTER UPDATE ON leads BEGIN
+          DELETE FROM leads_fts WHERE id = old.id;
+          INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+          VALUES (
+            new.id,
+            COALESCE(new.full_name, ''),
+            COALESCE(new.company, ''),
+            COALESCE(new.title, ''),
+            COALESCE(new.email, ''),
+            COALESCE(json_extract(new.payload, '$.notes'), ''),
+            COALESCE(json_extract(new.payload, '$.tags'), '')
+          );
+        END;
+      `);
+
+      const rows = db
+        .prepare(
+          "SELECT id, full_name, company, title, email, payload FROM leads",
+        )
+        .all() as {
+        id: string;
+        full_name?: string;
+        company?: string;
+        title?: string;
+        email?: string;
+        payload: string;
+      }[];
+      const insertFts = db.prepare(`
+        INSERT OR REPLACE INTO leads_fts(id, full_name, company, title, email, notes, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      batchedBackfill(db, rows, (row) => {
+        try {
+          let notes = "";
+          let tags = "";
+          try {
+            const parsed = JSON.parse(row.payload);
+            notes = typeof parsed.notes === "string" ? parsed.notes : "";
+            tags = Array.isArray(parsed.tags) ? parsed.tags.join(" ") : "";
+          } catch {}
+          insertFts.run(
+            row.id,
+            row.full_name || "",
+            row.company || "",
+            row.title || "",
+            row.email || "",
+            notes,
+            tags,
+          );
+        } catch {}
+      });
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1101,6 +1185,21 @@ export function normalizeIncomingLeads(input: unknown) {
     );
 }
 
+export function sanitizeFtsQuery(search: string): string | null {
+  if (!search || typeof search !== "string") return null;
+  const cleaned = search
+    .replace(/[^\p{L}\p{N}\s_@.-]/gu, " ")
+    .replace(/\b(AND|OR|NOT|MATCH|NEAR)\b/gi, " ")
+    .trim();
+  if (!cleaned) return null;
+  const tokens = cleaned
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").trim())
+    .filter((t) => t.length > 0 && /[\p{L}\p{N}]/u.test(t));
+  if (tokens.length === 0) return null;
+  return tokens.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" ");
+}
+
 export type ReadLeadsOptions = {
   stage?: string;
   reviewStatus?: string;
@@ -1156,13 +1255,15 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
     params.push(nextAction);
   }
   if (search && search.trim()) {
-    // Payload LIKE covers non-promoted fields (tags, notes, evidence) that
-    // users commonly search but which have no dedicated column.
-    conditions.push(
-      "(full_name LIKE ? OR company LIKE ? OR title LIKE ? OR email LIKE ? OR payload LIKE ?)",
-    );
-    const q = `%${search.trim()}%`;
-    params.push(q, q, q, q, q);
+    const ftsQuery = sanitizeFtsQuery(search);
+    if (ftsQuery) {
+      conditions.push(
+        "id IN (SELECT id FROM leads_fts WHERE leads_fts MATCH ?)",
+      );
+      params.push(ftsQuery);
+    } else {
+      conditions.push("0 = 1");
+    }
   }
 
   const where =

@@ -282,17 +282,27 @@ export async function probeCompanySites(
     }
   }
 
-  // Tavily extract supports up to 20 URLs per batch
+  // Tavily extract supports up to 20 URLs per batch - run batches in parallel
   const BATCH_SIZE = 20;
   const extractedByDomain = new Map<string, string[]>();
 
+  const batches: string[][] = [];
   for (let i = 0; i < urlsToExtract.length; i += BATCH_SIZE) {
-    if (options.abortSignal?.aborted) break;
-    const batchUrls = urlsToExtract.slice(i, i + BATCH_SIZE);
-    try {
-      options.onProviderUsage?.(1);
-      const extractResults = await tavilyExtract(batchUrls, 'company location team size services about us');
-      for (const res of extractResults) {
+    batches.push(urlsToExtract.slice(i, i + BATCH_SIZE));
+  }
+
+  const batchPromises = batches.map(async (batchUrls) => {
+    if (options.abortSignal?.aborted) return [];
+    options.onProviderUsage?.(1);
+    return tavilyExtract(batchUrls, 'company location team size services about us', {
+      signal: options.abortSignal,
+    });
+  });
+
+  const batchSettled = await Promise.allSettled(batchPromises);
+  for (const settled of batchSettled) {
+    if (settled.status === 'fulfilled' && Array.isArray(settled.value)) {
+      for (const res of settled.value) {
         const url = res.url || '';
         const domain = probeUrlsToDomain.get(url) || probeUrlsToDomain.get(url.replace(/\/$/, ''));
         const content = res.rawContent || '';
@@ -302,8 +312,6 @@ export async function probeCompanySites(
           extractedByDomain.set(domain, list);
         }
       }
-    } catch {
-      // Continue with remaining batches on error
     }
   }
 

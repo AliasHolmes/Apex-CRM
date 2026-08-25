@@ -1653,6 +1653,9 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
       customInstruction,
       companyAccount,
       buyingSignals,
+      evidence,
+      qualification,
+      notes,
     } = req.body;
 
     if (!profile || !profile.fullName) {
@@ -1686,6 +1689,19 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
         ? buyingSignals
         : "";
 
+    const evidenceSnippets = Array.isArray(evidence?.snippets)
+      ? evidence.snippets
+          .map((s: any) => (typeof s === "string" ? s : s?.text || ""))
+          .filter(Boolean)
+          .join(" | ")
+      : typeof evidence?.evidenceBlock === "string"
+        ? evidence.evidenceBlock.slice(0, 800)
+        : "";
+
+    const qualificationVerdict =
+      qualification?.explanation || qualification?.verdict || "";
+    const prospectNotes = typeof notes === "string" ? notes.trim() : "";
+
     const prompt = `Generate a highly personalized outreach message for the following prospect.
 
 ## Prospect Profile
@@ -1701,6 +1717,11 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
 - Tech Stack: ${(profile.techStackHints || []).join(", ") || "Unknown"}
 - Buying Signals: ${buyingSignalText || "None provided"}
 
+## Verified Real-World Triggers & Evidence
+- Mined Evidence & Observations: ${evidenceSnippets || "None available"}
+- Qualification Verdict & Match Context: ${qualificationVerdict || "None"}
+- CRM Notes: ${prospectNotes || "None"}
+
 ## Campaign Settings
 - Tone: ${tone || "Professional"}
 - Pitch Type: ${pitchType || "Cold outreach"}
@@ -1714,7 +1735,7 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
 Return plain text only. Do not use HTML, markdown, or unsupported performance claims.
 Follow the Golden Rules strictly:
 1. Never start with "I"
-2. Be specific - reference something real from their profile
+2. Be specific - prioritize referencing verified real-world facts from their profile or evidence
 3. One CTA only
 4. LinkedIn connection note: max 300 characters
 5. Cold email: max 150 words

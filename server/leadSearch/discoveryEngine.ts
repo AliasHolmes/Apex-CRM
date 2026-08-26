@@ -205,7 +205,10 @@ import {
   type FinalistCandidate,
 } from "./finalistJudge.js";
 import { buildRoundDiagnostics } from "./roundDiagnostics.js";
-import { buildCollectionCapacity } from "./collectionCapacity.js";
+import {
+  buildCollectionCapacity,
+  shouldKeepCollectingAfterStall,
+} from "./collectionCapacity.js";
 import { scheduleAdaptiveRetrievalTasks } from "./adaptiveScheduler.js";
 import { runProviderQueue } from "./providerQueue.js";
 import { runLinkedInPostIntentEnrichment } from "./linkedinPostIntent.js";
@@ -938,10 +941,7 @@ export async function executeDiscoverySession(
         )
           return true;
         if (name && name === exclusion) return true;
-        if (
-          username &&
-          (username === exclusion || exclusion === canonicalKey)
-        )
+        if (username && (username === exclusion || exclusion === canonicalKey))
           return true;
       }
       return false;
@@ -1088,7 +1088,9 @@ export async function executeDiscoverySession(
       urlRetryQueue,
       previousRoundSummary,
       signalStore: initialSignalStore,
-      recoveryAttempts: Number(options.initialCheckpoint?.recoveryAttempts || 0),
+      recoveryAttempts: Number(
+        options.initialCheckpoint?.recoveryAttempts || 0,
+      ),
     };
 
     const pipelinePorts: PipelinePorts = {
@@ -1154,7 +1156,10 @@ export async function executeDiscoverySession(
           const linkedinUrl =
             lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "";
           const username = extractLinkedInUsername(linkedinUrl);
-          if (username) seenCandidateKeys.add(username);
+          if (username) {
+            seenCandidateKeys.add(`linkedin:${username}`);
+            seenCandidateKeys.add(username);
+          }
           const normalized = normalizeLinkedInUrl(linkedinUrl);
           if (normalized) seenCandidateKeys.add(normalized);
         }
@@ -1256,7 +1261,10 @@ export async function executeDiscoverySession(
         if (planResult.adaptiveSchedulerState) {
           stats.scout.adaptiveScheduler = planResult.adaptiveSchedulerState;
         }
-        if (Array.isArray(planResult.debugLogs) && planResult.debugLogs.length > 0) {
+        if (
+          Array.isArray(planResult.debugLogs) &&
+          planResult.debugLogs.length > 0
+        ) {
           debugLogs.push(...planResult.debugLogs);
         }
 
@@ -1565,7 +1573,8 @@ export async function executeDiscoverySession(
             const canRecover =
               Boolean(
                 previousRoundSummary?.shouldRecover ||
-                  (previousRoundSummary?.missingHardRequirementIds?.length || 0) > 0,
+                (previousRoundSummary?.missingHardRequirementIds?.length || 0) >
+                  0,
               ) && (sessionState.recoveryAttempts || 0) < 2;
 
             if (consecutiveStalledRounds >= 2 && acceptedLeads.length > 0) {
@@ -1573,11 +1582,22 @@ export async function executeDiscoverySession(
                 logEvent(
                   `Round ${round}: 2 consecutive stalled rounds, but criteria are missing and recovery attempts remain (${sessionState.recoveryAttempts}/2). Continuing to recovery plan.`,
                 );
+              } else if (
+                shouldKeepCollectingAfterStall({
+                  completedRound: round,
+                  maxRounds,
+                  acceptedLeads: acceptedLeads.length,
+                  rerankPoolTarget,
+                })
+              ) {
+                logEvent(
+                  `Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Continuing bounded collection budget (${round}/${maxRounds}) with a new retrieval plan.`,
+                );
               } else {
                 logEvent(
-                  `Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Early exiting round loop with ${acceptedLeads.length} leads.`,
+                  `Round ${round}: collection budget exhausted after ${consecutiveStalledRounds} stalled rounds with ${acceptedLeads.length} leads.`,
                 );
-                stats.stopReason = "early_exit_stalled";
+                stats.stopReason = "max_rounds";
                 break;
               }
             }

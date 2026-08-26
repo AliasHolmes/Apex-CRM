@@ -9,6 +9,7 @@ import {
   type FailureClassification,
 } from "./keyRotator.js";
 import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
+import { normalizeLinkedInUrl } from "./linkedinEvidence.js";
 
 type BrightDataTransport = "hosted" | "local";
 export type BrightDataReasonCode =
@@ -1358,6 +1359,54 @@ export type BrightDataSearchOptions = {
   onBingFallback?: (event: { query: string; resultsCount: number }) => void;
 };
 
+const LINKEDIN_PROFILE_URL_PATTERN =
+  /(?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\/in\/[^\s"'<>)}\]]+/gi;
+
+/** Recover a canonical LinkedIn person URL from provider result metadata. */
+export function extractLinkedInProfileUrlFromResult(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const values: string[] = [];
+  const collect = (value: unknown, depth: number) => {
+    if (depth > 2 || value === null || value === undefined) return;
+    if (typeof value === "string") {
+      values.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const item of Object.values(value as Record<string, unknown>))
+        collect(item, depth + 1);
+    }
+  };
+  collect(result, 0);
+
+  for (const value of values) {
+    const candidates = value.match(LINKEDIN_PROFILE_URL_PATTERN) || [];
+    for (const candidate of candidates) {
+      const normalized = normalizeLinkedInUrl(
+        candidate.replace(/[.,;:]+$/, ""),
+      );
+      if (normalized) return `https://${normalized}`;
+    }
+  }
+  return "";
+}
+
+function normalizeBrightDataSearchResult(item: any): BrightDataSearchResult {
+  const directUrl = item?.link || item?.url || item?.source_url || "";
+  const profileUrl = extractLinkedInProfileUrlFromResult(item);
+  return {
+    title: item?.title || "",
+    url: profileUrl || directUrl,
+    content: item?.snippet || item?.description || item?.content || "",
+    sourceProvider: "brightdata_search" as const,
+    sourceEngine: item?.sourceEngine,
+  };
+}
+
 /** Bright Data search_engine accepts a two-letter geo_location value. */
 export function normalizeBrightDataGeoLocation(value?: string) {
   const normalized = String(value || "")
@@ -1550,13 +1599,12 @@ export async function brightDataSearch(
           ? parsed
           : parsed.organic || parsed.results || [];
         return items
-          .map((item: any) => ({
-            title: item.title || "",
-            url: item.link || item.url || "",
-            content: item.snippet || item.description || "",
-            sourceProvider: "brightdata_search" as const,
-            sourceEngine: activeEngine,
-          }))
+          .map((item: any) =>
+            normalizeBrightDataSearchResult({
+              ...item,
+              sourceEngine: activeEngine,
+            }),
+          )
           .filter((item: BrightDataSearchResult) => item.url && item.title);
       },
       { throwOnUnavailable: true, throwOnFailure: true },

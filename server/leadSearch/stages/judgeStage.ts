@@ -443,12 +443,16 @@ export async function executeJudgeStage(
       }))
       .filter((entry) => !qualifiedUrls.has(entry.url))
       // The judge said no on hard requirements; the safety net must not override that.
-      .filter(
-        (entry) =>
-          judgmentInsight.get(
-            candidateIdByLead.get(entry.lead) || `c${entry.index}`,
-          )?.status !== "hard_fail",
-      );
+      .filter((entry) => {
+        const insight = judgmentInsight.get(
+          candidateIdByLead.get(entry.lead) || `c${entry.index}`,
+        );
+        return (
+          !insight ||
+          insight.status === "qualified" ||
+          insight.status === "qualified_partial"
+        );
+      });
     for (const entry of rescuePool) {
       entry.lead.finalSelectionScore = rankLeadForFinalSelection(entry.lead);
     }

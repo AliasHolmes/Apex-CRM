@@ -530,20 +530,21 @@ export async function executeExtractStage(
       );
       const extractedLeads = Array.isArray(extracted) ? extracted : [];
       for (const lead of extractedLeads) {
-        const u =
-          extractLinkedInUsername(
-            lead.contactDetails?.linkedinUrl || lead.sourceUrl || "",
-          ) ||
-          normalizeLinkedInUrl(
-            lead.contactDetails?.linkedinUrl || lead.sourceUrl || "",
-          );
-        if (u) seenCandidateKeys.add(u);
+        const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || "";
+        const username = extractLinkedInUsername(url);
+        const normalized = normalizeLinkedInUrl(url);
+        if (username) seenCandidateKeys.add(`linkedin:${username}`);
+        if (username) seenCandidateKeys.add(username);
+        if (normalized) seenCandidateKeys.add(normalized);
       }
       const chunkLinkMatches = chunk.matchAll(/LINK:\s*([^\s\n]+)/g);
       for (const match of chunkLinkMatches) {
         const url = match[1];
-        const u = extractLinkedInUsername(url) || normalizeLinkedInUrl(url);
-        if (u) seenCandidateKeys.add(u);
+        const username = extractLinkedInUsername(url);
+        const normalized = normalizeLinkedInUrl(url);
+        if (username) seenCandidateKeys.add(`linkedin:${username}`);
+        if (username) seenCandidateKeys.add(username);
+        if (normalized) seenCandidateKeys.add(normalized);
       }
       state.debugLogs.push({
         timestamp: new Date().toISOString(),

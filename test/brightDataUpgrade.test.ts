@@ -17,6 +17,7 @@ import {
   createBrightDataMcpStderrFilter,
   executeBrightDataSearchWithEmptyBodyRecovery,
   executeBrightDataSearchWithRetry,
+  extractLinkedInProfileUrlFromResult,
   filterBrightDataMcpStderrLine,
   isEmptyBodySerpTransientError,
   normalizeBrightDataGeoLocation,
@@ -33,6 +34,31 @@ test("verifyDecisionMakerFromEvidence accepts founder", (t) => {
   });
   assert.strictEqual(result.titleMatched, true);
   assert.strictEqual(result.ignoredTitle, false);
+});
+
+test("extractLinkedInProfileUrlFromResult recovers only person profile URLs", () => {
+  assert.equal(
+    extractLinkedInProfileUrlFromResult({
+      link: "https://www.google.com/search?q=founder",
+      snippet:
+        "Profile: https://uk.linkedin.com/in/Jane-Doe/?trk=public_profile",
+    }),
+    "https://linkedin.com/in/jane-doe",
+  );
+  assert.equal(
+    extractLinkedInProfileUrlFromResult({
+      link: "https://www.linkedin.com/company/example",
+      metadata: { url: "https://linkedin.com/posts/example-123" },
+    }),
+    "",
+  );
+  assert.equal(
+    extractLinkedInProfileUrlFromResult({
+      link: "https://example.com/team/jane-doe",
+      title: "Jane Doe | Example AI",
+    }),
+    "",
+  );
 });
 
 test("verifyDecisionMakerFromEvidence rejects intern unless requested", (t) => {

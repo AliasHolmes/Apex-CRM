@@ -167,3 +167,42 @@ test('sessionStreamHub monotonic delta calculation streams continuously past rin
   assert.equal(received[9], 'log line 510');
 });
 
+test('MiningTelemetryRecorder preserves cumulative totals and costs across ring-buffer trimming', () => {
+  // Set ring buffer cap to 500
+  process.env.LEAD_TELEMETRY_MAX_EVENTS = '500';
+  const recorder = new MiningTelemetryRecorder('session-trim-test', 'test query', 5, new Date().toISOString());
+
+  // Record 600 LLM events (100 tokens and $0.001 each)
+  for (let i = 1; i <= 600; i++) {
+    recorder.record({
+      phase: 'extraction',
+      operation: 'llm_extract_chunk',
+      status: 'success',
+      provider: 'llm',
+      latencyMs: 100,
+      llm: {
+        inputTokens: 60,
+        outputTokens: 40,
+        totalTokens: 100,
+        estimatedCostUsd: 0.001
+      }
+    });
+  }
+
+  recorder.finish('success', { returned: 5, stopReason: 'target_reached' });
+
+  // Ring buffer events array is capped at 500
+  assert.equal(recorder.getEvents().length, 500);
+  assert.equal(recorder.getTrimmedEventCount(), 101); // 600 + 1 finish event = 601 total, 101 trimmed
+
+  // Summary must reflect all 601 events
+  const summary = recorder.getSummary();
+  assert.equal(summary.eventCount, 601);
+  assert.equal(summary.providerSummary.llm.calls, 600);
+  assert.equal(summary.providerSummary.llm.totalTokens, 60_000);
+  assert.equal(summary.costSummary.totalTokens, 60_000);
+  assert.equal(summary.costSummary.estimatedUsd, 0.6);
+  assert.equal(summary.phaseTimeline.find(p => p.phase === 'extraction')?.events, 600);
+});
+
+

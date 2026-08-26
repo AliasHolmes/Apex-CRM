@@ -689,7 +689,11 @@ export async function executeDiscoverySession(
             buildSearchSpecPrompt(query),
             searchSpecSchema,
             STRATEGIST_SYSTEM_PROMPT,
-            { maxTokens: 700, temperature: 0 },
+            {
+              maxTokens: 700,
+              temperature: 0,
+              signal: sessionAbortController.signal,
+            },
           ),
           query,
         );
@@ -731,7 +735,11 @@ export async function executeDiscoverySession(
           contractPrompt,
           prospectContractSchema,
           `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
-          { maxTokens: 1000, temperature: 0 },
+          {
+            maxTokens: 1000,
+            temperature: 0,
+            signal: sessionAbortController.signal,
+          },
         );
         contract = normalizeProspectContract(compiled, query, fallbackContract);
         const hardCount = contract.requirements.filter(

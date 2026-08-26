@@ -60,11 +60,12 @@ export type LLMSessionCircuitBreaker = {
   disabledProviderIds: Set<LLMProvider["id"]>;
 };
 
-type LLMExecutionOptions = {
+export type LLMExecutionOptions = {
   onProviderAttempt?: (attempt: LLMProviderAttempt) => void;
   onUsage?: (usage: LLMUsage) => void;
   timeoutMs?: number;
   circuitBreaker?: LLMSessionCircuitBreaker;
+  signal?: AbortSignal;
 };
 
 export function createLLMSessionCircuitBreaker(
@@ -236,7 +237,9 @@ async function fetchWithRetry(
     if (callerSignal) {
       if (callerSignal.aborted) {
         clearTimeout(timer);
-        throw new Error("LLM request cancelled");
+        const abortErr = new Error("LLM request was aborted by caller.");
+        abortErr.name = "AbortError";
+        throw abortErr;
       }
       if (typeof AbortSignal.any === "function") {
         compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
@@ -288,6 +291,14 @@ async function fetchWithRetry(
       return res;
     } catch (err: any) {
       clearTimeout(timer);
+      if (
+        callerSignal?.aborted ||
+        (err?.name === "AbortError" && callerSignal?.aborted)
+      ) {
+        const abortErr = new Error("LLM request was aborted by caller.");
+        abortErr.name = "AbortError";
+        throw abortErr;
+      }
       lastError =
         err?.name === "AbortError"
           ? new Error(`LLM request timed out after ${timeoutMs / 1000}s`)
@@ -367,6 +378,12 @@ async function withProviderFallback<T>(
   operation: (provider: LLMProvider) => Promise<T>,
   executionOptions: LLMExecutionOptions = {},
 ): Promise<T> {
+  if (executionOptions.signal?.aborted) {
+    const cancelError = new Error("LLM request was aborted by caller.");
+    cancelError.name = "AbortError";
+    throw cancelError;
+  }
+
   const providers = getConfiguredLLMProviders();
   if (providers.length === 0) {
     throw new Error(
@@ -376,6 +393,12 @@ async function withProviderFallback<T>(
 
   const failures: Error[] = [];
   for (const provider of providers) {
+    if (executionOptions.signal?.aborted) {
+      const cancelError = new Error("LLM request was aborted by caller.");
+      cancelError.name = "AbortError";
+      throw cancelError;
+    }
+
     if (executionOptions.circuitBreaker?.disabledProviderIds.has(provider.id)) {
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
@@ -403,6 +426,13 @@ async function withProviderFallback<T>(
       const normalized =
         error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
+      if (
+        executionOptions.signal?.aborted ||
+        normalized.name === "AbortError" ||
+        normalized.message.includes("aborted")
+      ) {
+        throw normalized;
+      }
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
@@ -446,7 +476,7 @@ async function sendChatCompletion(
     maxTokens?: number;
     temperature?: number;
     responseFormat?: { type: "json_object" };
-  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs">,
+  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "signal">,
 ): Promise<string> {
   let res: Response;
   try {
@@ -473,10 +503,14 @@ async function sendChatCompletion(
             ? { response_format: options.responseFormat }
             : {}),
         }),
+        signal: options?.signal,
       },
       options?.timeoutMs,
     );
   } catch (error: any) {
+    if (error?.name === "AbortError" || options?.signal?.aborted) {
+      throw error;
+    }
     throw new LLMProviderError(
       provider,
       undefined,

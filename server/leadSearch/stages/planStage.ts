@@ -121,6 +121,7 @@ export async function executePlanStage(
           maxTokens: 800,
           temperature: 0.1,
           circuitBreaker: state.llmCircuitBreaker,
+          signal: state.abortController.signal,
           onProviderAttempt: (attempt) =>
             strategyProviderAttempts.push(attempt),
         },

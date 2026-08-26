@@ -460,7 +460,11 @@ export function computeParetoFrontier<T extends Record<string, any>>(candidates:
   skyline: T[];
   nonSkyline: T[];
 } {
-  if (candidates.length <= 1) return { skyline: candidates, nonSkyline: [] };
+  if (candidates.length === 0) return { skyline: [], nonSkyline: [] };
+  if (candidates.length === 1) {
+    (candidates[0] as any).paretoSkyline = true;
+    return { skyline: candidates, nonSkyline: [] };
+  }
 
   const vectors = candidates.map(c => extractObjectiveVector(c));
   const isDominated = new Array<boolean>(candidates.length).fill(false);

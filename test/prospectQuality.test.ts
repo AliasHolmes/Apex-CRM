@@ -19,7 +19,7 @@ import { buildStrategistPrompt } from '../server/leadSearch/searchSpec.ts';
 import { buildRoundDiagnostics } from '../server/leadSearch/roundDiagnostics.ts';
 import { selectEvidenceForFinalist } from '../server/leadSearch/evidenceSelection.ts';
 import { verifyDecisionMakerFromEvidence } from '../server/leadSearch/verification.ts';
-import { computeMMRDiversitySelection, computeScoreBreakdown } from '../server/leadSearch/scoring.ts';
+import { computeMMRDiversitySelection, computeScoreBreakdown, computeParetoFrontier } from '../server/leadSearch/scoring.ts';
 import { createLeadEvidence } from '../server/leadSearch/evidence.ts';
 import { mapCandidateToPersistedLead } from '../server/leadSearch/discoveryEngine.ts';
 import {
@@ -930,5 +930,25 @@ describe('evidence-grounded prospect quality', () => {
     assert.equal(queryRun.requirementFailCounts['person_role'], 1);
     assert.equal(queryRun.requirementFailCounts['company_location'], undefined);
   });
+
+  it('marks a single candidate as paretoSkyline true in computeParetoFrontier', () => {
+    const singleLead = {
+      id: 'solo-1',
+      fullName: 'Solo Founder',
+      currentTitle: 'Founder & CEO',
+      currentCompany: 'SoloTech',
+      authorityScore: 10,
+      intentScore: 8,
+      postIntentScore: 7,
+      evidenceQuality: 'strong'
+    };
+
+    const result = computeParetoFrontier([singleLead]);
+    assert.equal(result.skyline.length, 1);
+    assert.equal(result.nonSkyline.length, 0);
+    assert.equal((result.skyline[0] as any).paretoSkyline, true);
+    assert.equal((singleLead as any).paretoSkyline, true);
+  });
 });
+
 

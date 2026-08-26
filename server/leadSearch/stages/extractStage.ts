@@ -499,6 +499,7 @@ export async function executeExtractStage(
               maxTokens: outputTokenBudget,
               temperature: 0.0,
               circuitBreaker: llmCircuitBreaker,
+              signal: state.abortController.signal,
               onProviderAttempt: (attempt) =>
                 extractionProviderAttempts.push(attempt),
             },

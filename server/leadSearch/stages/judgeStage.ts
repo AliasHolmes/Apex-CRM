@@ -192,6 +192,7 @@ export async function executeJudgeStage(
             retryOnParseFailure: false,
             timeoutMs: Number(process.env.LLM_FINALIST_TIMEOUT_MS || 90_000),
             circuitBreaker: llmCircuitBreaker,
+            signal: state.abortController.signal,
             onProviderAttempt: (attempt) => judgeAttempts.push(attempt),
             onUsage: (usage) => {
               judgeUsage = usage;

@@ -386,4 +386,37 @@ describe('LLM gateway and provider fallback', () => {
       /No LLM provider available/
     );
   });
+
+  it('aborts in-flight LLM requests immediately when signal is cancelled without fallback loop', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('abort-signal');
+    const controller = new AbortController();
+    const calls: string[] = [];
+
+    globalThis.fetch = async (url, options: any) => {
+      calls.push(url.toString());
+      // Abort signal while request is in flight
+      controller.abort();
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await llm.openAIText('test prompt', undefined, { signal: controller.signal });
+      },
+      (err: any) => {
+        assert.equal(err.name, 'AbortError');
+        return true;
+      }
+    );
+
+    // Only attempted the first provider, did not failover to openrouter
+    assert.equal(calls.length, 1);
+  });
 });
+

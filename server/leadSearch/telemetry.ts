@@ -290,41 +290,78 @@ function blankProviderSummary(): ProviderSummary {
   return summary;
 }
 
+function accumulateProviderEvent(
+  summary: ProviderSummary,
+  event: MiningTraceEvent,
+) {
+  if (!event.provider) return;
+  const item =
+    summary[event.provider] ||
+    (summary[event.provider] = blankProviderSummary()[event.provider]);
+  if (event.status === "started") return;
+  item.calls++;
+  if (event.status === "success") item.successes++;
+  else if (event.status === "error") item.failures++;
+  else if (event.status === "skipped") item.skipped++;
+  item.latencyMs += Number(event.latencyMs || 0);
+  item.inputTokens += Number(event.llm?.inputTokens || 0);
+  item.outputTokens += Number(event.llm?.outputTokens || 0);
+  const explicitTotal = Number(event.llm?.totalTokens);
+  const inferredTotal =
+    Number(event.llm?.inputTokens || 0) +
+    Number(event.llm?.outputTokens || 0);
+  item.totalTokens +=
+    Number.isFinite(explicitTotal) && explicitTotal > 0
+      ? explicitTotal
+      : inferredTotal;
+  item.estimatedCostUsd = Number(
+    (
+      item.estimatedCostUsd + Number(event.llm?.estimatedCostUsd || 0)
+    ).toFixed(6),
+  );
+  if (event.llm?.fallbackUsed) item.fallbackUses++;
+  item.avgLatencyMs =
+    item.calls > 0 ? Math.round(item.latencyMs / item.calls) : 0;
+}
+
 function summarizeProviders(events: MiningTraceEvent[]): ProviderSummary {
   const summary = blankProviderSummary();
   for (const event of events) {
-    if (!event.provider) continue;
-    const item =
-      summary[event.provider] ||
-      (summary[event.provider] = blankProviderSummary()[event.provider]);
-    if (event.status === "started") continue;
-    item.calls++;
-    if (event.status === "success") item.successes++;
-    else if (event.status === "error") item.failures++;
-    else if (event.status === "skipped") item.skipped++;
-    item.latencyMs += Number(event.latencyMs || 0);
-    item.inputTokens += Number(event.llm?.inputTokens || 0);
-    item.outputTokens += Number(event.llm?.outputTokens || 0);
-    const explicitTotal = Number(event.llm?.totalTokens);
-    const inferredTotal =
-      Number(event.llm?.inputTokens || 0) +
-      Number(event.llm?.outputTokens || 0);
-    item.totalTokens +=
-      Number.isFinite(explicitTotal) && explicitTotal > 0
-        ? explicitTotal
-        : inferredTotal;
-    item.estimatedCostUsd = Number(
-      (
-        item.estimatedCostUsd + Number(event.llm?.estimatedCostUsd || 0)
-      ).toFixed(6),
-    );
-    if (event.llm?.fallbackUsed) item.fallbackUses++;
-  }
-  for (const item of Object.values(summary)) {
-    item.avgLatencyMs =
-      item.calls > 0 ? Math.round(item.latencyMs / item.calls) : 0;
+    accumulateProviderEvent(summary, event);
   }
   return summary;
+}
+
+function accumulatePhaseEvent(
+  byPhase: Map<
+    MiningPhase,
+    PhaseTimelineItem & { firstMs?: number; lastMs?: number }
+  >,
+  event: MiningTraceEvent,
+) {
+  const atMs = Date.parse(event.timestamp);
+  const existing = byPhase.get(event.phase) || {
+    phase: event.phase,
+    status: "info" as MiningEventStatus,
+    events: 0,
+  };
+  existing.events++;
+  if (Number.isFinite(atMs)) {
+    existing.firstMs =
+      existing.firstMs === undefined
+        ? atMs
+        : Math.min(existing.firstMs, atMs);
+    existing.lastMs =
+      existing.lastMs === undefined ? atMs : Math.max(existing.lastMs, atMs);
+    existing.startedAt = new Date(existing.firstMs).toISOString();
+    existing.endedAt = new Date(existing.lastMs).toISOString();
+    existing.durationMs = Math.max(0, existing.lastMs - existing.firstMs);
+  }
+  if (event.status === "error") existing.status = "error";
+  else if (existing.status !== "error" && event.status === "success")
+    existing.status = "success";
+  else if (existing.status === "info") existing.status = event.status;
+  byPhase.set(event.phase, existing);
 }
 
 function summarizePhases(events: MiningTraceEvent[]): PhaseTimelineItem[] {
@@ -333,29 +370,7 @@ function summarizePhases(events: MiningTraceEvent[]): PhaseTimelineItem[] {
     PhaseTimelineItem & { firstMs?: number; lastMs?: number }
   >();
   for (const event of events) {
-    const atMs = Date.parse(event.timestamp);
-    const existing = byPhase.get(event.phase) || {
-      phase: event.phase,
-      status: "info" as MiningEventStatus,
-      events: 0,
-    };
-    existing.events++;
-    if (Number.isFinite(atMs)) {
-      existing.firstMs =
-        existing.firstMs === undefined
-          ? atMs
-          : Math.min(existing.firstMs, atMs);
-      existing.lastMs =
-        existing.lastMs === undefined ? atMs : Math.max(existing.lastMs, atMs);
-      existing.startedAt = new Date(existing.firstMs).toISOString();
-      existing.endedAt = new Date(existing.lastMs).toISOString();
-      existing.durationMs = Math.max(0, existing.lastMs - existing.firstMs);
-    }
-    if (event.status === "error") existing.status = "error";
-    else if (existing.status !== "error" && event.status === "success")
-      existing.status = "success";
-    else if (existing.status === "info") existing.status = event.status;
-    byPhase.set(event.phase, existing);
+    accumulatePhaseEvent(byPhase, event);
   }
   return Array.from(byPhase.values()).map(
     ({ firstMs, lastMs, ...item }) => item,
@@ -370,6 +385,11 @@ export class MiningTelemetryRecorder {
   private finalStats?: Record<string, any>;
   private maxEvents: number;
   private eventsTrimmed = 0;
+  private cumulativeProviderSummary: ProviderSummary = blankProviderSummary();
+  private phaseTimelineAccumulator = new Map<
+    MiningPhase,
+    PhaseTimelineItem & { firstMs?: number; lastMs?: number }
+  >();
 
   constructor(
     private readonly sessionId: string,
@@ -399,6 +419,10 @@ export class MiningTelemetryRecorder {
         : undefined,
       metadata: event.metadata ? sanitizeMetadata(event.metadata) : undefined,
     };
+
+    accumulateProviderEvent(this.cumulativeProviderSummary, traceEvent);
+    accumulatePhaseEvent(this.phaseTimelineAccumulator, traceEvent);
+
     this.events.push(traceEvent);
     // Ring behavior: keep memory bounded for long sessions. Oldest events are
     // dropped; summaries still reflect totals via eventCount accounting below.
@@ -470,7 +494,9 @@ export class MiningTelemetryRecorder {
   }
 
   getSummary(): MiningTraceSummary {
-    const providerSummary = summarizeProviders(this.events);
+    const providerSummary = JSON.parse(
+      JSON.stringify(this.cumulativeProviderSummary),
+    );
     const llm = providerSummary.llm || blankProviderSummary().llm;
     const returned = Number(this.finalStats?.returned || 0);
     const costSummary: CostSummary = {
@@ -488,6 +514,9 @@ export class MiningTelemetryRecorder {
     const endedAt = this.endedAt;
     const startMs = Date.parse(this.startedAt);
     const endMs = endedAt ? Date.parse(endedAt) : undefined;
+    const phaseTimeline = Array.from(
+      this.phaseTimelineAccumulator.values(),
+    ).map(({ firstMs, lastMs, ...item }) => item);
     return {
       sessionId: this.sessionId,
       query: this.query,
@@ -501,10 +530,10 @@ export class MiningTelemetryRecorder {
           : undefined,
       stopReason: this.finalStats?.stopReason,
       returned,
-      eventCount: this.events.length,
+      eventCount: this.sequence,
       providerSummary,
       costSummary,
-      phaseTimeline: summarizePhases(this.events),
+      phaseTimeline,
     };
   }
 

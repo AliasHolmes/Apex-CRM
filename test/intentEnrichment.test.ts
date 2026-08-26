@@ -157,3 +157,19 @@ test('runIntentEnrichment respects companyIntentMaxPerSearch cap ordering', asyn
   assert.strictEqual(qualifiedLeads.get('cand-4')?.finalSelectionScore, 9.4);  // 9.0 + 0.40 = 9.4
   assert.strictEqual(qualifiedLeads.get('cand-1')?.finalSelectionScore, 6.0);  // untouched
 });
+
+test('SignalCorpus.computeWeight calculates positive smoothed IDF for small/early corpora', async () => {
+  const { SignalCorpus } = await import('../server/leadSearch/companyIntent.js');
+  const corpus = new SignalCorpus();
+
+  // Register 1 document with 'hiring' signal
+  corpus.registerOccurrences(['hiring']);
+  assert.strictEqual(corpus.total, 1);
+
+  // When totalDocs = 1 and df = 1:
+  // Math.log(1 + 1 / (1 + 1)) = Math.log(1.5) = 0.405465... > 0
+  const weight = corpus.computeWeight('hiring', 2);
+  assert.ok(weight > 0, `Expected weight > 0, got ${weight}`);
+  assert.strictEqual(Number(weight.toFixed(3)), 0.811);
+});
+

@@ -69,6 +69,7 @@ class MiningTraceStore {
     try {
       const sse = new EventSource(`/api/mining-sessions/${sessionId}/stream`);
       this.activeEventSources.set(sessionId, sse);
+      let isInitialSnapshot = true;
 
       sse.onopen = () => {
         const state = this.getState(sessionId);
@@ -82,12 +83,24 @@ class MiningTraceStore {
           const state = this.getState(sessionId);
 
           let nextLogs = state.logs;
-          if (Array.isArray(data.logs) && data.logs.length > 0) {
+          if (isInitialSnapshot) {
+            if (Array.isArray(data.logs)) {
+              nextLogs = data.logs;
+            }
+          } else if (Array.isArray(data.logs) && data.logs.length > 0) {
             nextLogs = [...state.logs, ...data.logs];
           }
 
           let nextEvents = state.traceEvents;
-          if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
+          if (isInitialSnapshot) {
+            if (Array.isArray(data.traceEvents)) {
+              nextEvents = data.traceEvents;
+              if (nextEvents.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
+                onPersistenceEvent?.();
+              }
+            }
+            isInitialSnapshot = false;
+          } else if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
             const seenIds = new Set(state.traceEvents.map(e => e.id));
             const newEvents = data.traceEvents.filter((e: MiningTraceEvent) => !seenIds.has(e.id));
             if (newEvents.length > 0) {

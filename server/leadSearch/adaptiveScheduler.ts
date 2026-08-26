@@ -249,7 +249,7 @@ export function scheduleAdaptiveRetrievalTasks(
     decisions: ranked.map(item => ({
       scopeKey: item.scopeKey,
       query: item.task.query,
-      selected: selectedQueries.has(item.task.query),
+      selected: selectedIndexes.has(item.originalIndex),
       score: Number(item.score.toFixed(4)),
       outcomeRuns: item.outcomeRuns,
       reason: guardedReasons.get(item.originalIndex) || item.reason,

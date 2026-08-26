@@ -95,9 +95,12 @@ const candidateKey = (c: any): string => {
     c?.profile?.fullName ||
     c?.contactDetails?.linkedinUrl ||
     c?.profile?.contactDetails?.linkedinUrl ||
+    c?.linkedinUrl ||
     c?.sourceUrl ||
     c?.evidence?.sourceUrl ||
-    Math.random()
+    c?.email ||
+    c?.profile?.email ||
+    (c ? JSON.stringify(c) : 'unknown')
   );
 };
 

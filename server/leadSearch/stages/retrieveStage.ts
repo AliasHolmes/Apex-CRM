@@ -464,8 +464,12 @@ export async function executeRetrieveStage(
           item: {
             title: res.title,
             url: res.url,
-            content: res.snippet || res.description || "",
-            sourceProvider: "brightdata",
+            content: res.snippet || res.description || res.content || "",
+            sourceProvider:
+              result.fallbackProvider === "tavily" ||
+              res.sourceProvider === "tavily"
+                ? "tavily"
+                : "brightdata",
           },
           resultIndex: index,
         });

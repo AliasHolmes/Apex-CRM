@@ -37,7 +37,7 @@ export class SignalCorpus {
    */
   computeWeight(signal: string, termCount: number): number {
     const df = this.docFrequency.get(signal.toLowerCase()) ?? 0;
-    const idf = Math.log(Math.max(1, this.totalDocs) / (1 + df));
+    const idf = Math.log(1 + Math.max(1, this.totalDocs) / (1 + df));
     return Math.max(0, termCount * idf);
   }
 

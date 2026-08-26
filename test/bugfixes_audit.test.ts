@@ -202,3 +202,69 @@ test("selectDiversifiedLeads outputs consistent scores for both Pareto and MMR l
     );
   }
 });
+
+test("candidateKey determinism prevents Pareto reservation duplication", () => {
+  const c1 = { fullName: "Alice", currentCompany: "Co1", finalSelectionScore: 9.0 };
+  const c2 = { fullName: "Bob", currentCompany: "Co2", finalSelectionScore: 8.5 };
+
+  // Testing selectDiversifiedLeads with candidates without explicit IDs
+  const selected = selectDiversifiedLeads([c1, c2], 2, 1);
+  assert.equal(selected.length, 2);
+  const names = selected.map(s => (s as any).fullName);
+  assert.ok(names.includes("Alice"));
+  assert.ok(names.includes("Bob"));
+});
+
+test("executeFuseStage accurately classifies both 'brightdata' and 'brightdata_search' sourceProviders", async () => {
+  const { executeFuseStage } = await import("../server/leadSearch/stages/fuseStage.ts");
+
+  const mockCtx: any = {
+    config: { sessionId: "test-session", promptQuery: "founders", targetLimit: 10 },
+    state: {
+      seenCandidateKeys: new Set<string>(),
+      existingKeys: new Set<string>(),
+      acceptedLeads: [],
+    },
+    logEvent: () => {},
+  };
+
+  const output = await executeFuseStage(mockCtx, {
+    round: 1,
+    roundItems: [
+      {
+        item: {
+          title: "Jane Doe - Founder",
+          url: "https://www.linkedin.com/in/janedoe",
+          content: "Founder at Acme Corp",
+          sourceProvider: "brightdata",
+        },
+        resultIndex: 0,
+      },
+    ],
+    roundPlans: [
+      {
+        executableQuery: "founders",
+        item: { family: "persona_title", lane: "person", priority: 1 } as any,
+      } as any,
+    ],
+    queryRuns: [
+      {
+        query: "founders",
+        rawCandidates: 0,
+        providerUnits: 1,
+        searchLatencyMs: 100,
+        acceptedLeads: 0,
+        qualifiedFinalists: 0,
+        rescuedFinalists: 0,
+        returnedFinalists: 0,
+        rejectionReasons: {},
+      } as any,
+    ],
+    stats: { rejectionReasons: {} },
+  });
+
+  assert.equal(output.candidateItems.length, 1);
+  assert.equal(output.candidateItems[0].sourceProvider, "brightdata_search");
+  assert.deepEqual(output.candidateItems[0]._sourceProviders, ["brightdata"]);
+});
+

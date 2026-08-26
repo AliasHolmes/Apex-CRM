@@ -72,7 +72,10 @@ export async function executeFuseStage(
         url: String(item.url || item.link || ""),
         content: String(item.content || item.snippet || item.raw_content || ""),
         provider:
-          item.sourceProvider === "brightdata_search" ? "brightdata" : "tavily",
+          item.sourceProvider === "brightdata_search" ||
+          item.sourceProvider === "brightdata"
+            ? "brightdata"
+            : "tavily",
         query: plan?.executableQuery || config.promptQuery,
         round,
         family: plan?.item.family,
@@ -195,7 +198,7 @@ export async function executeFuseStage(
 
   const candidateBudget = Math.min(
     uniqueRoundItems.length,
-    Math.max(config.targetLimit * 4, 4),
+    Math.max(Number(config.targetLimit || 1) * 4, 4),
   );
   const candidateItems = uniqueRoundItems.slice(0, candidateBudget);
   logEvent(

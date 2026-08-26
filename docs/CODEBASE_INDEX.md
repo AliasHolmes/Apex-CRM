@@ -24,7 +24,7 @@ Primary reference docs:
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~6,733 lines                                        |
 | REST routes                                                      | 38 (all under `/api`)                               |
 | SQLite tables                                                    | 15 tables + leads_fts virtual table (schema v17, WAL mode)   |
-| Test suite                                                       | 32 files, 260 tests                                |
+| Test suite                                                       | 33 files, 264 tests                                |
 
 ## 3. Tech stack
 

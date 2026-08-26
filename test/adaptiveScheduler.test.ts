@@ -176,4 +176,31 @@ describe('provider-aware promise queue', () => {
     assert.equal(promotedDecision.selected, true);
     assert.equal(promotedDecision.reason, 'exploration');
   });
+
+  it('correctly isolates decision selection flags when tasks share identical query strings', () => {
+    const collidingTasks = [
+      task('same query', 'persona_title', 'person', 'tavily', 1),
+      task('same query', 'growth_signal', 'signal', 'brightdata', 2),
+      task('other query 1', 'local_market', 'account', 'brightdata', 3),
+      task('other query 2', 'tooling_signal', 'signal', 'brightdata', 4)
+    ];
+
+    const history = [
+      { family: 'persona_title', lane: 'person', provider: 'tavily', outcome_runs: 8, qualified_candidates: 6, returned_candidates: 5 },
+      { family: 'growth_signal', lane: 'signal', provider: 'brightdata', outcome_runs: 8, qualified_candidates: 0, returned_candidates: 0 }
+    ];
+
+    const result = scheduleAdaptiveRetrievalTasks(collidingTasks, history, {
+      maxTasks: 1, minOutcomeRuns: 4
+    });
+
+    // Exactly 1 task selected
+    assert.equal(result.tasks.length, 1);
+    const personDecision = result.decisions.find(d => d.scopeKey.includes('person'));
+    const signalDecision = result.decisions.find(d => d.scopeKey.includes('signal'));
+
+    assert.equal(personDecision?.selected, true);
+    assert.equal(signalDecision?.selected, false);
+  });
 });
+

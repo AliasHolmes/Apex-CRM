@@ -465,6 +465,10 @@ export class MiningTelemetryRecorder {
     return this.eventsTrimmed;
   }
 
+  getTotalEventsRecorded(): number {
+    return this.sequence;
+  }
+
   getSummary(): MiningTraceSummary {
     const providerSummary = summarizeProviders(this.events);
     const llm = providerSummary.llm || blankProviderSummary().llm;

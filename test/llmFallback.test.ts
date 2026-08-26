@@ -158,6 +158,35 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(breaker.disabledProviderIds.has('primary'), true);
   });
 
+  it('does not trip the session circuit breaker on transient 429 rate limits', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('circuit-breaker-429');
+    const breaker = llm.createLLMSessionCircuitBreaker(2);
+    const calls: string[] = [];
+
+    globalThis.fetch = async (url) => {
+      calls.push(url.toString());
+      if (url.toString().startsWith('https://byesu.com/')) {
+        return new Response('rate limited', { status: 429 });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'fallback ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    for (let call = 0; call < 3; call++) {
+      await llm.openAIText('test prompt', undefined, { circuitBreaker: breaker });
+    }
+
+    // All 3 calls attempted primary first because 429 does not trip the breaker
+    assert.equal(calls.filter(url => url.startsWith('https://byesu.com/')).length, 3);
+    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 3);
+    assert.equal(breaker.disabledProviderIds.has('primary'), false);
+  });
+
   it('never retries an unchanged 413 payload', async () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.LLM_MAX_RETRIES = '3';

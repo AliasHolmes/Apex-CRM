@@ -76,3 +76,14 @@ test('status summaries do not expose raw key values', async () => {
   assert.equal(status.keys[0].label, 'key_1');
   assert.equal(status.keys[0].fingerprint.length, 8);
 });
+
+test('executeWithKeyRotation formats error cleanly when all keys are in cooldown prior to call', async () => {
+  const pool = new ApiKeyPool('Mock', () => ['key1']);
+  pool.markFailure('key1', { kind: 'exhausted', message: 'credit balance zero' });
+
+  await assert.rejects(
+    executeWithKeyRotation(pool, async () => ({ ok: true })),
+    /All configured Mock API keys failed: No healthy Mock API keys are available\./
+  );
+});
+

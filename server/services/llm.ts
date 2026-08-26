@@ -179,10 +179,15 @@ function getConfiguredLLMProviders(): LLMProvider[] {
 }
 
 export function getLLMProviderSummaries(): LLMProviderSummary[] {
+  const isLiteLLM = getGatewayMode() === "litellm";
   return getLLMProviderCandidates().map(({ apiKey, headers, ...provider }) => ({
     ...provider,
     configured:
-      provider.id === "litellm" ? getGatewayMode() === "litellm" : !!apiKey,
+      provider.id === "litellm"
+        ? isLiteLLM
+        : isLiteLLM && provider.id === "primary"
+          ? false
+          : !!apiKey,
   }));
 }
 
@@ -337,10 +342,11 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
   const isTokenLimit =
     error instanceof LLMProviderError ? error.isTokenLimit : false;
+  // 429 rate limits are transient per-call events handled via backoff/fallback;
+  // only hard availability / infrastructure failures trip the session circuit breaker.
   if (
     status === 408 ||
     status === 413 ||
-    status === 429 ||
     status === 502 ||
     status === 503 ||
     status === 504 ||
@@ -352,7 +358,7 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     /empty or invalid response|unable to get json response/i.test(error.message)
   )
     return true;
-  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|rate_limit_exceeded/i.test(
+  return /timed out|timeout|connection timed out|no deployments available|cooldown|413/i.test(
     error.message,
   );
 }

@@ -303,6 +303,7 @@ export type ExecuteDiscoveryOptions = {
   startedAt: number;
   sessionAbortController: AbortController;
   activeSessions: Map<string, string[]>;
+  activeSessionLogTotals?: Map<string, number>;
   activeSessionControllers: Map<string, AbortController>;
   activeSessionEvents: Map<string, MiningTelemetryRecorder>;
   cancelledSessions: Set<string>;
@@ -325,6 +326,7 @@ export async function executeDiscoverySession(
     startedAt,
     sessionAbortController,
     activeSessions,
+    activeSessionLogTotals,
     activeSessionControllers,
     activeSessionEvents,
     cancelledSessions,
@@ -353,6 +355,12 @@ export async function executeDiscoverySession(
       : `[${new Date().toISOString()}] ${msg}`;
     console.log(line);
     sessionLogs.push(line);
+    if (activeSessionLogTotals) {
+      activeSessionLogTotals.set(
+        sessionId,
+        (activeSessionLogTotals.get(sessionId) || 0) + 1,
+      );
+    }
     // Bound session log memory for very long sessions (last 500 lines kept).
     if (sessionLogs.length > 500) {
       sessionLogs.splice(0, sessionLogs.length - 500);
@@ -1619,6 +1627,7 @@ export async function executeDiscoverySession(
     throw error;
   } finally {
     activeSessions.delete(sessionId);
+    activeSessionLogTotals?.delete(sessionId);
     activeSessionEvents.delete(sessionId);
     cancelledSessions.delete(sessionId);
     activeSessionControllers.delete(sessionId);
@@ -1643,6 +1652,7 @@ export class SessionAlreadyActiveError extends Error {
 
 export class DiscoverySessionEngine {
   private activeSessions = new Map<string, string[]>();
+  private activeSessionLogTotals = new Map<string, number>();
   private activeSessionControllers = new Map<string, AbortController>();
   private activeSessionEvents = new Map<string, MiningTelemetryRecorder>();
   private cancelledSessions = new Set<string>();
@@ -1656,6 +1666,7 @@ export class DiscoverySessionEngine {
   private tryClaim(sessionId: string): boolean {
     if (this.activeSessions.has(sessionId)) return false;
     this.activeSessions.set(sessionId, []);
+    this.activeSessionLogTotals.set(sessionId, 0);
     return true;
   }
 
@@ -1678,13 +1689,31 @@ export class DiscoverySessionEngine {
     return this.activeSessionEvents.get(sessionId)?.getEvents() || null;
   }
 
+  getLiveTraceTotal(sessionId: string): number {
+    return (
+      this.activeSessionEvents.get(sessionId)?.getTotalEventsRecorded() ??
+      (this.activeSessionEvents.get(sessionId)?.getEvents()?.length || 0)
+    );
+  }
+
   getLiveLogs(sessionId: string): string[] | null {
     return this.activeSessions.get(sessionId) || null;
+  }
+
+  getLiveLogTotal(sessionId: string): number {
+    return (
+      this.activeSessionLogTotals.get(sessionId) ??
+      (this.activeSessions.get(sessionId)?.length || 0)
+    );
   }
 
   addLog(sessionId: string, message: string): void {
     const logs = this.activeSessions.get(sessionId) || [];
     logs.push(message);
+    this.activeSessionLogTotals.set(
+      sessionId,
+      (this.activeSessionLogTotals.get(sessionId) || 0) + 1,
+    );
     this.activeSessions.set(sessionId, logs);
   }
 
@@ -1721,6 +1750,7 @@ export class DiscoverySessionEngine {
       startedAt: Date.now(),
       sessionAbortController,
       activeSessions: this.activeSessions,
+      activeSessionLogTotals: this.activeSessionLogTotals,
       activeSessionControllers: this.activeSessionControllers,
       activeSessionEvents: this.activeSessionEvents,
       cancelledSessions: this.cancelledSessions,
@@ -1753,6 +1783,7 @@ export class DiscoverySessionEngine {
     const checkpoint = readMiningSessionCheckpoint(trimmedId);
     if (!checkpoint) {
       this.activeSessions.delete(trimmedId);
+      this.activeSessionLogTotals.delete(trimmedId);
       throw new Error(
         `No resumable checkpoint found for session: ${trimmedId}`,
       );
@@ -1768,6 +1799,7 @@ export class DiscoverySessionEngine {
       startedAt: Date.now(),
       sessionAbortController,
       activeSessions: this.activeSessions,
+      activeSessionLogTotals: this.activeSessionLogTotals,
       activeSessionControllers: this.activeSessionControllers,
       activeSessionEvents: this.activeSessionEvents,
       cancelledSessions: this.cancelledSessions,

@@ -209,6 +209,7 @@ export class ApiKeyPool {
   }
 
   markSuccess(key: string) {
+    this.refresh();
     const entry = this.entries.get(key);
     if (!entry) return;
     entry.status = 'active';
@@ -220,6 +221,7 @@ export class ApiKeyPool {
   }
 
   markFailure(key: string, classification: FailureClassification, now = Date.now()) {
+    this.refresh(now);
     const entry = this.entries.get(key);
     if (!entry) return;
     entry.failures++;
@@ -319,7 +321,13 @@ export async function executeWithKeyRotation<T>(
   const failures: Error[] = [];
 
   while (attempted.size < pool.getStatus().total) {
-    const selected = pool.nextKey(attempted);
+    let selected;
+    try {
+      selected = pool.nextKey(attempted);
+    } catch (error) {
+      failures.push(error instanceof Error ? error : new Error(String(error)));
+      break;
+    }
     attempted.add(selected.key);
 
     try {

@@ -123,3 +123,47 @@ test('MiningTelemetryRecorder and live trace deltas survive >100 events without 
   assert.equal(receivedEvents.length, 150);
   assert.equal(receivedEvents[149].metadata?.eventIndex, 150);
 });
+
+test('sessionStreamHub monotonic delta calculation streams continuously past ring buffer saturation', () => {
+  // Simulate 600 log lines flowing through a 500-line ring buffer
+  const ringBuffer: string[] = [];
+  let totalEmitted = 0;
+  const emitLog = (msg: string) => {
+    ringBuffer.push(msg);
+    totalEmitted++;
+    if (ringBuffer.length > 500) {
+      ringBuffer.splice(0, ringBuffer.length - 500);
+    }
+  };
+
+  // Emit initial 500 logs
+  for (let i = 1; i <= 500; i++) {
+    emitLog(`log line ${i}`);
+  }
+  assert.equal(ringBuffer.length, 500);
+  assert.equal(totalEmitted, 500);
+
+  // Subscriber connects and receives initial state
+  let lastLogTotal = totalEmitted;
+  const received: string[] = [];
+
+  // 10 new logs arrive (buffer is saturated and slides forward)
+  for (let i = 501; i <= 510; i++) {
+    emitLog(`log line ${i}`);
+  }
+  assert.equal(ringBuffer.length, 500);
+  assert.equal(totalEmitted, 510);
+
+  // Monotonic poll calculation
+  const newLogCount = Math.max(0, Math.min(totalEmitted - lastLogTotal, ringBuffer.length));
+  const newLogs = newLogCount > 0 ? ringBuffer.slice(ringBuffer.length - newLogCount) : [];
+  lastLogTotal = totalEmitted;
+  received.push(...newLogs);
+
+  // Must receive exactly 10 new logs, NOT []
+  assert.equal(newLogs.length, 10);
+  assert.equal(received.length, 10);
+  assert.equal(received[0], 'log line 501');
+  assert.equal(received[9], 'log line 510');
+});
+

@@ -19,8 +19,8 @@ type Subscriber = (frame: SessionStreamFrame) => void;
 type SessionBroadcast = {
   subscribers: Set<Subscriber>;
   interval: NodeJS.Timeout | null;
-  lastLogCount: number;
-  lastTraceCount: number;
+  lastLogTotal: number;
+  lastTraceTotal: number;
 };
 
 const POLL_INTERVAL_MS = 250;
@@ -34,8 +34,8 @@ class SessionStreamHub {
       broadcast = {
         subscribers: new Set(),
         interval: null,
-        lastLogCount: 0,
-        lastTraceCount: 0,
+        lastLogTotal: 0,
+        lastTraceTotal: 0,
       };
       this.broadcasts.set(sessionId, broadcast);
     }
@@ -43,11 +43,9 @@ class SessionStreamHub {
     broadcast.subscribers.add(subscriber);
 
     if (!broadcast.interval) {
-      // Seed counters so the first tick only sends genuinely-new deltas.
-      const logs = discoveryEngine.getLiveLogs(sessionId) || [];
-      const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
-      broadcast.lastLogCount = logs.length;
-      broadcast.lastTraceCount = traceEvents.length;
+      // Seed total counters so the first tick only sends genuinely-new deltas.
+      broadcast.lastLogTotal = discoveryEngine.getLiveLogTotal(sessionId);
+      broadcast.lastTraceTotal = discoveryEngine.getLiveTraceTotal(sessionId);
       broadcast.interval = setInterval(
         () => this.poll(sessionId),
         POLL_INTERVAL_MS,
@@ -77,10 +75,27 @@ class SessionStreamHub {
       const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
       const session = readMiningSessionById(sessionId);
 
-      const newLogs = logs.slice(broadcast.lastLogCount);
-      const newTrace = traceEvents.slice(broadcast.lastTraceCount);
-      broadcast.lastLogCount = logs.length;
-      broadcast.lastTraceCount = traceEvents.length;
+      const totalLogs = discoveryEngine.getLiveLogTotal(sessionId);
+      const totalTraces = discoveryEngine.getLiveTraceTotal(sessionId);
+
+      const newLogCount = Math.max(
+        0,
+        Math.min(totalLogs - broadcast.lastLogTotal, logs.length),
+      );
+      const newTraceCount = Math.max(
+        0,
+        Math.min(totalTraces - broadcast.lastTraceTotal, traceEvents.length),
+      );
+
+      const newLogs =
+        newLogCount > 0 ? logs.slice(logs.length - newLogCount) : [];
+      const newTrace =
+        newTraceCount > 0
+          ? traceEvents.slice(traceEvents.length - newTraceCount)
+          : [];
+
+      broadcast.lastLogTotal = totalLogs;
+      broadcast.lastTraceTotal = totalTraces;
 
       const hasNewContent = newLogs.length > 0 || newTrace.length > 0;
       const isTerminal =

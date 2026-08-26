@@ -1158,14 +1158,24 @@ router.post(
         );
       });
 
-      return res.status(202).json({
-        apiVersion: 1,
-        status: "running",
-        sessionId,
-        streamUrl: `/api/mining-sessions/${sessionId}/stream`,
-        resumedFromRound: checkpoint.round,
-        message: `Resuming mining session from round ${checkpoint.round}.`,
-      });
+      // The engine's atomic claim decides; a lost race returns 409
+      if (discoveryEngine.isActive(sessionId)) {
+        return res.status(202).json({
+          apiVersion: 1,
+          status: "running",
+          sessionId,
+          streamUrl: `/api/mining-sessions/${sessionId}/stream`,
+          resumedFromRound: checkpoint.round,
+          message: `Resuming mining session from round ${checkpoint.round}.`,
+        });
+      }
+
+      return res
+        .status(409)
+        .json({
+          error: `A lead mining session with this sessionId is already active: ${sessionId}`,
+          sessionId,
+        });
     }
 
     try {

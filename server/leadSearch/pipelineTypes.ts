@@ -71,7 +71,6 @@ export type PipelineSessionState = {
   qualifiedLeads: any[];
   finalLeads: any[];
   rejectionCounts: Record<RejectionReason | string, number>;
-  failureCounts: Record<string, number>;
   brightDataStats: any;
   freeTierBudget: ScoutFreeTierBudget;
   llmCircuitBreaker: LLMSessionCircuitBreaker;
@@ -105,7 +104,7 @@ export type MiningSessionCheckpoint = {
   qualifiedLeads: any[];
   finalLeads: any[];
   rejectionCounts: Record<string, number>;
-  failureCounts: Record<string, number>;
+  failureCounts?: Record<string, number>;
   brightDataStats: any;
   previousRoundSummary?: any;
   evidenceByUrl?: Record<string, any>;

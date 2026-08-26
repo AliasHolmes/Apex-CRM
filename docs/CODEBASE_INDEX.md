@@ -23,8 +23,8 @@ Primary reference docs:
 | Backend engine (`server/leadSearch/`)                            | ~11,415 lines across 40 modules (incl. 9 `stages/`) |
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~6,733 lines                                        |
 | REST routes                                                      | 38 (all under `/api`)                               |
-| SQLite tables                                                    | 15 (schema v15, WAL mode)                           |
-| Test suite                                                       | 30 files, ~6,283 lines                              |
+| SQLite tables                                                    | 15 tables + leads_fts virtual table (schema v17, WAL mode)   |
+| Test suite                                                       | 32 files, 254 tests                                |
 
 ## 3. Tech stack
 
@@ -259,17 +259,18 @@ Verified against `server/routes/api.ts`:
 | POST   | `/generate-outbound`                 | Generate contextual outreach message                                               |
 | POST   | `/chat`                              | Conversational CRM assistant                                                       |
 
-## 8. Database schema (SQLite v16, `.apex-data/apex-crm.sqlite`)
+## 8. Database schema (SQLite v17, `.apex-data/apex-crm.sqlite`)
 
-15 tables created in `db.ts` (`LATEST_SCHEMA_VERSION = 16`):
+15 tables + 1 virtual table created in `db.ts` (`LATEST_SCHEMA_VERSION = 17`):
 
-`leads` · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts`
+`leads` · `leads_fts` (FTS5) · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts`
 
-Key columns added by recent migrations:
+Key columns and features added by recent migrations:
 
 - `mining_sessions.checkpoint_json` (v14) — compact `MiningSessionCheckpoint` Tier-A snapshot written at stage boundaries (ADR-0002); powers boot-sweep reconciliation of `interrupted` sessions into `resumable` status.
 - `query_performance.requirement_fail_digest` (v16) — serialized breakdown of requirement failure frequencies per query family/lane.
 - `saved_searches.exclude_list_json` (v16) — accumulated canonical identities already returned for a saved search to prevent duplicate rediscovery across runs.
+- `leads_fts` (v17) — SQLite FTS5 full-text search virtual table maintained via automatic triggers (`leads_ai`, `leads_ad`, `leads_au`) indexing promoted columns + `json_extract` notes and tags for sub-5ms search across leads.
 
 WAL mode, foreign keys on, busy timeouts set, auto-backup under `.apex-data/backups/` before migrations. Canonical identity dedupe via `lead_identities` with conflict tracking.
 
@@ -314,7 +315,7 @@ Typecheck gate: `npm run lint` (= `tsc --noEmit`).
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Change a REST endpoint      | `server/routes/api.ts` (adapter) → service/`leadSearch` module                                                                                               |
 | Touch discovery behavior    | `server/leadSearch/discoveryEngine.ts` → stage module in `leadSearch/stages/` (§6)                                                                           |
-| Add/alter persistence       | `server/db.ts` (schema v15 migrations + helpers)                                                                                                             |
+| Add/alter persistence       | `server/db.ts` (schema v17 migrations + helpers)                                                                                                             |
 | Checkpoint/resume logic     | `leadSearch/pipelineTypes.ts` (`MiningSessionCheckpoint`), `discoveryEngine.ts`, `routes/api.ts` (`/resume`, `/resumable`), UI `ResumableSessionsBanner.tsx` |
 | Modify brief→contract logic | `server/leadSearch/prospectContract.ts`, `searchSpec.ts`                                                                                                     |
 | Change scoring/ranking      | `server/leadSearch/scoring.ts`, `finalistJudge.ts`, `stages/selectStage.ts`                                                                                  |

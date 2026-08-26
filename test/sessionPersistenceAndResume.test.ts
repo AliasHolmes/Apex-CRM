@@ -307,4 +307,26 @@ test('discoveryEngine.resume from stage: judge restores evidenceByUrl and execut
   deleteMiningSessions([sessionId]);
 });
 
+test('discoveryEngine.resume rejects with SessionAlreadyActiveError when session is active', async () => {
+  const activeSessionId = `test-active-claim-${Date.now()}`;
+  discoveryEngine['activeSessions'].set(activeSessionId, ['task-1']);
+  assert.equal(discoveryEngine.isActive(activeSessionId), true);
+
+  try {
+    await assert.rejects(
+      async () => {
+        await discoveryEngine.resume(activeSessionId);
+      },
+      (err: any) => {
+        assert.equal(err.name, 'SessionAlreadyActiveError');
+        assert.equal(err.sessionId, activeSessionId);
+        return true;
+      }
+    );
+  } finally {
+    discoveryEngine['activeSessions'].delete(activeSessionId);
+  }
+});
+
+
 

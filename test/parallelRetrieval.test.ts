@@ -56,7 +56,6 @@ function createMockContext(overrides: Partial<SessionContext> = {}): SessionCont
       qualifiedLeads: [],
       finalLeads: [],
       rejectionCounts: {},
-      failureCounts: {},
       brightDataStats: { attempted: 0, succeeded: 0, failed: 0, failureReasons: {} },
       freeTierBudget: {
         reserveTavilySearch: () => true,

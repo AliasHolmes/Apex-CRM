@@ -6,9 +6,9 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-6.0-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v15-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v15" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v17-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v17" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-180_Tests_Passing-10B981" alt="Lead Engine 180 Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-254_Tests_Passing-10B981" alt="Lead Engine 254 Tests" />
   </p>
 </div>
 
@@ -329,8 +329,8 @@ server/
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
     scoring.ts               Composite scoring, freshness decay & MMR diversity
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v14 schema, migrations, checkpoint CRUD & startup sweeps
-test/                        Automated unit, integration, and replay test suites (180 tests)
+  db.ts                      SQLite v17 schema (with leads_fts virtual table), migrations, checkpoint CRUD & startup sweeps
+test/                        Automated unit, integration, and replay test suites (254 tests)
 scripts/                     Dev orchestrator and server runners
 litellm.config.yaml          LiteLLM proxy configuration
 .env.example                 Configuration variables and default settings

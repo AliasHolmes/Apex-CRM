@@ -1058,7 +1058,6 @@ export async function executeDiscoverySession(
       qualifiedLeads,
       finalLeads: [],
       rejectionCounts: stats.rejectionReasons,
-      failureCounts: brightDataStats.failureReasons,
       brightDataStats,
       freeTierBudget,
       llmCircuitBreaker,
@@ -1623,6 +1622,8 @@ export async function executeDiscoverySession(
     activeSessionEvents.delete(sessionId);
     cancelledSessions.delete(sessionId);
     activeSessionControllers.delete(sessionId);
+    // Re-use healthy MCP subprocess connections across discovery runs for performance;
+    // only close if the client encountered transport errors or entered a cooldown state.
     await closeBrightDataClient({
       onlyIfIdle: true,
       onlyIfUnhealthy: true,

@@ -1,6 +1,7 @@
 import {
   fuseObservations,
   extractCompanyHintDeterministic,
+  isSignalObservation,
   type ScoutObservation,
 } from "../observations.js";
 import { normalizeCompanyName } from "../signalStore.js";
@@ -30,6 +31,17 @@ export type FuseStageOutput = {
   stopReason?: string;
 };
 
+function inferSignalCategory(obs: any): string {
+  if (obs.family === 'pain_signal' || obs.intent === 'find_pain_signal') return 'pain';
+  if (obs.family === 'growth_signal' || obs.intent === 'find_growth_signal') return 'growth';
+  if (obs.family === 'tooling_signal' || obs.intent === 'find_tooling_signal') return 'tooling';
+  const text = `${obs.title || ''} ${obs.content || ''}`.toLowerCase();
+  if (/\b(hiring|jobs?|careers?|engineer|developer|recruiting|roles?)\b/.test(text)) return 'hiring';
+  if (/\b(funding|raised|series [a-e]|seed|invested|expansion)\b/.test(text)) return 'growth';
+  if (/\b(stack|n8n|zapier|hubspot|salesforce|aws|gcp|python|react)\b/.test(text)) return 'tooling';
+  return 'general';
+}
+
 export async function executeFuseStage(
   ctx: SessionContext,
   input: FuseStageInput,
@@ -37,15 +49,13 @@ export async function executeFuseStage(
   const { round, roundItems, roundPlans, queryRuns, searchSpec, stats } = input;
   const { config, state, logEvent } = ctx;
   const { seenCandidateKeys, existingKeys } = state;
+  const acceptedLeads = state.acceptedLeads || [];
+  const maxPerCompany = Math.max(1, Number(searchSpec?.maxPerCompany || 2));
 
-  const maxPerCompany = Math.max(
-    1,
-    Number(searchSpec?.maxPerCompany || 2),
-  );
   const acceptedCompanyCounts = new Map<string, number>();
-  for (const lead of state.acceptedLeads || []) {
+  for (const lead of acceptedLeads) {
     const comp = normalizeCompanyName(
-      lead?.company || lead?.currentCompany || lead?.companyName || "",
+      lead.currentCompany || lead.company || "",
     );
     if (comp) {
       acceptedCompanyCounts.set(
@@ -57,46 +67,49 @@ export async function executeFuseStage(
 
   const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
     incrementRejection(stats.rejectionReasons, reason);
-    if (queryRun) {
-      incrementRejection(queryRun.rejectionReasons, reason);
-    }
+    if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
   };
 
-  const observations: ScoutObservation[] = roundItems.map(
-    ({ item, resultIndex }) => {
-      const plan = roundPlans[resultIndex];
-      const queryRun = queryRuns[resultIndex];
-      if (queryRun) queryRun.rawCandidates++;
-      return {
-        title: String(item.title || ""),
-        url: String(item.url || item.link || ""),
-        content: String(item.content || item.snippet || item.raw_content || ""),
-        provider:
-          item.sourceProvider === "brightdata_search" ||
-          item.sourceProvider === "brightdata"
-            ? "brightdata"
-            : "tavily",
-        query: plan?.executableQuery || config.promptQuery,
-        round,
-        family: plan?.item.family,
-        lane: plan?.item.lane,
-        intent: plan?.item.intent,
-        expectedSignal: plan?.item.expectedSignal,
-        raw: item,
-      };
-    },
-  );
+  const planByQuery = new Map<string, ExecutableQueryPlan>();
+  for (const plan of roundPlans) {
+    planByQuery.set(plan.executableQuery, plan);
+  }
 
-  const fusedObservations = fuseObservations(observations);
-  const uniqueRoundItems: any[] = [];
+  const queryRunByQuery = new Map<string, QueryRunStats>();
+  for (const run of queryRuns) {
+    queryRunByQuery.set(run.query, run);
+  }
+
+  const scoutObservations: ScoutObservation[] = [];
+  for (const entry of roundItems) {
+    const item = entry.item;
+    if (!item) continue;
+    const plan = roundPlans[entry.resultIndex] || (item._sourceQuery ? planByQuery.get(item._sourceQuery) : undefined);
+    const queryRun = queryRuns[entry.resultIndex] || (item._sourceQuery ? queryRunByQuery.get(item._sourceQuery) : undefined);
+    if (queryRun) queryRun.rawCandidates++;
+    const obs: ScoutObservation = {
+      title: item.title || "",
+      url: item.url || "",
+      content: item.content || item.raw_content || "",
+      provider:
+        item.sourceProvider === "brightdata_search" ||
+        item.sourceProvider === "brightdata"
+          ? "brightdata"
+          : "tavily",
+      query: item._sourceQuery || plan?.executableQuery || config.promptQuery || "",
+      round,
+      family: item._queryFamily || plan?.item.family,
+      lane: item._lane || plan?.item.lane,
+      intent: item._queryIntent || plan?.item.intent,
+      expectedSignal: item._expectedSignal || plan?.item.expectedSignal,
+      raw: item,
+    };
+    scoutObservations.push(obs);
+  }
+
+  const fusedObservations = fuseObservations(scoutObservations);
   const roundCandidateKeys = new Set<string>();
-
-  // Prebuild lookup maps: queries are unique within a round (planStage
-  // dedupes via seenQueryTexts), so map lookups replace the O(n*m) findIndex.
-  const planByQuery = new Map(
-    roundPlans.map((plan) => [plan.executableQuery, plan]),
-  );
-  const queryRunByQuery = new Map(queryRuns.map((run) => [run.query, run]));
+  const uniqueRoundItems: any[] = [];
 
   for (const observation of fusedObservations) {
     const plan = planByQuery.get(observation.query);
@@ -106,6 +119,58 @@ export async function executeFuseStage(
     const username = extractLinkedInUsername(url);
     const normalizedUrl = normalizeLinkedInUrl(url);
 
+    const isSignal = isSignalObservation(observation) || observation.lane === 'signal';
+    const isAccount = observation.lane === 'account' || (Array.isArray(observation.lanes) && observation.lanes.includes('account'));
+
+    // STREAM 2: Signal Lane -> Store into session SignalStore and register discovered company
+    if (isSignal) {
+      const companyHint = extractCompanyHintDeterministic(observation) || "";
+      if (companyHint && ctx.state.signalStore) {
+        ctx.state.signalStore.add({
+          companyName: companyHint,
+          url: observation.url,
+          text: `${observation.title} - ${observation.content}`.trim(),
+          round,
+          query: observation.query,
+          lane: 'signal',
+          confidence: observation.corroborated ? 0.9 : 0.75,
+          provider: observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
+          category: inferSignalCategory(observation)
+        });
+      }
+      if (queryRun) {
+        queryRun.evidenceBlocks = (queryRun.evidenceBlocks || 0) + 1;
+        if (observation.corroborated) {
+          queryRun.corroboratedCandidates = (queryRun.corroboratedCandidates || 0) + 1;
+        }
+      }
+      // Signal observations provide company context; do not push to person candidateItems
+      continue;
+    }
+
+    // STREAM 3: Account Lane -> Register company evidence decisively
+    if (isAccount) {
+      const companyHint = extractCompanyHintDeterministic(observation) || (username ? username : "");
+      if (companyHint && ctx.state.signalStore) {
+        ctx.state.signalStore.registerDiscoveredCompany(
+          companyHint,
+          `${observation.title} - ${observation.content}`.trim(),
+          observation.url,
+          round,
+          0.8
+        );
+      }
+      if (queryRun) {
+        queryRun.evidenceBlocks = (queryRun.evidenceBlocks || 0) + 1;
+        if (observation.corroborated) {
+          queryRun.corroboratedCandidates = (queryRun.corroboratedCandidates || 0) + 1;
+        }
+      }
+      // Account observations provide organization context; do not push to person candidateItems
+      continue;
+    }
+
+    // STREAM 1: Person Lane -> Must have a valid LinkedIn profile URL
     if (!username || !normalizedUrl) {
       noteRejection("missing_linkedin_profile", queryRun);
       continue;

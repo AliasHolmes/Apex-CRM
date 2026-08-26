@@ -333,10 +333,10 @@ test('parallel two-wave retrieval produces identical fused candidate output to s
     },
     {
       item: {
-        family: 'account',
-        lane: 'account',
+        family: 'persona_title',
+        lane: 'person',
         providerPreference: 'brightdata',
-        intent: 'account',
+        intent: 'find_decision_makers',
         priority: 2,
         query: 'site:linkedin.com/in/ "VP Sales" New York',
         tavily: { searchDepth: 'basic', maxResults: 5 }

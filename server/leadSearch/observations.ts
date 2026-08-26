@@ -72,9 +72,11 @@ export type SignalBlock = {
   text: string;
   url: string;
   query: string;
-  lane: string;
-  round: number;
-  provider: 'tavily' | 'brightdata';
+  lane?: string;
+  round?: number;
+  provider?: 'tavily' | 'brightdata';
+  confidence?: number;
+  category?: string;
 };
 
 const cleanCompanyHint = (value: unknown) => String(value || '')

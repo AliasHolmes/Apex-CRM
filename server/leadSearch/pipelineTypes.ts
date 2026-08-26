@@ -61,6 +61,8 @@ export type PipelinePorts = {
   scrapeBatchMarkdown: (urls: string[]) => Promise<any>;
 };
 
+import type { SignalStore, SignalStoreData } from "./signalStore.js";
+
 export type PipelineSessionState = {
   round: number;
   stopReason?: string;
@@ -79,6 +81,8 @@ export type PipelineSessionState = {
   debugLogs: any[];
   urlRetryQueue?: Set<string>;
   previousRoundSummary?: any;
+  signalStore?: SignalStore;
+  recoveryAttempts?: number;
 };
 
 export type SessionContext = {
@@ -113,6 +117,8 @@ export type MiningSessionCheckpoint = {
   queryRunsDelta?: QueryRunStats[];
   /** Last N debug-log entries, persisted so crash context survives resume. */
   debugLogsTail?: any[];
+  signalStoreState?: SignalStoreData;
+  recoveryAttempts?: number;
   updatedAt: string;
 };
 

@@ -110,6 +110,7 @@ import {
   type EvidenceQuality,
   type LeadSourceProvider,
 } from "./scoring.js";
+import { SignalStore } from "./signalStore.js";
 import { createLeadEvidence, inferTavilyEvidenceQuality } from "./evidence.js";
 import {
   normalizeQueryPlanItems,
@@ -1065,6 +1066,10 @@ export async function executeDiscoverySession(
     // already captured. Checkpoints serialize only the tail beyond this.
     let checkpointedQueryRunCount = 0;
 
+    const initialSignalStore = SignalStore.fromJSON(
+      options.initialCheckpoint?.signalStoreState,
+    );
+
     const sessionState: PipelineSessionState = {
       round: 1,
       seenCandidateKeys,
@@ -1082,6 +1087,8 @@ export async function executeDiscoverySession(
       debugLogs,
       urlRetryQueue,
       previousRoundSummary,
+      signalStore: initialSignalStore,
+      recoveryAttempts: Number(options.initialCheckpoint?.recoveryAttempts || 0),
     };
 
     const pipelinePorts: PipelinePorts = {
@@ -1179,6 +1186,8 @@ export async function executeDiscoverySession(
         : options.initialCheckpoint?.round || 1;
 
     let nextPlanPromise: Promise<any> | null = null;
+    let speculativeAbortController: AbortController | null = null;
+    const planningGeneration = { value: 0 };
     let lastRecoveryProbeAt = 0;
 
     if (skipCollection) {
@@ -1222,6 +1231,7 @@ export async function executeDiscoverySession(
         acceptedCountBeforeRound = acceptedLeads.length;
         const remaining = Math.max(rerankPoolTarget - acceptedLeads.length, 0);
 
+        const currentGen = planningGeneration.value;
         const planResult = nextPlanPromise
           ? await nextPlanPromise
           : await executePlanStage(sessionCtx, {
@@ -1232,12 +1242,31 @@ export async function executeDiscoverySession(
               searchSpec,
               discoveryProviderMode,
               stats,
+              generation: currentGen,
             });
         nextPlanPromise = null;
+        speculativeAbortController = null;
 
         if (planResult.stopReason) {
           stats.stopReason = planResult.stopReason;
           break;
+        }
+
+        // Commit scheduler state and debug logs from the accepted plan
+        if (planResult.adaptiveSchedulerState) {
+          stats.scout.adaptiveScheduler = planResult.adaptiveSchedulerState;
+        }
+        if (Array.isArray(planResult.debugLogs) && planResult.debugLogs.length > 0) {
+          debugLogs.push(...planResult.debugLogs);
+        }
+
+        // Commit queries from the accepted plan to seenQueryTexts and generatedQueries
+        if (Array.isArray(planResult.proposedQueries)) {
+          for (const q of planResult.proposedQueries) {
+            const key = q.toLowerCase();
+            seenQueryTexts.add(key);
+            generatedQueries.push(q);
+          }
         }
 
         const { roundPlans, queryRuns } = planResult;
@@ -1285,21 +1314,41 @@ export async function executeDiscoverySession(
         stats.rawCandidates = rawResultsCount;
 
         // Stage Pipelining: Pre-compute plan for round N+1 speculatively in background while extract/verify/enrich execute
-        if (round + 1 <= maxRounds && acceptedLeads.length < rerankPoolTarget) {
+        if (
+          round + 1 <= maxRounds &&
+          acceptedLeads.length < rerankPoolTarget &&
+          !previousRoundSummary?.shouldRecover
+        ) {
+          speculativeAbortController = new AbortController();
+          const currentGen = planningGeneration.value;
+          const abortSig = speculativeAbortController.signal;
           nextPlanPromise = executePlanStage(sessionCtx, {
             round: round + 1,
             remaining: Math.max(rerankPoolTarget - acceptedLeads.length, 0),
-            generatedQueries,
-            seenQueryTexts,
+            generatedQueries: [...generatedQueries],
+            seenQueryTexts: new Set(seenQueryTexts),
             searchSpec,
             discoveryProviderMode,
             stats,
-          }).catch((err) => {
-            logEvent(
-              `WARN: Pipelined plan for round ${round + 1} failed: ${err.message || String(err)}`,
-            );
-            return { roundPlans: [], queryRuns: [] };
-          });
+            generation: currentGen,
+            signal: abortSig,
+            isSpeculative: true,
+          })
+            .then((res) => {
+              if (planningGeneration.value !== currentGen) {
+                return { roundPlans: [], queryRuns: [], proposedQueries: [] };
+              }
+              return res;
+            })
+            .catch((err) => {
+              if (abortSig.aborted) {
+                return { roundPlans: [], queryRuns: [], proposedQueries: [] };
+              }
+              logEvent(
+                `WARN: Pipelined plan for round ${round + 1} failed: ${err.message || String(err)}`,
+              );
+              return { roundPlans: [], queryRuns: [], proposedQueries: [] };
+            });
         }
 
         const extractResult = await executeExtractStage(sessionCtx, {
@@ -1413,6 +1462,22 @@ export async function executeDiscoverySession(
           rejectionReasons: stats.rejectionReasons,
         };
 
+        // Invalidate speculative plan if post-judging diagnostics demand recovery
+        if (
+          roundDiagnosticsObj.shouldRecover &&
+          (sessionState.recoveryAttempts || 0) < 2
+        ) {
+          planningGeneration.value++;
+          if (speculativeAbortController) {
+            speculativeAbortController.abort();
+            speculativeAbortController = null;
+          }
+          nextPlanPromise = null;
+          logEvent(
+            `Round ${round}: shouldRecover triggered for missing criteria [${(roundDiagnosticsObj.missingHardRequirementIds || []).join(", ")}]. Speculative plan N+1 invalidated; switching to authoritative recovery plan.`,
+          );
+        }
+
         logEvent(
           `Round ${round} diagnostics: ${previousRoundSummary.viableCandidates} candidates show all hard terms; recovery=${previousRoundSummary.shouldRecover ? "needed" : "not needed"}.`,
         );
@@ -1443,6 +1508,8 @@ export async function executeDiscoverySession(
           ),
           leadQueryRunMap: leadQueryRuns.toJSON(),
           debugLogsTail: debugLogs.slice(-100),
+          signalStoreState: sessionState.signalStore?.toJSON(),
+          recoveryAttempts: sessionState.recoveryAttempts,
           updatedAt: new Date().toISOString(),
         });
         checkpointedQueryRunCount = stats.queryRuns.length;
@@ -1495,19 +1562,37 @@ export async function executeDiscoverySession(
             }
           } else {
             consecutiveStalledRounds++;
+            const canRecover =
+              Boolean(
+                previousRoundSummary?.shouldRecover ||
+                  (previousRoundSummary?.missingHardRequirementIds?.length || 0) > 0,
+              ) && (sessionState.recoveryAttempts || 0) < 2;
+
             if (consecutiveStalledRounds >= 2 && acceptedLeads.length > 0) {
-              logEvent(
-                `Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Early exiting round loop with ${acceptedLeads.length} leads.`,
-              );
-              stats.stopReason = "early_exit_stalled";
-              break;
+              if (canRecover && round < maxRounds) {
+                logEvent(
+                  `Round ${round}: 2 consecutive stalled rounds, but criteria are missing and recovery attempts remain (${sessionState.recoveryAttempts}/2). Continuing to recovery plan.`,
+                );
+              } else {
+                logEvent(
+                  `Round ${round}: 2 consecutive rounds produced 0 new accepted leads. Early exiting round loop with ${acceptedLeads.length} leads.`,
+                );
+                stats.stopReason = "early_exit_stalled";
+                break;
+              }
             }
             if (consecutiveStalledRounds >= 3 && acceptedLeads.length === 0) {
-              logEvent(
-                `Round ${round}: 3 consecutive rounds produced 0 candidates. Early exiting round loop to prevent endless API token burning.`,
-              );
-              stats.stopReason = "exhausted";
-              break;
+              if (canRecover && round < maxRounds) {
+                logEvent(
+                  `Round ${round}: 3 stalled rounds with 0 accepted leads, but recovery is available (${sessionState.recoveryAttempts}/2). Transitioning to recovery plan.`,
+                );
+              } else {
+                logEvent(
+                  `Round ${round}: 3 consecutive rounds produced 0 candidates. Early exiting round loop to prevent endless API token burning.`,
+                );
+                stats.stopReason = "exhausted";
+                break;
+              }
             }
           }
         } else {
@@ -1546,6 +1631,8 @@ export async function executeDiscoverySession(
       ),
       leadQueryRunMap: leadQueryRuns.toJSON(),
       debugLogsTail: debugLogs.slice(-100),
+      signalStoreState: sessionState.signalStore?.toJSON(),
+      recoveryAttempts: sessionState.recoveryAttempts,
       updatedAt: new Date().toISOString(),
     });
     checkpointedQueryRunCount = stats.queryRuns.length;

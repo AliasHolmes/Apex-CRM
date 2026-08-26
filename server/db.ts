@@ -2861,6 +2861,8 @@ export type MiningSessionCheckpoint = {
   queryRunsDelta?: any[];
   /** Last N debug-log entries, persisted so crash context survives resume. */
   debugLogsTail?: any[];
+  signalStoreState?: any;
+  recoveryAttempts?: number;
   updatedAt: string;
 };
 

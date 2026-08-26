@@ -192,6 +192,27 @@ export async function executeVerifyStage(
       lanes: evidenceMeta.lanes,
     });
 
+    // Attach supplementary open-web company signals from SignalStore if matched
+    const companySignals = ctx.state.signalStore?.getForCandidate(lead.currentCompany || lead.company || "");
+    if (companySignals && companySignals.length > 0) {
+      const highConfSignals = companySignals.filter(s => (s.confidence || 0.7) >= 0.75);
+      const targetSignals = highConfSignals.length > 0 ? highConfSignals : companySignals;
+      const signalTexts = targetSignals.map(s => `[COMPANY SIGNAL - ${s.category || 'intent'}]: ${s.text}`).slice(0, 3);
+      if (Array.isArray(lead.evidence?.snippets)) {
+        lead.evidence.snippets.push(...signalTexts);
+      }
+      if (lead.evidence?.evidenceBlock) {
+        lead.evidence.evidenceBlock = `${lead.evidence.evidenceBlock}\n${signalTexts.join('\n')}`;
+      }
+      for (const sig of targetSignals.slice(0, 2)) {
+        const criteriaLabel = `company signal: ${sig.category || 'intent'}`;
+        if (!lead.scout.matchedCriteria.includes(criteriaLabel)) {
+          lead.scout.matchedCriteria.push(criteriaLabel);
+        }
+      }
+      lead.scout.corroborationScore = Math.min(10, (lead.scout.corroborationScore || 5) + 0.5);
+    }
+
     lead.scoreBreakdown = computeScoreBreakdown(
       lead,
       evidenceMeta.evidenceQuality,

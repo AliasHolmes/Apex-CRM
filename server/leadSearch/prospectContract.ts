@@ -573,6 +573,13 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       for (const requirement of hardRequirements) {
         if (intentTerms.has(lower(requirement.sourcePhrase))) continue;
         if (!includesAny(query, requirement.acceptableTerms)) {
+          if (requirement.scope === 'person_location') {
+            // If the query already has any location term from the contract, do not append a conflicting one
+            const allLocationTerms = contract.requirements
+              .filter(r => r.scope === 'person_location')
+              .flatMap(r => r.acceptableTerms);
+            if (includesAny(query, allLocationTerms)) continue;
+          }
           query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
         }
       }

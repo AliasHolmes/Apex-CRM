@@ -19,7 +19,10 @@ import {
   type SearchSpec,
   type RetrievalTask,
 } from "../searchSpec.js";
-import { enforceContractQueries } from "../prospectContract.js";
+import {
+  enforceContractQueries,
+  buildRecoveryQueryPrompt,
+} from "../prospectContract.js";
 import { scheduleAdaptiveRetrievalTasks } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
 import { summarizeLLM } from "../telemetry.js";
@@ -33,6 +36,10 @@ export type PlanStageInput = {
   searchSpec: SearchSpec;
   discoveryProviderMode: any;
   stats: any;
+  generation?: number;
+  signal?: AbortSignal;
+  isRecovery?: boolean;
+  isSpeculative?: boolean;
 };
 
 export type ExecutableQueryPlan = {
@@ -43,7 +50,11 @@ export type ExecutableQueryPlan = {
 export type PlanStageOutput = {
   roundPlans: ExecutableQueryPlan[];
   queryRuns: QueryRunStats[];
+  proposedQueries: string[];
   stopReason?: string;
+  generation?: number;
+  adaptiveSchedulerState?: any;
+  debugLogs?: any[];
 };
 
 export async function executePlanStage(
@@ -80,38 +91,70 @@ export async function executePlanStage(
     ]),
   );
 
-  const strategistPrompt = buildScoutStrategistPrompt({
-    query: config.promptQuery,
-    spec: searchSpec,
-    round,
-    maxRounds: config.maxRounds,
-    remaining,
-    previousQueries: generatedQueries,
-    previousRoundSummary: state.previousRoundSummary as any,
-    queryPerformance: historicalYield,
-    discoveryMode: discoveryProviderMode,
-    contract: config.contract,
-    missingRequirementIds: (state.previousRoundSummary as any)
-      ?.missingHardRequirementIds,
-    logEvent,
-  });
+  const effectiveSignal = input.signal || state.abortController.signal;
+  const isRecoveryMode = Boolean(
+    input.isRecovery ||
+      (state.previousRoundSummary?.shouldRecover && (state.recoveryAttempts || 0) < 2),
+  );
+
+  const localDebugLogs: any[] = [];
+  let strategistPrompt = "";
+  if (isRecoveryMode) {
+    const currentAttempt = (state.recoveryAttempts || 0) + 1;
+    const missingHardReqs =
+      Array.isArray((state.previousRoundSummary as any)?.missingHardRequirementIds)
+        ? (state.previousRoundSummary as any).missingHardRequirementIds
+        : [];
+    const viableCount = Number(
+      (state.previousRoundSummary as any)?.viableCandidates || 0,
+    );
+    strategistPrompt = buildRecoveryQueryPrompt(config.contract, {
+      missingHardRequirementIds: missingHardReqs,
+      viableCandidates: viableCount,
+    });
+    logEvent(
+      `Round ${round}: executing recovery query planning (attempt ${currentAttempt}/2) for missing criteria: [${missingHardReqs.join(", ")}].`,
+    );
+  } else {
+    const discoveredCompanies = ctx.state.signalStore
+      ? ctx.state.signalStore.getUniqueCompanyNames()
+      : [];
+
+    strategistPrompt = buildScoutStrategistPrompt({
+      query: config.promptQuery,
+      spec: searchSpec,
+      round,
+      maxRounds: config.maxRounds,
+      remaining,
+      previousQueries: generatedQueries,
+      previousRoundSummary: state.previousRoundSummary as any,
+      queryPerformance: historicalYield,
+      discoveryMode: discoveryProviderMode,
+      contract: config.contract,
+      missingRequirementIds: (state.previousRoundSummary as any)
+        ?.missingHardRequirementIds,
+      discoveredCompanies,
+      logEvent,
+    });
+  }
 
   let planItems: SearchQueryPlanItem[] = [];
-  if (remaining <= 2 && round > 1) {
+  if (remaining <= 2 && round > 1 && !isRecoveryMode) {
     logEvent(
       `Round ${round}: target near completion (remaining: ${remaining}). Skipping LLM Strategist planning to optimize efficiency.`,
     );
   } else {
     const strategyStarted = Date.now();
     const strategyProviderAttempts: LLMProviderAttempt[] = [];
+    const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
     try {
       recordTrace({
         phase: "strategy",
-        operation: "strategist_planning",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
         status: "started",
         provider: "llm",
         round,
-        metadata: { promptLength: strategistPrompt.length },
+        metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode },
       });
       const queryResult = await openAIStructured<any>(
         strategistPrompt,
@@ -121,24 +164,31 @@ export async function executePlanStage(
           maxTokens: 800,
           temperature: 0.1,
           circuitBreaker: state.llmCircuitBreaker,
-          signal: state.abortController.signal,
+          signal: effectiveSignal,
           onProviderAttempt: (attempt) =>
             strategyProviderAttempts.push(attempt),
         },
       );
-      state.debugLogs.push({
+      const reqLog = {
         timestamp: new Date().toISOString(),
         type: "llm_request",
-        label: `strategist_round_${round}`,
+        label,
         model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
         prompt: strategistPrompt,
         systemInstruction: STRATEGIST_SYSTEM_PROMPT,
         response: queryResult,
-      });
+      };
+      localDebugLogs.push(reqLog);
+      if (!input.isSpeculative) {
+        state.debugLogs.push(reqLog);
+      }
       planItems = normalizeQueryPlanItems(queryResult);
+      if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
+        state.recoveryAttempts = (state.recoveryAttempts || 0) + 1;
+      }
       recordTrace({
         phase: "strategy",
-        operation: "strategist_planning",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
         status: "success",
         provider: "llm",
         round,
@@ -154,9 +204,13 @@ export async function executePlanStage(
         ),
       });
     } catch (e: any) {
+      if (effectiveSignal?.aborted) {
+        logEvent(`Round ${round}: planning was aborted by generation guard.`);
+        return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
+      }
       recordTrace({
         phase: "strategy",
-        operation: "strategist_planning",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
         status: "error",
         provider: "llm",
         round,
@@ -174,13 +228,17 @@ export async function executePlanStage(
       logEvent(
         `WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
       );
-      state.debugLogs.push({
+      const errLog = {
         timestamp: new Date().toISOString(),
         type: "llm_error",
-        label: `strategist_round_${round}`,
+        label,
         prompt: strategistPrompt,
         error: e.message,
-      });
+      };
+      localDebugLogs.push(errLog);
+      if (!input.isSpeculative) {
+        state.debugLogs.push(errLog);
+      }
     }
   }
 
@@ -225,7 +283,7 @@ export async function executePlanStage(
     },
   );
 
-  stats.scout.adaptiveScheduler = {
+  const adaptiveSchedulerState = {
     active: adaptiveSchedule.active,
     totalOutcomeRuns: adaptiveSchedule.totalOutcomeRuns,
     selected: adaptiveSchedule.decisions
@@ -236,33 +294,49 @@ export async function executePlanStage(
       .map((decision) => decision.scopeKey),
   };
 
+  if (!input.isSpeculative) {
+    stats.scout.adaptiveScheduler = adaptiveSchedulerState;
+  }
+
   if (adaptiveSchedule.active) {
     logEvent(
       `Round ${round}: adaptive scheduler selected ${adaptiveSchedule.tasks.length}/${planItems.length} tasks using finalist-attributed outcomes.`,
     );
-    state.debugLogs.push({
+    const scheduleLog = {
       timestamp: new Date().toISOString(),
       type: "adaptive_schedule",
       round,
       decisions: adaptiveSchedule.decisions,
-    });
+    };
+    localDebugLogs.push(scheduleLog);
+    if (!input.isSpeculative) {
+      state.debugLogs.push(scheduleLog);
+    }
   }
 
+  // Filter against seenQueryTexts without directly mutating caller state here
+  const proposedQueries: string[] = [];
   const roundPlans = adaptiveSchedule.tasks
     .map((item) => ({ item, executableQuery: item.query }))
     .filter((plan) => {
       const key = plan.executableQuery.toLowerCase();
       if (seenQueryTexts.has(key)) return false;
-      seenQueryTexts.add(key);
+      proposedQueries.push(plan.executableQuery);
       return true;
     });
 
   if (roundPlans.length === 0) {
     logEvent(`Round ${round}: strategist produced no new queries.`);
-    return { roundPlans: [], queryRuns: [], stopReason: "exhausted" };
+    return {
+      roundPlans: [],
+      queryRuns: [],
+      proposedQueries: [],
+      stopReason: "exhausted",
+      generation: input.generation,
+      adaptiveSchedulerState,
+      debugLogs: localDebugLogs,
+    };
   }
-
-  generatedQueries.push(...roundPlans.map((plan) => plan.executableQuery));
 
   const queryRuns: QueryRunStats[] = roundPlans.map((plan) => {
     const run: QueryRunStats = {
@@ -289,5 +363,12 @@ export async function executePlanStage(
     return run;
   });
 
-  return { roundPlans, queryRuns };
+  return {
+    roundPlans,
+    queryRuns,
+    proposedQueries,
+    generation: input.generation,
+    adaptiveSchedulerState,
+    debugLogs: localDebugLogs,
+  };
 }

@@ -505,6 +505,8 @@ Historical family/provider yield: ${performanceStr}
 
 Rules:
 - Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
+- Query length must be concise (3 to 6 words).
+- When multiple target locations exist in the brief (e.g. USA, UK, Canada, Australia), pick exactly ONE location per query and distribute different locations across the 4 queries. Never concatenate all country names in a single query.
 - Use at least two lanes: person, account, signal when the brief supports them.
 - person lane finds public professional profiles. Keep person queries focused on Roles + Company Types/Names + Locations. Do NOT append niche hiring or tooling trigger keywords to person queries.
 - account lane finds companies and leadership evidence.

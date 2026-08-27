@@ -77,7 +77,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
     });
 
     it('classifies company_size hard as evidence_required', () => {
-      const cls = classifyRequirement('company_size', 'hard', '100–500');
+      const cls = classifyRequirement('company_size', 'hard', '100-500');
       assert.equal(cls, 'evidence_required');
     });
 

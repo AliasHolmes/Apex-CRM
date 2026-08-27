@@ -414,29 +414,42 @@ export async function executeExtractStage(
 
   // 4. Token budget calculation and chunking
   const extractionChunkChars = Math.min(
-    Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 3200), 1800),
-    9000,
+    Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 16000), 1800),
+    32000,
   );
   const configuredExtractionMaxTokens = Math.min(
     Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3000), 800),
     6000,
   );
   const providerTokenBudget = Math.min(
-    Math.max(Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 7200), 4000),
+    Math.max(Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 16000), 4000),
     120_000,
   );
   const tokenSafetyMargin = Math.min(
     Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
     2000,
   );
-  const extractionPromptPrefix = `Extract distinct, qualified B2B prospects from the source-labeled evidence below.\n\nRules:\n- Include only people with at least a full name and a title, company, or headline.\n- Do not invent data. Use empty strings for missing fields.\n- Set contactDetails.linkedinUrl ONLY to the exact LINK value from the same source block. Never copy external website URLs found in text snippets.\n- If LINK is not a linkedin.com/in/ URL or is missing, leave contactDetails.linkedinUrl empty.\n- Preserve SOURCE_PROVIDER as sourceProvider.\n- Score conservatively from 1-10 using only visible evidence.\n- Add evidenceReasons as 1-3 short reasons the prospect matches the user query.\n\nUser search criteria:\n${config.promptQuery}\n\nEvidence:\n`;
+  const extractionPromptPrefix = `Extract all distinct individuals and their professional profiles from the source-labeled evidence blocks below.
+
+Rules:
+- Extract every person who has a full name and an associated role, title, company, or headline.
+- Do not invent data. Use empty strings for missing fields.
+- Set contactDetails.linkedinUrl ONLY to the exact LINK value from the same source block. Never copy external website URLs found in text snippets.
+- If LINK is not a linkedin.com/in/ URL or is missing, leave contactDetails.linkedinUrl empty.
+- Preserve SOURCE_PROVIDER as sourceProvider.
+- Score conservatively from 1-10 using only visible evidence.
+- Add evidenceReasons as 1-3 short factual summaries of the person's role/company from the snippet.
+- Do not filter out individuals or evaluate subjective criteria; extract all visible professional entities faithfully.
+
+Evidence:
+`;
   const structuredPromptOverheadTokens =
     estimateTokenCount(extractionPromptPrefix) +
     estimateTokenCount(EXTRACTION_SYSTEM_PROMPT) +
     estimateTokenCount(JSON.stringify(bulkLeadsArraySchema)) +
     500;
   const evidenceTokenBudget = Math.max(
-    400,
+    1000,
     Math.min(
       Math.floor(extractionChunkChars / 4),
       providerTokenBudget -
@@ -531,15 +544,6 @@ export async function executeExtractStage(
       const extractedLeads = Array.isArray(extracted) ? extracted : [];
       for (const lead of extractedLeads) {
         const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || "";
-        const username = extractLinkedInUsername(url);
-        const normalized = normalizeLinkedInUrl(url);
-        if (username) seenCandidateKeys.add(`linkedin:${username}`);
-        if (username) seenCandidateKeys.add(username);
-        if (normalized) seenCandidateKeys.add(normalized);
-      }
-      const chunkLinkMatches = chunk.matchAll(/LINK:\s*([^\s\n]+)/g);
-      for (const match of chunkLinkMatches) {
-        const url = match[1];
         const username = extractLinkedInUsername(url);
         const normalized = normalizeLinkedInUrl(url);
         if (username) seenCandidateKeys.add(`linkedin:${username}`);

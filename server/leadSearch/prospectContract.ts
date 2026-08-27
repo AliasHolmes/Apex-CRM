@@ -299,15 +299,18 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   // with an any_of match rule so candidates with any qualifying executive title
   // (e.g. founder, CEO, owner, managing director) qualify without conjunction failures.
   const combinedRoleTerms = unique([
+    ...(professionMatch && ownerMatch ? [`${professionMatch} ${ownerMatch}`, `${professionMatch} owner`, `${professionMatch} founder`] : []),
+    ...(professionMatch ? [professionMatch, professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`] : []),
     ...(spec?.person?.includeTitles || []),
     ...hintedRoles,
     ...(ownerMatch ? ['owner', 'owners', 'firm owner', 'firm owners'] : []),
-    ...(professionMatch ? [professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`] : [])
   ]);
 
   if (combinedRoleTerms.length > 0) {
     const accepted = expandAcceptableTerms('person_role', combinedRoleTerms);
-    const sourcePhrase = ownerMatch || (hintedRoles[0] || (spec?.person?.includeTitles?.[0] || 'executive'));
+    const sourcePhrase = professionMatch
+      ? (ownerMatch ? `${professionMatch} ${ownerMatch}` : professionMatch)
+      : ownerMatch || (hintedRoles[0] || (spec?.person?.includeTitles?.[0] || 'executive'));
     const reqClass = classifyRequirement('person_role', 'hard', sourcePhrase);
     const hardness = assignQueryHardness(reqClass);
     requirements.push({
@@ -459,7 +462,7 @@ export function buildSignalLaneQueries(
   return requirements
     .filter(r => (r.evidenceModality === 'open_web_signal' || r.scope === 'signal') && r.queryable)
     .map((r, i) => ({
-      query: r.acceptableTerms.slice(0, 3).join(' OR ') || r.sourcePhrase,
+      query: r.acceptableTerms.slice(0, 2).join(' ') || r.sourcePhrase,
       family: 'pain_signal' as const,
       intent: 'find_buying_signal' as const,
       expectedSignal: `Open-web evidence corroborating: ${r.description}`,
@@ -846,7 +849,13 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   const normalized: SearchQueryPlanItem[] = [];
   for (const raw of rawItems.slice(0, 6)) {
     const candidate = typeof raw === 'string' ? { query: raw } : raw && typeof raw === 'object' ? raw as Record<string, any> : {};
-    let query = clean(candidate.query).replace(/\bsite:[^\s]+/gi, '').replace(/\blinkedin\b/gi, '').trim();
+    let query = clean(candidate.query)
+      .replace(/\bsite:[^\s]+/gi, '')
+      .replace(/\blinkedin\b/gi, '')
+      .replace(/\b(AND|OR|NOT)\b/g, ' ')
+      .replace(/[()"]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!query || query.length > 240 || exclusions.some(term => term && lower(query).includes(term))) continue;
     const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
     if (!isSignalLane) {

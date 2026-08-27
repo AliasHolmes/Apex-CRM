@@ -467,10 +467,10 @@ test("Bright Data URL normalization encodes LinkedIn unicode slugs before MCP va
     normalizeBrightDataUrl(unicodeUrl),
     "https://www.linkedin.com/in/james-pe%C3%B1as-758a841b",
   );
-  assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 10);
+  assert.strictEqual(BRIGHTDATA_SCRAPE_BATCH_MAX_URLS, 5);
 });
 
-test("Bright Data evidence batching keeps every target within the ten-URL tool contract", () => {
+test("Bright Data evidence batching keeps every target within the five-URL tool contract", () => {
   const urls = Array.from(
     { length: 21 },
     (_, index) => `https://example.com/${index + 1}`,
@@ -479,7 +479,7 @@ test("Bright Data evidence batching keeps every target within the ten-URL tool c
 
   assert.deepStrictEqual(
     batches.map((batch) => batch.length),
-    [10, 10, 1],
+    [5, 5, 5, 5, 1],
   );
   assert.deepStrictEqual(batches.flat(), urls);
 });

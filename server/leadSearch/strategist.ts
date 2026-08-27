@@ -37,7 +37,10 @@ export type ProviderRunStats = {
 export function sanitizeQueryText(query: string) {
   return (query || '')
     .replace(/site:linkedin\.com\/in\//gi, '')
-    .replace(/linkedin/gi, '')
+    .replace(/site:[^\s]+/gi, '')
+    .replace(/\blinkedin\b/gi, '')
+    .replace(/\b(AND|OR|NOT)\b/g, ' ')
+    .replace(/[()"]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

@@ -87,18 +87,31 @@ const companyMatchScore = (companyName: string, result: SearchResult) => {
   return tokens.reduce((score, token) => score + (text.includes(token) ? 1 : 0), 0) + hostMatches.length * 3;
 };
 
+export function cleanCompanyForDomainSearch(raw: string): string {
+  if (!raw) return "";
+  return raw
+    .replace(/[,.;:?!\'\"()\[\]{}\u00AE\u2122\u00A9\u201C\u201D\u2018\u2019]/g, " ")
+    .replace(
+      /\b(?:inc|llc|ltd|corp|corporation|gmbh|co|company|group|holdings|services|solutions|agency|consulting)\b\.?/gi,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export async function findCompanyWebsite(input: {
   companyName: string;
   location?: string;
   brightDataSearch: (query: string) => Promise<SearchResult[]>;
   tavilySearchFallback?: (query: string) => Promise<SearchResult[]>;
 }): Promise<string | null> {
-  const companyName = input.companyName?.trim();
-  if (!companyName) return null;
+  const rawName = input.companyName?.trim();
+  if (!rawName) return null;
+  const cleanName = cleanCompanyForDomainSearch(rawName) || rawName;
 
   const query = input.location
-    ? `"${companyName}" official website ${input.location}`
-    : `"${companyName}" official website`;
+    ? `${cleanName} official website ${input.location}`
+    : `${cleanName} official website`;
 
   let results = await input.brightDataSearch(query).catch(() => []);
   if ((!results || results.length === 0) && input.tavilySearchFallback) {
@@ -106,9 +119,12 @@ export async function findCompanyWebsite(input: {
   }
 
   const ranked = results
-    .filter(result => result.url && !isBlockedUrl(result.url))
-    .map(result => ({ result, score: companyMatchScore(companyName, result) }))
-    .filter(item => item.score > 0)
+    .filter((result) => result.url && !isBlockedUrl(result.url))
+    .map((result) => ({
+      result,
+      score: companyMatchScore(cleanName, result),
+    }))
+    .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
 
   return ranked[0]?.result.url || null;

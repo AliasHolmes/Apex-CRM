@@ -362,16 +362,40 @@ export async function runLinkedInPostIntentEnrichment(
 
           if ((!results || results.length === 0) && tavilySearchFallback) {
             try {
-              const tavilyRes = await tavilySearchFallback(query, { searchDepth: 'basic', maxResults: 5 });
-              const items = Array.isArray(tavilyRes) ? tavilyRes : (tavilyRes?.items || tavilyRes?.results || []);
+              const companyName = String(
+                lead.currentCompany ||
+                  lead.company ||
+                  lead.profile?.currentCompany ||
+                  "",
+              ).trim();
+              const tavilyQuery = handle
+                ? `${handle} linkedin posts`
+                : name && companyName
+                  ? `${name} ${companyName} linkedin posts`
+                  : `${name} linkedin posts`;
+              const tavilyRes = await tavilySearchFallback(tavilyQuery, {
+                searchDepth: "basic",
+                maxResults: 5,
+                includeDomains: ["linkedin.com"],
+              });
+              const items = Array.isArray(tavilyRes)
+                ? tavilyRes
+                : tavilyRes?.items || tavilyRes?.results || [];
               if (items.length > 0) {
-                activeProvider = 'tavily';
-                results = items.map((item: any) => ({
-                  title: String(item.title || ''),
-                  url: String(item.url || item.link || ''),
-                  content: String(item.content || item.raw_content || item.snippet || ''),
-                  sourceProvider: 'tavily' as any
-                })).filter((item: any) => item.url && item.title);
+                activeProvider = "tavily";
+                results = items
+                  .map((item: any) => ({
+                    title: String(item.title || ""),
+                    url: String(item.url || item.link || ""),
+                    content: String(
+                      item.content ||
+                        item.raw_content ||
+                        item.snippet ||
+                        "",
+                    ),
+                    sourceProvider: "tavily" as any,
+                  }))
+                  .filter((item: any) => item.url && item.title);
               }
             } catch {
               // tavily fallback failed, proceed with empty results

@@ -66,7 +66,7 @@ describe('lead search helpers', () => {
     const fallback = buildFallbackQueryPlan('dental clinics Austin patient booking');
 
     assert.equal(fallback.length, 4);
-    assert.equal(fallback.some(item => item.family === 'tooling_signal'), true);
+    assert.equal(fallback.some(item => item.family === 'growth_signal'), true);
     assert.equal(fallback.some(item => item.intent === 'find_decision_makers'), true);
   });
 

@@ -30,7 +30,7 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
     it('passes when quotes contain normalized smart quotes and whitespace', () => {
       const result = verifyEvidencePassage(
         baseEvidence,
-        '“Alex River is the Founder & CEO at Apex Studio”'
+        '\u201CAlex River is the Founder & CEO at Apex Studio\u201D'
       );
       assert.equal(result.valid, true);
       assert.ok(result.similarity >= 0.88);
@@ -102,7 +102,7 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
               requirementId: 'req-founder',
               status: 'pass',
               evidenceId: 'e1',
-              evidenceQuote: '“Alex River is the Founder & CEO at Apex Studio”' // smart quotes fail legacy substring match
+              evidenceQuote: '\u201CAlex River is the Founder & CEO at Apex Studio\u201D' // smart quotes fail legacy substring match
             }
           ],
           semanticFit: 9,
@@ -128,7 +128,7 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
               requirementId: 'req-founder',
               status: 'pass',
               evidenceId: 'e1',
-              evidenceQuote: '“Alex River is the Founder & CEO at Apex Studio”'
+              evidenceQuote: '\u201CAlex River is the Founder & CEO at Apex Studio\u201D'
             }
           ],
           semanticFit: 9,

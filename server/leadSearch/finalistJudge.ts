@@ -233,8 +233,8 @@ export function buildFinalistJudgePrompt(
 
 const normalizePassage = (text: string): string =>
   String(text || '')
-    .replace(/[“”"''`]/g, ' ')
-    .replace(/[—–-]/g, ' ')
+    .replace(/[\u201C\u201D"'\u2018\u2019`]/g, ' ')
+    .replace(/[\u2014\u2013-]/g, ' ')
     .replace(/&/g, ' and ')
     .replace(/[^\w\s]/g, ' ')
     .replace(/\s+/g, ' ')

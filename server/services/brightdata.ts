@@ -204,9 +204,9 @@ export const baseMaxRetries = () =>
   boundedNumber(process.env.BASE_MAX_RETRIES, 2, 0, 3);
 export const BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = boundedNumber(
   process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
-  10,
+  5,
   1,
-  20,
+  5,
 );
 const baseTimeoutMs = () => baseTimeoutSeconds() * 1000;
 const failureCooldownMs = () =>

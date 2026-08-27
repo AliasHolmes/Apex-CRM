@@ -175,6 +175,26 @@ export const normalizeSearchSpec = (
   };
 };
 
+export const METRO_HUBS_BY_COUNTRY: Record<string, string[]> = {
+  usa: [
+    "New York",
+    "San Francisco",
+    "Austin",
+    "Los Angeles",
+    "Chicago",
+    "Boston",
+    "Seattle",
+    "Miami",
+    "Atlanta",
+    "Dallas",
+    "Denver",
+    "San Diego",
+  ],
+  uk: ["London", "Manchester", "Birmingham", "Bristol", "Edinburgh", "Leeds"],
+  canada: ["Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa"],
+  australia: ["Sydney", "Melbourne", "Brisbane", "Perth"],
+};
+
 export const buildFallbackSearchSpec = (
   query: string,
   mode: DiscoveryMode = "person_first",
@@ -182,7 +202,7 @@ export const buildFallbackSearchSpec = (
   const normalized = clean(query);
   const lower = normalized.toLowerCase();
   const hasLocalHint =
-    /\b(local|near me|city|austin|dallas|houston|miami|chicago|new york|london|toronto|canada|usa|united states)\b/.test(
+    /\b(dentist|chiropractor|plumber|roofing|salon|restaurant|hvac|mechanic|bakery|barber|clinic|storefront)\b/.test(
       lower,
     );
   const hasSignalHint =
@@ -239,7 +259,7 @@ export const buildRetrievalTasks = (
   items: SearchQueryPlanItem[],
   spec: SearchSpec,
 ): RetrievalTask[] => {
-  const maxResults = boundedNumber(process.env.TAVILY_MAX_RESULTS, 10, 1, 20);
+  const maxResults = boundedNumber(process.env.TAVILY_MAX_RESULTS, 12, 1, 20);
   const configuredCountry = clean(process.env.TAVILY_COUNTRY);
   const seen = new Set<string>();
   return items
@@ -289,8 +309,8 @@ export const buildRetrievalTasks = (
           topic: isSignal ? item.topic || "general" : "general",
           timeRange: isSignal ? item.timeRange : undefined,
           country,
-          maxResults: isPerson ? maxResults : Math.min(maxResults, 8),
-          minimumScore: isPerson ? 0.35 : 0.25,
+          maxResults: isPerson ? Math.max(maxResults, 12) : Math.min(maxResults, 8),
+          minimumScore: isPerson ? 0.15 : 0.15,
         },
       };
       return task;
@@ -310,14 +330,41 @@ export const buildFallbackQueryPlan = (
   spec?: SearchSpec,
 ): SearchQueryPlanItem[] => {
   const base = clean(query);
+  const lower = base.toLowerCase();
   const effectiveSpec = spec || buildFallbackSearchSpec(query);
   const titles = effectiveSpec.person.includeTitles.length
     ? effectiveSpec.person.includeTitles
-    : ["founder", "owner"];
-  const signal = effectiveSpec.signals.include[0] || "growth automation";
+    : ["founder", "owner", "CEO", "managing partner"];
+  const signal = effectiveSpec.signals.include[0] || "growth hiring";
+
+  // Detect geography and retrieve relevant metro hubs
+  let metros: string[] = ["New York", "San Francisco", "Austin", "Los Angeles"];
+  let countryAnchor = "USA";
+  if (lower.includes("uk") || lower.includes("united kingdom") || lower.includes("london")) {
+    metros = METRO_HUBS_BY_COUNTRY.uk;
+    countryAnchor = "UK";
+  } else if (lower.includes("canada") || lower.includes("toronto")) {
+    metros = METRO_HUBS_BY_COUNTRY.canada;
+    countryAnchor = "Canada";
+  } else if (lower.includes("australia") || lower.includes("sydney")) {
+    metros = METRO_HUBS_BY_COUNTRY.australia;
+    countryAnchor = "Australia";
+  } else if (METRO_HUBS_BY_COUNTRY.usa) {
+    metros = METRO_HUBS_BY_COUNTRY.usa;
+    countryAnchor = "USA";
+  }
+
+  // Extract core company topic/vertical from query
+  const cleanTopic = base
+    .replace(/\b(from|in|based in|located in|near)\b.*$/i, "")
+    .replace(/\b(owner|founder|ceo|co-founder|director|managing partner|president|proprietor)\b/gi, "")
+    .replace(/[/\\|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || "AI agency";
+
   const plans: SearchQueryPlanItem[] = [
     {
-      query: `${base} ${titles.join(" ")}`,
+      query: `${cleanTopic} ${titles[0] || "founder"} ${countryAnchor}`.trim(),
       family: "persona_title",
       intent: "find_decision_makers",
       expectedSignal: "Decision-maker profiles",
@@ -327,33 +374,33 @@ export const buildFallbackQueryPlan = (
       searchDepth: "basic",
     },
     {
-      query: `${base} company founder owner`,
+      query: `${cleanTopic} ${titles[1] || "owner"} ${metros[0] || "New York"}`.trim(),
+      family: "persona_title",
+      intent: "find_decision_makers",
+      expectedSignal: "Decision-maker profiles in top metro",
+      priority: 2,
+      lane: "person",
+      providerPreference: "tavily",
+      searchDepth: "basic",
+    },
+    {
+      query: `${cleanTopic} ${titles[2] || "CEO"} ${metros[1] || "San Francisco"}`.trim(),
       family: "company_type",
       intent: "expand_surface_area",
-      expectedSignal: "Qualified company and leadership evidence",
-      priority: 2,
+      expectedSignal: "Leadership evidence in tech metro",
+      priority: 3,
       lane: "account",
       providerPreference: "brightdata",
       searchDepth: "basic",
     },
     {
-      query: `${base} ${signal}`,
+      query: `${cleanTopic} ${signal} ${countryAnchor}`.trim(),
       family: "growth_signal",
       intent: "find_buying_signal",
       expectedSignal: "Recent public business signals",
-      priority: 3,
-      lane: "signal",
-      providerPreference: "brightdata",
-      searchDepth: "basic",
-    },
-    {
-      query: `${base} automation CRM`,
-      family: "tooling_signal",
-      intent: "find_buying_signal",
-      expectedSignal: "Tooling or automation context",
       priority: 4,
       lane: "signal",
-      providerPreference: "corroborate",
+      providerPreference: "brightdata",
       searchDepth: "basic",
     },
   ];
@@ -504,9 +551,10 @@ Prior round summary: ${roundSummaryStr}
 Historical family/provider yield: ${performanceStr}
 
 Rules:
+- NEVER use boolean operators (AND, OR, NOT, site:, parentheses, or quotes). Use ONLY clean, natural language keyword phrases (3 to 6 words).
 - Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
 - Query length must be concise (3 to 6 words).
-- When multiple target locations exist in the brief (e.g. USA, UK, Canada, Australia), pick exactly ONE location per query and distribute different locations across the 4 queries. Never concatenate all country names in a single query.
+- When a country or region is targeted (e.g. USA, UK, Canada, Australia), distribute queries across distinct major metropolitan tech/agency hubs (e.g. New York, San Francisco, Austin, Los Angeles, Chicago, Boston, Seattle, London, Toronto, Sydney) and rotate executive title variants (founder, CEO, owner, managing partner) across the 4 queries.
 - Use at least two lanes: person, account, signal when the brief supports them.
 - person lane finds public professional profiles. Keep person queries focused on Roles + Company Types/Names + Locations. Do NOT append niche hiring or tooling trigger keywords to person queries.
 - account lane finds companies and leadership evidence.

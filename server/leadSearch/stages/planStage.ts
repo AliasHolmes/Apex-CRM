@@ -75,7 +75,9 @@ export async function executePlanStage(
   const historicalPerformance = readQueryPerformance(100);
   const historicalYield = Object.fromEntries(
     historicalPerformance.slice(0, 30).map((row: any) => [
-      `${row.family}:${row.lane}:${row.provider}`,
+      [row.family || "general", row.lane || "person", row.provider || "tavily"]
+        .join("|")
+        .toLowerCase(),
       {
         runs: Number(row.runs || 0),
         outcomeRuns: Number(row.outcome_runs || 0),

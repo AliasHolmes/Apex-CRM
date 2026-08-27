@@ -844,7 +844,12 @@ export async function executeEnrichStage(
       lead.scoreOverride = lead.scoreBreakdown.finalScore;
       lead._scoreCurrent = true;
     }
-    if (effectiveScore(lead) < minScore) {
+    const score = effectiveScore(lead);
+    const passesScore =
+      score >= minScore ||
+      Boolean(lead._borderlineEvidence) ||
+      score >= minScore - 1.0;
+    if (!passesScore) {
       noteRejection("score_below_minimum", queryRun);
       continue;
     }

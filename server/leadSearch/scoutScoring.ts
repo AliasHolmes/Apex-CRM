@@ -149,13 +149,39 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
     logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, company intent, post intent, and evidence quality.`);
   }
 
-  const extractCompanyKey = (candidate: any, cKey: string) => normalized(
-    candidate.currentCompany ||
-    candidate.company ||
-    candidate.profile?.currentCompany ||
-    candidate.profile?.company ||
-    candidate.companyAccount?.name
-  ) || `unknown:${cKey}`;
+  const GENERIC_INDEPENDENT_COMPANIES = new Set([
+    'self-employed',
+    'self employed',
+    'freelance',
+    'freelancer',
+    'independent',
+    'independent consultant',
+    'consultant',
+    'stealth',
+    'stealth startup',
+    'confidential',
+    'various',
+    'multiple',
+    'n/a',
+    'unknown',
+    'owner',
+    'founder',
+    'ceo'
+  ]);
+
+  const extractCompanyKey = (candidate: any, cKey: string) => {
+    const raw = normalized(
+      candidate.currentCompany ||
+      candidate.company ||
+      candidate.profile?.currentCompany ||
+      candidate.profile?.company ||
+      candidate.companyAccount?.name
+    );
+    if (!raw || GENERIC_INDEPENDENT_COMPANIES.has(raw)) {
+      return `independent:${cKey}`;
+    }
+    return raw;
+  };
 
   // Sort skyline by candidate rank to take top-scoring non-dominated candidates first
   const sortedSkyline = [...skyline].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));

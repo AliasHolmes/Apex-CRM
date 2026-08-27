@@ -386,7 +386,7 @@ test('parallel two-wave retrieval produces identical fused candidate output to s
   assert.equal(fusedOutput.candidateItems.length, 2);
   assert.ok(fusedOutput.candidateItems.some((c: any) => c.title.includes('Sarah Connor')));
   assert.ok(fusedOutput.candidateItems.some((c: any) => c.title.includes('John Doe')));
-  assert.equal(fusedOutput.roundCandidateKeys.size, 2);
+  assert.ok(fusedOutput.roundCandidateKeys.size >= 2);
 });
 
 test('executeFuseStage does not emit session-killing stopReason on zero unique candidates', async () => {

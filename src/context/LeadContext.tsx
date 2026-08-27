@@ -183,6 +183,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const leadsRef = useRef<Lead[]>([]);
   const leadPatchQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const leadPatchRollbackRef = useRef<Map<string, Lead | null>>(new Map());
+  const lastRehydrateTimeRef = useRef<number>(0);
 
   const [conflictModal, setConflictModal] = useState<{
     open: boolean;
@@ -237,6 +238,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const rehydrateLeads = useCallback(async (preserveExistingOnFailure = false): Promise<boolean> => {
     try {
       const stored = await loadLeadsFromSqliteBackend();
+      lastRehydrateTimeRef.current = Date.now();
       if (stored.initialized) {
         saveLeadsToStorage(sanitizeLeads(stored.leads));
         return true;
@@ -262,7 +264,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
     const onVisibilityOrFocus = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        void rehydrateLeads(true);
+        const now = Date.now();
+        if (now - lastRehydrateTimeRef.current > 20_000) {
+          void rehydrateLeads(true);
+        }
       }
     };
     window.addEventListener('focus', onVisibilityOrFocus);
@@ -287,9 +292,12 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
     const intervalId = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        void rehydrateLeads(true);
+        const now = Date.now();
+        if (now - lastRehydrateTimeRef.current > 20_000) {
+          void rehydrateLeads(true);
+        }
       }
-    }, 8000);
+    }, 15000);
 
     return () => {
       window.removeEventListener('focus', onVisibilityOrFocus);

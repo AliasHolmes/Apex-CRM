@@ -341,29 +341,28 @@ export async function probeCompanySites(
     }
   }
 
-  // For each domain, construct probe URLs (root, /about, /team, /contact)
+  // Two-Tier Probing Strategy:
+  // Tier 1: Probe cleanRoot for all unique domains first.
+  // Tier 2: Only probe /about or /team if the root page yields thin content or lacks key company signals.
   const probeUrlsToDomain = new Map<string, string>();
-  const urlsToExtract: string[] = [];
+  const rootUrlsToExtract: string[] = [];
 
   for (const domain of uniqueDomains) {
     const cleanRoot = domain.replace(/\/$/, '');
-    const urls = [cleanRoot, `${cleanRoot}/about`, `${cleanRoot}/team`, `${cleanRoot}/contact`];
-    for (const u of urls) {
-      urlsToExtract.push(u);
-      probeUrlsToDomain.set(u, domain);
-    }
+    rootUrlsToExtract.push(cleanRoot);
+    probeUrlsToDomain.set(cleanRoot, domain);
   }
 
-  // Tavily extract supports up to 20 URLs per batch - run batches in parallel
   const BATCH_SIZE = 20;
   const extractedByDomain = new Map<string, string[]>();
 
-  const batches: string[][] = [];
-  for (let i = 0; i < urlsToExtract.length; i += BATCH_SIZE) {
-    batches.push(urlsToExtract.slice(i, i + BATCH_SIZE));
+  // --- Tier 1: Extract Root URLs ---
+  const rootBatches: string[][] = [];
+  for (let i = 0; i < rootUrlsToExtract.length; i += BATCH_SIZE) {
+    rootBatches.push(rootUrlsToExtract.slice(i, i + BATCH_SIZE));
   }
 
-  const batchPromises = batches.map(async (batchUrls) => {
+  const rootBatchPromises = rootBatches.map(async (batchUrls) => {
     if (options.abortSignal?.aborted) return [];
     options.onProviderUsage?.(1);
     return tavilyExtract(batchUrls, 'company location team size services about us', {
@@ -371,8 +370,8 @@ export async function probeCompanySites(
     });
   });
 
-  const batchSettled = await Promise.allSettled(batchPromises);
-  for (const settled of batchSettled) {
+  const rootBatchSettled = await Promise.allSettled(rootBatchPromises);
+  for (const settled of rootBatchSettled) {
     if (settled.status === 'fulfilled' && Array.isArray(settled.value)) {
       for (const res of settled.value) {
         const url = res.url || '';
@@ -382,6 +381,56 @@ export async function probeCompanySites(
           const list = extractedByDomain.get(domain) || [];
           list.push(content);
           extractedByDomain.set(domain, list);
+        }
+      }
+    }
+  }
+
+  // --- Tier 2: Conditional Subpath Probing ---
+  // Identify domains where root content was extracted but thin (< 400 chars) or missing signals
+  const subpathUrlsToExtract: string[] = [];
+  for (const domain of uniqueDomains) {
+    const contents = extractedByDomain.get(domain) || [];
+    const rootText = contents.join('\n\n').trim();
+    if (!rootText) {
+      // Unreachable / failed root: do not waste calls on subpaths
+      continue;
+    }
+    const hasSignals = Boolean(extractSiteSignals(rootText));
+    if (!hasSignals || rootText.length < 400) {
+      const cleanRoot = domain.replace(/\/$/, '');
+      const subUrls = [`${cleanRoot}/about`, `${cleanRoot}/team`];
+      for (const u of subUrls) {
+        subpathUrlsToExtract.push(u);
+        probeUrlsToDomain.set(u, domain);
+      }
+    }
+  }
+
+  if (subpathUrlsToExtract.length > 0 && !options.abortSignal?.aborted) {
+    const subBatches: string[][] = [];
+    for (let i = 0; i < subpathUrlsToExtract.length; i += BATCH_SIZE) {
+      subBatches.push(subpathUrlsToExtract.slice(i, i + BATCH_SIZE));
+    }
+    const subBatchPromises = subBatches.map(async (batchUrls) => {
+      if (options.abortSignal?.aborted) return [];
+      options.onProviderUsage?.(1);
+      return tavilyExtract(batchUrls, 'company location team size services about us', {
+        signal: options.abortSignal,
+      });
+    });
+    const subBatchSettled = await Promise.allSettled(subBatchPromises);
+    for (const settled of subBatchSettled) {
+      if (settled.status === 'fulfilled' && Array.isArray(settled.value)) {
+        for (const res of settled.value) {
+          const url = res.url || '';
+          const domain = probeUrlsToDomain.get(url) || probeUrlsToDomain.get(url.replace(/\/$/, ''));
+          const content = res.rawContent || '';
+          if (domain && content) {
+            const list = extractedByDomain.get(domain) || [];
+            list.push(content);
+            extractedByDomain.set(domain, list);
+          }
         }
       }
     }

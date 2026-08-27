@@ -2473,7 +2473,7 @@ export function readSavedSearches(limit = 50) {
   const rows = getLeadsDb()
     .prepare(
       `
-    SELECT * FROM saved_searches ORDER BY datetime(updated_at) DESC LIMIT ?
+    SELECT * FROM saved_searches ORDER BY updated_at DESC LIMIT ?
   `,
     )
     .all(Math.min(Math.max(Math.floor(limit) || 50, 1), 100)) as any[];
@@ -2688,7 +2688,7 @@ export function readQueryPerformance(limit = 100) {
   return getLeadsDb()
     .prepare(
       `
-    SELECT * FROM query_performance ORDER BY datetime(updated_at) DESC LIMIT ?
+    SELECT * FROM query_performance ORDER BY updated_at DESC LIMIT ?
   `,
     )
     .all(Math.min(Math.max(Math.floor(limit) || 100, 1), 500)) as any[];
@@ -2922,11 +2922,20 @@ export function readMiningSessionById(id: string) {
   return row ? toMiningSessionRecord(row) : null;
 }
 
+export function readMiningSessionSummaryById(id: string): MiningSessionRecord | null {
+  const row = getLeadsDb()
+    .prepare(
+      "SELECT id, status, prompt, requested_limit, started_at, completed_at, cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at FROM mining_sessions WHERE id = ?",
+    )
+    .get(id) as any | undefined;
+  return row ? toMiningSessionRecord(row) : null;
+}
+
 export function readMiningSessions(limit = 25) {
   const boundedLimit = Math.min(Math.max(Math.floor(limit) || 25, 1), 100);
   const rows = getLeadsDb()
     .prepare(
-      "SELECT * FROM mining_sessions ORDER BY datetime(updated_at) DESC LIMIT ?",
+      "SELECT id, status, prompt, requested_limit, started_at, completed_at, cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at FROM mining_sessions ORDER BY updated_at DESC LIMIT ?",
     )
     .all(boundedLimit) as any[];
   return rows.map(toMiningSessionRecord);
@@ -2938,7 +2947,7 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
       `
       SELECT * FROM mining_sessions
       WHERE status = 'interrupted' AND checkpoint_json IS NOT NULL
-      ORDER BY datetime(updated_at) DESC
+      ORDER BY updated_at DESC
       LIMIT 20
     `,
     )
@@ -3002,7 +3011,7 @@ export function readEngineMetrics(limit = 20): EngineMetrics {
       `
     SELECT status, error_message, stats_json, trace_summary_json
     FROM mining_sessions
-    ORDER BY datetime(updated_at) DESC
+    ORDER BY updated_at DESC
     LIMIT ?
   `,
     )

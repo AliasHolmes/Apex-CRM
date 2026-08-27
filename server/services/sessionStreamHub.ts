@@ -1,4 +1,4 @@
-import { readMiningSessionById } from "../db.js";
+import { readMiningSessionSummaryById } from "../db.js";
 import { discoveryEngine } from "../leadSearch/discoveryEngine.js";
 
 /**
@@ -73,7 +73,7 @@ class SessionStreamHub {
     try {
       const logs = discoveryEngine.getLiveLogs(sessionId) || [];
       const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
-      const session = readMiningSessionById(sessionId);
+      const session = readMiningSessionSummaryById(sessionId);
 
       const totalLogs = discoveryEngine.getLiveLogTotal(sessionId);
       const totalTraces = discoveryEngine.getLiveTraceTotal(sessionId);

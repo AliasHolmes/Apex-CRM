@@ -366,9 +366,9 @@ export async function executeDiscoverySession(
         (activeSessionLogTotals.get(sessionId) || 0) + 1,
       );
     }
-    // Bound session log memory for very long sessions (last 500 lines kept).
-    if (sessionLogs.length > 500) {
-      sessionLogs.splice(0, sessionLogs.length - 500);
+    // Bound session log memory for very long sessions (last 1,500 lines kept).
+    if (sessionLogs.length > 1500) {
+      sessionLogs.splice(0, sessionLogs.length - 1500);
     }
     activeSessions.set(sessionId, sessionLogs);
     if (options.listener?.onLog) options.listener.onLog(line);
@@ -1069,10 +1069,13 @@ export async function executeDiscoverySession(
       profileConcurrency,
       profileMaxPerSearch,
       extractionConcurrency: Math.min(
-        Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1),
+        Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 2), 1),
         4,
       ),
-      judgeConcurrency: Number(process.env.FINALIST_JUDGE_CONCURRENCY || 2),
+      judgeConcurrency: Math.min(
+        Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 3), 1),
+        6,
+      ),
     };
 
     // Delta-serialization cursor: how many queryRuns previous checkpoints

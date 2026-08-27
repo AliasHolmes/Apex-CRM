@@ -1,21 +1,101 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import { useMiningTraceStream } from '@/lib/traceStore';
 import { Badge } from '@/components/ui/badge';
+import { Clock } from 'lucide-react';
 import type { MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '@/types';
 
-const formatDuration = (ms?: number) => {
-  if (!ms || ms < 0) return '0s';
-  return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 100) / 10}s`;
+export const formatDuration = (ms?: number) => {
+  if (ms === undefined || ms === null || isNaN(ms) || ms < 0) return '0s';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) {
+    const s = Math.round(ms / 100) / 10;
+    return Number.isInteger(s) ? `${s}.0s` : `${s}s`;
+  }
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
 };
+
+export function useSessionDuration({
+  startedAt,
+  endedAt,
+  durationMs,
+  isRunning,
+}: {
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+  isRunning?: boolean;
+}) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  const initialMountTimeRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const interval = setInterval(() => {
+      setNow(Date.now());
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isRunning]);
+
+  return useMemo(() => {
+    const startMs = startedAt ? Date.parse(startedAt) : NaN;
+    const endMs = endedAt ? Date.parse(endedAt) : NaN;
+
+    if (isRunning) {
+      if (Number.isFinite(startMs)) {
+        return Math.max(0, now - startMs);
+      }
+      return Math.max(0, now - initialMountTimeRef.current);
+    }
+
+    if (durationMs !== undefined && Number.isFinite(durationMs) && durationMs >= 0) {
+      return durationMs;
+    }
+
+    if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+      return Math.max(0, endMs - startMs);
+    }
+
+    if (Number.isFinite(startMs)) {
+      return Math.max(0, (Number.isFinite(endMs) ? endMs : now) - startMs);
+    }
+
+    return undefined;
+  }, [startedAt, endedAt, durationMs, isRunning, now]);
+}
+
+export interface TraceSummaryViewerProps {
+  traceSummary?: MiningTraceSummary;
+  traceEvents?: MiningTraceEvent[];
+  status?: string;
+  isRunning?: boolean;
+  startedAt?: string;
+  endedAt?: string;
+  durationMs?: number;
+}
 
 export const TraceSummaryViewer = ({
   traceSummary,
-  traceEvents = []
-}: {
-  traceSummary?: MiningTraceSummary;
-  traceEvents?: MiningTraceEvent[];
-}) => {
+  traceEvents = [],
+  status,
+  isRunning,
+  startedAt,
+  endedAt,
+  durationMs
+}: TraceSummaryViewerProps) => {
+  const active = isRunning ?? (status === 'running' || status === 'connecting' || traceSummary?.status === 'running');
+  const effectiveStartedAt = startedAt || traceSummary?.startedAt || traceEvents[0]?.timestamp;
+  const effectiveEndedAt = endedAt || traceSummary?.endedAt || (!active && traceEvents.length > 0 ? traceEvents[traceEvents.length - 1]?.timestamp : undefined);
+  const effectiveDuration = useSessionDuration({
+    startedAt: effectiveStartedAt,
+    endedAt: effectiveEndedAt,
+    durationMs: durationMs ?? traceSummary?.durationMs,
+    isRunning: active
+  });
+
   const derivedSummary = useMemo(() => {
     if (traceSummary) return null;
     let totalTokens = 0;
@@ -109,7 +189,21 @@ export const TraceSummaryViewer = ({
 
   return (
     <div className="p-4 border-t border-slate-800 bg-slate-950/70 space-y-3 text-xs text-slate-400">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+        <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
+          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider flex items-center justify-between">
+            <span>Duration</span>
+            {active && (
+              <span className="flex items-center gap-1 text-xs font-semibold text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" />
+                Live
+              </span>
+            )}
+          </div>
+          <div className="text-sm text-cyan-300 font-semibold mt-0.5 font-mono">
+            {formatDuration(effectiveDuration)}
+          </div>
+        </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
           <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Events</div>
           <div className="text-sm text-slate-200 font-semibold mt-0.5">{eventCount}</div>
@@ -248,28 +342,53 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
   const shouldReduceMotion = useReducedMotion();
   const { logs, traceEvents, status, sessionMeta } = useMiningTraceStream(sessionId);
 
+  const isRunning = status === 'running' || status === 'connecting';
+  const effectiveStartedAt = sessionMeta?.startedAt || sessionMeta?.traceSummary?.startedAt || traceEvents[0]?.timestamp;
+  const effectiveEndedAt = sessionMeta?.completedAt || sessionMeta?.traceSummary?.endedAt;
+  const elapsedMs = useSessionDuration({
+    startedAt: effectiveStartedAt,
+    endedAt: effectiveEndedAt,
+    durationMs: sessionMeta?.traceSummary?.durationMs,
+    isRunning
+  });
+
   if (!sessionId && logs.length === 0) return null;
 
   return (
     <div className="mt-4 rounded-xl border border-indigo-500/20 bg-slate-950/90 overflow-hidden shadow-2xl">
       <div className="p-5 font-mono text-xs text-indigo-300 space-y-2.5 max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950">
-        <div className="flex gap-3 items-center mb-1">
-          <div className="relative h-4 w-4 shrink-0">
-            <div
-              className={`absolute inset-0 h-full w-full rounded-full border-2 border-indigo-400 border-t-transparent ${
-                status === 'running' || status === 'connecting'
-                  ? 'animate-spin motion-reduce:animate-none'
-                  : ''
-              }`}
-            />
+        <div className="flex flex-wrap gap-3 items-center justify-between mb-1">
+          <div className="flex gap-3 items-center">
+            <div className="relative h-4 w-4 shrink-0">
+              <div
+                className={`absolute inset-0 h-full w-full rounded-full border-2 border-indigo-400 border-t-transparent ${
+                  isRunning
+                    ? 'animate-spin motion-reduce:animate-none'
+                    : ''
+                }`}
+              />
+            </div>
+            <div className="text-sm text-slate-100 font-semibold flex items-center gap-2">
+              <span>Search live telemetry</span>
+              {status === 'running' && (
+                <Badge variant="outline" className="border-indigo-500/40 text-indigo-300 text-xs py-0">
+                  Streaming
+                </Badge>
+              )}
+            </div>
           </div>
-          <div className="text-sm text-slate-100 font-semibold flex items-center gap-2">
-            <span>Search live telemetry</span>
-            {status === 'running' && (
-              <Badge variant="outline" className="border-indigo-500/40 text-indigo-300 text-xs py-0">
-                Streaming
-              </Badge>
-            )}
+          <div className="flex items-center gap-2">
+            <Badge
+              variant="outline"
+              className={`font-mono text-xs py-0.5 px-2.5 flex items-center gap-1.5 ${
+                isRunning
+                  ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200'
+                  : 'border-slate-800 bg-slate-900/60 text-slate-300'
+              }`}
+            >
+              <Clock className={`w-3.5 h-3.5 ${isRunning ? 'text-indigo-400 animate-pulse motion-reduce:animate-none' : 'text-slate-400'}`} />
+              <span>{isRunning ? `Running: ${formatDuration(elapsedMs)}` : `Duration: ${formatDuration(elapsedMs)}`}</span>
+            </Badge>
           </div>
         </div>
 
@@ -306,6 +425,11 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
       <TraceSummaryViewer
         traceSummary={sessionMeta?.traceSummary}
         traceEvents={traceEvents}
+        status={status}
+        isRunning={isRunning}
+        startedAt={effectiveStartedAt}
+        endedAt={effectiveEndedAt}
+        durationMs={sessionMeta?.traceSummary?.durationMs}
       />
     </div>
   );

@@ -1376,7 +1376,15 @@ export default function ScrapeWorkspace() {
                           </>
                         )}
                       </div>
-                      <TraceSummaryViewer traceSummary={log.traceSummary} traceEvents={log.traceEvents || []} />
+                      <TraceSummaryViewer
+                        traceSummary={log.traceSummary}
+                        traceEvents={log.traceEvents || []}
+                        status={log.status}
+                        isRunning={log.status === 'running'}
+                        startedAt={log.traceSummary?.startedAt || log.timestamp}
+                        endedAt={log.traceSummary?.endedAt}
+                        durationMs={log.traceSummary?.durationMs}
+                      />
                       {log.detailedLogs && (
                         <div className="mt-4 pt-3 border-t border-slate-800/50">
                           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Detailed progress</p>

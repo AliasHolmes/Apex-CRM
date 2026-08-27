@@ -722,6 +722,18 @@ export async function executeEnrichStage(
         .filter((t) => !t.enriched)
         .sort((a, b) => (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0));
 
+      const candidateDomains = probeCandidateTargets
+        .map((t) => deriveCompanyDomain(t.lead))
+        .filter(Boolean) as string[];
+
+      const domainLookups = candidateDomains.map((d) => ({ normalizedUrl: d }));
+      const positiveSiteCacheMap = getEnrichmentCacheEntriesBatch(domainLookups);
+      const negativeSiteCacheMap = getNegativeEnrichmentCacheEntriesBatch(
+        domainLookups,
+        new Date(),
+        "site_probe",
+      );
+
       const targetsToProbe: EnrichmentTarget[] = [];
       for (const target of probeCandidateTargets) {
         if (targetsToProbe.length >= siteProbeMax) {
@@ -732,7 +744,7 @@ export async function executeEnrichStage(
         if (!domain) continue;
 
         // Check positive cache
-        const posCache = getEnrichmentCacheEntry({ normalizedUrl: domain });
+        const posCache = positiveSiteCacheMap.get(domain);
         if (posCache) {
           stats.siteProbe.cacheHits++;
           const signals = parseSiteSignalsFromEvidenceBlock(
@@ -745,11 +757,7 @@ export async function executeEnrichStage(
         }
 
         // Check negative cache
-        const negCache = getNegativeEnrichmentCacheEntry(
-          { normalizedUrl: domain },
-          new Date(),
-          "site_probe",
-        );
+        const negCache = negativeSiteCacheMap.get(domain);
         if (negCache) {
           stats.siteProbe.negativeHits++;
           continue;

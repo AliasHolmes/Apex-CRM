@@ -162,3 +162,26 @@ test('miningTraceStore manages session live state and subscriber notifications',
   unsubscribe();
   miningTraceStore.resetSession(sessionId);
 });
+
+import { formatDuration } from '../src/components/TraceTerminal.js';
+
+test('formatDuration accurately handles millisecond, second, and minute ranges', () => {
+  assert.equal(formatDuration(undefined), '0s');
+  assert.equal(formatDuration(-10), '0s');
+  assert.equal(formatDuration(0), '0ms');
+  assert.equal(formatDuration(250), '250ms');
+  assert.equal(formatDuration(1200), '1.2s');
+  assert.equal(formatDuration(5000), '5.0s');
+  assert.equal(formatDuration(59900), '59.9s');
+  assert.equal(formatDuration(60000), '1m 0s');
+  assert.equal(formatDuration(65000), '1m 5s');
+  assert.equal(formatDuration(130000), '2m 10s');
+});
+
+test('TraceTerminal exports duration metrics card and live session telemetry', () => {
+  const terminalSource = readFileSync(path.resolve('src/components/TraceTerminal.tsx'), 'utf8');
+  assert.match(terminalSource, /useSessionDuration/);
+  assert.match(terminalSource, /formatDuration/);
+  assert.match(terminalSource, /<span>Duration<\/span>/);
+  assert.match(terminalSource, /Running:\s*\$\{formatDuration/);
+});

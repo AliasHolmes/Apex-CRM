@@ -41,7 +41,7 @@ export async function executeSelectStage(
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
       maxLeads: Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20),
-      concurrency: Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 2),
+      concurrency: Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 4),
       ttlDays,
       sessionAbortSignal: state.abortController.signal,
       logEvent,

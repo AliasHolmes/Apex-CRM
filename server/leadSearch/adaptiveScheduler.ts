@@ -1,4 +1,5 @@
 import type { RetrievalTask } from './searchSpec.js';
+import { isFlagEnabled } from './featureFlags.js';
 
 export type AdaptivePerformanceRow = {
   family?: string;
@@ -12,6 +13,9 @@ export type AdaptivePerformanceRow = {
   duplicate_candidates?: number;
   search_latency_ms?: number;
   provider_units?: number;
+  identity_pass_count?: number;
+  context_pass_count?: number;
+  signal_pass_count?: number;
 };
 
 export type AdaptiveScheduleDecision = {
@@ -115,12 +119,20 @@ export function scoreAdaptiveArm(
   const providerUnits = finiteCount(row?.provider_units);
   const latencySeconds = finiteCount(row?.search_latency_ms) / 1_000;
 
+  let classBonus = 0;
+  if (isFlagEnabled.classAwareScheduler()) {
+    const idPasses = finiteCount(row?.identity_pass_count);
+    const ctxPasses = finiteCount(row?.context_pass_count);
+    const sigPasses = finiteCount(row?.signal_pass_count);
+    classBonus = (idPasses * 1.5 + ctxPasses * 1.0 + sigPasses * 1.2) / outcomeRuns;
+  }
+
   // Beta-Bernoulli conjugate posteriors:
   // Successes (alpha): Qualified finalists, returned list members, unique discoveries
   // Failures (beta): Rescued low-tier candidates, duplicates, provider burn, latency
   const alphaPrior = 1.0;
   const betaPrior = 1.0;
-  const alphaPost = alphaPrior + qualified * 2.5 + returned * 2.0 + unique * 0.04;
+  const alphaPost = alphaPrior + qualified * 2.5 + returned * 2.0 + unique * 0.04 + (classBonus > 0 ? classBonus * 0.5 : 0);
   const betaPost = betaPrior + rescued * 1.25 + duplicates * 0.08 + providerUnits * 0.12 + latencySeconds * 0.002;
   const thompsonSample = sampleBeta(alphaPost, betaPost);
 
@@ -132,7 +144,8 @@ export function scoreAdaptiveArm(
     rescued * 1.25 -
     duplicates * 0.08 -
     providerUnits * 0.12 -
-    latencySeconds * 0.002
+    latencySeconds * 0.002 +
+    classBonus
   ) / outcomeRuns;
   const ucbExplorationBonus = explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 1) / outcomeRuns);
 

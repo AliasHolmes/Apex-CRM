@@ -1,5 +1,6 @@
 import type { LLMProviderAttempt, LLMUsage } from "../services/llm.js";
 import { estimateTokenCount } from "./llmBudget.js";
+import type { RequirementClass, ProspectContract } from "./prospectContract.js";
 
 export type MiningProvider =
   | "llm"
@@ -59,6 +60,30 @@ export function summarizeLLM(
     totalTokens: inputTokens + outputTokens,
     estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
     parseRetries,
+  };
+}
+
+/**
+ * Phase 1: Emit classification distribution for a contract.
+ * Used to understand requirement class composition in production.
+ */
+export function summarizeContractClassification(contract: ProspectContract) {
+  const classCounts = new Map<RequirementClass, number>();
+  for (const req of contract.requirements) {
+    const cls = req.requirementClass || 'ranking_signal';
+    classCounts.set(cls, (classCounts.get(cls) || 0) + 1);
+  }
+  const distribution = Object.fromEntries(classCounts);
+  return {
+    contractId: contract.version,
+    policyVersion: contract.policyVersion,
+    requirementCount: contract.requirements.length,
+    classDistribution: distribution,
+    identityHardCount: contract.requirements.filter(r => r.requirementClass === 'identity_hard').length,
+    contextHardCount: contract.requirements.filter(r => r.requirementClass === 'context_hard').length,
+    systemInvariantCount: contract.requirements.filter(r => r.requirementClass === 'system_invariant').length,
+    evidenceRequiredCount: contract.requirements.filter(r => r.requirementClass === 'evidence_required').length,
+    rankingSignalCount: contract.requirements.filter(r => r.requirementClass === 'ranking_signal').length
   };
 }
 

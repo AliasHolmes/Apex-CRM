@@ -131,6 +131,7 @@ import {
   MiningTelemetryRecorder,
   estimateLLMCostUsd,
   getLLMRouteLabel,
+  summarizeContractClassification,
   type MiningTraceEvent,
   type TargetEffortStats,
   type FinalistJudgeStats,
@@ -759,6 +760,17 @@ export async function executeDiscoverySession(
       }
     }
     stats.scout.contract = contract;
+
+    // Record contract classification telemetry (Phase 1)
+    const taxonomySummary = summarizeContractClassification(contract);
+    recordTrace({
+      phase: "strategy",
+      provider: "system",
+      operation: "contract_taxonomy_classification",
+      query: "contract.taxonomy.classification",
+      status: "info",
+      metadata: taxonomySummary,
+    });
 
     // Apply contract synonyms to searchSpec
     searchSpec = searchSpecFromProspectContract(searchSpec, contract);

@@ -1,4 +1,5 @@
 import type { ProspectContract, ProspectRequirement } from './prospectContract.js';
+import { isFlagEnabled } from './featureFlags.js';
 
 export type SelectedEvidence = {
   evidence: Array<{ id: string; text: string }>;
@@ -132,7 +133,25 @@ export function selectEvidenceForFinalist(
       .filter(requirement => matchingTerms(text, requirement).length > 0)
       .map(requirement => requirement.id);
     const hardMatches = hardRequirements.filter(requirement => matchedRequirementIds.includes(requirement.id)).length;
-    return { text, index, matchedRequirementIds, score: hardMatches * 4 + matchedRequirementIds.length };
+    let score = hardMatches * 4 + matchedRequirementIds.length;
+    
+    if (isFlagEnabled.evidenceAware()) {
+      for (const id of matchedRequirementIds) {
+        const req = contract.requirements.find(r => r.id === id);
+        if (req?.acceptableEvidenceSources?.length) {
+          const sourceMatch = req.acceptableEvidenceSources.some(src => {
+            if (src === 'linkedin_profile') return /linkedin\.com|profile/i.test(text);
+            if (src === 'company_website') return /website|\.com|\.io|about us/i.test(text);
+            if (src === 'job_postings') return /job|hiring|careers|posted/i.test(text);
+            if (src === 'news_articles') return /news|press|article|reported/i.test(text);
+            return true;
+          });
+          if (sourceMatch) score += 3;
+        }
+      }
+    }
+    
+    return { text, index, matchedRequirementIds, score };
   });
   const selected = new Set<number>();
   const evidenceLines: string[] = [];

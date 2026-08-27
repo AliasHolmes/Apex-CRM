@@ -8,6 +8,7 @@ import {
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
 import { rankLeadForFinalSelection } from "./scoring.js";
+import { isFlagEnabled } from "./featureFlags.js";
 
 export type RequirementStatus = "pass" | "fail" | "unknown";
 
@@ -352,28 +353,97 @@ export function validateFinalistJudgments(
       contextPasses = 0;
     let signalPasses = 0;
     let fabricatedHardPass = false;
-    for (const req of requirements) {
-      const contractReq = contract.requirements.find(
-        (item) => item.id === req.requirementId,
-      );
-      if (!contractReq || contractReq.importance !== "hard") continue;
-      if (req.fabricatedPass) fabricatedHardPass = true;
-      const isSignal =
-        (contractReq.evidenceModality ||
-          (contractReq.scope === "signal"
-            ? "open_web_signal"
-            : "structured_profile")) === "open_web_signal";
-      if (isSignal) {
-        if (req.status === "pass") signalPasses++;
-        continue;
+
+    let identityHardTotal = profileHardReqs.filter(
+      (req) => req.scope === "person_role",
+    ).length;
+    let contextHardTotal = profileHardReqs.length - identityHardTotal;
+
+    if (isFlagEnabled.semanticGrouping()) {
+      const anyOfGroups = new Map<string, ProspectRequirement[]>();
+      const ungroupedHardReqs: ProspectRequirement[] = [];
+
+      for (const contractReq of profileHardReqs) {
+        if (contractReq.groupId && contractReq.matchRule === 'any_of') {
+          const list = anyOfGroups.get(contractReq.groupId) || [];
+          list.push(contractReq);
+          anyOfGroups.set(contractReq.groupId, list);
+        } else {
+          ungroupedHardReqs.push(contractReq);
+        }
       }
-      const isIdentity = contractReq.scope === "person_role";
-      if (req.status === "pass") {
-        if (isIdentity) identityPasses++;
-        else contextPasses++;
-      } else if (req.status === "fail") {
-        if (isIdentity) identityFails++;
-        else contextFails++;
+
+      let groupIdentityTotal = 0;
+      let groupContextTotal = 0;
+      for (const [_, groupReqs] of anyOfGroups) {
+        const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
+        if (isIdentityGroup) groupIdentityTotal++;
+        else groupContextTotal++;
+      }
+
+      identityHardTotal = ungroupedHardReqs.filter(r => r.scope === 'person_role').length + groupIdentityTotal;
+      contextHardTotal = ungroupedHardReqs.filter(r => r.scope !== 'person_role').length + groupContextTotal;
+
+      for (const contractReq of ungroupedHardReqs) {
+        const req = requirements.find(r => r.requirementId === contractReq.id);
+        if (!req) continue;
+        if (req.fabricatedPass) fabricatedHardPass = true;
+        const isIdentity = contractReq.scope === 'person_role';
+        if (req.status === 'pass') {
+          if (isIdentity) identityPasses++;
+          else contextPasses++;
+        } else if (req.status === 'fail') {
+          if (isIdentity) identityFails++;
+          else contextFails++;
+        }
+      }
+
+      for (const [_, groupReqs] of anyOfGroups) {
+        const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
+        const groupAssessments = groupReqs.map(gr => requirements.find(r => r.requirementId === gr.id)).filter(Boolean);
+        if (groupAssessments.some(a => a?.fabricatedPass)) fabricatedHardPass = true;
+
+        const anyPass = groupAssessments.some(a => a?.status === 'pass');
+        const allFail = groupAssessments.length > 0 && groupAssessments.every(a => a?.status === 'fail');
+
+        if (anyPass) {
+          if (isIdentityGroup) identityPasses++;
+          else contextPasses++;
+        } else if (allFail) {
+          if (isIdentityGroup) identityFails++;
+          else contextFails++;
+        }
+      }
+
+      for (const contractReq of signalHardReqs) {
+        const req = requirements.find(r => r.requirementId === contractReq.id);
+        if (req?.fabricatedPass) fabricatedHardPass = true;
+        if (req?.status === 'pass') signalPasses++;
+      }
+    } else {
+      for (const req of requirements) {
+        const contractReq = contract.requirements.find(
+          (item) => item.id === req.requirementId,
+        );
+        if (!contractReq || contractReq.importance !== "hard") continue;
+        if (req.fabricatedPass) fabricatedHardPass = true;
+        const isSignal =
+          (contractReq.evidenceModality ||
+            (contractReq.scope === "signal"
+              ? "open_web_signal"
+              : "structured_profile")) === "open_web_signal";
+        if (isSignal) {
+          if (req.status === "pass") signalPasses++;
+          continue;
+        }
+        const isIdentity = contractReq.scope === "person_role";
+        if (req.status === "pass") {
+          if (isIdentity) identityPasses++;
+          else contextPasses++;
+        } else if (req.status === "fail") {
+          if (isIdentity) identityFails++;
+          else contextFails++;
+        }
       }
     }
 
@@ -387,10 +457,6 @@ export function validateFinalistJudgments(
       clean(judgment.reason, 500) ||
       "Matches the prospect contract with cited public evidence.";
 
-    const identityHardTotal = profileHardReqs.filter(
-      (req) => req.scope === "person_role",
-    ).length;
-    const contextHardTotal = profileHardReqs.length - identityHardTotal;
     const identityVerified =
       identityFails === 0 && identityPasses === identityHardTotal;
     const contextVerified =

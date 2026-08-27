@@ -1,10 +1,11 @@
 import { Type } from '../services/llm.js';
 import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
 import type { IntentSignalSpec } from './intentSignals.js';
+import { isFlagEnabled } from './featureFlags.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v5';
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v6';
 
 export type RequirementScope =
   | 'person_role'
@@ -16,6 +17,27 @@ export type RequirementScope =
 
 export type EvidenceModality = 'structured_profile' | 'open_web_signal' | 'inferred';
 
+export type RequirementClass =
+  | 'system_invariant'        // Validation guard, never in queries (e.g., URL validity)
+  | 'identity_hard'           // Essential; required in every person query (e.g., "owner")
+  | 'context_hard'            // Qualifying; distributed round-robin across queries (e.g., "New York")
+  | 'evidence_required'       // Routing signal; guides evidence extraction (e.g., company size)
+  | 'ranking_signal';         // Soft; for scoring, never in queries (e.g., "nice to have")
+
+export type QueryHardness =
+  | 'required_in_every_query'       // Append to every person query (identity_hard)
+  | 'distributed_across_queries'   // Append to ~1 per N queries via round-robin (context_hard)
+  | 'optional_for_queries';        // Never append (system_invariant, ranking_signal, etc.)
+
+export type EvidenceSource =
+  | 'linkedin_profile'
+  | 'company_website'
+  | 'job_postings'
+  | 'news_articles'
+  | 'social_media';
+
+export type MatchRule = 'all_of' | 'any_of';
+
 export type ProspectRequirement = {
   id: string;
   scope: RequirementScope;
@@ -26,6 +48,11 @@ export type ProspectRequirement = {
   sourcePhrase: string;
   acceptableTerms: string[];
   queryable: boolean;
+  requirementClass?: RequirementClass;
+  queryHardness?: QueryHardness;
+  acceptableEvidenceSources?: EvidenceSource[];
+  groupId?: string;
+  matchRule?: MatchRule;
 };
 
 export type DecompositionMode = 'single_stream_identity' | 'dual_stream_intent';
@@ -68,6 +95,61 @@ const permittedScopes = new Set<RequirementScope>([
 ]);
 
 const requirementId = (scope: RequirementScope, index: number) => `${scope}-${index + 1}`;
+
+// ============================================================================
+// Phase 1: Requirement Classification (Deterministic)
+// ============================================================================
+
+const SYSTEM_INVARIANT_PATTERN = /linkedin.*url|duplicate|valid.*url|profile.*validity/i;
+
+/**
+ * Classify a requirement into one of five categories based on scope and importance.
+ * This classification determines how the requirement is used in queries and routing.
+ */
+export function classifyRequirement(
+  scope: RequirementScope,
+  importance: 'hard' | 'soft',
+  sourcePhrase: string
+): RequirementClass {
+  // Soft requirements are never query terms
+  if (importance === 'soft') return 'ranking_signal';
+
+  // System invariants: validation guards, never in queries
+  if (scope === 'signal' && SYSTEM_INVARIANT_PATTERN.test(sourcePhrase)) {
+    return 'system_invariant';
+  }
+
+  // Identity requirements: person role (owner, CEO, etc.)
+  if (scope === 'person_role') return 'identity_hard';
+
+  // Context requirements: location, industry, company type
+  if (['person_location', 'company_type', 'company_industry'].includes(scope)) {
+    return 'context_hard';
+  }
+
+  // Evidence routing: company size inferred data
+  if (scope === 'company_size') return 'evidence_required';
+
+  // Catch-all: default context for unclassified hard requirements
+  return 'context_hard';
+}
+
+/**
+ * Derive query hardness from requirement class.
+ * This determines whether the requirement is appended to every query, distributed, or optional.
+ */
+export function assignQueryHardness(requirementClass: RequirementClass): QueryHardness {
+  switch (requirementClass) {
+    case 'system_invariant':
+    case 'ranking_signal':
+      return 'optional_for_queries';
+    case 'identity_hard':
+      return 'required_in_every_query';
+    case 'context_hard':
+    case 'evidence_required':
+      return 'distributed_across_queries';
+  }
+}
 
 const sourceAppearsInBrief = (phrase: string, brief: string) => {
   const normalizedPhrase = lower(phrase);
@@ -140,20 +222,25 @@ export function detectDecompositionMode(brief: string): DecompositionMode {
  * the contract compiler is unavailable, while still preserving supplied spec
  * constraints as hard requirements.
  */
-export function buildDeterministicProspectContract(brief: string, spec: SearchSpec): ProspectContract {
+export function buildDeterministicProspectContract(brief: string, spec: Partial<SearchSpec> = {}): ProspectContract {
   const requirements: ProspectRequirement[] = [];
   const add = (scope: RequirementScope, terms: string[], importance: 'hard' | 'soft' = 'hard') => {
     const accepted = expandAcceptableTerms(scope, includeTerms(terms, brief));
     if (!accepted.length) return;
+    const reqClass = classifyRequirement(scope, importance, accepted[0]);
+    const hardness = assignQueryHardness(reqClass);
     requirements.push({
       id: requirementId(scope, requirements.filter(item => item.scope === scope).length),
       scope,
       importance,
+      requirementClass: reqClass,
+      queryHardness: hardness,
       evidenceModality: scope === 'signal' ? 'open_web_signal' : scope === 'company_size' ? 'inferred' : 'structured_profile',
       description: accepted.slice(0, 3).join(' or '),
       sourcePhrase: accepted[0],
       acceptableTerms: accepted,
-      queryable: true
+      queryable: reqClass !== 'system_invariant',
+      acceptableEvidenceSources: []
     });
   };
 
@@ -165,15 +252,20 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   ) => {
     if (!sourceAppearsInBrief(sourcePhrase, brief)) return;
     const accepted = expandAcceptableTerms(scope, unique([sourcePhrase, ...acceptableTerms]));
+    const reqClass = classifyRequirement(scope, importance, sourcePhrase);
+    const hardness = assignQueryHardness(reqClass);
     requirements.push({
       id: requirementId(scope, requirements.filter(item => item.scope === scope).length),
       scope,
       importance,
+      requirementClass: reqClass,
+      queryHardness: hardness,
       evidenceModality: scope === 'signal' ? 'open_web_signal' : scope === 'company_size' ? 'inferred' : 'structured_profile',
       description: sourcePhrase,
       sourcePhrase,
       acceptableTerms: accepted,
-      queryable: true
+      queryable: reqClass !== 'system_invariant',
+      acceptableEvidenceSources: []
     });
   };
 
@@ -197,7 +289,7 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\//).map(s => s.trim()).filter(isCleanRequirementTerm) : [];
 
   const companyTypeMatch = clean(brief).match(new RegExp('([A-Za-z0-9\\s-]{2,30}?)\\s+(?:' + rolePattern + ')\\b', 'i'))?.[1]?.trim() || '';
-  const explicitCompanyKeywords = spec.company.keywords.filter(keyword => lower(keyword) !== lower(brief));
+  const explicitCompanyKeywords = (spec?.company?.keywords || []).filter(keyword => lower(keyword) !== lower(brief));
   const ownerMatch = clean(brief).match(/\b(?:firm\s+)?owners?\b/i)?.[0] || '';
   const professionMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,2}(?:lawyers?|attorneys?|dentists?|doctors?|brokers?|accountants?)\b/i)?.[0] || '';
   const firmMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,3}firm\b/i)?.[0] || '';
@@ -206,12 +298,12 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
   // Keep ownership as one requirement even when the user writes "firm owners".
   // The dedicated requirement below carries the useful owner/firm-owner variants.
   const nonOwnershipHints = hintedRoles.filter(term => !/^owners?$/i.test(term));
-  add('person_role', [...spec.person.includeTitles, ...nonOwnershipHints]);
+  add('person_role', [...(spec?.person?.includeTitles || []), ...nonOwnershipHints]);
   // Singular/plural ownership and professional titles are explicit criteria,
   // even when an LLM omitted them from its contract.
   addWithAlternatives('person_role', ownerMatch, ['owner', 'owners', 'firm owner', 'firm owners']);
   addWithAlternatives('person_role', professionMatch, [professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`]);
-  add('person_location', [...spec.person.locations, ...spec.company.locations, ...extractedLocations].filter(isCleanRequirementTerm));
+  add('person_location', [...(spec?.person?.locations || []), ...(spec?.company?.locations || []), ...extractedLocations].filter(isCleanRequirementTerm));
   if (firmMatch && isCleanRequirementTerm(firmMatch)) {
     addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
   }
@@ -219,30 +311,35 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
     addWithAlternatives('company_type', companyTypeMatch, [companyTypeMatch]);
   }
   add('company_type', explicitCompanyKeywords);
-  add('company_industry', spec.company.industries);
+  add('company_industry', spec?.company?.industries || []);
   if (intentMatch) {
     addWithAlternatives('signal', intentMatch, ['hiring', 'careers', 'open roles', 'recruiting', 'growing team'], 'soft');
   }
-  add('signal', spec.signals.include, 'soft');
+  add('signal', spec?.signals?.include || [], 'soft');
 
   // A brief with no editable spec still needs one non-invented hard target.
   if (!requirements.length && clean(brief)) {
+    const reqClass = classifyRequirement('company_type', 'hard', clean(brief));
+    const hardness = assignQueryHardness(reqClass);
     requirements.push({
       id: 'brief-1',
       scope: 'company_type',
       importance: 'hard',
+      requirementClass: reqClass,
+      queryHardness: hardness,
       evidenceModality: 'structured_profile',
       description: clean(brief),
       sourcePhrase: clean(brief),
       acceptableTerms: [clean(brief)],
-      queryable: false
+      queryable: reqClass !== 'system_invariant',
+      acceptableEvidenceSources: []
     });
   }
 
   const exclusions = unique([
-    ...spec.person.excludeTitles,
-    ...spec.exclusions.companies,
-    ...spec.exclusions.domains
+    ...(spec?.person?.excludeTitles || []),
+    ...(spec?.exclusions?.companies || []),
+    ...(spec?.exclusions?.domains || [])
   ]);
 
   // Deduplicate requirements of the same scope that share a sourcePhrase root.
@@ -267,17 +364,31 @@ export function buildDeterministicProspectContract(brief: string, spec: SearchSp
 
   const fallback = buildContractFallbackQueries(brief, deduped);
   const decompositionMode = detectDecompositionMode(brief);
+  
+  // Ensure all requirements have requirementClass and queryHardness (defensive)
+  for (const req of deduped) {
+    if (!req.requirementClass) {
+      req.requirementClass = classifyRequirement(req.scope, req.importance, req.sourcePhrase);
+    }
+    if (!req.queryHardness) {
+      req.queryHardness = assignQueryHardness(req.requirementClass);
+    }
+    if (!req.acceptableEvidenceSources) {
+      req.acceptableEvidenceSources = [];
+    }
+  }
+  
   const identityRoles = unique(deduped.filter(r => r.scope === 'person_role').flatMap(r => r.acceptableTerms));
   const identityLocations = unique(deduped.filter(r => r.scope === 'person_location').flatMap(r => r.acceptableTerms));
   const identityCompanyTypes = unique(deduped.filter(r => r.scope === 'company_type').flatMap(r => r.acceptableTerms));
   const identityIndustries = unique(deduped.filter(r => r.scope === 'company_industry').flatMap(r => r.acceptableTerms));
 
   const identitySpec: IdentitySpec = {
-    roles: identityRoles.length ? identityRoles : spec.person.includeTitles,
-    locations: identityLocations.length ? identityLocations : spec.person.locations,
-    companyTypes: identityCompanyTypes.length ? identityCompanyTypes : spec.company.keywords,
-    industries: identityIndustries.length ? identityIndustries : spec.company.industries,
-    seniorities: spec.person.seniorities
+    roles: identityRoles.length ? identityRoles : (spec?.person?.includeTitles || []),
+    locations: identityLocations.length ? identityLocations : (spec?.person?.locations || []),
+    companyTypes: identityCompanyTypes.length ? identityCompanyTypes : (spec?.company?.keywords || []),
+    industries: identityIndustries.length ? identityIndustries : (spec?.company?.industries || []),
+    seniorities: spec?.person?.seniorities
   };
 
   const intentRequirements = deduped.filter(r => r.scope === 'signal' || r.evidenceModality === 'open_web_signal');
@@ -330,6 +441,35 @@ export function buildSignalLaneQueries(
 
 export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
   const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
+  
+  if (isFlagEnabled.distributedQuery()) {
+    const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
+    const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
+    
+    const variants = [0, 1, 2, 3].map(index => {
+      const idTerms = identityReqs.map(r => r.acceptableTerms[index % Math.max(r.acceptableTerms.length, 1)] || r.sourcePhrase).filter(Boolean);
+      const ctxReq = contextReqs.length ? contextReqs[index % contextReqs.length] : null;
+      const ctxTerm = ctxReq ? (ctxReq.acceptableTerms[index % Math.max(ctxReq.acceptableTerms.length, 1)] || ctxReq.sourcePhrase) : '';
+      return [...idTerms, ctxTerm].filter(Boolean).join(' ');
+    });
+    
+    const base = queryTermsFor(requirements).join(' ') || clean(brief);
+    const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
+    const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
+      query: query.slice(0, 240).trim(),
+      family: 'persona_title' as const,
+      intent: 'find_decision_makers' as const,
+      expectedSignal: 'Public profile evidence for distributed hard requirements',
+      priority: index + 1,
+      lane: 'person' as const,
+      providerPreference: index === 0 ? 'tavily' as const : 'corroborate' as const,
+      searchDepth: 'basic' as const,
+      coveredRequirementIds: requirements.filter(item => item.importance === 'hard').map(item => item.id)
+    }));
+    const signalQueries = buildSignalLaneQueries(requirements);
+    return [...personQueries, ...signalQueries];
+  }
+
   const locationReq = hardRequirements.find(r => r.scope === 'person_location');
   const nonLocationReqs = hardRequirements.filter(r => r.scope !== 'person_location');
   const locationTerms = locationReq?.acceptableTerms && locationReq.acceptableTerms.length > 0
@@ -396,7 +536,12 @@ export const prospectContractSchema = {
           description: { type: Type.STRING },
           sourcePhrase: { type: Type.STRING },
           acceptableTerms: { type: Type.ARRAY, items: { type: Type.STRING } },
-          queryable: { type: Type.BOOLEAN }
+          queryable: { type: Type.BOOLEAN },
+          requirementClass: { type: Type.STRING, enum: ['system_invariant', 'identity_hard', 'context_hard', 'evidence_required', 'ranking_signal'] },
+          queryHardness: { type: Type.STRING, enum: ['required_in_every_query', 'distributed_across_queries', 'optional_for_queries'] },
+          acceptableEvidenceSources: { type: Type.ARRAY, items: { type: Type.STRING, enum: ['linkedin_profile', 'company_website', 'job_postings', 'news_articles', 'social_media'] } },
+          groupId: { type: Type.STRING },
+          matchRule: { type: Type.STRING, enum: ['all_of', 'any_of'] }
         },
         required: ['scope', 'importance', 'description', 'sourcePhrase', 'acceptableTerms', 'queryable']
       }
@@ -440,7 +585,24 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - coveredRequirementIds may reference only the returned requirement ids.
 Return only the requested JSON.`;
 
-export const buildRecoveryQueryPrompt = (contract: ProspectContract, diagnostics: { missingHardRequirementIds: string[]; viableCandidates: number }) => `Generate exactly four distinct recovery retrieval queries for this immutable prospect contract.\n\nContract: ${JSON.stringify({ requirements: contract.requirements, exclusions: contract.exclusions })}\n\nRound evidence: ${JSON.stringify(diagnostics)}\n\nRules:\n- Preserve every hard requirement in every query.\n- Recover only the missing hard requirements; do not widen personas, geography, firmographics, or intent.\n- Use only contract terms. Do not use Google dorks, site:, or the word LinkedIn.\n- Vary only the contract's acceptable terms and retrieval phrasing such as public profile or professional profile.\n- Return exactly four query objects.`;
+export const buildRecoveryQueryPrompt = (
+  contract: ProspectContract,
+  diagnostics: { missingHardRequirementIds: string[]; viableCandidates: number; classSummary?: any }
+) => {
+  let bottleneckGuidance = '';
+  if (isFlagEnabled.enhancedDiagnostics() && diagnostics.classSummary?.bottleneckClass) {
+    const bClass = diagnostics.classSummary.bottleneckClass;
+    if (bClass === 'context_hard') {
+      bottleneckGuidance = '\n- Bottleneck identified: Context Hard (Location/Industry/CompanyType). Vary geographic and firmographic acceptable terms while keeping role/persona identity strictly aligned.';
+    } else if (bClass === 'identity_hard') {
+      bottleneckGuidance = '\n- Bottleneck identified: Identity Hard (Role/Seniority). Vary role/title acceptable terms while keeping firmographics constant.';
+    } else if (bClass === 'evidence_required') {
+      bottleneckGuidance = '\n- Bottleneck identified: Evidence Required. Focus queries on open-web sources and company profile sites.';
+    }
+  }
+
+  return `Generate exactly four distinct recovery retrieval queries for this immutable prospect contract.\n\nContract: ${JSON.stringify({ requirements: contract.requirements, exclusions: contract.exclusions })}\n\nRound evidence: ${JSON.stringify(diagnostics)}\n\nRules:\n- Preserve every hard requirement in every query.\n- Recover only the missing hard requirements; do not widen personas, geography, firmographics, or intent.\n- Use only contract terms. Do not use Google dorks, site:, or the word LinkedIn.\n- Vary only the contract's acceptable terms and retrieval phrasing such as public profile or professional profile.${bottleneckGuidance}\n- Return exactly four query objects.`;
+};
 
 /** Validate all model output before it influences retrieval. */
 export function normalizeProspectContract(
@@ -466,15 +628,35 @@ export function normalizeProspectContract(
     const evidenceModality: EvidenceModality = rawModality === 'open_web_signal' || rawModality === 'inferred' || rawModality === 'structured_profile'
       ? rawModality
       : (scope === 'signal' ? 'open_web_signal' : scope === 'company_size' ? 'inferred' : 'structured_profile');
+    
+    // Phase 1: Classify requirement deterministically
+    let reqClass: RequirementClass = item?.requirementClass;
+    if (!reqClass) {
+      reqClass = classifyRequirement(scope, importance, sourcePhrase);
+    }
+    let hardness: QueryHardness = item?.queryHardness;
+    if (!hardness) {
+      hardness = assignQueryHardness(reqClass);
+    }
+    
+    // Phase 3: Semantic grouping support
+    const rawGroupId = clean(item?.groupId);
+    const rawMatchRule = item?.matchRule === 'any_of' ? 'any_of' : (item?.matchRule === 'all_of' ? 'all_of' : undefined);
+
     requirements.push({
       id: clean(item?.id) || requirementId(scope, count),
       scope,
       importance,
+      requirementClass: reqClass,
+      queryHardness: hardness,
       evidenceModality,
       description: clean(item?.description) || sourcePhrase,
       sourcePhrase,
       acceptableTerms: terms,
-      queryable: item?.queryable !== false
+      queryable: reqClass === 'system_invariant' ? false : (item?.queryable !== false),
+      acceptableEvidenceSources: Array.isArray(item?.acceptableEvidenceSources) ? item.acceptableEvidenceSources : [],
+      groupId: rawGroupId || undefined,
+      matchRule: rawMatchRule
     });
   }
 
@@ -535,6 +717,21 @@ export function normalizeProspectContract(
     growthSignals: Array.isArray(rawIntent.growthSignals) && rawIntent.growthSignals.length ? unique(rawIntent.growthSignals) : fallback.intentSpec?.growthSignals || []
   };
 
+  // Ensure all normalized requirements have Phase 1 fields
+  for (const req of normalizedRequirements) {
+    if (!req.requirementClass) {
+      req.requirementClass = classifyRequirement(req.scope, req.importance, req.sourcePhrase);
+    }
+    if (!req.queryHardness) {
+      req.queryHardness = assignQueryHardness(req.requirementClass);
+    }
+    if (!req.acceptableEvidenceSources) {
+      req.acceptableEvidenceSources = [];
+    }
+  }
+  
+  const finalRequirements = normalizedRequirements.length ? normalizedRequirements : fallback.requirements;
+
   return {
     version: 1,
     policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
@@ -542,10 +739,10 @@ export function normalizeProspectContract(
     decompositionMode,
     identitySpec,
     intentSpec,
-    authorityRequired: Boolean(raw.authorityRequired) || inferredAuthority(normalizedRequirements),
-    requirements: normalizedRequirements.length ? normalizedRequirements : fallback.requirements,
+    authorityRequired: Boolean(raw.authorityRequired) || inferredAuthority(finalRequirements),
+    requirements: finalRequirements,
     exclusions,
-    initialQueries: initialQueries.length ? initialQueries : buildContractFallbackQueries(brief, normalizedRequirements.length ? normalizedRequirements : fallback.requirements)
+    initialQueries: initialQueries.length ? initialQueries : buildContractFallbackQueries(brief, finalRequirements)
   };
 }
 
@@ -570,17 +767,47 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     if (!query || query.length > 240 || exclusions.some(term => term && lower(query).includes(term))) continue;
     const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
     if (!isSignalLane) {
-      for (const requirement of hardRequirements) {
-        if (intentTerms.has(lower(requirement.sourcePhrase))) continue;
-        if (!includesAny(query, requirement.acceptableTerms)) {
-          if (requirement.scope === 'person_location') {
-            // If the query already has any location term from the contract, do not append a conflicting one
-            const allLocationTerms = contract.requirements
-              .filter(r => r.scope === 'person_location')
-              .flatMap(r => r.acceptableTerms);
-            if (includesAny(query, allLocationTerms)) continue;
+      if (isFlagEnabled.distributedQuery()) {
+        const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
+        const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
+
+        // 1. Identity terms: required in every persona query
+        for (const req of identityReqs) {
+          if (intentTerms.has(lower(req.sourcePhrase))) continue;
+          if (!includesAny(query, req.acceptableTerms)) {
+            const addition = req.acceptableTerms[0] || req.sourcePhrase;
+            if ((query + ' ' + addition).length <= 240) {
+              query = `${query} ${addition}`.trim();
+            }
           }
-          query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
+        }
+
+        // 2. Context terms: distributed round-robin across candidate queries
+        if (contextReqs.length > 0) {
+          const alreadyHasContext = contextReqs.some(cr => includesAny(query, cr.acceptableTerms));
+          if (!alreadyHasContext) {
+            const ctxReq = contextReqs[normalized.length % contextReqs.length];
+            if (!intentTerms.has(lower(ctxReq.sourcePhrase))) {
+              const addition = ctxReq.acceptableTerms[0] || ctxReq.sourcePhrase;
+              if ((query + ' ' + addition).length <= 240) {
+                query = `${query} ${addition}`.trim();
+              }
+            }
+          }
+        }
+      } else {
+        for (const requirement of hardRequirements) {
+          if (intentTerms.has(lower(requirement.sourcePhrase))) continue;
+          if (!includesAny(query, requirement.acceptableTerms)) {
+            if (requirement.scope === 'person_location') {
+              // If the query already has any location term from the contract, do not append a conflicting one
+              const allLocationTerms = contract.requirements
+                .filter(r => r.scope === 'person_location')
+                .flatMap(r => r.acceptableTerms);
+              if (includesAny(query, allLocationTerms)) continue;
+            }
+            query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
+          }
         }
       }
     }

@@ -965,20 +965,20 @@ export async function openAIStructured<T>(
           ? parsed.items
           : null;
       if (!Array.isArray(value)) return null;
-      if (
-        value.length > 0 &&
-        !value.some(
-          (item: any) =>
-            item &&
-            typeof item === "object" &&
-            (typeof item.fullName === "string" ||
-              typeof item.headline === "string" ||
-              typeof item.currentTitle === "string" ||
-              typeof item.currentCompany === "string" ||
-              item.contactDetails),
-        )
-      )
-        return null;
+
+      const itemSchema = normalizedSchema?.items;
+      if (itemSchema && typeof itemSchema === "object") {
+        const itemRequired = Array.isArray(itemSchema.required) ? itemSchema.required : [];
+        if (itemRequired.length > 0 && value.length > 0) {
+          const hasValidItem = value.some(
+            (item: any) =>
+              item &&
+              typeof item === "object" &&
+              itemRequired.every((key: string) => key in item),
+          );
+          if (!hasValidItem) return null;
+        }
+      }
       return value as T;
     }
 

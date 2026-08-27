@@ -55,7 +55,7 @@ class SessionStreamHub {
     return () => this.unsubscribe(sessionId, subscriber);
   }
 
-  private unsubscribe(sessionId: string, subscriber: Subscriber) {
+  unsubscribe(sessionId: string, subscriber: Subscriber) {
     const broadcast = this.broadcasts.get(sessionId);
     if (!broadcast) return;
     broadcast.subscribers.delete(subscriber);
@@ -113,7 +113,8 @@ class SessionStreamHub {
           try {
             subscriber(frame);
           } catch {
-            // A broken subscriber pipe must not kill the fan-out loop.
+            // A broken subscriber pipe must be pruned immediately to prevent leaks.
+            this.unsubscribe(sessionId, subscriber);
           }
         }
       }

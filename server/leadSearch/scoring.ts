@@ -141,9 +141,14 @@ export function computeKalmanFusedScore(
   processNoise = 1.0,
   observationNoise = 2.0
 ): number {
-  const kalmanGain = processNoise / (processNoise + observationNoise);
-  const fused = priorEstimate + kalmanGain * (newObservation - priorEstimate);
-  return Number(Math.min(Math.max(fused, 1), 10).toFixed(2));
+  const safeP = Math.max(Number.isFinite(processNoise) ? processNoise : 1.0, 1e-4);
+  const safeR = Math.max(Number.isFinite(observationNoise) ? observationNoise : 2.0, 1e-4);
+  const kalmanGain = safeP / (safeP + safeR);
+  const prior = Number.isFinite(priorEstimate) ? priorEstimate : 5.0;
+  const obs = Number.isFinite(newObservation) ? newObservation : prior;
+  const fused = prior + kalmanGain * (obs - prior);
+  const safeScore = Number.isFinite(fused) ? fused : prior;
+  return Number(Math.min(Math.max(safeScore, 1), 10).toFixed(2));
 }
 
 /**

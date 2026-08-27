@@ -20,6 +20,7 @@
         "test:class-scheduler": "tsx --test test/classAwareScheduler.test.ts",
         "test:enhanced-diagnostics": "tsx --test test/enhancedDiagnostics.test.ts",
         "test:optimizations": "tsx --test test/fuzzyQuoteGrounding.test.ts test/safeSlugProbe.test.ts test/companyEntityResolution.test.ts test/resilienceAndCacheHygiene.test.ts",
+        "test:critical-fixes": "tsx --test test/llmStructuredArrayCoercion.test.ts test/siteProbeSsrfGuard.test.ts test/sessionStreamHubPruning.test.ts test/kalmanStability.test.ts",
         "test:hard-terms": "tsx --test test/contractShape.test.ts test/distributedQueryEnforcement.test.ts test/semanticGrouping.test.ts test/evidenceAwareHardness.test.ts test/classAwareScheduler.test.ts test/enhancedDiagnostics.test.ts",
         "test:scout": "tsx --test test/scoutPipeline.test.ts",
         "test:brightdata-upgrade": "tsx --test test/brightDataUpgrade.test.ts",

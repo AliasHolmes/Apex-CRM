@@ -361,6 +361,7 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     status === 502 ||
     status === 503 ||
     status === 504 ||
+    (status !== undefined && status >= 520 && status <= 526) ||
     isTokenLimit
   )
     return true;
@@ -369,7 +370,7 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     /empty or invalid response|unable to get json response/i.test(error.message)
   )
     return true;
-  return /timed out|timeout|connection timed out|no deployments available|cooldown|413/i.test(
+  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|524|origin took too long|origin web server/i.test(
     error.message,
   );
 }

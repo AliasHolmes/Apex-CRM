@@ -115,7 +115,15 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   // Widen score distribution when candidates cluster tightly (low entropy),
   // so MMR and Sigmoid can meaningfully differentiate them.
   const rawScores = candidates.map(c => {
-    const raw = Number((c as any).finalSelectionScore ?? (c as any).profile?.finalSelectionScore ?? (c as any).qualification?.finalScore ?? (c as any).profile?.qualification?.finalScore ?? 0);
+    const raw = Number(
+      (c as any).finalSelectionScore ??
+      (c as any).profile?.finalSelectionScore ??
+      (c as any).scoreBreakdown?.finalScore ??
+      (c as any).qualification?.finalScore ??
+      (c as any).profile?.qualification?.finalScore ??
+      (c as any).effectiveScore ??
+      rankLeadForFinalSelection(c)
+    );
     return raw <= 1.0 && raw > 0 ? raw * 10 : raw;
   });
   const entropyNormalizedScores = normalizeScorePool(rawScores);

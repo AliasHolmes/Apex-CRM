@@ -132,6 +132,26 @@ describe('free-tier prospect scout', () => {
     assert.deepEqual(selected.map(item => item.id), ['a', 'b', 'd']);
   });
 
+  it('ranks un-keyed candidates using rankLeadForFinalSelection fallback', () => {
+    const candidateHigh = {
+      id: 'high',
+      company: 'Apex',
+      decisionMakerVerification: { confidence: 9 },
+      scout: { criteriaCoverageScore: 9, corroborationScore: 9 },
+      evidence: { evidenceQuality: 'good', sourceProvider: 'tavily' }
+    };
+    const candidateLow = {
+      id: 'low',
+      company: 'Beacon',
+      decisionMakerVerification: { confidence: 3 },
+      scout: { criteriaCoverageScore: 3, corroborationScore: 3 },
+      evidence: { evidenceQuality: 'weak', sourceProvider: 'tavily' }
+    };
+
+    const selected = selectDiversifiedLeads([candidateLow, candidateHigh], 1, 1);
+    assert.equal(selected[0].id, 'high', 'Higher quality candidate must be selected even when finalSelectionScore key is absent');
+  });
+
   it('does not rank an email higher during scout selection', () => {
     const base = {
       scoreBreakdown: { finalScore: 7 },

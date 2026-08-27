@@ -113,8 +113,8 @@ export function buildCollectionCapacity(input: {
   const rerankPoolTarget = Math.min(desiredPool, poolMax);
   const requiredRounds = Math.max(1, Math.ceil(rerankPoolTarget / candidateBatchSize));
 
-  // Hard ceiling on max rounds (default: 8 rounds for targets <= 30, 10 rounds for target <= 50, 12 for larger)
-  const defaultMaxRoundsCap = targetLimit <= 30 ? 8 : targetLimit <= 50 ? 10 : 12;
+  // Hard ceiling on max rounds (default: 6 rounds for targets <= 30, 8 rounds for target <= 50, 12 for larger)
+  const defaultMaxRoundsCap = targetLimit <= 30 ? 6 : targetLimit <= 50 ? 8 : 12;
   const maxRoundsCap = clampInteger(input.maxRoundsCap ?? defaultMaxRoundsCap, 3, MAX_COLLECTION_ROUNDS);
 
   // Add 1 recovery round pad, bounded by baseRounds and strictly capped by maxRoundsCap

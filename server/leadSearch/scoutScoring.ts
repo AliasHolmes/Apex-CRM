@@ -221,7 +221,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   const mmrSelected = computeMMRDiversitySelection(filtered, mmrLimit, 0.75);
   const selectedList = [...paretoGuaranteed, ...mmrSelected];
 
-  // --- Step 4: Shortfall Backfill (guarantee full requested limit if candidate pool was sufficient) ---
+  // --- Step 4: Shortfall Backfill (guarantee full requested limit if candidate pool was sufficient while respecting maxPerCompany) ---
   if (
     candidates.length >= limit &&
     selectedList.length < limit &&
@@ -232,8 +232,13 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
       if (selectedList.length >= limit) break;
       const cKey = candidateKey(candidate);
       if (!selectedKeys.has(cKey)) {
-        selectedList.push(candidate);
-        selectedKeys.add(cKey);
+        const compKey = extractCompanyKey(candidate, cKey);
+        const currentCount = perCompany.get(compKey) || 0;
+        if (currentCount < maxPerCompany) {
+          selectedList.push(candidate);
+          selectedKeys.add(cKey);
+          perCompany.set(compKey, currentCount + 1);
+        }
       }
     }
   }

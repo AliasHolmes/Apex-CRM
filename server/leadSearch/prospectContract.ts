@@ -285,11 +285,35 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   };
   const TITLE_MODIFIER_PATTERN = /^(?:managing|operations?|technical|executive|senior|junior|lead|principal|chief|global|regional|fractional|founding|head|director|directors|vp|vice|deputy|sales|marketing|revops|finance|co-?\s*founder|co-?\s*owner)\b/i;
 
+  const ROLE_WORDS_PATTERN = /\b(owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i;
+  const CONJUNCTION_STOP_PATTERN = /^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\b|\b(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i;
+  const COMPANY_TITLE_PREFIX_PATTERN = /^(?:managing|senior|junior|lead|principal|chief|executive|vp|vice|deputy|head|director|directors|founder|owner|ceo|president)\b/i;
+
+  const isCleanCompanyTypeTerm = (value: unknown): boolean => {
+    const v = clean(value);
+    if (!v || v.length < 2 || v.length > 48) return false;
+    if (ROLE_WORDS_PATTERN.test(v)) return false;
+    if (CONJUNCTION_STOP_PATTERN.test(v)) return false;
+    if (COMPANY_TITLE_PREFIX_PATTERN.test(v)) return false;
+    if (JUNK_TERM_PATTERN.test(v)) return false;
+    return true;
+  };
+
   const rawLocMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120})/i)?.[1] || '';
   const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\//).map(s => s.trim()).filter(isCleanRequirementTerm) : [];
 
-  const companyTypeMatch = clean(brief).match(new RegExp('([A-Za-z0-9\\s-]{2,30}?)\\s+(?:' + rolePattern + ')\\b', 'i'))?.[1]?.trim() || '';
-  const explicitCompanyKeywords = (spec?.company?.keywords || []).filter(keyword => lower(keyword) !== lower(brief));
+  // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
+  // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
+  const prepCompanyMatch = clean(brief).match(/\b(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b\s+(?:of|at|in|for)\s+(?:an?\s+)?([^,.]+?)(?=\s+(?:with|in|near|from|located|who|having|\d+|,|\.|$))/i)?.[1]?.trim() || '';
+
+  // Pattern B: Direct Prefix "[Company Type] [Role]"
+  // e.g. "AI agency owner" -> "AI agency"
+  const prefixCompanyMatch = clean(brief).match(/\b([^,.]+?)\s+(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i)?.[1]?.trim() || '';
+
+  // Pattern C: Headcount / Employee size
+  // e.g. "with 5-50 employees"
+  const sizeMatch = clean(brief).match(/\b(\d+)(?:\s*-\s*(\d+))?\s+employees?\b/i);
+  const explicitCompanyKeywords = (spec?.company?.keywords || []).filter(keyword => lower(keyword) !== lower(brief) && isCleanCompanyTypeTerm(keyword));
   const ownerMatch = clean(brief).match(/\b(?:firm\s+)?owners?\b/i)?.[0] || '';
   const professionMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,2}(?:lawyers?|attorneys?|dentists?|doctors?|brokers?|accountants?)\b/i)?.[0] || '';
   const firmMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,3}firm\b/i)?.[0] || '';
@@ -331,14 +355,22 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   }
 
   add('person_location', [...(spec?.person?.locations || []), ...(spec?.company?.locations || []), ...extractedLocations].filter(isCleanRequirementTerm));
-  if (firmMatch && isCleanRequirementTerm(firmMatch)) {
+  if (firmMatch && isCleanCompanyTypeTerm(firmMatch)) {
     addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
   }
-  if (companyTypeMatch && !TITLE_MODIFIER_PATTERN.test(companyTypeMatch) && !/^(with|and|or|in|from|at|the|a|an)$/i.test(companyTypeMatch)) {
-    addWithAlternatives('company_type', companyTypeMatch, [companyTypeMatch]);
+  if (prepCompanyMatch && isCleanCompanyTypeTerm(prepCompanyMatch)) {
+    addWithAlternatives('company_type', prepCompanyMatch, [prepCompanyMatch]);
+  } else if (prefixCompanyMatch && isCleanCompanyTypeTerm(prefixCompanyMatch)) {
+    addWithAlternatives('company_type', prefixCompanyMatch, [prefixCompanyMatch]);
   }
   add('company_type', explicitCompanyKeywords);
   add('company_industry', spec?.company?.industries || []);
+  if (sizeMatch) {
+    const minEmployees = Number(sizeMatch[1]);
+    const maxEmployees = sizeMatch[2] ? Number(sizeMatch[2]) : undefined;
+    const sizePhrase = maxEmployees ? `${minEmployees}-${maxEmployees} employees` : `${minEmployees}+ employees`;
+    addWithAlternatives('company_size', sizePhrase, [sizePhrase, `${minEmployees} to ${maxEmployees || ''} employees`].filter(Boolean), 'soft');
+  }
   if (intentMatch) {
     addWithAlternatives('signal', intentMatch, ['hiring', 'careers', 'open roles', 'recruiting', 'growing team'], 'soft');
   }
@@ -951,7 +983,11 @@ export function searchSpecFromProspectContract(base: SearchSpec, contract: Prosp
   const roles = byScope('person_role');
   const locations = byScope('person_location');
   const industries = byScope('company_industry');
-  const companyTypes = byScope('company_type');
+  const companyTypes = byScope('company_type').filter(
+    (t) =>
+      !/\b(owner|owners|founder|founders|ceo|president|director|directors|executive|executives|vp|head)\b/i.test(t) &&
+      !/^(or|and|with|of|at|in|for|from|to)\b|\b(or|and|with|of|at|in|for|from|to)$/i.test(t),
+  );
   const signals = byScope('signal');
   return {
     ...base,

@@ -666,10 +666,15 @@ export async function executeDiscoverySession(
       );
 
     const targetLimit = stats.requested;
-    const rerankPoolMultiplier = Math.min(
-      Math.max(Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER || 3), 1),
-      5,
-    );
+    const rerankPoolMultiplier = process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER
+      ? Math.min(
+          Math.max(
+            Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER),
+            1,
+          ),
+          5,
+        )
+      : undefined;
 
     const requestedMode = [
       "person_first",

@@ -35,14 +35,35 @@ export type ProviderRunStats = {
 };
 
 export function sanitizeQueryText(query: string) {
-  return (query || '')
+  let cleaned = (query || '')
     .replace(/site:linkedin\.com\/in\//gi, '')
     .replace(/site:[^\s]+/gi, '')
     .replace(/\blinkedin\b/gi, '')
-    .replace(/\b(AND|OR|NOT)\b/g, ' ')
+    .replace(/\b(AND|OR|NOT)\b/gi, ' ')
     .replace(/[()"]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Strip leading/trailing prepositions and conjunctions
+  cleaned = cleaned
+    .replace(/^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\s+/i, '')
+    .replace(/\s+(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i, '')
+    .trim();
+
+  // Deduplicate repeated words (case-insensitive) while preserving original sequence
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const seenLower = new Set<string>();
+  const dedupedWords: string[] = [];
+  for (const word of words) {
+    const lower = word.toLowerCase();
+    // Allow non-role words to repeat only if separated, but drop duplicate roles/locations
+    if (!seenLower.has(lower)) {
+      seenLower.add(lower);
+      dedupedWords.push(word);
+    }
+  }
+
+  return dedupedWords.join(' ');
 }
 
 export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {

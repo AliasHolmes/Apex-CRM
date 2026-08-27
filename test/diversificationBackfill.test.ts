@@ -25,7 +25,7 @@ test("selectDiversifiedLeads backfills remaining slots up to requested limit", (
     {
       id: "4",
       fullName: "David",
-      currentCompany: "Acme Corp",
+      currentCompany: "Gamma Inc",
       finalSelectionScore: 7.5,
     },
     {

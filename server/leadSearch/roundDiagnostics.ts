@@ -35,10 +35,37 @@ const candidateText = (lead: Record<string, any>) => normalize([
 
 const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequirement) => {
   const text = candidateText(lead);
-  const terms = requirement.acceptableTerms.map(normalize);
+  const terms = requirement.acceptableTerms.map(normalize).filter(Boolean);
 
-  // Exact term matching against the contract's compiled acceptable terms (synonyms are already expanded in contract)
-  if (terms.some(term => term && text.includes(term))) return true;
+  // 1. Direct substring match against compiled acceptable terms
+  if (terms.some(term => text.includes(term))) return true;
+
+  // 2. Multi-Signal Role Evaluation: If scope is person_role, authority verification or executive title satisfies role
+  if (requirement.scope === 'person_role') {
+    if (lead.decisionMakerVerification?.verified === true) return true;
+    const title = normalize(lead.currentTitle || lead.title || lead.headline || '');
+    if (/\b(founder|co-founder|cofounder|owner|ceo|president|partner|managing director|principal)\b/i.test(title)) {
+      return true;
+    }
+  }
+
+  // 3. Multi-Signal Company / Industry Evaluation:
+  // If requirement has multi-word terms (e.g. "marketing agency"), match if all significant constituent
+  // words (e.g. "marketing" and "agency") appear across the candidate profile/evidence text.
+  if (requirement.scope === 'company_type' || requirement.scope === 'company_industry') {
+    for (const term of terms) {
+      const words = term.split(/\s+/).filter(w => w.length > 2);
+      if (words.length > 1 && words.every(w => text.includes(w))) {
+        return true;
+      }
+    }
+  }
+
+  // 4. Multi-Signal Location Evaluation: Check candidate location field directly
+  if (requirement.scope === 'person_location') {
+    const loc = normalize(lead.location || lead.profile?.location || '');
+    if (terms.some(term => loc.includes(term))) return true;
+  }
 
   return false;
 };

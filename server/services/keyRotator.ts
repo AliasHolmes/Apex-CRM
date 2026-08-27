@@ -350,3 +350,59 @@ export async function executeWithKeyRotation<T>(
 function fingerprintKey(key: string) {
   return crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
 }
+
+export type TrafficLimit = {
+  maxTokensPerMinute?: number;
+  maxRequestsPerMinute?: number;
+};
+
+export class ProviderTrafficController {
+  private requestTimestamps: number[] = [];
+  private tokenUsageRecords: Array<{ timestamp: number; tokens: number }> = [];
+
+  constructor(
+    private limits: TrafficLimit = {
+      maxTokensPerMinute: 60_000,
+      maxRequestsPerMinute: 60
+    }
+  ) {}
+
+  canAcquire(estimatedTokens = 500, now = Date.now()): boolean {
+    const windowStart = now - 60_000;
+    this.clean(windowStart);
+
+    if (this.limits.maxRequestsPerMinute && this.requestTimestamps.length >= this.limits.maxRequestsPerMinute) {
+      return false;
+    }
+
+    if (this.limits.maxTokensPerMinute) {
+      const currentTokens = this.tokenUsageRecords.reduce((sum, r) => sum + r.tokens, 0);
+      if (currentTokens + estimatedTokens > this.limits.maxTokensPerMinute) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  recordUsage(tokens = 500, now = Date.now()): void {
+    this.requestTimestamps.push(now);
+    this.tokenUsageRecords.push({ timestamp: now, tokens });
+    this.clean(now - 60_000);
+  }
+
+  getUsage(now = Date.now()): { requestsInLastMinute: number; tokensInLastMinute: number } {
+    const windowStart = now - 60_000;
+    this.clean(windowStart);
+    return {
+      requestsInLastMinute: this.requestTimestamps.length,
+      tokensInLastMinute: this.tokenUsageRecords.reduce((sum, r) => sum + r.tokens, 0)
+    };
+  }
+
+  private clean(windowStart: number): void {
+    this.requestTimestamps = this.requestTimestamps.filter(t => t > windowStart);
+    this.tokenUsageRecords = this.tokenUsageRecords.filter(r => r.timestamp > windowStart);
+  }
+}
+

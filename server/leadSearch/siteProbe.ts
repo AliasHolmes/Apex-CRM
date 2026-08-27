@@ -5,7 +5,14 @@ import {
   getNegativeEnrichmentCacheEntry,
   upsertNegativeEnrichmentCacheEntry
 } from '../db.js';
+import { isFlagEnabled } from './featureFlags.js';
 import type { EnrichmentTarget } from './stages/enrichStage.js';
+
+const GENERIC_SHORT_SLUGS = new Set([
+  'apex', 'river', 'peak', 'nova', 'matrix', 'delta', 'echo', 'orbit', 'pulse',
+  'alpha', 'summit', 'horizon', 'scale', 'vanguard', 'nexus', 'beacon', 'atlas',
+  'forge', 'zenith', 'prism', 'flux', 'vertex', 'shift', 'core', 'spark', 'stride'
+]);
 
 const BLOCKED_DOMAINS = new Set([
   'linkedin.com',
@@ -117,6 +124,10 @@ export function deriveCompanyDomainWithProvenance(lead: Record<string, any>): De
       .trim();
 
     if (slug.length >= 3 && slug.length <= 32) {
+      if (isFlagEnabled.safeSlugProbe() && GENERIC_SHORT_SLUGS.has(slug)) {
+        // Do not guess naked .com for short generic brand words
+        return null;
+      }
       return { domain: `https://${slug}.com`, provenance: 'slug_guess' };
     }
   }
@@ -129,7 +140,12 @@ export function deriveCompanyDomain(lead: Record<string, any>): string | null {
   return derived ? derived.domain : null;
 }
 
-export function matchesCompanyIdentity(companyName: string | undefined, markdown: string): boolean {
+export function matchesCompanyIdentity(
+  companyName: string | undefined,
+  markdown: string,
+  lead?: Record<string, any>,
+  provenance?: DomainProvenance
+): boolean {
   if (!companyName || !markdown) return false;
   const cleanedCompany = companyName
     .toLowerCase()
@@ -138,16 +154,39 @@ export function matchesCompanyIdentity(companyName: string | undefined, markdown
     .trim();
 
   const tokens = cleanedCompany.split(/\s+/).filter(t => t.length >= 3);
+  let baseMatched = false;
+  const lowerMarkdown = markdown.toLowerCase();
+
   if (tokens.length === 0) {
     const bare = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    return bare.length >= 3 && markdown.toLowerCase().includes(bare);
+    baseMatched = bare.length >= 3 && lowerMarkdown.includes(bare);
+  } else {
+    baseMatched = tokens.some(token => {
+      const wordRegex = new RegExp(`\\b${token}\\b`, 'i');
+      return wordRegex.test(lowerMarkdown);
+    });
   }
 
-  const lowerMarkdown = markdown.toLowerCase();
-  return tokens.some(token => {
-    const wordRegex = new RegExp(`\\b${token}\\b`, 'i');
-    return wordRegex.test(lowerMarkdown);
-  });
+  if (!baseMatched) return false;
+
+  // When safe slug probe is active and provenance is slug_guess, enforce secondary attribute corroboration
+  if (isFlagEnabled.safeSlugProbe() && provenance === 'slug_guess' && lead) {
+    const loc = String(lead.location || lead.profile?.location || '').toLowerCase();
+    const locTokens = loc.split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !['united', 'states', 'kingdom', 'area'].includes(t));
+    const locMatched = locTokens.length > 0 && locTokens.some(t => lowerMarkdown.includes(t));
+
+    const personName = String(lead.fullName || lead.profile?.fullName || '').toLowerCase();
+    const nameTokens = personName.split(/[^a-z0-9]+/).filter(t => t.length >= 3);
+    const nameMatched = nameTokens.length >= 2 && nameTokens.every(t => lowerMarkdown.includes(t));
+
+    const ind = String(lead.industry || lead.profile?.industry || '').toLowerCase();
+    const indTokens = ind.split(/[^a-z0-9]+/).filter(t => t.length >= 4);
+    const indMatched = indTokens.length > 0 && indTokens.some(t => lowerMarkdown.includes(t));
+
+    return locMatched || nameMatched || indMatched;
+  }
+
+  return true;
 }
 
 export function parseSiteSignalsFromEvidenceBlock(block?: string): SiteSignals {
@@ -261,11 +300,13 @@ export async function probeCompanySites(
   const uniqueDomains = Array.from(new Set(validTargets.map(t => t.domain)));
   const domainProvenanceMap = new Map<string, DomainProvenance>();
   const domainCompanyMap = new Map<string, string | undefined>();
+  const domainLeadMap = new Map<string, Record<string, any>>();
 
   for (const t of validTargets) {
     if (!domainProvenanceMap.has(t.domain)) {
       domainProvenanceMap.set(t.domain, t.provenance);
       domainCompanyMap.set(t.domain, t.companyName);
+      domainLeadMap.set(t.domain, t.target.lead);
     }
   }
 
@@ -320,9 +361,10 @@ export async function probeCompanySites(
     const combinedMarkdown = contents.join('\n\n');
     const provenance = domainProvenanceMap.get(domain) || 'slug_guess';
     const companyName = domainCompanyMap.get(domain);
+    const lead = domainLeadMap.get(domain);
 
     // Hardening: Slug-guessed domains require company token match in page content
-    if (provenance === 'slug_guess' && !matchesCompanyIdentity(companyName, combinedMarkdown)) {
+    if (provenance === 'slug_guess' && !matchesCompanyIdentity(companyName, combinedMarkdown, lead, provenance)) {
       continue;
     }
 

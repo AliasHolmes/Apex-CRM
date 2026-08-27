@@ -49,5 +49,47 @@ export const isFlagEnabled = {
    * Phase 6: Diagnostics Enhancement
    * Emits class-level diagnostics; recovery considers class bottlenecks
    */
-  enhancedDiagnostics: () => readFlag('ENHANCED_DIAGNOSTICS_ENABLED')
+  enhancedDiagnostics: () => readFlag('ENHANCED_DIAGNOSTICS_ENABLED'),
+
+  /**
+   * Optimization 1: Fuzzy Token-Aligned Quote Grounding
+   * Prevents false fabrication flags from whitespace/quote formatting differences
+   */
+  fuzzyQuoteGrounding: () => readFlag('FUZZY_QUOTE_GROUNDING_ENABLED'),
+
+  /**
+   * Optimization 2: Safe Slug Probing & Anti-Hijacking
+   * Enforces dual-attribute corroboration on guessed .com domains
+   */
+  safeSlugProbe: () => readFlag('SAFE_SLUG_PROBE_ENABLED'),
+
+  /**
+   * Optimization 3: Company Entity Resolution & Domain Registry
+   * Canonical domain-stem clustering and collision protection
+   */
+  companyEntityRegistry: () => readFlag('COMPANY_ENTITY_REGISTRY_ENABLED'),
+
+  /**
+   * Optimization 4: Context-Anchored Reverse Flywheel Queries
+   * Anchors intent-discovered accounts with geographic/domain keywords
+   */
+  anchoredFlywheel: () => readFlag('ANCHORED_FLYWHEEL_QUERIES_ENABLED'),
+
+  /**
+   * Optimization 5: Full Jitter Exponential Backoff
+   * Eliminates thundering-herd retry bursts on 429s
+   */
+  fullJitterRetry: () => readFlag('FULL_JITTER_RETRY_ENABLED'),
+
+  /**
+   * Optimization 6: Transient vs Permanent Negative Cache Separation
+   * Prevents temporary 429/timeout errors from locking leads for 14 days
+   */
+  transientNegativeCache: () => readFlag('TRANSIENT_NEGATIVE_CACHE_ENABLED'),
+
+  /**
+   * Optimization 7: Proactive Token Regulator & Load Shedder
+   * Meters sliding-window token rates to prevent 429 rate limits
+   */
+  proactiveTokenRegulator: () => readFlag('PROACTIVE_TOKEN_REGULATOR_ENABLED')
 };

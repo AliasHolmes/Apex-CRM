@@ -2132,13 +2132,23 @@ export function upsertNegativeEnrichmentCacheEntry(
   ttlHours = 24,
   now = new Date(),
 ) {
+  let effectiveHours = ttlHours;
+  const anyEntry = entry as any;
+  const reason = String(anyEntry.rawPayload?.error || anyEntry.rawPayload?.reason || entry.evidenceBlock || '').toLowerCase();
+  const isTransient = /rate.?limit|429|timeout|etimedout|econnreset|5\d\d|service unavailable|overloaded/i.test(reason);
+
+  if (isTransient) {
+    // If transient error, only cache for 15 minutes (0.25 hours) instead of 24h/14d
+    effectiveHours = Math.min(ttlHours, 0.25);
+  }
+
   return upsertEnrichmentCacheEntry(
     {
       ...entry,
       scrapeQuality: "bad",
       sourceProvider: entry.sourceProvider || "brightdata",
     },
-    ttlHours / 24,
+    effectiveHours / 24,
     now,
   );
 }

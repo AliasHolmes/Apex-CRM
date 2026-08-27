@@ -232,6 +232,71 @@ export function buildFinalistJudgePrompt(
   return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. Omit evidenceId, evidenceQuote, and reason unless they clarify an ambiguous verdict. Return judgments only.`;
 }
 
+const normalizePassage = (text: string): string =>
+  String(text || '')
+    .replace(/[“”"''`]/g, ' ')
+    .replace(/[—–-]/g, ' ')
+    .replace(/&/g, ' and ')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+export function verifyEvidencePassage(
+  evidenceText: string,
+  citedQuote: string,
+  threshold = 0.88
+): { valid: boolean; similarity: number } {
+  if (!citedQuote || !citedQuote.trim()) return { valid: true, similarity: 1.0 };
+  if (!evidenceText || !evidenceText.trim()) return { valid: false, similarity: 0.0 };
+
+  if (evidenceText.includes(citedQuote)) {
+    return { valid: true, similarity: 1.0 };
+  }
+
+  const normEvidence = normalizePassage(evidenceText);
+  const normQuote = normalizePassage(citedQuote);
+
+  if (normEvidence.includes(normQuote)) {
+    return { valid: true, similarity: 1.0 };
+  }
+
+  const quoteTokens = normQuote.split(' ').filter(Boolean);
+  const evidenceTokens = normEvidence.split(' ').filter(Boolean);
+
+  if (quoteTokens.length === 0) return { valid: true, similarity: 1.0 };
+  if (evidenceTokens.length === 0) return { valid: false, similarity: 0.0 };
+
+  const windowSize = quoteTokens.length;
+  let maxSimilarity = 0;
+
+  for (let i = 0; i <= evidenceTokens.length - Math.min(windowSize, evidenceTokens.length); i++) {
+    const candidateSlice = evidenceTokens.slice(i, i + windowSize);
+    let matchCount = 0;
+    for (let j = 0; j < candidateSlice.length; j++) {
+      if (candidateSlice[j] === quoteTokens[j]) {
+        matchCount++;
+      } else if (
+        candidateSlice[j].length >= 3 &&
+        quoteTokens[j].length >= 3 &&
+        (candidateSlice[j].startsWith(quoteTokens[j]) || quoteTokens[j].startsWith(candidateSlice[j]))
+      ) {
+        matchCount += 0.8;
+      }
+    }
+    const sim = matchCount / windowSize;
+    if (sim > maxSimilarity) {
+      maxSimilarity = sim;
+    }
+    if (maxSimilarity >= 1.0) break;
+  }
+
+  return {
+    valid: maxSimilarity >= threshold,
+    similarity: Number(maxSimilarity.toFixed(2))
+  };
+}
+
 const normalizeAssessment = (
   raw: any,
   candidate: FinalistCandidate,
@@ -243,11 +308,16 @@ const normalizeAssessment = (
   const evidenceQuote = clean(raw?.evidenceQuote, 400);
   const evidence = candidate.evidence.find((item) => item.id === evidenceId);
 
-  const quoteValid = Boolean(
-    status !== "pass" ||
-    !evidenceQuote ||
-    (evidence && evidence.text.includes(evidenceQuote)),
-  );
+  let quoteValid = false;
+  if (status !== 'pass' || !evidenceQuote) {
+    quoteValid = true;
+  } else if (!evidence) {
+    quoteValid = false;
+  } else if (isFlagEnabled.fuzzyQuoteGrounding()) {
+    quoteValid = verifyEvidencePassage(evidence.text, evidenceQuote).valid;
+  } else {
+    quoteValid = evidence.text.includes(evidenceQuote);
+  }
 
   return {
     requirementId: requirement.id,

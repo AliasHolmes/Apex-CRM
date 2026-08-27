@@ -1,5 +1,6 @@
 import { extractLinkedInUsername, normalizeLinkedInUrl } from "../services/linkedinEvidence.js";
 import type { EvidenceQuality, LeadSourceProvider } from "./scoring.js";
+import { isFlagEnabled } from "./featureFlags.js";
 
 /**
  * Shared per-session helpers used across the discovery engine and stage
@@ -170,7 +171,10 @@ export async function runWithTransientRetry<T>(
         !isTransientLLMError(error) ||
         options.signal?.aborted;
       if (isLastAttempt) throw error;
-      const delayMs = baseDelayMs * attempt;
+      let delayMs = baseDelayMs * attempt;
+      if (isFlagEnabled.fullJitterRetry()) {
+        delayMs = Math.floor(Math.random() * (baseDelayMs * Math.pow(2, attempt - 1)));
+      }
       options.onRetry?.(attempt + 1, delayMs, error);
       await sleepWithAbort(delayMs, options.signal);
     }

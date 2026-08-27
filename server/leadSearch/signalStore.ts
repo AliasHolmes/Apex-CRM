@@ -1,4 +1,5 @@
 import type { SignalBlock } from './observations.js';
+import { isFlagEnabled } from './featureFlags.js';
 
 export const MAX_SIGNAL_BLOCKS = 50;
 export const MAX_SIGNAL_TEXT_LENGTH = 600;
@@ -20,7 +21,7 @@ export type SignalStoreData = {
 
 /**
  * Normalize a company name for conservative matching.
- * Only trailing legal suffixes are removed; descriptive brand words are retained.
+ * Trailing international legal suffixes are removed; descriptive brand words are retained.
  */
 export function normalizeCompanyName(name: string): string {
   let normalized = String(name || '')
@@ -30,7 +31,7 @@ export function normalizeCompanyName(name: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const legalSuffix = /\s+(?:llc|inc|incorporated|ltd|limited|co|company|corp|corporation|gmbh|pty|plc|llp)$/;
+  const legalSuffix = /\s+(?:llc|inc|incorporated|ltd|limited|co|company|corp|corporation|gmbh|pty|plc|llp|b\s*v|s\s*a)$/;
   while (legalSuffix.test(normalized)) {
     normalized = normalized.replace(legalSuffix, '').trim();
   }
@@ -67,6 +68,79 @@ export const distinctiveTokens = (name: string): string[] => {
     });
 };
 
+export type CompanyEntity = {
+  rawName: string;
+  normalizedName: string;
+  domainStem?: string;
+  distinctiveTokens: string[];
+  isShortBrand: boolean;
+};
+
+export class CompanyRegistry {
+  private static extractDomainStem(urlOrDomain: string): string | undefined {
+    if (!urlOrDomain) return undefined;
+    const clean = urlOrDomain.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
+    const parts = clean.split('.');
+    if (parts.length >= 2) {
+      return parts[0].toLowerCase();
+    }
+    return undefined;
+  }
+
+  static resolve(nameOrUrl: string): CompanyEntity {
+    const raw = String(nameOrUrl || '').trim();
+    const isUrl = /^https?:\/\/|\.com|\.io|\.ai|\.co|\.org|\.net/i.test(raw);
+    const domainStem = isUrl ? this.extractDomainStem(raw) : undefined;
+    const normalizedName = normalizeCompanyName(domainStem || raw);
+    const tokens = distinctiveTokens(normalizedName);
+    const isShortBrand = normalizedName.length <= 4 && !genericCompanyTokens.has(normalizedName);
+
+    return {
+      rawName: raw,
+      normalizedName,
+      domainStem,
+      distinctiveTokens: tokens,
+      isShortBrand
+    };
+  }
+
+  static areEquivalent(a: string, b: string): boolean {
+    const entityA = this.resolve(a);
+    const entityB = this.resolve(b);
+
+    if (!entityA.normalizedName || !entityB.normalizedName) return false;
+    if (entityA.normalizedName === entityB.normalizedName) return true;
+
+    const compactA = entityA.normalizedName.replace(/\s+/g, '');
+    const compactB = entityB.normalizedName.replace(/\s+/g, '');
+    if (compactA.length >= 6 && compactA === compactB) return true;
+
+    if (entityA.domainStem && entityB.domainStem && entityA.domainStem === entityB.domainStem) {
+      return true;
+    }
+
+    if (entityA.isShortBrand || entityB.isShortBrand) {
+      return entityA.normalizedName === entityB.normalizedName;
+    }
+
+    const setB = new Set(entityB.distinctiveTokens);
+    const hasSharedDistinctive = entityA.distinctiveTokens.some(token => setB.has(token));
+    if (!hasSharedDistinctive) return false;
+
+    const wordsA = entityA.normalizedName.split(' ').filter(Boolean);
+    const wordsB = entityB.normalizedName.split(' ').filter(Boolean);
+    if (wordsA.length >= 2 && wordsB.length >= 2) {
+      const diffA = wordsA.filter(w => !wordsB.includes(w));
+      const diffB = wordsB.filter(w => !wordsA.includes(w));
+      if (diffA.some(w => INDUSTRY_QUALIFIERS.has(w)) && diffB.some(w => INDUSTRY_QUALIFIERS.has(w))) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+}
+
 /**
  * 4-Tier Safe Company Match:
  * Tier 1: Exact normalized name match
@@ -75,6 +149,10 @@ export const distinctiveTokens = (name: string): string[] => {
  * Tier 4: Whitelisted 3-character tech brands (e.g. n8n)
  */
 export function companiesMatch(a: string, b: string): boolean {
+  if (isFlagEnabled.companyEntityRegistry()) {
+    return CompanyRegistry.areEquivalent(a, b);
+  }
+
   const na = normalizeCompanyName(a);
   const nb = normalizeCompanyName(b);
   if (!na || !nb) return false;
@@ -244,6 +322,35 @@ export class SignalStore {
   /** Return list of unique company names discovered with signal evidence. */
   getUniqueCompanyNames(): string[] {
     return this.getTopDiscoveredCompanies(MAX_DISCOVERED_COMPANIES).map(c => c.companyName);
+  }
+
+  /**
+   * Return query terms for a discovered company, anchoring with geographic or
+   * domain qualifiers when anchoredFlywheel is enabled.
+   */
+  getAnchoredQueryTerms(companyName: string): string[] {
+    const norm = normalizeCompanyName(companyName);
+    const discovered = this.companyMap.get(norm);
+    if (!discovered) return [companyName];
+
+    if (isFlagEnabled.anchoredFlywheel()) {
+      const signal = discovered.strongestSignal || '';
+      const locMatch = signal.match(/\b(?:in|based in|at|near)\s+([A-Z][a-zA-Z\s,]+?)(?:\.|\sand\s|\swith\b|\sfor\b|\s-|--|\n|$)/);
+      const location = locMatch ? locMatch[1].trim().slice(0, 30) : undefined;
+      
+      const domainUrl = discovered.sourceUrls[0];
+      const domainStem = domainUrl ? CompanyRegistry.resolve(domainUrl).domainStem : undefined;
+
+      const terms = [companyName];
+      if (location && location.length >= 3 && !genericCompanyTokens.has(location.toLowerCase())) {
+        terms.push(location);
+      } else if (domainStem && domainStem.length >= 3 && domainStem !== norm) {
+        terms.push(domainStem);
+      }
+      return terms;
+    }
+
+    return [companyName];
   }
 
   toJSON(): SignalStoreData {

@@ -219,7 +219,26 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   // --- Step 3: MMR Diversity Selection ---
   const mmrLimit = Math.max(0, limit - paretoGuaranteed.length);
   const mmrSelected = computeMMRDiversitySelection(filtered, mmrLimit, 0.75);
-  const finalSelected = [...paretoGuaranteed, ...mmrSelected].slice(0, limit);
+  const selectedList = [...paretoGuaranteed, ...mmrSelected];
+
+  // --- Step 4: Shortfall Backfill (guarantee full requested limit if candidate pool was sufficient) ---
+  if (
+    candidates.length >= limit &&
+    selectedList.length < limit &&
+    ordered.length > selectedList.length
+  ) {
+    const selectedKeys = new Set(selectedList.map(candidateKey));
+    for (const candidate of ordered) {
+      if (selectedList.length >= limit) break;
+      const cKey = candidateKey(candidate);
+      if (!selectedKeys.has(cKey)) {
+        selectedList.push(candidate);
+        selectedKeys.add(cKey);
+      }
+    }
+  }
+
+  const finalSelected = selectedList.slice(0, limit);
 
   if (logEvent) {
     logEvent(`[MMR Selection] Selected ${finalSelected.length}/${candidates.length} candidates using MMR diversity (lambda=0.75, maxPerCompany=${maxPerCompany}, paretoGuaranteed=${paretoGuaranteed.length}).`);

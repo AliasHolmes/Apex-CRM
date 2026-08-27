@@ -1069,11 +1069,22 @@ const textFromToolResult = (result: any) => {
   return "";
 };
 
+const AUTHWALLED_HOST_PATTERN =
+  /(?:linkedin\.com\/in\/|twitter\.com|x\.com|instagram\.com|facebook\.com|tiktok\.com)/i;
+
+export function isAuthwalledUrl(url: string): boolean {
+  if (!url) return true;
+  return AUTHWALLED_HOST_PATTERN.test(url);
+}
+
 export async function scrapeAsMarkdown(
   url: string,
   timeoutMs = baseTimeoutMs(),
 ) {
   const scrapeUrl = normalizeBrightDataUrl(url);
+  if (!scrapeUrl || isAuthwalledUrl(scrapeUrl)) {
+    return null;
+  }
 
   if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
     try {
@@ -1148,13 +1159,10 @@ export type BrightDataBatchResult = {
  * dropping the remainder of a larger enrichment set.
  */
 export function chunkBrightDataBatchItems<T>(items: T[]): T[][] {
+  const list = Array.isArray(items) ? items : [];
   const batches: T[][] = [];
-  for (
-    let index = 0;
-    index < items.length;
-    index += BRIGHTDATA_SCRAPE_BATCH_MAX_URLS
-  ) {
-    batches.push(items.slice(index, index + BRIGHTDATA_SCRAPE_BATCH_MAX_URLS));
+  for (let i = 0; i < list.length; i += BRIGHTDATA_SCRAPE_BATCH_MAX_URLS) {
+    batches.push(list.slice(i, i + BRIGHTDATA_SCRAPE_BATCH_MAX_URLS));
   }
   return batches;
 }
@@ -1173,7 +1181,7 @@ export async function scrapeBatchAsMarkdown(
             return "";
           }
         })
-        .filter(Boolean),
+        .filter((url) => Boolean(url) && !isAuthwalledUrl(url)),
     ),
   ).slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
   if (cleanUrls.length === 0) return [];
@@ -1412,6 +1420,25 @@ export function normalizeBrightDataGeoLocation(value?: string) {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
+  const countryMap: Record<string, string> = {
+    usa: "us",
+    "united states": "us",
+    us: "us",
+    uk: "gb",
+    "united kingdom": "gb",
+    gb: "gb",
+    canada: "ca",
+    ca: "ca",
+    australia: "au",
+    au: "au",
+    germany: "de",
+    de: "de",
+    france: "fr",
+    fr: "fr",
+    netherlands: "nl",
+    nl: "nl",
+  };
+  if (countryMap[normalized]) return countryMap[normalized];
   return /^[a-z]{2}$/.test(normalized) ? normalized : "";
 }
 

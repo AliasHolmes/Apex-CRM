@@ -871,13 +871,9 @@ export async function executeDiscoverySession(
     const linkedinPostIntentEnabled =
       String(process.env.LINKEDIN_POST_INTENT_ENABLED || "").toLowerCase() !==
       "false";
-    // Default to post_filter deep unlock when Bright Data is available so scout
-    // shortlists get markdown evidence; callers may still force on_demand.
+    // Default to on_demand profile enrichment (search snippet grounding + public company site probing)
     const profileEnrichmentStage =
-      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE ||
-      (isBrightDataConfigured() ? "post_filter" : "on_demand") ||
-      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE ||
-      (isBrightDataConfigured() ? "post_filter" : "on_demand");
+      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE || "on_demand";
 
     const freeTierBudget = new ScoutFreeTierBudget();
     const tavilyCapabilities = tavilyFreeTierCapabilities();

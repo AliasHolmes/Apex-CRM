@@ -447,11 +447,7 @@ export async function executeJudgeStage(
         const insight = judgmentInsight.get(
           candidateIdByLead.get(entry.lead) || `c${entry.index}`,
         );
-        return (
-          !insight ||
-          insight.status === "qualified" ||
-          insight.status === "qualified_partial"
-        );
+        return !insight || insight.status !== "hard_fail";
       });
     for (const entry of rescuePool) {
       entry.lead.finalSelectionScore = rankLeadForFinalSelection(entry.lead);

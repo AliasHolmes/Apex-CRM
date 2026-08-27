@@ -8,6 +8,7 @@ import {
   isBrightDataRetryableError,
   getBrightDataStatus,
   BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
+  isAuthwalledUrl,
 } from "../../services/brightdata.js";
 import {
   getEnrichmentCacheEntry,
@@ -467,14 +468,26 @@ export async function executeEnrichStage(
     }
 
     const uncachedTargets = Array.from(targetsByUrl.values());
+    // Immediately ground authwalled profile targets (e.g. LinkedIn profiles) on snippet evidence
+    for (const target of uncachedTargets) {
+      if (isAuthwalledUrl(target.url)) {
+        target.enriched = true;
+        refreshLeadEvidence(target);
+      }
+    }
+
+    const publicTargetsToScrape = uncachedTargets.filter(
+      (target) => !isAuthwalledUrl(target.url),
+    );
+
     if (brightDataProviderDisabled) {
-      brightDataStats.skipped += uncachedTargets.length;
+      brightDataStats.skipped += publicTargetsToScrape.length;
     }
 
     const batchSize = BRIGHTDATA_SCRAPE_BATCH_MAX_URLS;
     for (
       let i = 0;
-      i < uncachedTargets.length && !brightDataProviderDisabled;
+      i < publicTargetsToScrape.length && !brightDataProviderDisabled;
       i += batchSize
     ) {
       if (
@@ -482,7 +495,7 @@ export async function executeEnrichStage(
         Date.now() < brightDataTransportRetryAfter
       )
         break;
-      const batchTargets = uncachedTargets.slice(i, i + batchSize);
+      const batchTargets = publicTargetsToScrape.slice(i, i + batchSize);
       const batchUrls = batchTargets.map((target) => target.url);
       const started = Date.now();
       brightDataStats.attempted++;
@@ -596,7 +609,10 @@ export async function executeEnrichStage(
     );
     const retryDelays = [3_000, 10_000, 20_000];
     const retryTargets = uncachedTargets.filter(
-      (target) => urlRetryQueue.has(target.normalizedUrl) && !target.enriched,
+      (target) =>
+        urlRetryQueue.has(target.normalizedUrl) &&
+        !target.enriched &&
+        !isAuthwalledUrl(target.url),
     );
     for (const target of retryTargets) {
       if (brightDataProviderDisabled) break;

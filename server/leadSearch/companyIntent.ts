@@ -143,7 +143,7 @@ export async function checkCompanyIntent(
   if (!websiteUrl || isBlockedUrl(websiteUrl)) return null;
 
   try {
-    const markdown = await scrapeAsMarkdown(websiteUrl);
+    const markdown = await scrapeAsMarkdown(websiteUrl, 12000);
     if (!markdown) return null;
 
     const lowerMarkdown = markdown.toLowerCase();

@@ -1,5 +1,10 @@
 import { tavilyExtract, hasTavilyKey } from '../services/llm.js';
 import {
+  isBrightDataConfigured,
+  isBrightDataCoolingDown,
+  scrapeAsMarkdown,
+} from '../services/brightdata.js';
+import {
   getEnrichmentCacheEntry,
   upsertEnrichmentCacheEntry,
   getNegativeEnrichmentCacheEntry,
@@ -380,6 +385,28 @@ export async function probeCompanySites(
         }
       }
     }
+  }
+
+  const unextractedDomains = uniqueDomains.filter(
+    (d) => !(extractedByDomain.get(d) || []).length,
+  );
+  if (
+    unextractedDomains.length > 0 &&
+    isBrightDataConfigured() &&
+    !isBrightDataCoolingDown()
+  ) {
+    const bdPromises = unextractedDomains.slice(0, 5).map(async (domain) => {
+      if (options.abortSignal?.aborted) return;
+      try {
+        const md = await scrapeAsMarkdown(domain, 12000);
+        if (md && md.trim().length > 100) {
+          extractedByDomain.set(domain, [md]);
+        }
+      } catch {
+        // Safe skip
+      }
+    });
+    await Promise.allSettled(bdPromises);
   }
 
   for (const domain of uniqueDomains) {

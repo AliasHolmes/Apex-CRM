@@ -486,7 +486,7 @@ test("Bright Data evidence batching keeps every target within the five-URL tool 
 
 test("Bright Data search arguments match the installed MCP search_engine schema", () => {
   assert.strictEqual(normalizeBrightDataGeoLocation("US"), "us");
-  assert.strictEqual(normalizeBrightDataGeoLocation("United States"), "");
+  assert.strictEqual(normalizeBrightDataGeoLocation("United States"), "us");
   assert.deepStrictEqual(
     buildBrightDataSearchArguments("AI founders", {
       country: "US",

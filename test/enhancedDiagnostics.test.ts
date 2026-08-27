@@ -21,7 +21,7 @@ describe('Phase 6: Enhanced Diagnostics & Targeted Recovery', () => {
 
   const contract: ProspectContract = {
     version: 1,
-    policyVersion: 'evidence-contract-v6',
+    policyVersion: 'evidence-contract-v7',
     brief: 'Find AI agency owners in New York',
     authorityRequired: false,
     exclusions: [],

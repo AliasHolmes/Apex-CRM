@@ -58,7 +58,7 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
   describe('validateFinalistJudgments integration', () => {
     const contract: ProspectContract = {
       version: 1,
-      policyVersion: 'evidence-contract-v6',
+      policyVersion: 'evidence-contract-v7',
       brief: 'Find founders',
       authorityRequired: false,
       exclusions: [],

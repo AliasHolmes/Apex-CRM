@@ -498,6 +498,50 @@ export async function executeJudgeStage(
       qualifiedUrls.add(entry.url);
       rescuedCount++;
     }
+
+    // Zero-yield safety net: if qualified leads are still 0 but accepted candidates exist,
+    // perform best-effort rescue of top-scoring candidates from acceptedLeads so the user
+    // never receives an empty result when viable profiles were discovered.
+    if (qualifiedLeads.length === 0 && acceptedLeads.length > 0) {
+      const fallbackRescuePool = acceptedLeads
+        .map((lead, index) => ({
+          lead,
+          index,
+          url: lead.contactDetails?.linkedinUrl || lead.sourceUrl || "",
+        }))
+        .filter((entry) => !qualifiedUrls.has(entry.url));
+
+      for (const entry of fallbackRescuePool) {
+        entry.lead.finalSelectionScore = rankLeadForFinalSelection(entry.lead);
+      }
+      fallbackRescuePool.sort((a, b) => {
+        const rankDelta =
+          Number(b.lead.finalSelectionScore || 0) -
+          Number(a.lead.finalSelectionScore || 0);
+        if (rankDelta !== 0) return rankDelta;
+        return effectiveScore(b.lead) - effectiveScore(a.lead);
+      });
+
+      for (const entry of fallbackRescuePool) {
+        if (rescuedCount >= targetLimit || qualifiedLeads.length >= targetLimit)
+          break;
+        entry.lead.qualification = {
+          verdict: "rescued",
+          reason: "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool",
+          finalScore: entry.lead.finalSelectionScore || 5.0,
+        };
+        entry.lead.whyThisLead =
+          "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool";
+        entry.lead.isRescued = true;
+        qualifiedLeads.push(entry.lead);
+        qualifiedUrls.add(entry.url);
+        rescuedCount++;
+      }
+      logEvent(
+        `Safety Net: Starvation fallback rescued ${rescuedCount} top-scoring candidate(s) from discovery pool.`,
+      );
+    }
+
     logEvent(
       `Safety Net: Promoted ${rescuedCount} candidates to reach target.`,
     );

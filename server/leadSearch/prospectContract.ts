@@ -5,7 +5,7 @@ import { isFlagEnabled } from './featureFlags.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v6';
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v7';
 
 export type RequirementScope =
   | 'person_role'
@@ -88,7 +88,7 @@ export type ProspectContract = {
 
 const clean = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
 const lower = (value: unknown) => clean(value).toLowerCase();
-const unique = (items: string[], max = 8) => Array.from(new Set(items.map(clean).filter(Boolean))).slice(0, max);
+const unique = (items: string[], max = 25) => Array.from(new Set(items.map(clean).filter(Boolean))).slice(0, max);
 
 const permittedScopes = new Set<RequirementScope>([
   'person_role', 'person_location', 'company_type', 'company_industry', 'company_size', 'signal'
@@ -188,8 +188,8 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   }
 
   if (scope === 'person_role') {
-    if (terms.some(t => /\b(owner|owners?|firm owner|agency owner)\b/i.test(t))) {
-      expanded.push('founder', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor');
+    if (terms.some(t => /\b(owner|owners?|firm owner|agency owner|founder|founders?|co-?founder|ceo|chief executive officer|president|managing partner|managing director|principal|partner|proprietor)\b/i.test(t))) {
+      expanded.push('owner', 'owners', 'firm owner', 'agency owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor');
     }
   }
 
@@ -295,14 +295,38 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const firmMatch = clean(brief).match(/\b(?:[a-z]+\s+){0,3}firm\b/i)?.[0] || '';
   const intentMatch = clean(brief).match(/\b(hiring(?:\s+intent)?|recruiting|scaling|funding)\b/i)?.[0] || '';
 
-  // Keep ownership as one requirement even when the user writes "firm owners".
-  // The dedicated requirement below carries the useful owner/firm-owner variants.
-  const nonOwnershipHints = hintedRoles.filter(term => !/^owners?$/i.test(term));
-  add('person_role', [...(spec?.person?.includeTitles || []), ...nonOwnershipHints]);
-  // Singular/plural ownership and professional titles are explicit criteria,
-  // even when an LLM omitted them from its contract.
-  addWithAlternatives('person_role', ownerMatch, ['owner', 'owners', 'firm owner', 'firm owners']);
-  addWithAlternatives('person_role', professionMatch, [professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`]);
+  // Consolidate all hinted/extracted roles into a unified person_role requirement
+  // with an any_of match rule so candidates with any qualifying executive title
+  // (e.g. founder, CEO, owner, managing director) qualify without conjunction failures.
+  const combinedRoleTerms = unique([
+    ...(spec?.person?.includeTitles || []),
+    ...hintedRoles,
+    ...(ownerMatch ? ['owner', 'owners', 'firm owner', 'firm owners'] : []),
+    ...(professionMatch ? [professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`] : [])
+  ]);
+
+  if (combinedRoleTerms.length > 0) {
+    const accepted = expandAcceptableTerms('person_role', combinedRoleTerms);
+    const sourcePhrase = ownerMatch || (hintedRoles[0] || (spec?.person?.includeTitles?.[0] || 'executive'));
+    const reqClass = classifyRequirement('person_role', 'hard', sourcePhrase);
+    const hardness = assignQueryHardness(reqClass);
+    requirements.push({
+      id: 'person_role-1',
+      scope: 'person_role',
+      importance: 'hard',
+      requirementClass: reqClass,
+      queryHardness: hardness,
+      evidenceModality: 'structured_profile',
+      description: accepted.slice(0, 3).join(' or '),
+      sourcePhrase,
+      acceptableTerms: accepted,
+      queryable: true,
+      groupId: 'person_role_group',
+      matchRule: 'any_of',
+      acceptableEvidenceSources: []
+    });
+  }
+
   add('person_location', [...(spec?.person?.locations || []), ...(spec?.company?.locations || []), ...extractedLocations].filter(isCleanRequirementTerm));
   if (firmMatch && isCleanRequirementTerm(firmMatch)) {
     addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
@@ -342,22 +366,31 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     ...(spec?.exclusions?.domains || [])
   ]);
 
-  // Deduplicate requirements of the same scope that share a sourcePhrase root.
-  // This prevents the contract from generating e.g. company_type-1 and company_type-2
-  // for the same phrase ("Immigration lawyer firm" appearing twice), which forces
-  // candidates to satisfy the same criterion twice simultaneously.
+  // Deduplicate requirements of the same scope.
+  // For person_role, always merge into a single any_of requirement so candidates
+  // never have to satisfy multiple contradictory title criteria simultaneously.
   const deduped: ProspectRequirement[] = [];
   for (const req of requirements) {
     const existing = deduped.find(
       item => item.scope === req.scope &&
-        (lower(item.sourcePhrase) === lower(req.sourcePhrase) ||
+        (req.scope === 'person_role' ||
+         lower(item.sourcePhrase) === lower(req.sourcePhrase) ||
          lower(item.sourcePhrase).includes(lower(req.sourcePhrase)) ||
          lower(req.sourcePhrase).includes(lower(item.sourcePhrase)))
     );
     if (existing) {
       // Merge acceptableTerms instead of creating a duplicate requirement.
       existing.acceptableTerms = unique([...existing.acceptableTerms, ...req.acceptableTerms]);
+      if (req.scope === 'person_role') {
+        existing.matchRule = 'any_of';
+        existing.groupId = 'person_role_group';
+        existing.description = existing.acceptableTerms.slice(0, 4).join(' or ');
+      }
     } else {
+      if (req.scope === 'person_role') {
+        req.matchRule = 'any_of';
+        req.groupId = 'person_role_group';
+      }
       deduped.push(req);
     }
   }
@@ -441,6 +474,9 @@ export function buildSignalLaneQueries(
 
 export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
   const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
+  const isAgencyBrief = /\b(agenc|consult|studio|firm|services)\b/i.test(brief) ||
+    requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && /\b(agenc|consult|studio|firm|services)\b/i.test(`${r.description} ${r.acceptableTerms.join(' ')}`));
+  const agencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
   
   if (isFlagEnabled.distributedQuery()) {
     const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
@@ -450,7 +486,8 @@ export function buildContractFallbackQueries(brief: string, requirements: Prospe
       const idTerms = identityReqs.map(r => r.acceptableTerms[index % Math.max(r.acceptableTerms.length, 1)] || r.sourcePhrase).filter(Boolean);
       const ctxReq = contextReqs.length ? contextReqs[index % contextReqs.length] : null;
       const ctxTerm = ctxReq ? (ctxReq.acceptableTerms[index % Math.max(ctxReq.acceptableTerms.length, 1)] || ctxReq.sourcePhrase) : '';
-      return [...idTerms, ctxTerm].filter(Boolean).join(' ');
+      const disambig = (index > 0 && agencyDisambiguation) ? agencyDisambiguation : '';
+      return [...idTerms, ctxTerm, disambig].filter(Boolean).join(' ');
     });
     
     const base = queryTermsFor(requirements).join(' ') || clean(brief);
@@ -481,12 +518,13 @@ export function buildContractFallbackQueries(brief: string, requirements: Prospe
       .map(requirement => requirement.acceptableTerms[index % Math.max(requirement.acceptableTerms.length, 1)] || requirement.sourcePhrase)
       .filter(Boolean);
     const locTerm = locationTerms[index % locationTerms.length];
-    return [...nonLocTerms, locTerm].filter(Boolean).join(' ');
+    const disambig = (index > 0 && agencyDisambiguation) ? agencyDisambiguation : '';
+    return [...nonLocTerms, locTerm, disambig].filter(Boolean).join(' ');
   });
   const base = queryTermsFor(requirements).join(' ') || clean(brief);
   const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
   const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
-    query,
+    query: query.slice(0, 240).trim(),
     family: 'persona_title' as const,
     intent: 'find_decision_makers' as const,
     expectedSignal: 'Public profile evidence for every hard requirement',
@@ -668,21 +706,66 @@ export function normalizeProspectContract(
   // The deterministic contract takes precedence over extra model interpretations.
   const hard = fallback.requirements.filter(item => item.importance === 'hard').slice(0, 4);
 
-  // Merge acceptableTerms from modelHard for scopes that already exist in hard
+  const modelRoleReqs = modelHard.filter(m => m.scope === 'person_role');
+  const fallbackRoleReq = hard.find(r => r.scope === 'person_role');
+
+  if (fallbackRoleReq) {
+    for (const modelRole of modelRoleReqs) {
+      fallbackRoleReq.acceptableTerms = unique([...fallbackRoleReq.acceptableTerms, ...modelRole.acceptableTerms]);
+    }
+    fallbackRoleReq.matchRule = 'any_of';
+    fallbackRoleReq.groupId = 'person_role_group';
+    fallbackRoleReq.description = fallbackRoleReq.acceptableTerms.slice(0, 4).join(' or ');
+  } else if (modelRoleReqs.length > 0) {
+    const combinedTerms = unique(modelRoleReqs.flatMap(r => r.acceptableTerms));
+    const first = modelRoleReqs[0];
+    hard.push({
+      ...first,
+      id: 'person_role-1',
+      description: combinedTerms.slice(0, 4).join(' or '),
+      acceptableTerms: combinedTerms,
+      matchRule: 'any_of',
+      groupId: 'person_role_group'
+    });
+  }
+
+  // Merge acceptableTerms from modelHard for non-role scopes that already exist in hard
   for (const fallbackReq of hard) {
-    const modelMatch = modelHard.find(m => m.scope === fallbackReq.scope);
-    if (modelMatch) {
+    if (fallbackReq.scope === 'person_role') continue;
+    const modelMatches = modelHard.filter(m => m.scope === fallbackReq.scope);
+    for (const modelMatch of modelMatches) {
       fallbackReq.acceptableTerms = unique([...fallbackReq.acceptableTerms, ...modelMatch.acceptableTerms]);
     }
   }
 
   for (const requirement of modelHard) {
     if (hard.length >= 4) break;
+    if (requirement.scope === 'person_role') continue;
     if (!hard.some(item => item.scope === requirement.scope && lower(item.sourcePhrase) === lower(requirement.sourcePhrase))) {
       hard.push(requirement);
     }
   }
-  const normalizedRequirements = [...hard.slice(0, 4), ...soft.slice(0, 5)];
+  
+  // Deduplicate requirements so person_role is strictly unified into at most 1 any_of requirement
+  const dedupedNormalized: ProspectRequirement[] = [];
+  for (const req of [...hard.slice(0, 4), ...soft.slice(0, 5)]) {
+    const existing = dedupedNormalized.find(item => item.scope === req.scope && (req.scope === 'person_role' || lower(item.sourcePhrase) === lower(req.sourcePhrase)));
+    if (existing) {
+      existing.acceptableTerms = unique([...existing.acceptableTerms, ...req.acceptableTerms]);
+      if (req.scope === 'person_role') {
+        existing.matchRule = 'any_of';
+        existing.groupId = 'person_role_group';
+        existing.description = existing.acceptableTerms.slice(0, 4).join(' or ');
+      }
+    } else {
+      if (req.scope === 'person_role') {
+        req.matchRule = 'any_of';
+        req.groupId = 'person_role_group';
+      }
+      dedupedNormalized.push(req);
+    }
+  }
+  const normalizedRequirements = dedupedNormalized;
   const exclusions = unique([
     ...(Array.isArray(raw.exclusions) ? raw.exclusions : []),
     ...fallback.exclusions

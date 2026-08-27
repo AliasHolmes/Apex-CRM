@@ -145,9 +145,8 @@ CORE RULES:
    - "San Francisco CA", "New York", "Boston", "United States", "US", "U.S.", "America" all satisfy "USA"
    - UK / United Kingdom / England / Scotland / London all satisfy "UK"
 3. ROLE & OWNERSHIP equivalence:
-   - "Founder", "Co-Founder", "Proprietor", "Owner" satisfy an ownership requirement.
-   - "Partner" satisfies ownership ONLY when actual partnership/managing partner evidence exists.
-   - "Director", "President", "VP", or hired C-Suite titles do NOT automatically satisfy an ownership requirement without explicit founder/ownership evidence.
+   - "Founder", "Co-Founder", "Proprietor", "Owner", "Managing Partner", "Managing Director", "Principal", "CEO", "President" satisfy executive leadership and ownership requirements for agencies and businesses.
+   - When a brief seeks agency owners/founders (e.g. "owner/founder", "agency owner", "founder or CEO"), verified Founders, Co-Founders, Owners, CEOs, and Managing Directors of the firm satisfy the person_role requirement.
 4. COMPANY TYPE equivalence:
    - "AI agency", "AI consultancy", "AI services firm", "AI studio", "AI marketing agency" satisfy an AI agency requirement.
    - A generic AI software product company or tech vendor does NOT satisfy an AI agency requirement without client-service model evidence.
@@ -537,7 +536,7 @@ export function validateFinalistJudgments(
     // judge's graded scores still carry decision weight instead of being
     // discarded: strong semantic + authority ratings qualify as partial.
     const stronglyRatedIdentity =
-      semanticFit >= 7 && authorityFit >= (contract.authorityRequired ? 8 : 7);
+      semanticFit >= 6.5 && authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
 
     let status: FinalistOutcomeStatus = "unknown";
     if (fabricatedHardPass) {
@@ -556,7 +555,7 @@ export function validateFinalistJudgments(
       (identityFails === 0 && stronglyRatedIdentity)
     ) {
       // Identity verified (or strongly rated); context attributes or dynamic
-      // signals are uncorroborated but the candidate is genuine.
+      // signals are uncorroborated (unknown) but the candidate is genuine.
       status = "qualified_partial";
       counts.qualified++;
     } else {

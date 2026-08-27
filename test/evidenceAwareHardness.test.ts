@@ -18,7 +18,7 @@ describe('Phase 4: Evidence-Aware Hardness & Modality Routing', () => {
 
   const contract: ProspectContract = {
     version: 1,
-    policyVersion: 'evidence-contract-v6',
+    policyVersion: 'evidence-contract-v7',
     brief: 'Find hiring agency owners',
     authorityRequired: false,
     exclusions: [],

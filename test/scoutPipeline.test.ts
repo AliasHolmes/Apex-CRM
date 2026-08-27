@@ -20,6 +20,7 @@ import {
 } from '../server/leadSearch/searchSpec.ts';
 import { selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
 import { rankLeadForFinalSelection } from '../server/leadSearch/scoring.ts';
+import { executeFuseStage } from '../server/leadSearch/stages/fuseStage.ts';
 
 describe('free-tier prospect scout', () => {
   it('preserves an explicitly requested discovery mode over a compiled spec', () => {
@@ -237,5 +238,54 @@ describe('free-tier prospect scout', () => {
 
     assert.equal(enrichmentTargets.length, 1);
     assert.equal(enrichmentTargets[0].fullName, 'Eve (Beta)');
+  });
+
+  it('exhaustively deduplicates across all identity key variations in executeFuseStage', async () => {
+    const ctx: any = {
+      config: { promptQuery: 'founders' },
+      state: {
+        seenCandidateKeys: new Set(['linkedin:alexriver']),
+        existingKeys: new Set(['linkedin:janedoe']),
+        acceptedLeads: []
+      },
+      logEvent: () => {}
+    };
+
+    const input: any = {
+      round: 1,
+      roundItems: [
+        {
+          item: {
+            title: 'Alex River - Founder',
+            url: 'https://www.linkedin.com/in/alexriver',
+            content: 'Founder at Apex'
+          },
+          resultIndex: 0
+        },
+        {
+          item: {
+            title: 'Jane Doe - CEO',
+            url: 'https://linkedin.com/in/janedoe',
+            content: 'CEO at Beta'
+          },
+          resultIndex: 1
+        },
+        {
+          item: {
+            title: 'Sam Taylor - VP',
+            url: 'https://linkedin.com/in/samtaylor',
+            content: 'VP at Gamma'
+          },
+          resultIndex: 2
+        }
+      ],
+      roundPlans: [],
+      queryRuns: [],
+      stats: { rejectionReasons: {} }
+    };
+
+    const output = await executeFuseStage(ctx, input);
+    assert.equal(output.candidateItems.length, 1, 'Only unique new candidate Sam Taylor should pass fusion');
+    assert.equal(output.candidateItems[0]._linkedinUsername, 'samtaylor');
   });
 });

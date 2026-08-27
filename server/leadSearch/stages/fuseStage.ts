@@ -176,26 +176,30 @@ export async function executeFuseStage(
       continue;
     }
 
-    if (existingKeys.has(`linkedin:${username}`)) {
-      noteRejection("duplicate_existing_lead", queryRun);
-      continue;
-    }
-    if (normalizedUrl && existingKeys.has(`linkedin:${normalizedUrl}`)) {
+    const candidateKeys = [
+      observation.identityKey,
+      `linkedin:${username}`,
+      username,
+      `linkedin:${normalizedUrl}`,
+      `url:${normalizedUrl}`,
+      normalizedUrl
+    ].filter(Boolean);
+
+    // 1. Check against existing CRM leads in SQLite
+    if (candidateKeys.some(k => existingKeys.has(k))) {
       noteRejection("duplicate_existing_lead", queryRun);
       continue;
     }
 
-    // Prefer the canonical prefixed identity key from fusion (e.g. "linkedin:jane")
-    // over the bare username so round-to-round dedupe keys stay consistent with
-    // the keys recorded during extraction.
-    const candidateKey = observation.identityKey || username || normalizedUrl;
-    if (
-      !candidateKey ||
-      seenCandidateKeys.has(candidateKey) ||
-      roundCandidateKeys.has(candidateKey)
-    )
+    // 2. Check against already seen / extracted candidates in the current session
+    if (candidateKeys.some(k => seenCandidateKeys.has(k) || roundCandidateKeys.has(k))) {
       continue;
-    roundCandidateKeys.add(candidateKey);
+    }
+
+    // 3. Register all identity key variations
+    for (const k of candidateKeys) {
+      roundCandidateKeys.add(k);
+    }
 
     item.url = url;
     item.title = observation.title;

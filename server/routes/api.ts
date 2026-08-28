@@ -27,6 +27,7 @@ import {
   readSearchLogs,
   readSearchLogById,
   readMiningSessionById,
+  readMiningSessionSummaryById,
   readMiningSessions,
   readMiningSessionCheckpoint,
   readResumableMiningSessions,
@@ -908,28 +909,71 @@ router.get("/search-logs", (req, res): any => {
     const sessionById = new Map(
       readMiningSessions(parsedLimit).map((session) => [session.id, session]),
     );
-    const logs = readSearchLogs(parsedLimit).map((log: any) => ({
-      id: log.id,
-      timestamp: log.timestamp,
-      prompt: log.prompt,
-      generatedQueries: log.generatedQueries,
-      status: sessionById.get(log.id)?.status || log.status,
-      errorMessage: sessionById.get(log.id)?.errorMessage || log.errorMessage,
-      rawResultsCount: log.rawResultsCount,
-      leadsFound: log.leadsFound,
-      detailedLogs: log.detailedLogs,
-      debugLogs: log.debugLogs,
-      traceSummary: {
-        eventCount: log.traceEvents?.length || 0,
-        providerSummary: log.providerSummary || {},
-        costSummary: log.costSummary || {},
-        phaseTimeline: log.phaseTimeline || [],
-        schemaVersion: log.schemaVersion || 1,
-      },
-      providerSummary: log.providerSummary || {},
-      costSummary: log.costSummary || {},
-      phaseTimeline: log.phaseTimeline || [],
-    }));
+    const logs = readSearchLogs(parsedLimit).map((log: any) => {
+      const session = sessionById.get(log.id) || readMiningSessionSummaryById(log.id);
+      const sessionTrace = (session?.traceSummary as any) || {};
+      const providerSummary =
+        sessionTrace.providerSummary && Object.keys(sessionTrace.providerSummary).length > 0
+          ? sessionTrace.providerSummary
+          : log.providerSummary && Object.keys(log.providerSummary).length > 0
+            ? log.providerSummary
+            : {};
+      const costSummary =
+        sessionTrace.costSummary && Object.keys(sessionTrace.costSummary).length > 0
+          ? sessionTrace.costSummary
+          : log.costSummary && Object.keys(log.costSummary).length > 0
+            ? log.costSummary
+            : {};
+      const phaseTimeline =
+        Array.isArray(sessionTrace.phaseTimeline) && sessionTrace.phaseTimeline.length > 0
+          ? sessionTrace.phaseTimeline
+          : Array.isArray(log.phaseTimeline) && log.phaseTimeline.length > 0
+            ? log.phaseTimeline
+            : [];
+      const eventCount =
+        sessionTrace.eventCount !== undefined && sessionTrace.eventCount !== null
+          ? Number(sessionTrace.eventCount)
+          : Array.isArray(log.traceEvents) && log.traceEvents.length > 0
+            ? log.traceEvents.length
+            : Array.isArray(phaseTimeline) && phaseTimeline.length > 0
+              ? phaseTimeline.reduce((acc: number, p: any) => acc + Number(p.events || 0), 0)
+              : 0;
+
+      const traceSummary = {
+        sessionId: log.id,
+        query: log.prompt,
+        requested: session?.requestedLimit || 0,
+        status: session?.status || log.status,
+        startedAt: sessionTrace.startedAt || session?.startedAt || log.timestamp,
+        endedAt: sessionTrace.endedAt || session?.completedAt,
+        durationMs: sessionTrace.durationMs,
+        stopReason: sessionTrace.stopReason,
+        returned: log.leadsFound || 0,
+        eventCount,
+        providerSummary,
+        costSummary,
+        phaseTimeline,
+        schemaVersion: sessionTrace.schemaVersion || log.schemaVersion || 1,
+      };
+
+      return {
+        id: log.id,
+        timestamp: log.timestamp,
+        prompt: log.prompt,
+        generatedQueries: log.generatedQueries,
+        status: session?.status || log.status,
+        errorMessage: session?.errorMessage || log.errorMessage,
+        rawResultsCount: log.rawResultsCount,
+        leadsFound: log.leadsFound,
+        detailedLogs: log.detailedLogs,
+        debugLogs: log.debugLogs,
+        traceEvents: log.traceEvents || [],
+        traceSummary,
+        providerSummary,
+        costSummary,
+        phaseTimeline,
+      };
+    });
     res.json({ apiVersion: 1, logs });
   } catch (error: any) {
     console.error("Failed to read search logs:", error);
@@ -941,7 +985,64 @@ router.get("/search-logs/:id", (req, res): any => {
   try {
     const log = readSearchLogById(req.params.id);
     if (!log) return res.status(404).json({ error: "Search log not found." });
-    res.json({ apiVersion: 1, log });
+    const session = readMiningSessionSummaryById(req.params.id) || readMiningSessionById(req.params.id);
+    const sessionTrace = (session?.traceSummary as any) || {};
+    const providerSummary =
+      sessionTrace.providerSummary && Object.keys(sessionTrace.providerSummary).length > 0
+        ? sessionTrace.providerSummary
+        : log.providerSummary && Object.keys(log.providerSummary).length > 0
+          ? log.providerSummary
+          : {};
+    const costSummary =
+      sessionTrace.costSummary && Object.keys(sessionTrace.costSummary).length > 0
+        ? sessionTrace.costSummary
+        : log.costSummary && Object.keys(log.costSummary).length > 0
+          ? log.costSummary
+          : {};
+    const phaseTimeline =
+      Array.isArray(sessionTrace.phaseTimeline) && sessionTrace.phaseTimeline.length > 0
+        ? sessionTrace.phaseTimeline
+        : Array.isArray(log.phaseTimeline) && log.phaseTimeline.length > 0
+          ? log.phaseTimeline
+          : [];
+    const eventCount =
+      sessionTrace.eventCount !== undefined && sessionTrace.eventCount !== null
+        ? Number(sessionTrace.eventCount)
+        : Array.isArray(log.traceEvents) && log.traceEvents.length > 0
+          ? log.traceEvents.length
+          : Array.isArray(phaseTimeline) && phaseTimeline.length > 0
+            ? phaseTimeline.reduce((acc: number, p: any) => acc + Number(p.events || 0), 0)
+            : 0;
+
+    const traceSummary = {
+      sessionId: log.id,
+      query: log.prompt,
+      requested: session?.requestedLimit || 0,
+      status: session?.status || log.status,
+      startedAt: sessionTrace.startedAt || session?.startedAt || log.timestamp,
+      endedAt: sessionTrace.endedAt || session?.completedAt,
+      durationMs: sessionTrace.durationMs,
+      stopReason: sessionTrace.stopReason,
+      returned: log.leadsFound || 0,
+      eventCount,
+      providerSummary,
+      costSummary,
+      phaseTimeline,
+      schemaVersion: sessionTrace.schemaVersion || log.schemaVersion || 1,
+    };
+
+    res.json({
+      apiVersion: 1,
+      log: {
+        ...log,
+        status: session?.status || log.status,
+        errorMessage: session?.errorMessage || log.errorMessage,
+        traceSummary,
+        providerSummary,
+        costSummary,
+        phaseTimeline,
+      },
+    });
   } catch (error: any) {
     console.error("Failed to read search log:", error);
     res.status(500).json({ error: "Failed to retrieve search log." });

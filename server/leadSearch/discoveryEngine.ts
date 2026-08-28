@@ -1731,6 +1731,10 @@ export async function executeDiscoverySession(
       leadsFound: effectiveLeadsFound,
       detailedLogs: detailedLogsText,
       debugLogs: JSON.stringify(debugLogs),
+      providerSummary: traceSummary.providerSummary,
+      costSummary: traceSummary.costSummary,
+      phaseTimeline: traceSummary.phaseTimeline,
+      schemaVersion: (traceSummary as any).schemaVersion || 1,
     });
 
     upsertMiningSession({

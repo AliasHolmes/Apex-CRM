@@ -2286,7 +2286,7 @@ const toSearchLogRecord = (row: any) => ({
 export function readSearchLogs(limit = 30) {
   const rows = getLeadsDb()
     .prepare(
-      "SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?",
+      "SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs, debug_logs, trace_events, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?",
     )
     .all(limit) as any[];
   return rows.map(toSearchLogRecord);

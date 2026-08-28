@@ -80,6 +80,9 @@ test('insertSearchLog stores telemetry fields and culls by SEARCH_LOG_RETENTION_
   const logs = dbModule.readSearchLogs();
   assert.equal(logs.length, 10);
   assert.equal(logs[0].id, 'session-11');
+  assert.equal(logs[0].traceEvents.length, 1);
+  assert.equal(logs[0].detailedLogs, 'details');
+  assert.equal(logs[0].debugLogs, '[]');
   const newest = dbModule.readSearchLogById('session-11');
   assert.equal(newest?.traceEvents.length, 1);
   assert.equal(newest?.providerSummary.llm.calls, 1);

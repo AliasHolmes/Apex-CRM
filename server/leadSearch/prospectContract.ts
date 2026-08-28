@@ -5,7 +5,7 @@ import { isFlagEnabled } from './featureFlags.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v7';
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v8';
 
 export type RequirementScope =
   | 'person_role'
@@ -489,22 +489,30 @@ const queryTermsFor = (requirements: ProspectRequirement[]) => requirements
   .filter(Boolean);
 
 export function buildSignalLaneQueries(
-  requirements: ProspectRequirement[]
+  requirements: ProspectRequirement[],
+  identitySpec?: IdentitySpec
 ): SearchQueryPlanItem[] {
+  const companyNiche = identitySpec?.companyTypes?.[0] || requirements.find(r => r.scope === 'company_type')?.acceptableTerms?.[0] || '';
   return requirements
     .filter(r => (r.evidenceModality === 'open_web_signal' || r.scope === 'signal') && r.queryable)
-    .map((r, i) => ({
-      query: r.acceptableTerms.slice(0, 2).join(' ') || r.sourcePhrase,
-      family: 'pain_signal' as const,
-      intent: 'find_buying_signal' as const,
-      expectedSignal: `Open-web evidence corroborating: ${r.description}`,
-      priority: i + 1,
-      lane: 'signal' as const,
-      providerPreference: 'tavily' as const,
-      searchDepth: 'basic' as const,
-      coveredRequirementIds: [r.id],
-      topic: 'general' as const
-    }));
+    .map((r, i) => {
+      let query = r.acceptableTerms.slice(0, 2).join(' ') || r.sourcePhrase;
+      if (companyNiche && !lower(query).includes(lower(companyNiche))) {
+        query = `${companyNiche} ${query}`.trim();
+      }
+      return {
+        query: query.slice(0, 240),
+        family: 'pain_signal' as const,
+        intent: 'find_buying_signal' as const,
+        expectedSignal: `Open-web evidence corroborating: ${r.description}`,
+        priority: i + 1,
+        lane: 'signal' as const,
+        providerPreference: 'tavily' as const,
+        searchDepth: 'basic' as const,
+        coveredRequirementIds: [r.id],
+        topic: 'general' as const
+      };
+    });
 }
 
 export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
@@ -646,12 +654,16 @@ User brief:
 ${clean(brief)}
 
 ${suppliedSpec ? `User-supplied editable search spec (these are immutable constraints):\n${JSON.stringify(suppliedSpec)}\n\n` : ''}Rules:
+- Understand natural conversational phrasing: The brief may start with conversational command phrases like "Find", "Show me", "Search for", "Get me", "Look for", "Bring up", "Give me", "Target", "I want". These are conversational instructions and are NEVER a company name, company type, or requirement source phrase. Ignore them completely.
 - Classify decompositionMode as 'single_stream_identity' (for short/simple persona briefs without explicit buying triggers) or 'dual_stream_intent' (for briefs with hiring, tooling, pain, or expansion triggers).
 - For dual_stream_intent briefs: decouple identitySpec (roles, locations, companyTypes, industries) from intentSpec (toolingKeywords, hiringSignals, painSignals, growthSignals).
 - In person-lane profile discovery queries, include ONLY identity terms (Role + Location + Company Type). NEVER include intent/hiring/tooling trigger words in person-lane queries.
-- For open_web_signal / intent requirements, generate dedicated signal-lane queries searching the open web.
+- For open_web_signal / intent requirements (e.g. hiring for n8n, Zapier, Make.com, AI agents, workflow automation), generate dedicated signal-lane queries searching the open web.
+- Comma-or-conjunction separated company niches (e.g. "marketing, lead-generation, SEO, or creative agencies") MUST be unified under a single company_type requirement whose acceptableTerms list all distinct expanded forms (e.g. ["marketing agency", "lead-generation agency", "SEO agency", "creative agency"]).
+- Multiple requested roles (e.g. "founders, CEOs, or operations directors") MUST be unified into a single person_role requirement with matchRule: "any_of" and groupId: "person_role_group".
+- Headcount / employee size ranges (e.g. "with 2 to 15 employees" or "(3 to 20 employees)") MUST be extracted as a company_size requirement with evidenceModality: "inferred" and importance: "soft".
 - A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.
-- At most 5 hard and 5 soft requirements. A person role, profession, company type, or location explicitly requested is hard.
+- At most 4 hard requirements (e.g. person_role, company_type, person_location) and at most 5 soft requirements.
 - For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
 - acceptableTerms are short alternatives for the same stated requirement, never broader personas.
 - Do not use Google dorks, site:, or the word LinkedIn in initialQueries.
@@ -734,24 +746,17 @@ export function normalizeProspectContract(
   }
 
   const modelHard = requirements.filter(item => item.importance === 'hard');
-  const soft = requirements.filter(item => item.importance === 'soft').slice(0, 5);
-  // Cap at 4 hard requirements (down from 5). Satisfying 5 simultaneous hard
-  // requirements from a single web search snippet is nearly impossible in
-  // practice and causes the entire pipeline to loop to max rounds with 0 yield.
-  // The deterministic contract takes precedence over extra model interpretations.
-  const hard = fallback.requirements.filter(item => item.importance === 'hard').slice(0, 4);
+  const modelSoft = requirements.filter(item => item.importance === 'soft');
+  const fallbackHard = fallback.requirements.filter(item => item.importance === 'hard');
+  const fallbackSoft = fallback.requirements.filter(item => item.importance === 'soft');
 
+  const hard: ProspectRequirement[] = [];
+
+  // Step 1: Roles from LLM (primary intelligence layer)
   const modelRoleReqs = modelHard.filter(m => m.scope === 'person_role');
-  const fallbackRoleReq = hard.find(r => r.scope === 'person_role');
+  const fallbackRoleReqs = fallbackHard.filter(r => r.scope === 'person_role');
 
-  if (fallbackRoleReq) {
-    for (const modelRole of modelRoleReqs) {
-      fallbackRoleReq.acceptableTerms = unique([...fallbackRoleReq.acceptableTerms, ...modelRole.acceptableTerms]);
-    }
-    fallbackRoleReq.matchRule = 'any_of';
-    fallbackRoleReq.groupId = 'person_role_group';
-    fallbackRoleReq.description = fallbackRoleReq.acceptableTerms.slice(0, 4).join(' or ');
-  } else if (modelRoleReqs.length > 0) {
+  if (modelRoleReqs.length > 0) {
     const combinedTerms = unique(modelRoleReqs.flatMap(r => r.acceptableTerms));
     const first = modelRoleReqs[0];
     hard.push({
@@ -762,29 +767,62 @@ export function normalizeProspectContract(
       matchRule: 'any_of',
       groupId: 'person_role_group'
     });
+  } else if (fallbackRoleReqs.length > 0) {
+    // Emergency supplement: fallback role only if LLM found nothing
+    const combinedTerms = unique(fallbackRoleReqs.flatMap(r => r.acceptableTerms));
+    const first = fallbackRoleReqs[0];
+    hard.push({
+      ...first,
+      id: 'person_role-1',
+      description: combinedTerms.slice(0, 4).join(' or '),
+      acceptableTerms: combinedTerms,
+      matchRule: 'any_of',
+      groupId: 'person_role_group'
+    });
   }
 
-  // Merge acceptableTerms from modelHard for non-role scopes that already exist in hard
-  for (const fallbackReq of hard) {
-    if (fallbackReq.scope === 'person_role') continue;
-    const modelMatches = modelHard.filter(m => m.scope === fallbackReq.scope);
-    for (const modelMatch of modelMatches) {
-      fallbackReq.acceptableTerms = unique([...fallbackReq.acceptableTerms, ...modelMatch.acceptableTerms]);
-    }
-  }
-
-  for (const requirement of modelHard) {
+  // Step 2: Fill remaining hard slots (up to 4) from LLM modelHard for non-role scopes
+  for (const req of modelHard) {
     if (hard.length >= 4) break;
-    if (requirement.scope === 'person_role') continue;
-    if (!hard.some(item => item.scope === requirement.scope && lower(item.sourcePhrase) === lower(requirement.sourcePhrase))) {
-      hard.push(requirement);
+    if (req.scope === 'person_role') continue;
+    const existing = hard.find(h => h.scope === req.scope);
+    if (existing) {
+      existing.acceptableTerms = unique([...existing.acceptableTerms, ...req.acceptableTerms]);
+    } else {
+      hard.push(req);
     }
   }
-  
+
+  // Step 3: If LLM produced no hard requirements at all, supplement from fallback
+  if (hard.length === 0) {
+    hard.push(...fallbackHard.slice(0, 4));
+  } else {
+    // If LLM produced some requirements but missed a location or company type present in fallback,
+    // supplement only non-colliding scopes if under the 4-cap
+    for (const fbReq of fallbackHard) {
+      if (hard.length >= 4) break;
+      if (!hard.some(h => h.scope === fbReq.scope)) {
+        hard.push(fbReq);
+      }
+    }
+  }
+
+  // Step 4: Soft requirements (LLM primary, fallback supplement)
+  const soft: ProspectRequirement[] = [...modelSoft];
+  for (const fbSoft of fallbackSoft) {
+    if (soft.length >= 5) break;
+    if (!soft.some(s => s.scope === fbSoft.scope)) {
+      soft.push(fbSoft);
+    }
+  }
+
   // Deduplicate requirements so person_role is strictly unified into at most 1 any_of requirement
   const dedupedNormalized: ProspectRequirement[] = [];
   for (const req of [...hard.slice(0, 4), ...soft.slice(0, 5)]) {
-    const existing = dedupedNormalized.find(item => item.scope === req.scope && (req.scope === 'person_role' || lower(item.sourcePhrase) === lower(req.sourcePhrase)));
+    const existing = dedupedNormalized.find(
+      item => item.scope === req.scope &&
+        (req.scope === 'person_role' || lower(item.sourcePhrase) === lower(req.sourcePhrase))
+    );
     if (existing) {
       existing.acceptableTerms = unique([...existing.acceptableTerms, ...req.acceptableTerms]);
       if (req.scope === 'person_role') {
@@ -995,7 +1033,7 @@ export function searchSpecFromProspectContract(base: SearchSpec, contract: Prosp
       ...base.person,
       includeTitles: roles.length ? unique(roles) : base.person.includeTitles,
       locations: locations.length ? unique(locations) : base.person.locations,
-      excludeTitles: unique([...base.person.excludeTitles, ...contract.exclusions])
+      excludeTitles: base.person.excludeTitles
     },
     company: {
       ...base.company,

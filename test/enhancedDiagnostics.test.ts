@@ -5,7 +5,8 @@ import {
 } from '../server/leadSearch/roundDiagnostics.js';
 import {
   buildRecoveryQueryPrompt,
-  type ProspectContract
+  type ProspectContract,
+  PROSPECT_CONTRACT_POLICY_VERSION
 } from '../server/leadSearch/prospectContract.js';
 
 describe('Phase 6: Enhanced Diagnostics & Targeted Recovery', () => {
@@ -21,7 +22,7 @@ describe('Phase 6: Enhanced Diagnostics & Targeted Recovery', () => {
 
   const contract: ProspectContract = {
     version: 1,
-    policyVersion: 'evidence-contract-v7',
+    policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
     brief: 'Find AI agency owners in New York',
     authorityRequired: false,
     exclusions: [],

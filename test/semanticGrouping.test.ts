@@ -7,7 +7,8 @@ import {
 import {
   normalizeProspectContract,
   buildDeterministicProspectContract,
-  type ProspectContract
+  type ProspectContract,
+  PROSPECT_CONTRACT_POLICY_VERSION
 } from '../server/leadSearch/prospectContract.js';
 
 describe('Phase 3: Semantic Grouping Support', () => {
@@ -23,7 +24,7 @@ describe('Phase 3: Semantic Grouping Support', () => {
 
   const baseContract: ProspectContract = {
     version: 1,
-    policyVersion: 'evidence-contract-v7',
+    policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
     brief: 'Find owners in NY or SF',
     authorityRequired: false,
     exclusions: [],

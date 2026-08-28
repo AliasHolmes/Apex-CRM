@@ -746,7 +746,7 @@ export async function executeDiscoverySession(
           prospectContractSchema,
           `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
           {
-            maxTokens: 1000,
+            maxTokens: 1800,
             temperature: 0,
             signal: sessionAbortController.signal,
           },

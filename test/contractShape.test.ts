@@ -172,10 +172,10 @@ describe('Phase 1: Requirement Taxonomy', () => {
       }
     });
 
-    it('uses policy version v7', () => {
+    it('uses current policy version', () => {
       const brief = 'Find owners';
       const contract = buildDeterministicProspectContract(brief, minimalSpec);
-      assert.equal(contract.policyVersion, 'evidence-contract-v7');
+      assert.equal(contract.policyVersion, PROSPECT_CONTRACT_POLICY_VERSION);
     });
 
     it('identity_hard requirements have queryHardness=required_in_every_query', () => {
@@ -227,7 +227,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
       };
 
       const normalized = normalizeProspectContract(oldContract, fallbackBrief, fallbackContract);
-      assert.equal(normalized.policyVersion, 'evidence-contract-v7', 'Should bump to v7');
+      assert.equal(normalized.policyVersion, PROSPECT_CONTRACT_POLICY_VERSION, 'Should bump to current version');
       assert.ok(normalized.requirements[0].requirementClass, 'Should populate requirementClass');
       assert.equal(normalized.requirements[0].requirementClass, 'identity_hard');
       assert.ok(normalized.requirements[0].queryHardness, 'Should populate queryHardness');
@@ -238,7 +238,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
       const brief = 'Find owners with valid linkedin profile url';
       const contract: any = {
         version: 1,
-        policyVersion: 'evidence-contract-v7',
+        policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
         brief,
         requirements: [
           {
@@ -268,10 +268,10 @@ describe('Phase 1: Requirement Taxonomy', () => {
       );
     });
 
-    it('leaves requirements unchanged when already v7', () => {
+    it('leaves requirements unchanged when already current version', () => {
       const contract: any = {
         version: 1,
-        policyVersion: 'evidence-contract-v7',
+        policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
         brief: 'Find owners',
         requirements: [
           {
@@ -291,7 +291,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
       };
 
       const normalized = normalizeProspectContract(contract, fallbackBrief, fallbackContract);
-      assert.equal(normalized.policyVersion, 'evidence-contract-v7');
+      assert.equal(normalized.policyVersion, PROSPECT_CONTRACT_POLICY_VERSION);
       assert.equal(normalized.requirements[0].requirementClass, 'identity_hard');
     });
 
@@ -410,8 +410,8 @@ describe('Phase 1: Requirement Taxonomy', () => {
   });
 
   describe('Policy version consistency', () => {
-    it('PROSPECT_CONTRACT_POLICY_VERSION constant is v7', () => {
-      assert.equal(PROSPECT_CONTRACT_POLICY_VERSION, 'evidence-contract-v7');
+    it('PROSPECT_CONTRACT_POLICY_VERSION constant is defined and matches current version', () => {
+      assert.equal(PROSPECT_CONTRACT_POLICY_VERSION, 'evidence-contract-v8');
     });
 
     it('buildDeterministicProspectContract uses current policy version', () => {
@@ -419,7 +419,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
       assert.equal(contract.policyVersion, PROSPECT_CONTRACT_POLICY_VERSION);
     });
 
-    it('normalizeProspectContract bumps old contracts to v7', () => {
+    it('normalizeProspectContract bumps old contracts to current version', () => {
       const oldContract: any = {
         version: 1,
         policyVersion: 'evidence-contract-v5',
@@ -430,7 +430,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
 
       const fallback = buildDeterministicProspectContract('Find owners', {});
       const normalized = normalizeProspectContract(oldContract, 'Find owners', fallback);
-      assert.equal(normalized.policyVersion, 'evidence-contract-v7');
+      assert.equal(normalized.policyVersion, PROSPECT_CONTRACT_POLICY_VERSION);
     });
   });
 

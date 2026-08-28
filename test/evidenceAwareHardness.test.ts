@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   selectEvidenceForFinalist
 } from '../server/leadSearch/evidenceSelection.js';
-import type { ProspectContract } from '../server/leadSearch/prospectContract.js';
+import { type ProspectContract, PROSPECT_CONTRACT_POLICY_VERSION } from '../server/leadSearch/prospectContract.js';
 
 describe('Phase 4: Evidence-Aware Hardness & Modality Routing', () => {
   const originalEnv = process.env.EVIDENCE_AWARE_HARDNESS_ENABLED;
@@ -18,7 +18,7 @@ describe('Phase 4: Evidence-Aware Hardness & Modality Routing', () => {
 
   const contract: ProspectContract = {
     version: 1,
-    policyVersion: 'evidence-contract-v7',
+    policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
     brief: 'Find hiring agency owners',
     authorityRequired: false,
     exclusions: [],

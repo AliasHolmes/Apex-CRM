@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildDeterministicProspectContract, normalizeProspectContract } from '../server/leadSearch/prospectContract.js';
+import { buildDeterministicProspectContract, normalizeProspectContract, PROSPECT_CONTRACT_POLICY_VERSION } from '../server/leadSearch/prospectContract.js';
 
 describe('Intelligent Role Fusion & Any-Of Unification', () => {
   it('fuses owner/founder into a single person_role requirement with any_of match rule', () => {
@@ -54,6 +54,6 @@ describe('Intelligent Role Fusion & Any-Of Unification', () => {
     
     assert.ok(locReqs.length >= 1, 'Should have location requirement');
     assert.ok(compReqs.length >= 1, 'Should have company type requirement');
-    assert.equal(contract.policyVersion, 'evidence-contract-v7');
+    assert.equal(contract.policyVersion, PROSPECT_CONTRACT_POLICY_VERSION);
   });
 });

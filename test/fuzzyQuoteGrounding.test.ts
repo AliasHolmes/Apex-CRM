@@ -5,7 +5,7 @@ import {
   validateFinalistJudgments,
   type FinalistCandidate
 } from '../server/leadSearch/finalistJudge.js';
-import type { ProspectContract } from '../server/leadSearch/prospectContract.js';
+import { type ProspectContract, PROSPECT_CONTRACT_POLICY_VERSION } from '../server/leadSearch/prospectContract.js';
 
 describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
   const originalEnv = process.env.FUZZY_QUOTE_GROUNDING_ENABLED;
@@ -58,7 +58,7 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
   describe('validateFinalistJudgments integration', () => {
     const contract: ProspectContract = {
       version: 1,
-      policyVersion: 'evidence-contract-v7',
+      policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
       brief: 'Find founders',
       authorityRequired: false,
       exclusions: [],

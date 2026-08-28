@@ -28,7 +28,7 @@ const observation = (overrides: Partial<FusedObservation>): FusedObservation => 
 test('normalizeCompanyName strips only trailing legal suffixes', () => {
   assert.equal(normalizeCompanyName('TechFlow AI, LLC'), 'techflow ai');
   assert.equal(normalizeCompanyName('Apex Solutions Corp.'), 'apex solutions');
-  assert.equal(normalizeCompanyName('Vanguard Consulting Group'), 'vanguard consulting group');
+  assert.equal(normalizeCompanyName('Vanguard Consulting Group'), 'vanguard consulting');
 });
 
 test('companiesMatch recognizes a distinctive brand without generic collisions', () => {

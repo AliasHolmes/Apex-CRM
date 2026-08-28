@@ -24,7 +24,8 @@ interface ToastItem {
   type: ToastType;
 }
 
-const ToastContext = createContext<ToastContextType | undefined>(undefined);
+const ToastStateContext = createContext<string | null>(null);
+const ToastDispatchContext = createContext<((msg: string, type?: ToastType) => void) | undefined>(undefined);
 
 const toastStyles: Record<ToastType, { container: string; icon: typeof Info }> = {
   success: {
@@ -76,55 +77,61 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timeoutId);
   }, [activeToast]);
 
-  const contextValue = useMemo<ToastContextType>(() => ({
-    toast: activeToast?.message ?? null,
-    triggerToast
-  }), [activeToast?.message, triggerToast]);
-
   const activeStyle = activeToast ? toastStyles[activeToast.type] : null;
   const ToastIcon = activeStyle?.icon ?? Info;
 
   return (
-    <ToastContext.Provider value={contextValue}>
-      {children}
-      <div
-        className="pointer-events-none fixed inset-x-4 top-20 z-[9999] flex justify-end sm:left-auto sm:right-4 sm:w-[min(24rem,calc(100vw-2rem))]"
-        aria-live={activeToast?.type === 'error' ? 'assertive' : 'polite'}
-        aria-atomic="true"
-      >
-        {activeToast && activeStyle && (
-          <div
-            role={activeToast.type === 'error' ? 'alert' : 'status'}
-            className={`pointer-events-auto flex w-full items-start gap-3 rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 motion-reduce:animate-none ${activeStyle.container}`}
-          >
-            <ToastIcon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold leading-5">{activeToast.message}</p>
-              {toastQueue.length > 1 && (
-                <p className="mt-1 text-xs opacity-70">
-                  {toastQueue.length - 1} more notification{toastQueue.length === 2 ? '' : 's'} queued
-                </p>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={() => dismissToast(activeToast.id)}
-              className="-mr-1 rounded-md p-1 opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
-              aria-label="Dismiss notification"
+    <ToastDispatchContext.Provider value={triggerToast}>
+      <ToastStateContext.Provider value={activeToast?.message ?? null}>
+        {children}
+        <div
+          className="pointer-events-none fixed inset-x-4 top-20 z-[9999] flex justify-end sm:left-auto sm:right-4 sm:w-[min(24rem,calc(100vw-2rem))]"
+          aria-live={activeToast?.type === 'error' ? 'assertive' : 'polite'}
+          aria-atomic="true"
+        >
+          {activeToast && activeStyle && (
+            <div
+              role={activeToast.type === 'error' ? 'alert' : 'status'}
+              className={`pointer-events-auto flex w-full items-start gap-3 rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 motion-reduce:animate-none ${activeStyle.container}`}
             >
-              <X className="h-4 w-4" aria-hidden="true" />
-            </button>
-          </div>
-        )}
-      </div>
-    </ToastContext.Provider>
+              <ToastIcon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold leading-5">{activeToast.message}</p>
+                {toastQueue.length > 1 && (
+                  <p className="mt-1 text-xs opacity-70">
+                    {toastQueue.length - 1} more notification{toastQueue.length === 2 ? '' : 's'} queued
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => dismissToast(activeToast.id)}
+                className="-mr-1 rounded-md p-1 opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                aria-label="Dismiss notification"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+          )}
+        </div>
+      </ToastStateContext.Provider>
+    </ToastDispatchContext.Provider>
   );
 }
 
 export function useToast() {
-  const context = useContext(ToastContext);
-  if (context === undefined) {
+  const triggerToast = useContext(ToastDispatchContext);
+  const toast = useContext(ToastStateContext);
+  if (triggerToast === undefined) {
     throw new Error('useToast must be used within a ToastProvider');
   }
-  return context;
+  return useMemo(() => ({ toast, triggerToast }), [toast, triggerToast]);
+}
+
+export function useToastDispatch() {
+  const triggerToast = useContext(ToastDispatchContext);
+  if (triggerToast === undefined) {
+    throw new Error('useToastDispatch must be used within a ToastProvider');
+  }
+  return triggerToast;
 }

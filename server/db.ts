@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import dotenv from "dotenv";
 import {
   clampSearchLogRetentionLimit,
@@ -20,12 +20,30 @@ import {
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 19;
+const LATEST_SCHEMA_VERSION = 20;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
 
 let leadsDb: DatabaseSync | null = null;
+const statementCache = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
+
+function getCachedStatement(db: DatabaseSync, sql: string): StatementSync {
+  let cache = statementCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    statementCache.set(db, cache);
+  }
+  let stmt = cache.get(sql);
+  if (!stmt) {
+    stmt = db.prepare(sql);
+    cache.set(sql, stmt);
+  }
+  return stmt;
+}
+
+let pruneEnrichmentCounter = 0;
+let searchLogInsertCounter = 0;
 
 const isUsableEmail = (value: unknown): value is string => {
   if (typeof value !== "string") return false;
@@ -892,10 +910,31 @@ function runMigrations(db: DatabaseSync) {
         "domain_cluster",
         "domain_cluster TEXT NOT NULL DEFAULT 'global'",
       );
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_query_performance_domain_cluster
-          ON query_performance(domain_cluster, updated_at DESC);
-      `);
+      const qpTable = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'query_performance'").get();
+      if (qpTable) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_query_performance_domain_cluster
+            ON query_performance(domain_cluster, updated_at DESC);
+        `);
+      }
+    }
+
+    if (currentVersion < 20) {
+      const leadsTable = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'leads'").get();
+      if (leadsTable) {
+        db.exec(`
+          DROP INDEX IF EXISTS idx_leads_stage_updated;
+          CREATE INDEX IF NOT EXISTS idx_leads_stage_created
+            ON leads(stage, created_at DESC, updated_at DESC);
+        `);
+      }
+      const llmTable = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'llm_stage_logs'").get();
+      if (llmTable) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_llm_stage_logs_created_at
+            ON llm_stage_logs(created_at DESC);
+        `);
+      }
     }
 
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
@@ -1578,22 +1617,25 @@ export function upsertLeadInExistingTransaction(
 ): LeadWriteResult {
   const now = new Date().toISOString();
   const incomingLeadId = String(lead.id || "");
-  const existing = db
-    .prepare("SELECT payload, revision FROM leads WHERE id = ?")
-    .get(incomingLeadId) as { payload: string; revision: number } | undefined;
+  const existing = getCachedStatement(
+    db,
+    "SELECT payload, revision FROM leads WHERE id = ?",
+  ).get(incomingLeadId) as { payload: string; revision: number } | undefined;
   if (!existing && options.requireExisting) {
     throw new LeadNotFoundError(incomingLeadId);
   }
 
   const identityKey = leadIdentityKey(lead);
   if (identityKey) {
-    const identity = db
-      .prepare("SELECT lead_id FROM lead_identities WHERE identity_key = ?")
-      .get(identityKey) as { lead_id?: string } | undefined;
+    const identity = getCachedStatement(
+      db,
+      "SELECT lead_id FROM lead_identities WHERE identity_key = ?",
+    ).get(identityKey) as { lead_id?: string } | undefined;
     if (identity?.lead_id && identity.lead_id !== incomingLeadId) {
-      const canonicalRow = db
-        .prepare("SELECT payload, revision FROM leads WHERE id = ?")
-        .get(identity.lead_id) as
+      const canonicalRow = getCachedStatement(
+        db,
+        "SELECT payload, revision FROM leads WHERE id = ?",
+      ).get(identity.lead_id) as
         | { payload: string; revision: number }
         | undefined;
       const canonicalLead = readLeadFromRow(canonicalRow);
@@ -1607,9 +1649,10 @@ export function upsertLeadInExistingTransaction(
       }
       // A stale mapping should never survive a normal delete, but recovering it
       // here keeps a corrupted legacy database from blocking the valid lead.
-      db.prepare("DELETE FROM lead_identities WHERE identity_key = ?").run(
-        identityKey,
-      );
+      getCachedStatement(
+        db,
+        "DELETE FROM lead_identities WHERE identity_key = ?",
+      ).run(identityKey);
     }
   }
 
@@ -1636,7 +1679,8 @@ export function upsertLeadInExistingTransaction(
   };
   const cols = extractPromotedLeadColumns(storedLead);
 
-  db.prepare(
+  getCachedStatement(
+    db,
     `
     INSERT INTO leads (
       id, payload, created_at, updated_at, revision,
@@ -1672,11 +1716,13 @@ export function upsertLeadInExistingTransaction(
     cols.email,
   );
 
-  db.prepare(
+  getCachedStatement(
+    db,
     "DELETE FROM lead_identities WHERE lead_id = ? AND identity_key <> ?",
   ).run(storedLead.id, identityKey || "");
   if (identityKey) {
-    db.prepare(
+    getCachedStatement(
+      db,
       `
       INSERT INTO lead_identities (identity_key, lead_id, created_at)
       VALUES (?, ?, ?)
@@ -1685,7 +1731,8 @@ export function upsertLeadInExistingTransaction(
     ).run(identityKey, storedLead.id, now);
   }
 
-  db.prepare(
+  getCachedStatement(
+    db,
     `
     INSERT INTO app_meta (key, value, updated_at)
     VALUES ('leads_initialized', 'true', ?)
@@ -1944,7 +1991,9 @@ export function upsertEnrichmentCacheEntry(
     expiresAt,
   );
 
-  pruneExpiredEnrichmentCache(now);
+  if (++pruneEnrichmentCounter % 50 === 0) {
+    pruneExpiredEnrichmentCache(now);
+  }
   return { ...entry, id, createdAt, expiresAt };
 }
 
@@ -1982,6 +2031,48 @@ export function upsertIntentCacheEntry(
   now = new Date(),
 ) {
   return upsertEnrichmentCacheEntry(entry, ttlDays, now);
+}
+
+export function getIntentCacheEntriesBatch(
+  keys: Array<{ normalizedUrl: string; intentFingerprint: string }>,
+  now = new Date(),
+): Map<string, EnrichmentCacheEntry> {
+  const result = new Map<string, EnrichmentCacheEntry>();
+  if (!keys.length) return result;
+
+  const validKeys = keys
+    .map((k) => ({
+      url: normalizeCacheValue(k.normalizedUrl),
+      fp: (k.intentFingerprint || "").trim(),
+    }))
+    .filter((k) => k.url && k.fp);
+
+  if (!validKeys.length) return result;
+
+  const urls = Array.from(new Set(validKeys.map((k) => k.url)));
+  const fps = Array.from(new Set(validKeys.map((k) => k.fp)));
+
+  const rows = getLeadsDb()
+    .prepare(
+      `
+    SELECT * FROM enrichment_cache
+    WHERE expires_at > ?
+      AND normalized_url IN (${urls.map(() => "?").join(",")})
+      AND intent_fingerprint IN (${fps.map(() => "?").join(",")})
+    ORDER BY created_at DESC
+  `,
+    )
+    .all(now.toISOString(), ...urls, ...fps) as any[];
+
+  for (const row of rows) {
+    const entry = toCacheRow(row);
+    if (!entry || !entry.normalizedUrl || !row.intent_fingerprint) continue;
+    const compoundKey = `${entry.normalizedUrl}::${row.intent_fingerprint}`;
+    if (!result.has(compoundKey)) {
+      result.set(compoundKey, entry);
+    }
+  }
+  return result;
 }
 
 /**
@@ -2185,7 +2276,9 @@ export function upsertNegativeEnrichmentCacheEntry(
 export function insertSearchLog(log: any) {
   try {
     const db = getLeadsDb();
-    const insertStmt = db.prepare(`
+    const insertStmt = getCachedStatement(
+      db,
+      `
       INSERT INTO search_logs (
         id,
         timestamp,
@@ -2219,7 +2312,8 @@ export function insertSearchLog(log: any) {
         cost_summary = excluded.cost_summary,
         phase_timeline = excluded.phase_timeline,
         schema_version = excluded.schema_version
-    `);
+    `,
+    );
     insertStmt.run(
       log.id,
       log.timestamp,
@@ -2239,14 +2333,17 @@ export function insertSearchLog(log: any) {
     );
 
     const retentionLimit = clampSearchLogRetentionLimit();
-    const cullStmt = db.prepare(`
+    const cullStmt = getCachedStatement(
+      db,
+      `
       DELETE FROM search_logs
       WHERE id NOT IN (
         SELECT id FROM search_logs
         ORDER BY timestamp DESC
         LIMIT ?
       )
-    `);
+    `,
+    );
     cullStmt.run(retentionLimit);
   } catch (err) {
     console.error("Failed to write search log to DB:", err);
@@ -2302,12 +2399,15 @@ export function readSearchLogById(id: string) {
 export function insertLlmStageLog(entry: LlmStageLogEntry) {
   try {
     const db = getLeadsDb();
-    const insertStmt = db.prepare(`
+    const insertStmt = getCachedStatement(
+      db,
+      `
       INSERT INTO llm_stage_logs (
         id, search_log_id, stage, round, status,
         input_tokens, output_tokens, latency_ms, model_name, provider, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    `,
+    );
     insertStmt.run(
       crypto.randomUUID(),
       entry.searchLogId || null,
@@ -2686,7 +2786,7 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       qualified_candidates = CAST(ROUND(query_performance.qualified_candidates * 0.95 + excluded.qualified_candidates) AS INTEGER),
       rescued_candidates = CAST(ROUND(query_performance.rescued_candidates * 0.95 + excluded.rescued_candidates) AS INTEGER),
       returned_candidates = CAST(ROUND(query_performance.returned_candidates * 0.95 + excluded.returned_candidates) AS INTEGER),
-      search_latency_ms = CAST(ROUND(query_performance.search_latency_ms * 0.95 + excluded.search_latency_ms) AS INTEGER),
+      search_latency_ms = CASE WHEN excluded.search_latency_ms > 0 THEN CAST(ROUND(query_performance.search_latency_ms * 0.95 + excluded.search_latency_ms) AS INTEGER) ELSE query_performance.search_latency_ms END,
       provider_units = CAST(ROUND(query_performance.provider_units * 0.95 + excluded.provider_units) AS INTEGER),
       judged_candidates = CAST(ROUND(query_performance.judged_candidates * 0.95 + excluded.judged_candidates) AS INTEGER),
       hard_failed_candidates = CAST(ROUND(query_performance.hard_failed_candidates * 0.95 + excluded.hard_failed_candidates) AS INTEGER),
@@ -3226,7 +3326,8 @@ export function reconcileOrphanedMiningSessions(reason?: string): number {
         // ignore parse error
       }
     }
-    db.prepare(
+    getCachedStatement(
+      db,
       `
       UPDATE mining_sessions
       SET status = 'interrupted',
@@ -3457,7 +3558,9 @@ export function upsertDiscoveredCompanies(
   try {
     const db = getLeadsDb();
     const now = new Date().toISOString();
-    const stmt = db.prepare(`
+    const stmt = getCachedStatement(
+      db,
+      `
       INSERT INTO discovered_companies (
         normalized_name, company_name, signal_count, strongest_signal, source_urls_json, confidence, last_seen_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -3467,20 +3570,30 @@ export function upsertDiscoveredCompanies(
         source_urls_json = excluded.source_urls_json,
         confidence = MAX(discovered_companies.confidence, excluded.confidence),
         last_seen_at = excluded.last_seen_at
-    `);
-    for (const c of companies) {
-      const cleanName = String(c.companyName || '').trim();
-      const norm = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (!norm || norm.length < 2) continue;
-      stmt.run(
-        norm,
-        cleanName,
-        Math.max(1, c.signalCount || 1),
-        String(c.strongestSignal || '').slice(0, 300),
-        JSON.stringify(c.sourceUrls || []),
-        c.confidence ?? 0.7,
-        now,
-      );
+    `,
+    );
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const c of companies) {
+        const cleanName = String(c.companyName || '').trim();
+        const norm = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!norm || norm.length < 2) continue;
+        stmt.run(
+          norm,
+          cleanName,
+          Math.max(1, c.signalCount || 1),
+          String(c.strongestSignal || '').slice(0, 300),
+          JSON.stringify(c.sourceUrls || []),
+          c.confidence ?? 0.7,
+          now,
+        );
+      }
+      db.exec("COMMIT");
+    } catch (innerErr) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {}
+      throw innerErr;
     }
   } catch (err) {
     console.warn("Failed to upsert discovered companies:", err);

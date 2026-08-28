@@ -273,16 +273,20 @@ router.get("/leads", (req, res): any => {
       parsedLimit === undefined &&
       parsedOffset === undefined
     ) {
+      const DEFAULT_UNFILTERED_LIMIT = 500;
       const db = getLeadsDb();
       const rows = db
         .prepare(
-          "SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC",
+          "SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC LIMIT ?",
         )
-        .all() as { payload: string }[];
+        .all(DEFAULT_UNFILTERED_LIMIT) as { payload: string }[];
+      const total =
+        (db.prepare("SELECT COUNT(*) as count FROM leads").get() as any)
+          ?.count ?? rows.length;
       const initialized = hasLeadStoreBeenInitialized();
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       return res.send(
-        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${rows.length},"initialized":${initialized}}`,
+        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${total},"initialized":${initialized}}`,
       );
     }
 
@@ -965,9 +969,9 @@ router.get("/search-logs", (req, res): any => {
         errorMessage: session?.errorMessage || log.errorMessage,
         rawResultsCount: log.rawResultsCount,
         leadsFound: log.leadsFound,
-        detailedLogs: log.detailedLogs,
-        debugLogs: log.debugLogs,
-        traceEvents: log.traceEvents || [],
+        detailedLogs: undefined,
+        debugLogs: undefined,
+        traceEvents: [],
         traceSummary,
         providerSummary,
         costSummary,

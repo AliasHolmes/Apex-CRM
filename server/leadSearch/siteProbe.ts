@@ -428,7 +428,7 @@ export async function probeCompanySites(
     const hasSignals = Boolean(extractSiteSignals(rootText));
     if (!hasSignals || rootText.length < 400) {
       const cleanRoot = domain.replace(/\/$/, '');
-      const subUrls = [`${cleanRoot}/about`, `${cleanRoot}/team`, `${cleanRoot}/pricing`, `${cleanRoot}/case-studies`, `${cleanRoot}/careers`];
+      const subUrls = [`${cleanRoot}/about`, `${cleanRoot}/team`];
       for (const u of subUrls) {
         subpathUrlsToExtract.push(u);
         probeUrlsToDomain.set(u, domain);

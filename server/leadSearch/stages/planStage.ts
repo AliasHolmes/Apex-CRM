@@ -148,15 +148,36 @@ export async function executePlanStage(
   const strategyStarted = Date.now();
   const strategyProviderAttempts: LLMProviderAttempt[] = [];
   const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
-  try {
+
+  if (
+    round === 1 &&
+    !isRecoveryMode &&
+    Array.isArray(config.contract?.initialQueries) &&
+    config.contract.initialQueries.length > 0
+  ) {
+    planItems = config.contract.initialQueries;
+    logEvent(
+      `Round 1: using ${planItems.length} initial contract queries without additional strategist call.`,
+    );
     recordTrace({
       phase: "strategy",
-      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-      status: "started",
-      provider: "llm",
-      round,
-      metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
+      operation: "contract_initial_queries",
+      status: "success",
+      provider: "system",
+      round: 1,
+      latencyMs: 0,
+      counts: { generatedQueries: planItems.length },
     });
+  } else {
+    try {
+      recordTrace({
+        phase: "strategy",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+        status: "started",
+        provider: "llm",
+        round,
+        metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
+      });
       const queryResult = await openAIStructured<any>(
         strategistPrompt,
         searchQueriesSchema,
@@ -241,6 +262,7 @@ export async function executePlanStage(
         state.debugLogs.push(errLog);
       }
     }
+  }
 
   if (planItems.length === 0) {
     planItems = buildScoutFallbackQueryPlan(config.promptQuery, searchSpec);

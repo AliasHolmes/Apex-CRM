@@ -997,9 +997,9 @@ export async function openAIStructured<T>(
 
   let sysPrompt = systemInstruction || "";
   if (useJsonMode) {
-    sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. Do not include markdown, comments, <think> tags, explanations, or text before/after the JSON. The JSON must exactly match this schema:\n${JSON.stringify(responseSchema, null, 2)}`;
+    sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. Do not include markdown, comments, <think> tags, explanations, or text before/after the JSON. The JSON must exactly match this schema:\n${JSON.stringify(responseSchema)}`;
   } else {
-    sysPrompt += `\n\nYou may reason internally or in <think>...</think>, but the final answer must include exactly one JSON value between FINAL_JSON_START and FINAL_JSON_END. Do not put schema examples or commentary between those markers. The final JSON must exactly match this schema:\n${JSON.stringify(responseSchema, null, 2)}`;
+    sysPrompt += `\n\nYou may reason internally or in <think>...</think>, but the final answer must include exactly one JSON value between FINAL_JSON_START and FINAL_JSON_END. Do not put schema examples or commentary between those markers. The final JSON must exactly match this schema:\n${JSON.stringify(responseSchema)}`;
   }
 
   const messages: ChatMessage[] = [

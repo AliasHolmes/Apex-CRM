@@ -71,7 +71,6 @@ import {
   APEX_SYSTEM_PROMPT,
   leadsArraySchema,
   searchQueriesSchema,
-  searchSpecSchema,
   openAIText,
   STRATEGIST_SYSTEM_PROMPT,
   EXTRACTION_SYSTEM_PROMPT,
@@ -142,7 +141,6 @@ import {
   buildFallbackQueryPlan as buildScoutFallbackQueryPlan,
   buildFallbackSearchSpec,
   buildRetrievalTasks,
-  buildSearchSpecPrompt,
   buildStrategistPrompt as buildScoutStrategistPrompt,
   normalizeSearchSpec,
   type DiscoveryMode,
@@ -694,42 +692,6 @@ export async function executeDiscoverySession(
     let searchSpec = normalizeSearchSpec(options.searchSpec, query);
     if (!options.searchSpec) {
       searchSpec = buildFallbackSearchSpec(query, requestedMode);
-      const specStarted = Date.now();
-      try {
-        searchSpec = normalizeSearchSpec(
-          await openAIStructured(
-            buildSearchSpecPrompt(query),
-            searchSpecSchema,
-            STRATEGIST_SYSTEM_PROMPT,
-            {
-              maxTokens: 700,
-              temperature: 0,
-              signal: sessionAbortController.signal,
-            },
-          ),
-          query,
-        );
-        recordTrace({
-          phase: "strategy",
-          operation: "search_spec_compile",
-          status: "success",
-          provider: "llm",
-          latencyMs: Date.now() - specStarted,
-          metadata: { mode: searchSpec.mode },
-        });
-      } catch (error: any) {
-        logEvent(
-          `WARN: Search-spec compiler failed: ${error.message || String(error)}. Using deterministic spec.`,
-        );
-        recordTrace({
-          phase: "strategy",
-          operation: "search_spec_compile",
-          status: "error",
-          provider: "llm",
-          latencyMs: Date.now() - specStarted,
-          error: { message: error.message || String(error) },
-        });
-      }
     }
 
     // Build deterministic contract first as fallback (or restore from checkpoint).
@@ -884,6 +846,10 @@ export async function executeDiscoverySession(
     const companyIntentMaxPerSearch = Math.max(
       Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 3),
       0,
+    );
+    const companyIntentConcurrency = Math.max(
+      Number(process.env.COMPANY_INTENT_CONCURRENCY || 4),
+      1,
     );
     const linkedinPostIntentEnabled =
       String(process.env.LINKEDIN_POST_INTENT_ENABLED || "").toLowerCase() !==
@@ -1404,6 +1370,7 @@ export async function executeDiscoverySession(
           enrichmentCap,
           companyIntentEnabled,
           companyIntentMaxPerSearch,
+          companyIntentConcurrency,
           profileConcurrency,
           ttlDays,
           contract,

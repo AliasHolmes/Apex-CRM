@@ -36,7 +36,7 @@ export function useSessionDuration({
     if (!isRunning) return;
     const interval = setInterval(() => {
       setNow(Date.now());
-    }, 100);
+    }, 1000);
     return () => clearInterval(interval);
   }, [isRunning]);
 

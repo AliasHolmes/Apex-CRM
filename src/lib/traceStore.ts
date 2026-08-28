@@ -28,9 +28,24 @@ class MiningTraceStore {
     };
   };
 
+  private trimSessions() {
+    if (this.sessions.size <= 20) return;
+    for (const [key, state] of this.sessions.entries()) {
+      if (this.sessions.size <= 20) break;
+      if (
+        !this.activeEventSources.has(key) &&
+        state.status !== 'running' &&
+        state.status !== 'connecting'
+      ) {
+        this.sessions.delete(key);
+      }
+    }
+  }
+
   getState(sessionId: string): MiningSessionLiveState {
     let state = this.sessions.get(sessionId);
     if (!state) {
+      this.trimSessions();
       state = {
         sessionId,
         logs: [],

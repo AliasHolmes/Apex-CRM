@@ -1,6 +1,6 @@
 import { Type, openAIStructured } from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
-import { getIntentCacheEntry, upsertIntentCacheEntry } from '../db.js';
+import { getIntentCacheEntry, getIntentCacheEntriesBatch, upsertIntentCacheEntry } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
 import { applyPostIntentDelta, rankLeadForFinalSelection } from './scoring.js';
 import type { ProspectContract } from './prospectContract.js';
@@ -254,17 +254,28 @@ export async function runLinkedInPostIntentEnrichment(
   // to Phase 5 signal entirely -- defeating the purpose of the cutline sort.
   // Cache reads are synchronous SQLite; no SERP calls are made here.
   const allLeads = Array.from(qualifiedLeads.values());
+  const lookups: Array<{ lead: any; cacheKey: string }> = [];
   for (const lead of allLeads) {
     if (lead.postIntentEvidence) continue; // already attached (e.g. from an earlier pass)
     const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || lead.profile?.contactDetails?.linkedinUrl || '';
     const handle = extractLinkedInUsername(url) || (lead.fullName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (!handle) continue;
-    const cached = getIntentCacheEntry(`linkedin:post:${handle}`, INTENT_FINGERPRINT);
-    if (cached) {
-      try {
-        lead.postIntentEvidence = JSON.parse(cached.evidenceBlock) as PostIntentEvidence;
-      } catch {
-        // malformed cache entry -- leave postIntentEvidence undefined, sorts to neutral 5
+    const cacheKey = `linkedin:post:${handle}`;
+    lookups.push({ lead, cacheKey });
+  }
+
+  if (lookups.length > 0) {
+    const cachedBatch = getIntentCacheEntriesBatch(
+      lookups.map(l => ({ normalizedUrl: l.cacheKey, intentFingerprint: INTENT_FINGERPRINT }))
+    );
+    for (const { lead, cacheKey } of lookups) {
+      const cached = cachedBatch.get(`${cacheKey.trim().toLowerCase()}::${INTENT_FINGERPRINT}`);
+      if (cached) {
+        try {
+          lead.postIntentEvidence = JSON.parse(cached.evidenceBlock) as PostIntentEvidence;
+        } catch {
+          // malformed cache entry -- leave postIntentEvidence undefined, sorts to neutral 5
+        }
       }
     }
   }

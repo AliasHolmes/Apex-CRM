@@ -364,6 +364,9 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   const [industryFilter, setIndustryFilter] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
   const [detailsLeadId, setDetailsLeadId] = useState<string | null>(null);
+  const handleOpenDetails = useCallback((selectedLead: Lead) => {
+    setDetailsLeadId(selectedLead.id);
+  }, []);
 
   const [showConfirmBulkDelete, setShowConfirmBulkDelete] = useState(false);
   const [showConfirmPurgeDuplicates, setShowConfirmPurgeDuplicates] = useState(false);
@@ -1482,7 +1485,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                   isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
                   isMutationLocked={isBulkMutating}
                   onSelect={handleSelectRow}
-                  onOpenDetails={(selectedLead) => setDetailsLeadId(selectedLead.id)}
+                  onOpenDetails={handleOpenDetails}
                   onRequestDelete={handleRequestDeleteLead}
                 />
               ))

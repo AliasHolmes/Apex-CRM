@@ -103,7 +103,6 @@ export const finalistJudgeSchema = {
             description:
               "Evidence confidence score from 1 to 10 evaluating proof clarity and certainty.",
           },
-          verdict: { type: Type.STRING },
           reason: { type: Type.STRING },
         },
         required: [
@@ -112,7 +111,6 @@ export const finalistJudgeSchema = {
           "semanticFit",
           "authorityFit",
           "evidenceConfidence",
-          "verdict",
           "reason",
         ],
       },

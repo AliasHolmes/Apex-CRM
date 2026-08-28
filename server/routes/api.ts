@@ -1465,9 +1465,16 @@ router.post("/find-leads", async (req, res): Promise<any> => {
       });
   }
 
+  const onClientClose = () => {
+    if (!res.writableEnded) {
+      discoveryEngine.cancel(targetSessionId);
+    }
+  };
+  req.on("close", onClientClose);
+
   try {
     const result = await discoveryEngine.execute({
-      sessionId: suppliedSessionId || undefined,
+      sessionId: targetSessionId,
       promptQuery: req.body?.query,
       requestedLimit: req.body?.limit,
       discoveryProviderMode:

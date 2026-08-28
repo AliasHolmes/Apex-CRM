@@ -86,12 +86,54 @@ describe('Zero-Yield Prevention & Starvation Safety Net', () => {
       sourceRound: 1
     });
 
-    await executeJudgeStage(mockCtx, {
-      contract,
-      evidenceByUrl,
-      stats,
-      checkpointAcceptedLeads: () => {}
-    });
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    judgments: [
+                      {
+                        candidateIndex: 0,
+                        verdict: 'hard_fail',
+                        confidence: 9,
+                        reason: 'Fails strict criteria for test',
+                        evidencePassage: '',
+                        overallScore: 2.0,
+                      },
+                      {
+                        candidateIndex: 1,
+                        verdict: 'hard_fail',
+                        confidence: 9,
+                        reason: 'Fails strict criteria for test',
+                        evidencePassage: '',
+                        overallScore: 2.0,
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+          text: async () => '',
+        } as any;
+      };
+
+      await executeJudgeStage(mockCtx, {
+        contract,
+        evidenceByUrl,
+        stats,
+        checkpointAcceptedLeads: () => {},
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
 
     assert.ok(qualifiedLeads.length > 0, `Expected at least 1 rescued lead, got ${qualifiedLeads.length}`);
     assert.equal(qualifiedLeads.length, 2, 'Should rescue both available candidates');

@@ -527,29 +527,58 @@ test('runLinkedInPostIntentEnrichment falls back to Tavily search when Bright Da
   let brightDataAttempted = false;
   let tavilyAttempted = false;
 
-  const stats = await runLinkedInPostIntentEnrichment({
-    qualifiedLeads: map,
-    contract: mockContract,
-    maxLeads: 1,
-    brightDataSearch: async () => {
-      brightDataAttempted = true;
-      throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
-    },
-    tavilySearchFallback: async (q) => {
-      tavilyAttempted = true;
+  const originalFetch = globalThis.fetch;
+  let stats: any;
+  try {
+    globalThis.fetch = async () => {
       return {
-        items: [
-          {
-            title: "Fallback Prospect's Post | LinkedIn",
-            url: 'https://www.linkedin.com/posts/fallback-prospect_automation-hiring-12345',
-            content: 'We are urgently hiring senior workflow automation engineers for our team.'
-          }
-        ]
-      };
-    },
-    logEvent: () => {},
-    recordTrace: () => {}
-  });
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  intentCategory: 'hiring',
+                  confidenceScore: 0.9,
+                  keywords: ['hiring', 'workflow automation engineers'],
+                  reason: 'Actively looking for senior automation talent on LinkedIn.',
+                }),
+              },
+            },
+          ],
+        }),
+        text: async () => '',
+      } as any;
+    };
+
+    stats = await runLinkedInPostIntentEnrichment({
+      qualifiedLeads: map,
+      contract: mockContract,
+      maxLeads: 1,
+      brightDataSearch: async () => {
+        brightDataAttempted = true;
+        throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
+      },
+      tavilySearchFallback: async (q) => {
+        tavilyAttempted = true;
+        return {
+          items: [
+            {
+              title: "Fallback Prospect's Post | LinkedIn",
+              url: 'https://www.linkedin.com/posts/fallback-prospect_automation-hiring-12345',
+              content: 'We are urgently hiring senior workflow automation engineers for our team.',
+            },
+          ],
+        };
+      },
+      logEvent: () => {},
+      recordTrace: () => {},
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 
   assert.ok(brightDataAttempted, 'Bright Data search should be attempted first');
   assert.ok(tavilyAttempted, 'Tavily search fallback should be called when Bright Data fails');

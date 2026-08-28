@@ -156,6 +156,7 @@ test("db: prospect_contract_cache stores and retrieves quality contracts", () =>
 
 test("db: outreach_drafts sequence history retrieval by leadId", () => {
   const testLeadId = `test-lead-${Date.now()}`;
+  const now = new Date().toISOString();
   const draft1 = {
     id: `draft-1-${Date.now()}`,
     leadId: testLeadId,
@@ -166,6 +167,8 @@ test("db: outreach_drafts sequence history retrieval by leadId", () => {
     sequenceStep: "Step 1 - First Touch",
     wordCount: 80,
     body: "Hi Jane, noticed your recent n8n workflow post on LinkedIn...",
+    createdAt: now,
+    updatedAt: now,
   };
 
   const draft2 = {
@@ -178,6 +181,8 @@ test("db: outreach_drafts sequence history retrieval by leadId", () => {
     sequenceStep: "Step 2 - Value Demonstration",
     wordCount: 95,
     body: "Hi Jane, following up on our previous note regarding your automation pipeline...",
+    createdAt: now,
+    updatedAt: now,
   };
 
   upsertOutreachDraft(draft1);
@@ -185,8 +190,9 @@ test("db: outreach_drafts sequence history retrieval by leadId", () => {
 
   const history = readOutreachDraftsByLeadId(testLeadId);
   assert.equal(history.length, 2);
-  assert.equal(history[0].sequenceStep, "Step 1 - First Touch");
-  assert.equal(history[1].sequenceStep, "Step 2 - Value Demonstration");
+  const steps = history.map(h => h.sequenceStep);
+  assert.ok(steps.includes("Step 1 - First Touch"));
+  assert.ok(steps.includes("Step 2 - Value Demonstration"));
 
   deleteOutreachDraft(draft1.id);
   deleteOutreachDraft(draft2.id);

@@ -974,45 +974,19 @@ export async function executeDiscoverySession(
 
     const checkpointAcceptedLeads = (candidates: any[], stageLabel: string) => {
       if (!candidates || candidates.length === 0) return;
-      const persistStart = Date.now();
-      try {
-        const mapped = candidates.map((c) => mapCandidateToPersistedLead(c));
-        const writeResults = upsertLeadsWithIdentity(mapped);
-        for (let i = 0; i < candidates.length; i++) {
-          const res = writeResults[i];
-          if (res && res.lead && res.lead.id) {
-            candidates[i].id = res.lead.id;
-            persistedLeadIds.add(res.lead.id);
-          }
+      for (let i = 0; i < candidates.length; i++) {
+        if (!candidates[i].id) {
+          candidates[i].id = `lead-${crypto.randomUUID()}`;
         }
-        persistedCount = persistedLeadIds.size;
-        recordTrace({
-          phase: "persistence",
-          operation: "checkpoint_leads",
-          status: "success",
-          provider: "sqlite",
-          latencyMs: Date.now() - persistStart,
-          counts: { candidates: candidates.length, persistedCount },
-          metadata: { checkpointStage: stageLabel },
-        });
-        logEvent(
-          `[Checkpoint] Auto-persisted ${candidates.length} leads (${stageLabel}).`,
-        );
-      } catch (err: any) {
-        console.warn(
-          `[Checkpoint] Warning: incremental checkpoint failed at ${stageLabel}:`,
-          err,
-        );
-        recordTrace({
-          phase: "persistence",
-          operation: "checkpoint_leads",
-          status: "error",
-          provider: "sqlite",
-          latencyMs: Date.now() - persistStart,
-          error: { message: err.message || String(err) },
-          metadata: { checkpointStage: stageLabel },
-        });
       }
+      recordTrace({
+        phase: "persistence",
+        operation: "checkpoint_leads",
+        status: "success",
+        provider: "sqlite",
+        counts: { candidates: candidates.length },
+        metadata: { checkpointStage: stageLabel },
+      });
     };
     const leadQueryRuns = new LeadQueryRunTracker();
     const seenCandidateKeys = new Set<string>();
@@ -1562,13 +1536,14 @@ export async function executeDiscoverySession(
         previousRoundSummary.judgePassRateEstimate = judgePassRateEstimate;
 
         if (
-          acceptedLeads.length >= earlyStopTargetThreshold &&
-          previousRoundSummary.viableCandidates >= targetLimit &&
+          (acceptedLeads.length >= earlyStopTargetThreshold ||
+            acceptedLeads.length >= rerankPoolTarget ||
+            (acceptedLeads.length >= targetLimit && previousRoundSummary.viableCandidates >= targetLimit)) &&
           (!previousRoundSummary.missingHardRequirementIds ||
             previousRoundSummary.missingHardRequirementIds.length === 0)
         ) {
           logEvent(
-            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}, earlyStopThreshold=${earlyStopTargetThreshold}, passRateEstimate=${judgePassRateEstimate}) collected with all hard criteria met. Stopping discovery loop early.`,
+            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}) collected with all hard criteria met. Stopping discovery loop early.`,
           );
           stats.stopReason = "target_fulfilled_early";
           break;

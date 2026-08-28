@@ -89,33 +89,33 @@ export function buildCollectionCapacity(input: {
 }): CollectionCapacity {
   const targetLimit = clampInteger(input.targetLimit, 1, 200);
 
-  // Dynamic pool multiplier:
-  // For small targets (<= 20), 2.0x cushion is ample for diversity.
-  // For medium targets (<= 50), 1.75x cushion provides strong candidate choices without round bloat.
-  // For large targets (> 50), 1.5x cushion keeps token and search usage bounded.
-  const defaultPoolMultiplier = targetLimit <= 20 ? 2.0 : targetLimit <= 50 ? 1.75 : 1.5;
+  // Lean dynamic pool multiplier:
+  // For small targets (<= 20), 1.25x cushion (e.g. 20 target -> 25 candidate pool).
+  // For medium targets (<= 50), 1.20x cushion provides high selectivity without round bloat.
+  // For large targets (> 50), 1.15x cushion keeps token and search usage bounded.
+  const defaultPoolMultiplier = targetLimit <= 20 ? 1.25 : targetLimit <= 50 ? 1.20 : 1.15;
   const poolMultiplier = input.poolMultiplier !== undefined
-    ? Number(Math.min(Math.max(Number(input.poolMultiplier), 1.25), 4).toFixed(2))
+    ? Number(Math.min(Math.max(Number(input.poolMultiplier), 1.10), 2.0).toFixed(2))
     : defaultPoolMultiplier;
 
   const poolMax = clampInteger(input.poolMax ?? MAX_CANDIDATE_POOL, 24, MAX_CANDIDATE_POOL);
 
-  // Base rounds from contract complexity
+  // Base rounds from contract complexity: simpler contracts converge in 1-2 rounds.
   const hardReqCount = clampInteger(input.contractHardReqCount ?? 3, 0, 10);
-  const baseRoundsByComplexity = hardReqCount <= 1 ? 3 : hardReqCount <= 2 ? 4 : 5;
-  const baseRounds = clampInteger(input.baseRounds ?? baseRoundsByComplexity, 2, 8);
+  const baseRoundsByComplexity = hardReqCount <= 1 ? 2 : hardReqCount <= 2 ? 2 : 3;
+  const baseRounds = clampInteger(input.baseRounds ?? baseRoundsByComplexity, 1, 5);
 
   // Dynamic candidate batch scaling:
-  // Scales throughput per round with target size so large requests do not degenerate into 12-20 rounds.
-  const candidateBatchSize = clampInteger(Math.ceil(targetLimit * 0.6), 12, 36);
+  // Scales throughput per round with target size so requests do not degenerate into 5-10 rounds.
+  const candidateBatchSize = clampInteger(Math.ceil(targetLimit * 0.75), 15, 40);
 
-  const desiredPool = Math.ceil(targetLimit * poolMultiplier);
+  const desiredPool = Math.max(Math.ceil(targetLimit * poolMultiplier), targetLimit <= 10 ? targetLimit + 2 : targetLimit + 4);
   const rerankPoolTarget = Math.min(desiredPool, poolMax);
   const requiredRounds = Math.max(1, Math.ceil(rerankPoolTarget / candidateBatchSize));
 
-  // Hard ceiling on max rounds (default: 6 rounds for targets <= 30, 8 rounds for target <= 50, 12 for larger)
-  const defaultMaxRoundsCap = targetLimit <= 30 ? 6 : targetLimit <= 50 ? 8 : 12;
-  const maxRoundsCap = clampInteger(input.maxRoundsCap ?? defaultMaxRoundsCap, 3, MAX_COLLECTION_ROUNDS);
+  // Hard ceiling on max rounds (default: 3 rounds for targets <= 30, 4 rounds for target <= 50, 6 for larger)
+  const defaultMaxRoundsCap = targetLimit <= 30 ? 3 : targetLimit <= 50 ? 4 : 6;
+  const maxRoundsCap = clampInteger(input.maxRoundsCap ?? defaultMaxRoundsCap, 2, MAX_COLLECTION_ROUNDS);
 
   // Add 1 recovery round pad, bounded by baseRounds and strictly capped by maxRoundsCap
   const maxRounds = Math.min(

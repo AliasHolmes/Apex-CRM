@@ -15,6 +15,7 @@ Primary reference docs:
 - [`docs/adr/0001-discovery-session-engine.md`](adr/0001-discovery-session-engine.md) — ADR: extraction of the discovery loop into in-process `DiscoverySessionEngine`
 - [`docs/adr/0002-stage-boundary-session-persistence-and-resumption.md`](adr/0002-stage-boundary-session-persistence-and-resumption.md) — ADR: durable stage-boundary checkpoints & session resumption
 - [`docs/adr/0003-symbiotic-intelligence-hardening.md`](adr/0003-symbiotic-intelligence-hardening.md) — ADR: domain-clustered MAB, dynamic query strategy, DCR leadership scoring, site probe commercial signals, and entity resolution
+- [`docs/adr/0004-lean-adaptive-collection-and-targeted-enrichment.md`](adr/0004-lean-adaptive-collection-and-targeted-enrichment.md) — ADR: lean adaptive collection capacity, decoupled early stopping, and targeted post-selection enrichment
 
 ## 2. Quick stats
 

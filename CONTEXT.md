@@ -45,3 +45,12 @@ A multi-tier extraction engine that inspects target company root websites and de
 
 ### Global Corporate Entity Resolution
 An alias-matching and normalization system that strips global corporate entity forms (`S.R.L.`, `S.A.S.`, `S.L.`, `AG`, `Pte Ltd`, `Sdn Bhd`, `Sp. z o.o.`, `ApS`, `Pty Ltd`) and regional branch designations (`EMEA`, `APAC`, `Global`, `Holdings`) to prevent company profile duplicates.
+
+### Lean Adaptive Collection Capacity
+A dynamic candidate sizing policy that sets search pool targets proportional to requested output limits (1.15x–1.25x cushion) with dynamic batch scaling (15–40 leads/round) and tight maximum round bounds (2–4 rounds).
+
+### Decoupled Early Shortlist Termination
+A high-selectivity discovery exit check that terminates search rounds immediately when verified candidate volume satisfies target limits, decoupled from literal keyword substring heuristics.
+
+### Targeted Post-Selection Enrichment
+A pipeline execution order that defers intensive Phase 4 company website probing and Phase 5 LinkedIn post intent SERP lookups until after the Finalist Judge and Pareto diversification have selected the top $K$ prospect finalists.

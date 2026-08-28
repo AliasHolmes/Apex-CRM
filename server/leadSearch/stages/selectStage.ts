@@ -30,17 +30,20 @@ export async function executeSelectStage(
   const { qualifiedLeads } = state;
   const { targetLimit, maxRounds, linkedinPostIntentEnabled } = config;
 
-  // 1. Optional Phase 5: LinkedIn Post Intent Enrichment
-  if (linkedinPostIntentEnabled && qualifiedLeads.length > 0) {
-    logEvent(`Phase 5: LinkedIn post intent enrichment starting. Pool: ${qualifiedLeads.length} qualified leads.`);
-    const qualifiedMap = new Map<string, any>(qualifiedLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
+  // 1. Initial Final Selection and Diversification
+  const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
+
+  // 2. Targeted Phase 5: LinkedIn Post Intent Enrichment ONLY on the final returned prospects
+  if (linkedinPostIntentEnabled && finalLeads.length > 0) {
+    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${finalLeads.length} selected finalists.`);
+    const finalistsMap = new Map<string, any>(finalLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
     const postIntentStats = await runLinkedInPostIntentEnrichment({
-      qualifiedLeads: qualifiedMap,
+      qualifiedLeads: finalistsMap,
       contract,
       brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
-      maxLeads: Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20),
+      maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), finalLeads.length),
       concurrency: Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 4),
       ttlDays,
       sessionAbortSignal: state.abortController.signal,
@@ -50,9 +53,6 @@ export async function executeSelectStage(
     (stats as any).linkedinPostIntent = postIntentStats;
     logEvent(`Phase 5 complete: ${postIntentStats.succeeded} enriched, ${postIntentStats.cacheHits} cache hits, ${postIntentStats.noResults} no-results, ${postIntentStats.llmSkipped} skipped, ${postIntentStats.failed} failed.`);
   }
-
-  // 2. Final Selection and Diversification
-  const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
 
   for (const lead of qualifiedLeads) {
     const queryRun = leadQueryRuns.get(lead);

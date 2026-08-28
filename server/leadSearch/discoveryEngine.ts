@@ -1503,14 +1503,14 @@ export async function executeDiscoverySession(
         previousRoundSummary.judgePassRateEstimate = judgePassRateEstimate;
 
         if (
-          (acceptedLeads.length >= earlyStopTargetThreshold ||
-            acceptedLeads.length >= rerankPoolTarget ||
-            (acceptedLeads.length >= targetLimit && previousRoundSummary.viableCandidates >= targetLimit)) &&
-          (!previousRoundSummary.missingHardRequirementIds ||
-            previousRoundSummary.missingHardRequirementIds.length === 0)
+          acceptedLeads.length >= rerankPoolTarget ||
+          (acceptedLeads.length >= targetLimit &&
+            (acceptedLeads.length >= earlyStopTargetThreshold ||
+              previousRoundSummary.viableCandidates >= Math.ceil(targetLimit * 0.6) ||
+              !previousRoundSummary.shouldRecover))
         ) {
           logEvent(
-            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}) collected with all hard criteria met. Stopping discovery loop early.`,
+            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}) collected. Stopping discovery loop early.`,
           );
           stats.stopReason = "target_fulfilled_early";
           break;

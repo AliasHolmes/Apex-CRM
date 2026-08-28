@@ -113,9 +113,14 @@ export async function executeJudgeStage(
     finalistCandidates,
     contract,
   );
+  const candidatePoolCap = Math.max(Math.ceil(targetLimit * 1.35), 24);
+  const prioritizedNeedsJudge = needsJudge.length > candidatePoolCap
+    ? [...needsJudge].sort((a, b) => (effectiveScore(b.lead) || 0) - (effectiveScore(a.lead) || 0)).slice(0, candidatePoolCap)
+    : needsJudge;
+
   const maxBatchSize = Math.max(
     1,
-    Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 6)),
+    Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 8)),
   );
   const providerTokenBudget = Math.max(
     4_000,
@@ -128,7 +133,7 @@ export async function executeJudgeStage(
   const judgeBatches: FinalistCandidate[][] = [];
   let currentBatch: FinalistCandidate[] = [];
 
-  for (const candidate of needsJudge) {
+  for (const candidate of prioritizedNeedsJudge) {
     const proposedBatch = [...currentBatch, candidate];
     const proposedInputTokens = estimateTokenCount(
       buildFinalistJudgePrompt(contract, proposedBatch),

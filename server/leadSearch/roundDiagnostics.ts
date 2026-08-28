@@ -38,6 +38,8 @@ const candidateText = (lead: Record<string, any>) => normalize([
 ].filter(Boolean).join(' '));
 
 const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequirement) => {
+  if (lead._verified === true || lead.qualification?.verdict === 'qualified') return true;
+
   const text = candidateText(lead);
   const terms = requirement.acceptableTerms.map(normalize).filter(Boolean);
 
@@ -48,27 +50,28 @@ const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequ
   if (requirement.scope === 'person_role') {
     if (lead.decisionMakerVerification?.verified === true) return true;
     const title = normalize(lead.currentTitle || lead.title || lead.headline || '');
-    if (/\b(founder|co-founder|cofounder|owner|ceo|president|partner|managing director|principal)\b/i.test(title)) {
+    if (/\b(founder|co-founder|cofounder|owner|ceo|president|partner|managing director|principal|cxo|cmo|cro|cto|cfo|coo|head of|director|vp)\b/i.test(title)) {
       return true;
     }
   }
 
   // 3. Multi-Signal Company / Industry Evaluation:
-  // If requirement has multi-word terms (e.g. "marketing agency"), match if all significant constituent
-  // words (e.g. "marketing" and "agency") appear across the candidate profile/evidence text.
+  // Match if any significant constituent word (length >= 4) from acceptable terms appears in candidate text
   if (requirement.scope === 'company_type' || requirement.scope === 'company_industry') {
+    const comp = normalize(lead.currentCompany || lead.company || lead.companyName || '');
+    const ind = normalize(lead.industry || '');
     for (const term of terms) {
-      const words = term.split(/\s+/).filter(w => w.length > 2);
-      if (words.length > 1 && words.every(w => text.includes(w))) {
+      const words = term.split(/\s+/).filter(w => w.length >= 4);
+      if (words.some(w => text.includes(w) || comp.includes(w) || ind.includes(w))) {
         return true;
       }
     }
   }
 
-  // 4. Multi-Signal Location Evaluation: Check candidate location field directly
+  // 4. Multi-Signal Location Evaluation: Check candidate location field or text directly
   if (requirement.scope === 'person_location') {
     const loc = normalize(lead.location || lead.profile?.location || '');
-    if (terms.some(term => loc.includes(term))) return true;
+    if (terms.some(term => loc.includes(term) || text.includes(term))) return true;
   }
 
   return false;
@@ -97,10 +100,13 @@ export function buildRoundDiagnostics(params: {
     };
   });
   const hardRequirementIds = new Set(params.contract.requirements.filter(item => item.importance === 'hard').map(item => item.id));
-  const missingHardRequirementIds = requirements.filter(item => hardRequirementIds.has(item.requirementId) && item.passRate < 0.25).map(item => item.requirementId);
-  const viableCandidates = params.leads.filter(lead => params.contract.requirements
-    .filter(requirement => requirement.importance === 'hard')
-    .every(requirement => matchesRequirement(lead, requirement))).length;
+  const missingHardRequirementIds = requirements.filter(item => hardRequirementIds.has(item.requirementId) && item.passRate < 0.20).map(item => item.requirementId);
+  const viableCandidates = params.leads.filter(lead => 
+    lead.decisionMakerVerification?.verified === true ||
+    params.contract.requirements
+      .filter(requirement => requirement.importance === 'hard')
+      .every(requirement => matchesRequirement(lead, requirement))
+  ).length;
 
   let classSummary: ClassDiagnosticSummary | undefined;
   if (isFlagEnabled.enhancedDiagnostics()) {
@@ -142,6 +148,8 @@ export function buildRoundDiagnostics(params: {
   }
 
   const banked = params.alreadyQualified ?? 0;
+  const totalViable = banked + viableCandidates;
+  const targetThreshold = Math.ceil(params.targetLimit * 0.5);
   return {
     round: params.round,
     rawCandidates: params.rawCandidates,
@@ -149,7 +157,7 @@ export function buildRoundDiagnostics(params: {
     viableCandidates,
     requirements,
     missingHardRequirementIds,
-    shouldRecover: (banked + viableCandidates) < Math.ceil(params.targetLimit * 0.5) || missingHardRequirementIds.length > 0,
+    shouldRecover: totalViable < targetThreshold || missingHardRequirementIds.length > 0,
     classSummary,
     observedNonMatchingAttributes: {
       locations: Array.from(nonMatchingLocations).slice(0, 8),

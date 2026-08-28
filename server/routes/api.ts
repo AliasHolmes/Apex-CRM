@@ -257,7 +257,7 @@ router.get("/leads", (req, res): any => {
     } = req.query as Record<string, string | undefined>;
     const parsedLimit =
       limit !== undefined
-        ? Math.min(Math.max(Number(limit) || 1, 1), 2000)
+        ? Math.min(Math.max(Number(limit) || 1, 1), 5000)
         : undefined;
     const parsedOffset =
       offset !== undefined ? Math.max(Number(offset) || 0, 0) : undefined;
@@ -273,13 +273,12 @@ router.get("/leads", (req, res): any => {
       parsedLimit === undefined &&
       parsedOffset === undefined
     ) {
-      const DEFAULT_UNFILTERED_LIMIT = 500;
       const db = getLeadsDb();
       const rows = db
         .prepare(
-          "SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC LIMIT ?",
+          "SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC",
         )
-        .all(DEFAULT_UNFILTERED_LIMIT) as { payload: string }[];
+        .all() as { payload: string }[];
       const total =
         (db.prepare("SELECT COUNT(*) as count FROM leads").get() as any)
           ?.count ?? rows.length;

@@ -132,6 +132,7 @@ export function verifyDecisionMakerFromEvidence(input: {
   ].join(' '));
   const seniorityText = normalizeForTitleMatching(input.seniorityLevel);
   const evidenceText = normalizeForTitleMatching(input.evidenceText);
+  const profileIdentityText = [roleText, seniorityText].filter(Boolean).join(' ');
   const textToSearch = [roleText, seniorityText, evidenceText].filter(Boolean).join(' ');
 
   // If query explicitly asks for a weak title (e.g. "I want interns"), don't ignore it.
@@ -139,14 +140,14 @@ export function verifyDecisionMakerFromEvidence(input: {
 
   const positiveMatches = collectMatches(textToSearch, POSITIVE_TITLE_PATTERNS);
   const seniorityPositive = POSITIVE_SENIORITY_PATTERNS.some(pattern => pattern.test(seniorityText));
-  const rawWeakMatches = collectMatches(textToSearch, WEAK_TITLE_PATTERNS);
+  const rawWeakMatches = collectMatches(profileIdentityText, WEAK_TITLE_PATTERNS);
   const weakMatches = rawWeakMatches.filter(label => {
-    if (label === 'consultant' && QUALIFIED_CONSULTANT_PREFIXES.test(textToSearch)) return false;
-    if (label === 'specialist' && QUALIFIED_CONSULTANT_PREFIXES.test(textToSearch)) return false;
+    if (label === 'consultant' && QUALIFIED_CONSULTANT_PREFIXES.test(profileIdentityText)) return false;
+    if (label === 'specialist' && QUALIFIED_CONSULTANT_PREFIXES.test(profileIdentityText)) return false;
     return true;
   });
-  const hasStudentOrgConflict = /\b(student|campus|university|college)\s+(club|organization|society|association)\b/.test(textToSearch);
-  const hasAssistantAuthorityConflict = /\bassistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)\b/.test(textToSearch);
+  const hasStudentOrgConflict = /\b(student|campus|university|college)\s+(club|organization|society|association)\b/.test(profileIdentityText);
+  const hasAssistantAuthorityConflict = /\bassistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)\b/.test(profileIdentityText);
 
   const hasPositiveTitle = positiveMatches.length > 0 || seniorityPositive;
   const hasWeakTitle = weakMatches.length > 0;
@@ -162,12 +163,14 @@ export function verifyDecisionMakerFromEvidence(input: {
   let confidence = 0;
   let reason = '';
 
+  const hasEvidenceLink = Boolean(input.evidenceText && (/\b(?:link|url):\s*https?:\/\//i.test(input.evidenceText) || input.evidenceText.includes('LINK:')));
+
   if (ignoredTitle) {
     confidence = 2;
     reason = weakConflictOverridesPositive
       ? 'Weak context overrides authority keyword'
       : 'Weak or ignored title';
-  } else if (hasPositiveTitle && companyMatched && input.evidenceText && input.evidenceText.includes('LINK:')) {
+  } else if (hasPositiveTitle && companyMatched && hasEvidenceLink) {
     confidence = 9;
     reason = 'Authority title with company support and good evidence';
   } else if (hasPositiveTitle) {

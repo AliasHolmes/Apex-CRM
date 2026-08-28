@@ -1082,11 +1082,14 @@ export async function scrapeAsMarkdown(
   timeoutMs = baseTimeoutMs(),
 ) {
   const scrapeUrl = normalizeBrightDataUrl(url);
-  if (!scrapeUrl || isAuthwalledUrl(scrapeUrl)) {
+  if (!scrapeUrl) {
     return null;
   }
 
+  const isAuthwalled = isAuthwalledUrl(scrapeUrl);
+
   if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
+    if (isAuthwalled) return null;
     try {
       const response = await fetch(scrapeUrl, {
         headers: {
@@ -1099,17 +1102,33 @@ export async function scrapeAsMarkdown(
       });
       if (response.ok) {
         const html = await response.text();
+        const jsonLdMatches = Array.from(html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi))
+          .map(m => m[1].trim())
+          .filter(Boolean);
+        const metaDesc = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i)?.[1] || '';
+        const ogTitle = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i)?.[1] || '';
+
         const textContent = html
           .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
           .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+          .replace(/<h[1-6]\b[^>]*>/gi, "\n\n### ")
+          .replace(/<\/h[1-6]>/gi, "\n")
+          .replace(/<p\b[^>]*>/gi, "\n\n")
+          .replace(/<br\s*\/?>/gi, "\n")
           .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/gi, " ")
+          .replace(/&amp;/gi, "&")
           .replace(/\s+/g, " ")
           .trim();
-        if (textContent.length > 50) return textContent;
+
+        const parts = [ogTitle ? `# ${ogTitle}` : '', metaDesc ? `> ${metaDesc}` : '', textContent, ...jsonLdMatches.map(j => `\`\`\`json\n${j}\n\`\`\``)].filter(Boolean);
+        const result = parts.join('\n\n');
+        if (result.length > 50) return result;
       }
     } catch {
       // Fallback fetch failed
     }
+    return null;
   }
 
   return withBrightDataClient(

@@ -20,7 +20,7 @@ import {
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 17;
+const LATEST_SCHEMA_VERSION = 18;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
@@ -867,6 +867,22 @@ function runMigrations(db: DatabaseSync) {
           );
         } catch {}
       });
+    }
+
+    if (currentVersion < 18) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS discovered_companies (
+          normalized_name TEXT PRIMARY KEY,
+          company_name TEXT NOT NULL,
+          signal_count INTEGER NOT NULL DEFAULT 1,
+          strongest_signal TEXT NOT NULL,
+          source_urls_json TEXT NOT NULL DEFAULT '[]',
+          confidence REAL NOT NULL DEFAULT 0.7,
+          last_seen_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_discovered_companies_last_seen
+          ON discovered_companies(last_seen_at DESC);
+      `);
     }
 
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
@@ -3368,6 +3384,88 @@ export function readOutreachDrafts(limit = 50): OutreachDraftRecord[] {
   }));
 }
 
+export function readOutreachDraftsByLeadId(leadId: string): OutreachDraftRecord[] {
+  if (!leadId) return [];
+  const db = getLeadsDb();
+  const rows = db
+    .prepare(
+      `
+    SELECT * FROM outreach_drafts WHERE lead_id = ? ORDER BY created_at ASC
+  `,
+    )
+    .all(leadId) as any[];
+  return rows.map((row) => ({
+    id: row.id,
+    leadId: row.lead_id,
+    leadName: row.lead_name,
+    companyName: row.company_name || undefined,
+    tone: row.tone,
+    medium: row.medium,
+    sequenceStep: row.sequence_step,
+    wordCount: Number(row.word_count || 0),
+    body: row.body,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
 export function deleteOutreachDraft(id: string): void {
   getLeadsDb().prepare("DELETE FROM outreach_drafts WHERE id = ?").run(id);
+}
+
+export function upsertDiscoveredCompanies(
+  companies: Array<{
+    companyName: string;
+    signalCount?: number;
+    strongestSignal?: string;
+    sourceUrls?: string[];
+    confidence?: number;
+  }>,
+) {
+  if (!Array.isArray(companies) || companies.length === 0) return;
+  try {
+    const db = getLeadsDb();
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+      INSERT INTO discovered_companies (
+        normalized_name, company_name, signal_count, strongest_signal, source_urls_json, confidence, last_seen_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(normalized_name) DO UPDATE SET
+        signal_count = discovered_companies.signal_count + excluded.signal_count,
+        strongest_signal = CASE WHEN length(excluded.strongest_signal) > length(discovered_companies.strongest_signal) THEN excluded.strongest_signal ELSE discovered_companies.strongest_signal END,
+        source_urls_json = excluded.source_urls_json,
+        confidence = MAX(discovered_companies.confidence, excluded.confidence),
+        last_seen_at = excluded.last_seen_at
+    `);
+    for (const c of companies) {
+      const cleanName = String(c.companyName || '').trim();
+      const norm = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!norm || norm.length < 2) continue;
+      stmt.run(
+        norm,
+        cleanName,
+        Math.max(1, c.signalCount || 1),
+        String(c.strongestSignal || '').slice(0, 300),
+        JSON.stringify(c.sourceUrls || []),
+        c.confidence ?? 0.7,
+        now,
+      );
+    }
+  } catch (err) {
+    console.warn("Failed to upsert discovered companies:", err);
+  }
+}
+
+export function readDiscoveredCompanyNames(limit = 20): string[] {
+  try {
+    const db = getLeadsDb();
+    const rows = db.prepare(`
+      SELECT company_name FROM discovered_companies
+      ORDER BY signal_count DESC, last_seen_at DESC
+      LIMIT ?
+    `).all(limit) as { company_name?: string }[];
+    return rows.map(r => r.company_name).filter((n): n is string => Boolean(n));
+  } catch {
+    return [];
+  }
 }

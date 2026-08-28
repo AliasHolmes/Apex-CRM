@@ -340,7 +340,19 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   const baseScore = clampScore(rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase, 5);
 
   // BM25+ Profile & Evidence Text Relevance:
-  const queryTerms = Array.isArray(lead.scout?.matchedCriteria) ? lead.scout.matchedCriteria : [];
+  const queryTerms: string[] = [];
+  if (Array.isArray(lead.scout?.queryTokens) && lead.scout.queryTokens.length > 0) {
+    queryTerms.push(...lead.scout.queryTokens);
+  } else if (typeof lead.scout?.searchQuery === 'string' && lead.scout.searchQuery.trim()) {
+    queryTerms.push(...lead.scout.searchQuery.split(/\s+/).filter((t: string) => t.length > 2));
+  } else if (Array.isArray(lead.scout?.matchedTerms) && lead.scout.matchedTerms.length > 0) {
+    queryTerms.push(...lead.scout.matchedTerms);
+  } else if (Array.isArray(lead.scout?.matchedCriteria)) {
+    const cleanTerms = lead.scout.matchedCriteria.filter((c: string) => typeof c === 'string' && !c.startsWith('target ') && !c.startsWith('company '));
+    if (cleanTerms.length > 0) {
+      queryTerms.push(...cleanTerms);
+    }
+  }
   const profileDoc = `${lead.headline || ''} ${lead.summary || ''} ${lead.currentTitle || ''} ${lead.currentCompany || ''}`;
   const bm25Bonus = queryTerms.length > 0
     ? computeBM25PlusScore(profileDoc, queryTerms, corpusStats) * 0.05

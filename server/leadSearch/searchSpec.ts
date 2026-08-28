@@ -477,15 +477,25 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   }
 
   const roundSummaryRaw = { ...(params.previousRoundSummary || {}) };
-  // Strip verbose fields; keep only the ids the model actually needs.
-  if (
-    Array.isArray(roundSummaryRaw.missingHardRequirementIds) &&
-    roundSummaryRaw.missingHardRequirementIds.length > 10
-  ) {
-    roundSummaryRaw.missingHardRequirementIds =
-      roundSummaryRaw.missingHardRequirementIds.slice(0, 10);
+  const summaryBullets: string[] = [];
+  if (Array.isArray(roundSummaryRaw.missingHardRequirementIds) && roundSummaryRaw.missingHardRequirementIds.length > 0) {
+    summaryBullets.push(`Missing requirements: ${roundSummaryRaw.missingHardRequirementIds.slice(0, 5).join(', ')}`);
   }
-  const roundSummaryStr = JSON.stringify(roundSummaryRaw).slice(0, 800);
+  if (typeof roundSummaryRaw.viableCandidates === 'number') {
+    summaryBullets.push(`Viable candidates: ${roundSummaryRaw.viableCandidates}`);
+  }
+  if (roundSummaryRaw.classSummary?.bottleneckClass) {
+    summaryBullets.push(`Bottleneck: ${roundSummaryRaw.classSummary.bottleneckClass}`);
+  }
+  if (roundSummaryRaw.rejectionReasons && typeof roundSummaryRaw.rejectionReasons === 'object') {
+    const topRejections = Object.entries(roundSummaryRaw.rejectionReasons)
+      .sort((a: any, b: any) => Number(b[1]) - Number(a[1]))
+      .slice(0, 3)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ');
+    if (topRejections) summaryBullets.push(`Top rejections: ${topRejections}`);
+  }
+  const roundSummaryStr = summaryBullets.length > 0 ? summaryBullets.join(' | ') : 'No previous round diagnostics';
   // Compact yield digest: top scope keys by accepted-per-run instead of raw JSON.
   const performanceEntries = Object.entries(params.queryPerformance || {})
     .map(([scopeKey, data]: [string, any]) => ({

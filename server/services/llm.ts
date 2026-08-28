@@ -213,9 +213,9 @@ async function fetchWithRetry(
   url: string,
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 240000),
-  maxRetries = Number(process.env.LLM_MAX_RETRIES || 0),
+  maxRetries = Number(process.env.LLM_MAX_RETRIES || 1),
 ): Promise<Response> {
-  const retry429 = process.env.LLM_RETRY_429 === "true";
+  const retry429 = process.env.LLM_RETRY_429 !== "false";
 
   const headers = {
     "User-Agent":
@@ -881,6 +881,68 @@ function findBalancedJSONCandidates(
   return Array.from(new Set(candidates));
 }
 
+function repairTruncatedJSON(str: string): string | null {
+  if (!str || typeof str !== "string") return null;
+  const cleaned = stripMarkdownFence(stripReasoningBlocks(str)).trim();
+  const firstBracket = cleaned.indexOf("[");
+  const firstBrace = cleaned.indexOf("{");
+  if (firstBracket === -1 && firstBrace === -1) return null;
+
+  const startIdx = firstBracket !== -1 && firstBrace !== -1
+    ? Math.min(firstBracket, firstBrace)
+    : (firstBracket !== -1 ? firstBracket : firstBrace);
+
+  let sub = cleaned.slice(startIdx);
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let lastCompleteItemIndex = -1;
+
+  for (let i = 0; i < sub.length; i++) {
+    const ch = sub[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      stack.push("}");
+    } else if (ch === "[") {
+      stack.push("]");
+    } else if (ch === "}" || ch === "]") {
+      if (stack.length > 0 && stack[stack.length - 1] === ch) {
+        stack.pop();
+        if (stack.length === 1 && stack[0] === "]") {
+          lastCompleteItemIndex = i;
+        }
+      }
+    }
+  }
+
+  if (sub.startsWith("[") && lastCompleteItemIndex > 0) {
+    return sub.slice(0, lastCompleteItemIndex + 1) + "]";
+  }
+
+  if (inString) {
+    sub = sub + '"';
+  }
+  while (stack.length > 0) {
+    sub = sub + stack.pop();
+  }
+  return sub;
+}
+
 function cleanJSONString(str: string): string {
   const marked = getMarkedJSONBlock(str);
   if (marked) return stripMarkdownFence(marked);
@@ -971,13 +1033,14 @@ export async function openAIStructured<T>(
       if (itemSchema && typeof itemSchema === "object") {
         const itemRequired = Array.isArray(itemSchema.required) ? itemSchema.required : [];
         if (itemRequired.length > 0 && value.length > 0) {
-          const hasValidItem = value.some(
+          const validItems = value.filter(
             (item: any) =>
               item &&
               typeof item === "object" &&
               itemRequired.every((key: string) => key in item),
           );
-          if (!hasValidItem) return null;
+          if (validItems.length === 0) return null;
+          return validItems as T;
         }
       }
       return value as T;
@@ -1003,8 +1066,10 @@ export async function openAIStructured<T>(
 
     const parseErrors: string[] = [];
     for (const source of sources) {
+      const repaired = repairTruncatedJSON(source);
       const directCandidates = [
         cleanJSONString(source),
+        ...(repaired ? [repaired] : []),
         ...findBalancedJSONCandidates(source, schemaIsArray),
       ];
       for (const candidate of directCandidates) {
@@ -1039,11 +1104,12 @@ export async function openAIStructured<T>(
           error.message.includes("json_validate_failed") ||
           error.message.includes("Failed to validate JSON") ||
           error.message.includes("json_validate") ||
-          error.message.includes("response_format"));
+          error.message.includes("response_format") ||
+          error.message.includes("unsupported parameter"));
 
-      if (jsonMode === "auto" && isJsonValidationError) {
+      if (isJsonValidationError) {
         console.warn(
-          `[llm] Structured output call failed for ${provider.name}. Retrying without response_format due to LLM_JSON_MODE=auto...`,
+          `[llm] Structured output call failed for ${provider.name} with schema validation error. Retrying without response_format...`,
         );
         text = await sendChatCompletion(provider, messages, options);
       } else {

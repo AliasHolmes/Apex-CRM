@@ -244,7 +244,7 @@ const normalizePassage = (text: string): string =>
 export function verifyEvidencePassage(
   evidenceText: string,
   citedQuote: string,
-  threshold = 0.88
+  threshold = 0.70
 ): { valid: boolean; similarity: number } {
   if (!citedQuote || !citedQuote.trim()) return { valid: true, similarity: 1.0 };
   if (!evidenceText || !evidenceText.trim()) return { valid: false, similarity: 0.0 };
@@ -266,8 +266,26 @@ export function verifyEvidencePassage(
   if (quoteTokens.length === 0) return { valid: true, similarity: 1.0 };
   if (evidenceTokens.length === 0) return { valid: false, similarity: 0.0 };
 
+  // Set-based token containment
+  const evidenceTokenSet = new Set(evidenceTokens);
+  let matchedTokens = 0;
+  for (const qt of quoteTokens) {
+    if (evidenceTokenSet.has(qt)) {
+      matchedTokens++;
+    } else {
+      for (const et of evidenceTokens) {
+        if (et.length >= 3 && qt.length >= 3 && (et.startsWith(qt) || qt.startsWith(et))) {
+          matchedTokens += 0.8;
+          break;
+        }
+      }
+    }
+  }
+  const setOverlap = Math.min(1.0, matchedTokens / quoteTokens.length);
+
+  // Sliding window matching
   const windowSize = quoteTokens.length;
-  let maxSimilarity = 0;
+  let maxSimilarity = setOverlap * 0.9;
 
   for (let i = 0; i <= evidenceTokens.length - Math.min(windowSize, evidenceTokens.length); i++) {
     const candidateSlice = evidenceTokens.slice(i, i + windowSize);
@@ -290,9 +308,11 @@ export function verifyEvidencePassage(
     if (maxSimilarity >= 1.0) break;
   }
 
+  const finalSim = Math.max(setOverlap, maxSimilarity);
+
   return {
-    valid: maxSimilarity >= threshold,
-    similarity: Number(maxSimilarity.toFixed(2))
+    valid: finalSim >= threshold,
+    similarity: Number(finalSim.toFixed(2))
   };
 }
 

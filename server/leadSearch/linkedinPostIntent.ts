@@ -91,15 +91,15 @@ export function buildLinkedInPostSearchQuery(lead: Record<string, any>): string 
   const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || lead.profile?.contactDetails?.linkedinUrl;
   const handle = extractLinkedInUsername(url);
   if (handle) {
-    return `(site:linkedin.com/posts OR site:linkedin.com/pulse) "${handle}"`;
+    return `site:linkedin.com ("${handle}" OR "in/${handle}") (posts OR "recent-activity" OR hiring OR looking OR scaling)`;
   }
   const name = String(lead.fullName || lead.profile?.fullName || '').trim();
   const company = String(lead.currentCompany || lead.company || lead.profile?.currentCompany || '').trim();
   if (name && company) {
-    return `"${name}" "${company}" (site:linkedin.com/posts OR site:linkedin.com/pulse)`;
+    return `"${name}" "${company}" site:linkedin.com (posts OR "recent-activity" OR hiring OR looking OR scaling)`;
   }
   if (name) {
-    return `"${name}" (site:linkedin.com/posts OR site:linkedin.com/pulse)`;
+    return `"${name}" site:linkedin.com (posts OR "recent-activity" OR hiring OR looking OR scaling)`;
   }
   return '';
 }

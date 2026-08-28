@@ -157,11 +157,12 @@ export async function checkCompanyIntent(
     const signalCounts = new Map<string, number>();
 
     const countOccurrences = (signal: string): number => {
-      const lower = signal.toLowerCase();
-      let count = 0;
-      let idx = lowerMarkdown.indexOf(lower);
-      while (idx !== -1) { count++; idx = lowerMarkdown.indexOf(lower, idx + 1); }
-      return count;
+      const trimmed = signal.trim().toLowerCase();
+      if (!trimmed) return 0;
+      const escaped = trimmed.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const pattern = new RegExp(`\\b(?<!-)${escaped}(?!-)\\b`, 'gi');
+      const matches = markdown.match(pattern);
+      return matches ? matches.length : 0;
     };
 
     for (const signal of dynamicSet) {
@@ -176,6 +177,15 @@ export async function checkCompanyIntent(
       const count = countOccurrences(signal);
       if (count > 0) {
         universalSignalsFound.push(signal);
+        signalCounts.set(signal.toLowerCase(), (signalCounts.get(signal.toLowerCase()) ?? 0) + count);
+      }
+    }
+
+    const categorizedPain = options?.intentSignals?.categorized?.pain || [];
+    for (const signal of categorizedPain) {
+      const count = countOccurrences(signal);
+      if (count > 0) {
+        painSignalsFound.push(signal);
         signalCounts.set(signal.toLowerCase(), (signalCounts.get(signal.toLowerCase()) ?? 0) + count);
       }
     }

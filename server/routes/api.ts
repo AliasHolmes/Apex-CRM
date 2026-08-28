@@ -50,6 +50,7 @@ import {
   readLeadActivities,
   upsertOutreachDraft,
   readOutreachDrafts,
+  readOutreachDraftsByLeadId,
   deleteOutreachDraft,
   readSavedSearches,
   readSavedSearchById,
@@ -364,6 +365,35 @@ router.patch("/leads/:id", (req, res): any => {
         actor: "user",
         createdAt: new Date().toISOString(),
       });
+    }
+
+    const previousReviewStatus = previousLead?.reviewStatus;
+    const isNewRejection =
+      (storedLead.reviewStatus === "REJECTED" && previousReviewStatus !== "REJECTED") ||
+      (storedLead.stage === "UNQUALIFIED" && previousStage !== "UNQUALIFIED");
+    const isNewVerification =
+      (storedLead.reviewStatus === "VERIFIED" && previousReviewStatus !== "VERIFIED") ||
+      (storedLead.stage === "CLOSED_WON" && previousStage !== "CLOSED_WON") ||
+      (storedLead.stage === "MEETING_SCHEDULED" && previousStage !== "MEETING_SCHEDULED");
+
+    if (isNewRejection || isNewVerification) {
+      const family = storedLead.evidence?.discoveryFamily || storedLead.scout?.family || "general";
+      const lane = storedLead.evidence?.discoveryLane || storedLead.scout?.lane || "person";
+      const provider = storedLead.evidence?.sourceProvider || storedLead.source || "tavily";
+      try {
+        recordQueryPerformance({
+          family,
+          lane,
+          provider,
+          runs: 0,
+          outcomeRuns: 1,
+          qualifiedCandidates: isNewVerification ? 1 : 0,
+          hardFailedCandidates: isNewRejection ? 1 : 0,
+          rescuedCandidates: isNewRejection ? 1 : 0,
+        });
+      } catch (err) {
+        console.warn("[lead-review-feedback] Failed to record query performance feedback:", err);
+      }
     }
 
     res.json({
@@ -1653,6 +1683,7 @@ router.delete("/outreach-drafts/:id", (req, res): any => {
 router.post("/generate-outbound", async (req, res): Promise<any> => {
   try {
     const {
+      leadId,
       profile,
       tone,
       pitchType,
@@ -1665,6 +1696,8 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
       buyingSignals,
       evidence,
       qualification,
+      postIntentEvidence,
+      companyIntentEvidence,
       notes,
     } = req.body;
 
@@ -1684,7 +1717,7 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
     }
 
     console.log(
-      `[generate-outbound] Generating outreach for: ${profile.fullName}`,
+      `[generate-outbound] Generating outreach for: ${profile.fullName} (step: ${sequenceStep || "Step 1"})`,
     );
     const buyingSignalText = Array.isArray(buyingSignals)
       ? buyingSignals
@@ -1705,12 +1738,37 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
           .filter(Boolean)
           .join(" | ")
       : typeof evidence?.evidenceBlock === "string"
-        ? evidence.evidenceBlock.slice(0, 800)
+        ? evidence.evidenceBlock.slice(0, 1000)
         : "";
+
+    const postIntentSnippets = Array.isArray(postIntentEvidence?.recentPosts) && postIntentEvidence.recentPosts.length > 0
+      ? postIntentEvidence.recentPosts
+          .map((p: any) => typeof p === "string" ? p : [p.topic ? `Topic: ${p.topic}` : '', p.quote ? `Quote: "${p.quote}"` : '', p.postDate ? `Date: ${p.postDate}` : ''].filter(Boolean).join(" | "))
+          .filter(Boolean)
+          .join("\n")
+      : typeof postIntentEvidence?.summary === "string"
+        ? postIntentEvidence.summary
+        : "";
+
+    const companyIntentSnippets = Array.isArray(companyIntentEvidence?.snippets)
+      ? companyIntentEvidence.snippets.join(" | ")
+      : "";
 
     const qualificationVerdict =
       qualification?.explanation || qualification?.verdict || "";
     const prospectNotes = typeof notes === "string" ? notes.trim() : "";
+
+    // Load multi-touch thread context if leadId is available
+    const priorDrafts = (leadId && typeof leadId === "string") ? readOutreachDraftsByLeadId(leadId) : [];
+    const priorDraftSummary = priorDrafts.length > 0
+      ? priorDrafts.map((d: any) => `[${d.sequenceStep || "Earlier Touch"} (${d.medium || "Outreach"})]:\n"${d.body.slice(0, 300)}"`).join("\n\n")
+      : "No prior sequence touchpoints recorded.";
+
+    // Load few-shot style exemplars from recent approved drafts
+    const recentDrafts = readOutreachDrafts(3);
+    const styleExemplars = recentDrafts.length > 0
+      ? recentDrafts.map((d: any) => `[Example Style - ${d.medium} - ${d.tone}]:\n"${d.body.slice(0, 250)}..."`).join("\n\n")
+      : "";
 
     const prompt = `Generate a highly personalized outreach message for the following prospect.
 
@@ -1728,16 +1786,25 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
 - Buying Signals: ${buyingSignalText || "None provided"}
 
 ## Verified Real-World Triggers & Evidence
+- Prospect Authored LinkedIn Posts & Quotes: ${postIntentSnippets || "None available"}
+- Company Intent & Website Signals: ${companyIntentSnippets || "None available"}
 - Mined Evidence & Observations: ${evidenceSnippets || "None available"}
 - Qualification Verdict & Match Context: ${qualificationVerdict || "None"}
 - CRM Notes: ${prospectNotes || "None"}
+
+## Sequence & Conversation Thread History
+- Current Step: ${sequenceStep || "Step 1 - First Touch"}
+- Prior Touchpoints in Thread:
+${priorDraftSummary}
+
+## Approved Style Calibration (User Preference Exemplars)
+${styleExemplars || "Write in crisp, concise, high-signal modern B2B tone."}
 
 ## Campaign Settings
 - Tone: ${tone || "Professional"}
 - Pitch Type: ${pitchType || "Cold outreach"}
 - Value Proposition: ${valueProposition || "Not specified"}
 - Sender: ${senderName || "Sales Rep"} from ${senderCompany || "Our Company"}
-- Sequence Step: ${sequenceStep || "Step 1 - First Touch"}
 - Custom Instruction: ${customInstruction || "None"}
 - Channel: ${companyAccount ? "Company LinkedIn Account" : "Personal LinkedIn / Email"}
 
@@ -1745,11 +1812,12 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
 Return plain text only. Do not use HTML, markdown, or unsupported performance claims.
 Follow the Golden Rules strictly:
 1. Never start with "I"
-2. Be specific - prioritize referencing verified real-world facts from their profile or evidence
-3. One CTA only
-4. LinkedIn connection note: max 300 characters
-5. Cold email: max 150 words
-6. No spam words: guaranteed, synergy, leverage, disruptive, game-changing, revolutionary
+2. Be specific - lead with or reference verified real-world facts from their recent LinkedIn posts, hiring signals, or website observations
+3. If this is a follow-up step (> Step 1), advance the conversation thread naturally from prior touchpoints rather than repeating the first pitch
+4. One CTA only
+5. LinkedIn connection note: max 300 characters
+6. Cold email: max 150 words
+7. No spam words: guaranteed, synergy, leverage, disruptive, game-changing, revolutionary
 
 Use normal paragraph breaks so the result can be pasted into email, LinkedIn, or a mailto link.`;
 

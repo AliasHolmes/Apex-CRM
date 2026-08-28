@@ -1,4 +1,4 @@
-import { readQueryPerformance } from "../../db.js";
+import { readQueryPerformance, readDiscoveredCompanyNames } from "../../db.js";
 import {
   openAIStructured,
   searchQueriesSchema,
@@ -118,9 +118,12 @@ export async function executePlanStage(
       `Round ${round}: executing recovery query planning (attempt ${currentAttempt}/2) for missing criteria: [${missingHardReqs.join(", ")}].`,
     );
   } else {
-    const discoveredCompanies = ctx.state.signalStore
+    const sessionDiscovered = ctx.state.signalStore
       ? ctx.state.signalStore.getUniqueCompanyNames()
       : [];
+    const discoveredCompanies = sessionDiscovered.length > 0
+      ? sessionDiscovered
+      : readDiscoveredCompanyNames(15);
 
     strategistPrompt = buildScoutStrategistPrompt({
       query: config.promptQuery,
@@ -141,23 +144,18 @@ export async function executePlanStage(
   }
 
   let planItems: SearchQueryPlanItem[] = [];
-  if (remaining <= 2 && round > 1 && !isRecoveryMode) {
-    logEvent(
-      `Round ${round}: target near completion (remaining: ${remaining}). Skipping LLM Strategist planning to optimize efficiency.`,
-    );
-  } else {
-    const strategyStarted = Date.now();
-    const strategyProviderAttempts: LLMProviderAttempt[] = [];
-    const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
-    try {
-      recordTrace({
-        phase: "strategy",
-        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-        status: "started",
-        provider: "llm",
-        round,
-        metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode },
-      });
+  const strategyStarted = Date.now();
+  const strategyProviderAttempts: LLMProviderAttempt[] = [];
+  const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
+  try {
+    recordTrace({
+      phase: "strategy",
+      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+      status: "started",
+      provider: "llm",
+      round,
+      metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
+    });
       const queryResult = await openAIStructured<any>(
         strategistPrompt,
         searchQueriesSchema,
@@ -242,7 +240,6 @@ export async function executePlanStage(
         state.debugLogs.push(errLog);
       }
     }
-  }
 
   if (planItems.length === 0) {
     planItems = buildScoutFallbackQueryPlan(config.promptQuery, searchSpec);
@@ -326,6 +323,45 @@ export async function executePlanStage(
       proposedQueries.push(plan.executableQuery);
       return true;
     });
+
+  if (roundPlans.length === 0 && config.contract) {
+    const roles = config.contract.identitySpec?.roles || ['founder', 'owner', 'CEO'];
+    const locations = config.contract.identitySpec?.locations || [''];
+    const companyTypes = config.contract.identitySpec?.companyTypes || ['agency'];
+    const hints = ['public profile', 'leadership', 'executive', 'founder profile'];
+    
+    for (const role of roles) {
+      for (const comp of companyTypes) {
+        for (const loc of locations) {
+          for (const hint of hints) {
+            const candidateQuery = [role, comp, loc, hint].filter(Boolean).join(' ').trim();
+            if (!seenQueryTexts.has(candidateQuery.toLowerCase()) && !proposedQueries.includes(candidateQuery)) {
+              proposedQueries.push(candidateQuery);
+              roundPlans.push({
+                item: {
+                  query: candidateQuery,
+                  family: 'persona_title',
+                  intent: 'find_decision_makers',
+                  priority: roundPlans.length + 1,
+                  lane: 'person',
+                  providerPreference: 'tavily',
+                  tavily: { searchDepth: 'basic', topic: 'general' }
+                } as any,
+                executableQuery: candidateQuery
+              });
+              if (roundPlans.length >= 3) break;
+            }
+          }
+          if (roundPlans.length >= 3) break;
+        }
+        if (roundPlans.length >= 3) break;
+      }
+      if (roundPlans.length >= 3) break;
+    }
+    if (roundPlans.length > 0) {
+      logEvent(`Round ${round}: generated ${roundPlans.length} novel non-colliding fallback queries.`);
+    }
+  }
 
   if (roundPlans.length === 0) {
     logEvent(`Round ${round}: strategist produced no new queries.`);

@@ -4,6 +4,7 @@ import {
   readSavedSearchById,
   markSavedSearchRun,
   updateSavedSearchExcludeList,
+  upsertDiscoveredCompanies,
 } from "../../db.js";
 import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
 import { mapCandidateToPersistedLead } from "../leadMapping.js";
@@ -91,6 +92,18 @@ export async function executePersistStage(
       `Successfully auto-persisted ${persistence.createdCount} new leads; ${persistence.duplicateCount} LinkedIn duplicates returned existing prospects.`,
     );
     mappedLeads.splice(0, mappedLeads.length, ...persistedLeads);
+
+    if (ctx.state.signalStore) {
+      try {
+        const discovered = ctx.state.signalStore.getTopDiscoveredCompanies(25);
+        if (discovered.length > 0) {
+          upsertDiscoveredCompanies(discovered);
+          logEvent(`Persisted ${discovered.length} discovered companies to cross-session knowledge graph.`);
+        }
+      } catch (err) {
+        console.warn("Failed to persist discovered companies:", err);
+      }
+    }
   } catch (e: any) {
     console.error("Failed to auto-persist leads on backend:", e);
     recordTrace({

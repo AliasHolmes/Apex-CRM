@@ -58,6 +58,8 @@ import {
   saveMiningSessionCheckpoint,
   readMiningSessionCheckpoint,
   readResumableMiningSessions,
+  getProspectContractCache,
+  upsertProspectContractCache,
 } from "../db.js";
 import {
   hasOpenAIKey,
@@ -737,31 +739,41 @@ export async function executeDiscoverySession(
 
     // Compile contract using LLM if OpenAI/Byesu key is configured and not resuming from existing contract.
     let contract = options.initialCheckpoint?.contract || fallbackContract;
-    if (!options.initialCheckpoint?.contract && hasOpenAIKey()) {
-      const contractStarted = Date.now();
-      const contractPrompt = buildProspectContractPrompt(query);
-      try {
-        const compiled = await openAIStructured<any>(
-          contractPrompt,
-          prospectContractSchema,
-          `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
-          {
-            maxTokens: 1800,
-            temperature: 0,
-            signal: sessionAbortController.signal,
-          },
-        );
-        contract = normalizeProspectContract(compiled, query, fallbackContract);
-        const hardCount = contract.requirements.filter(
-          (req) => req.importance === "hard",
-        ).length;
+    if (!options.initialCheckpoint?.contract) {
+      const cacheKey = query.trim().toLowerCase();
+      const cached = getProspectContractCache(cacheKey, PROSPECT_CONTRACT_POLICY_VERSION);
+      if (cached) {
+        contract = cached;
         logEvent(
-          `Compiled prospect quality contract v${contract.policyVersion} with ${hardCount} hard requirements.`,
+          `Hydrated prospect quality contract v${contract.policyVersion} from contract cache.`,
         );
-      } catch (err: any) {
-        logEvent(
-          `WARN: Prospect contract compiler failed: ${err.message || String(err)}. Using deterministic contract.`,
-        );
+      } else if (hasOpenAIKey()) {
+        const contractStarted = Date.now();
+        const contractPrompt = buildProspectContractPrompt(query);
+        try {
+          const compiled = await openAIStructured<any>(
+            contractPrompt,
+            prospectContractSchema,
+            `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
+            {
+              maxTokens: 1800,
+              temperature: 0,
+              signal: sessionAbortController.signal,
+            },
+          );
+          contract = normalizeProspectContract(compiled, query, fallbackContract);
+          const hardCount = contract.requirements.filter(
+            (req) => req.importance === "hard",
+          ).length;
+          logEvent(
+            `Compiled prospect quality contract v${contract.policyVersion} with ${hardCount} hard requirements.`,
+          );
+          upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
+        } catch (err: any) {
+          logEvent(
+            `WARN: Prospect contract compiler failed: ${err.message || String(err)}. Using deterministic contract.`,
+          );
+        }
       }
     }
     stats.scout.contract = contract;

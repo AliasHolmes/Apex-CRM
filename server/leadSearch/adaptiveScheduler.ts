@@ -49,11 +49,17 @@ const finiteCount = (value: unknown) => {
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 };
 
-export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'>) =>
-  [task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily'].join('|').toLowerCase();
+export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'> & { domainCluster?: string }) =>
+  [task.domainCluster || '', task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily']
+    .filter(Boolean)
+    .join('|')
+    .toLowerCase();
 
-const rowScopeKey = (row: AdaptivePerformanceRow) =>
-  [row.family || 'general', row.lane || 'person', row.provider || 'tavily'].join('|').toLowerCase();
+const rowScopeKey = (row: AdaptivePerformanceRow & { domainCluster?: string }) =>
+  [row.domainCluster || '', row.family || 'general', row.lane || 'person', row.provider || 'tavily']
+    .filter(Boolean)
+    .join('|')
+    .toLowerCase();
 
 /**
  * Marsaglia and Tsang method for generating standard Gamma(alpha, 1) variates.

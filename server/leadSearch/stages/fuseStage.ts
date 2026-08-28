@@ -246,19 +246,38 @@ export async function executeFuseStage(
     };
   }
 
+  const contractTerms = (config.contract?.requirements || [])
+    .flatMap((r: any) => (r.acceptableTerms || []).map((t: string) => t.toLowerCase()))
+    .filter(Boolean);
+
   uniqueRoundItems.sort((a, b) => {
     const scoreItem = (item: any) => {
       const companyCount = item._companyHint
         ? acceptedCompanyCounts.get(item._companyHint) || 0
         : 0;
       const overCapPenalty = companyCount >= maxPerCompany ? -500 : 0;
+      const text = `${item.title || ""} ${item.content || ""}`.toLowerCase();
+      
+      // Intent density: matched contract terms
+      let termMatches = 0;
+      for (const term of contractTerms) {
+        if (term.length > 2 && text.includes(term)) termMatches++;
+      }
+
+      // Executive / Decision-maker role authority in title
+      const hasExecutiveRole = /\b(founder|co[-\s]?founder|owner|ceo|coo|cro|cmo|cfo|cto|president|partner|managing director|head of|vp|vice president|director|principal)\b/i.test(item.title || text);
+
+      // Clean length signal (capped so noisy text doesn't dominate)
+      const lengthBonus = Math.min(Math.floor(text.length / 50), 30);
+
       return (
-        `${item.title || ""} ${item.content || ""} ${item.raw_content || ""}`
-          .length +
-        (extractLinkedInUsername(item.url) ? 180 : 0) +
+        termMatches * 120 +
+        (hasExecutiveRole ? 250 : 0) +
+        (extractLinkedInUsername(item.url) ? 200 : 0) +
         Number(item._sourceCount || 1) * 160 +
         (item._corroborated ? 180 : 0) +
         (Array.isArray(item._lanes) && item._lanes.includes("signal") ? 40 : 0) +
+        lengthBonus +
         overCapPenalty
       );
     };

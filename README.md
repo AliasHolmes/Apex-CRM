@@ -6,9 +6,9 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-6.0-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v17-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v17" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v19-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v19" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-264_Tests_Passing-10B981" alt="Lead Engine 264 Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-32_Core_Tests_Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 
@@ -105,6 +105,20 @@ flowchart TD
 - **Phase 4 (Company Website TF-IDF)**: Scrapes company websites against categorized intent dictionaries with session-scoped IDF corpus weighting.
 - **Phase 5 (LinkedIn Post SERP Intent)**: Queries Google for indexed prospect post snippets (`site:linkedin.com/posts <handle>`), classifies intent categories (`hiring`, `evaluating_tools`, `pain_signal`, `growth_signal`), and renders "Why Now" badges.
 - **Temporal Freshness Decay**: Parses SERP snippet recency markers (`"2 days ago"`, `"3 weeks ago"`) and applies exponential half-life decay ($e^{-0.02 \times \text{days}}$) so newly published intent triggers receive full boost.
+
+#### 7. Domain-Clustered Multi-Armed Bandit & Dynamic Search Strategy (ADR-0003)
+
+- **Domain Clustering**: Partitions cross-session MAB query performance by domain cluster (`b2b_agency`, `b2b_saas`, `executive_coaching`, `local_services`, `healthcare_life_sciences`) so agency learning does not pollute SaaS searches.
+- **Exponential Moving Average Decay ($\lambda = 0.95$)**: Automatically downweights stale historical query metrics on every conflict update, allowing newly adapted strategies to emerge.
+- **Dynamic Semantic Query Fallback**: Synthesizes non-colliding fallback queries using domain synonyms, tooling keywords, and pain signals directly from the compiled contract.
+- **Intent-Density Pre-Ranking**: Sorts incoming search hits by contract requirement term density and executive role markers rather than raw character length.
+
+#### 8. Entity Intelligence & High-Fidelity Site Probing (ADR-0003)
+
+- **Career Trajectory DCR Fix & Modern Leadership**: Fully models Partners, Fractional CXOs, Practice Leads, RevOps/GTM Heads, and Principal Consultants with exponential role recency decay.
+- **Commercial Signal Extraction**: Multi-tier site probe scans root domains and subpaths (`/pricing`, `/case-studies`, `/careers`, `/integrations`) to extract pricing models, customer proof, tech stacks, and active hiring roles.
+- **Multi-Evidence Fallback Grounding**: The Finalist Judge scans all candidate evidence passages before flagging ungrounded verdicts, eliminating false-positive fabrication rejections.
+- **Global Corporate Form Normalization**: Strips international corporate suffixes (`S.R.L.`, `S.A.S.`, `S.L.`, `AG`, `Pte Ltd`, `Sdn Bhd`, `Sp. z o.o.`, `ApS`, `Pty Ltd`) and regional branch designations (`EMEA`, `APAC`, `Global`, `Holdings`).
 
 ---
 

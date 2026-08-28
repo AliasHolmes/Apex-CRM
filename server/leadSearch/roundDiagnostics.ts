@@ -25,6 +25,10 @@ export type RoundDiagnostics = {
   missingHardRequirementIds: string[];
   shouldRecover: boolean;
   classSummary?: ClassDiagnosticSummary;
+  observedNonMatchingAttributes?: {
+    locations?: string[];
+    roles?: string[];
+  };
 };
 
 const normalize = (value: unknown) => String(value || '').toLowerCase();
@@ -128,6 +132,15 @@ export function buildRoundDiagnostics(params: {
     };
   }
 
+  const nonMatchingLocations = new Set<string>();
+  const nonMatchingRoles = new Set<string>();
+  for (const lead of params.leads) {
+    const loc = String(lead.location || lead.profile?.location || '').trim();
+    if (loc && loc.length > 2 && loc.length < 50) nonMatchingLocations.add(loc);
+    const title = String(lead.currentTitle || lead.profile?.currentTitle || lead.title || '').trim();
+    if (title && title.length > 2 && title.length < 50) nonMatchingRoles.add(title);
+  }
+
   const banked = params.alreadyQualified ?? 0;
   return {
     round: params.round,
@@ -137,7 +150,11 @@ export function buildRoundDiagnostics(params: {
     requirements,
     missingHardRequirementIds,
     shouldRecover: (banked + viableCandidates) < Math.ceil(params.targetLimit * 0.5) || missingHardRequirementIds.length > 0,
-    classSummary
+    classSummary,
+    observedNonMatchingAttributes: {
+      locations: Array.from(nonMatchingLocations).slice(0, 8),
+      roles: Array.from(nonMatchingRoles).slice(0, 8),
+    }
   };
 }
 

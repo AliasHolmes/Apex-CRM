@@ -14,17 +14,18 @@ Primary reference docs:
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary (Discovery Session, Prospect Contract, Identity/Intent Plane, Finalist Judge, Pareto Skyline, Reverse Flywheel)
 - [`docs/adr/0001-discovery-session-engine.md`](adr/0001-discovery-session-engine.md) — ADR: extraction of the discovery loop into in-process `DiscoverySessionEngine`
 - [`docs/adr/0002-stage-boundary-session-persistence-and-resumption.md`](adr/0002-stage-boundary-session-persistence-and-resumption.md) — ADR: durable stage-boundary checkpoints & session resumption
+- [`docs/adr/0003-symbiotic-intelligence-hardening.md`](adr/0003-symbiotic-intelligence-hardening.md) — ADR: domain-clustered MAB, dynamic query strategy, DCR leadership scoring, site probe commercial signals, and entity resolution
 
 ## 2. Quick stats
 
 | Metric                                                           | Value                                               |
 | ---------------------------------------------------------------- | --------------------------------------------------- |
 | Frontend (`src/`)                                                | ~9,983 lines across 33 files                        |
-| Backend engine (`server/leadSearch/`)                            | ~11,415 lines across 40 modules (incl. 9 `stages/`) |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~6,733 lines                                        |
+| Backend engine (`server/leadSearch/`)                            | ~11,600 lines across 40 modules (incl. 9 `stages/`) |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~6,800 lines                                        |
 | REST routes                                                      | 38 (all under `/api`)                               |
-| SQLite tables                                                    | 15 tables + leads_fts virtual table (schema v17, WAL mode)   |
-| Test suite                                                       | 33 files, 264 tests                                |
+| SQLite tables                                                    | 15 tables + leads_fts virtual table (schema v19, WAL mode)   |
+| Test suite                                                       | 35 files, 277 tests                                |
 
 ## 3. Tech stack
 

@@ -49,17 +49,46 @@ const finiteCount = (value: unknown) => {
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 };
 
+export function deriveDomainCluster(queryOrBrief: string): string {
+  const text = String(queryOrBrief || '').toLowerCase();
+  if (!text.trim()) return 'global';
+  if (/\b(agency|agencies|lead[-\s]?gen|seo|creative|copywriting|performance marketing|growth marketing|media buyer|advertising)\b/i.test(text)) {
+    return 'b2b_agency';
+  }
+  if (/\b(coach|coaching|executive coach|mastermind|mentorship|consultant|consulting|advisory)\b/i.test(text)) {
+    return 'executive_coaching';
+  }
+  if (/\b(saas|software|platform|cloud|api|fintech|edtech|healthtech|devops|cybersecurity)\b/i.test(text)) {
+    return 'b2b_saas';
+  }
+  if (/\b(dental|dentist|clinic|doctor|plumbing|hvac|roofing|electrician|contractor|realtor|real estate)\b/i.test(text)) {
+    return 'local_services';
+  }
+  if (/\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store|brand)\b/i.test(text)) {
+    return 'ecommerce_retail';
+  }
+  if (/\b(biotech|pharma|clinical|healthcare|hospital|medical)\b/i.test(text)) {
+    return 'healthcare_life_sciences';
+  }
+  if (/\b(legal|law firm|attorney|accounting|cpa|tax firm)\b/i.test(text)) {
+    return 'professional_services';
+  }
+  return 'global';
+}
+
 export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'> & { domainCluster?: string }) =>
-  [task.domainCluster || '', task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily']
+  [task.domainCluster !== 'global' ? task.domainCluster : '', task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily']
     .filter(Boolean)
     .join('|')
     .toLowerCase();
 
-const rowScopeKey = (row: AdaptivePerformanceRow & { domainCluster?: string }) =>
-  [row.domainCluster || '', row.family || 'general', row.lane || 'person', row.provider || 'tavily']
+const rowScopeKey = (row: AdaptivePerformanceRow & { domain_cluster?: string; domainCluster?: string }) => {
+  const cluster = row.domain_cluster || row.domainCluster || '';
+  return [cluster !== 'global' ? cluster : '', row.family || 'general', row.lane || 'person', row.provider || 'tavily']
     .filter(Boolean)
     .join('|')
     .toLowerCase();
+};
 
 /**
  * Marsaglia and Tsang method for generating standard Gamma(alpha, 1) variates.
@@ -188,20 +217,27 @@ export function scheduleAdaptiveRetrievalTasks(
       tasks,
       active: false,
       totalOutcomeRuns,
-      decisions: tasks.map(task => ({
-        scopeKey: adaptiveScopeKey(task),
-        query: task.query,
-        selected: true,
-        score: 0,
-        outcomeRuns: finiteCount(rowsByScope.get(adaptiveScopeKey(task))?.outcome_runs),
-        reason: 'cold_start'
-      }))
+      decisions: tasks.map(task => {
+        const scopeKey = adaptiveScopeKey(task);
+        const globalScopeKey = [task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily'].filter(Boolean).join('|').toLowerCase();
+        const row = rowsByScope.get(scopeKey) || rowsByScope.get(globalScopeKey);
+        return {
+          scopeKey,
+          query: task.query,
+          selected: true,
+          score: 0,
+          outcomeRuns: finiteCount(row?.outcome_runs),
+          reason: 'cold_start' as const
+        };
+      })
     };
   }
 
   const ranked = tasks.map((task, originalIndex) => {
     const scopeKey = adaptiveScopeKey(task);
-    const arm = scoreAdaptiveArm(rowsByScope.get(scopeKey), totalOutcomeRuns, explorationStrength);
+    const globalScopeKey = [task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily'].filter(Boolean).join('|').toLowerCase();
+    const row = rowsByScope.get(scopeKey) || rowsByScope.get(globalScopeKey);
+    const arm = scoreAdaptiveArm(row, totalOutcomeRuns, explorationStrength);
     return { task, originalIndex, scopeKey, ...arm };
   }).sort((a, b) => b.score - a.score || a.task.priority - b.task.priority || a.originalIndex - b.originalIndex);
 

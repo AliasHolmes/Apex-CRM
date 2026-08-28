@@ -23,7 +23,7 @@ import {
   enforceContractQueries,
   buildRecoveryQueryPrompt,
 } from "../prospectContract.js";
-import { scheduleAdaptiveRetrievalTasks } from "../adaptiveScheduler.js";
+import { scheduleAdaptiveRetrievalTasks, deriveDomainCluster } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
 import { summarizeLLM } from "../telemetry.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -72,7 +72,8 @@ export async function executePlanStage(
   } = input;
   const { config, state, logEvent, recordTrace } = ctx;
 
-  const historicalPerformance = readQueryPerformance(100);
+  const domainCluster = deriveDomainCluster(config.contract?.brief || config.promptQuery || "");
+  const historicalPerformance = readQueryPerformance(100, domainCluster);
   const historicalYield = Object.fromEntries(
     historicalPerformance.slice(0, 30).map((row: any) => [
       [row.family || "general", row.lane || "person", row.provider || "tavily"]
@@ -262,8 +263,13 @@ export async function executePlanStage(
           ),
         );
 
+  const rawTasks = buildRetrievalTasks(planItems, searchSpec).map(t => ({
+    ...t,
+    domainCluster: t.domainCluster || domainCluster
+  }));
+
   const adaptiveSchedule = scheduleAdaptiveRetrievalTasks(
-    buildRetrievalTasks(planItems, searchSpec),
+    rawTasks,
     historicalPerformance,
     {
       enabled: process.env.LEAD_ADAPTIVE_SCHEDULER_ENABLED !== "false",
@@ -316,7 +322,7 @@ export async function executePlanStage(
   // Filter against seenQueryTexts without directly mutating caller state here
   const proposedQueries: string[] = [];
   const roundPlans = adaptiveSchedule.tasks
-    .map((item) => ({ item, executableQuery: item.query }))
+    .map((item) => ({ item: { ...item, domainCluster: item.domainCluster || domainCluster }, executableQuery: item.query }))
     .filter((plan) => {
       const key = plan.executableQuery.toLowerCase();
       if (seenQueryTexts.has(key)) return false;
@@ -325,41 +331,57 @@ export async function executePlanStage(
     });
 
   if (roundPlans.length === 0 && config.contract) {
-    const roles = config.contract.identitySpec?.roles || ['founder', 'owner', 'CEO'];
-    const locations = config.contract.identitySpec?.locations || [''];
-    const companyTypes = config.contract.identitySpec?.companyTypes || ['agency'];
-    const hints = ['public profile', 'leadership', 'executive', 'founder profile'];
-    
+    const roles = config.contract.identitySpec?.roles || ['founder', 'owner', 'CEO', 'managing partner', 'director'];
+    const locations = (config.contract.identitySpec?.locations || []).length > 0
+      ? config.contract.identitySpec!.locations!
+      : ['United States', 'United Kingdom', 'Canada', 'Australia'];
+    const companyTypes = (config.contract.identitySpec?.companyTypes || []).length > 0
+      ? config.contract.identitySpec!.companyTypes!
+      : ['agency', 'consultancy', 'firm', 'studio'];
+    const tooling = config.contract.intentSpec?.toolingKeywords || [];
+    const painSignals = config.contract.intentSpec?.painSignals || [];
+    const suffixes = ['executive profile', 'leadership', 'founder profile', 'portfolio', 'team leadership'];
+
+    const candidateVariants: string[] = [];
     for (const role of roles) {
       for (const comp of companyTypes) {
         for (const loc of locations) {
-          for (const hint of hints) {
-            const candidateQuery = [role, comp, loc, hint].filter(Boolean).join(' ').trim();
-            if (!seenQueryTexts.has(candidateQuery.toLowerCase()) && !proposedQueries.includes(candidateQuery)) {
-              proposedQueries.push(candidateQuery);
-              roundPlans.push({
-                item: {
-                  query: candidateQuery,
-                  family: 'persona_title',
-                  intent: 'find_decision_makers',
-                  priority: roundPlans.length + 1,
-                  lane: 'person',
-                  providerPreference: 'tavily',
-                  tavily: { searchDepth: 'basic', topic: 'general' }
-                } as any,
-                executableQuery: candidateQuery
-              });
-              if (roundPlans.length >= 3) break;
-            }
+          candidateVariants.push(`${role} ${comp} ${loc}`.trim());
+          if (tooling.length > 0) {
+            candidateVariants.push(`${role} ${comp} ${tooling[0]} ${loc}`.trim());
           }
-          if (roundPlans.length >= 3) break;
+          if (painSignals.length > 0) {
+            candidateVariants.push(`${role} ${comp} ${painSignals[0]} ${loc}`.trim());
+          }
+          for (const suffix of suffixes) {
+            candidateVariants.push(`${role} ${comp} ${loc} ${suffix}`.trim());
+          }
         }
+      }
+    }
+
+    for (const candidateQuery of candidateVariants) {
+      const lowerQ = candidateQuery.toLowerCase();
+      if (!seenQueryTexts.has(lowerQ) && !proposedQueries.includes(candidateQuery)) {
+        proposedQueries.push(candidateQuery);
+        roundPlans.push({
+          item: {
+            query: candidateQuery,
+            family: 'persona_title',
+            intent: 'find_decision_makers',
+            priority: roundPlans.length + 1,
+            lane: 'person',
+            providerPreference: 'tavily',
+            domainCluster,
+            tavily: { searchDepth: 'basic', topic: 'general' }
+          } as any,
+          executableQuery: candidateQuery
+        });
         if (roundPlans.length >= 3) break;
       }
-      if (roundPlans.length >= 3) break;
     }
     if (roundPlans.length > 0) {
-      logEvent(`Round ${round}: generated ${roundPlans.length} novel non-colliding fallback queries.`);
+      logEvent(`Round ${round}: generated ${roundPlans.length} novel dynamic semantic fallback queries.`);
     }
   }
 

@@ -31,7 +31,7 @@ export function normalizeCompanyName(name: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const legalSuffix = /\s+(?:llc|inc|incorporated|ltd|limited|co|company|corp|corporation|gmbh|pty|plc|llp|b\s*v|s\s*a)$/;
+  const legalSuffix = /\s+(?:llc|inc|incorporated|ltd|limited|co|company|corp|corporation|gmbh|pty|plc|llp|b\s*v|s\s*a|s\s*r\s*l|s\s*a\s*s|s\s*l|ag|pte\s*ltd|sdn\s*bhd|sp\s*z\s*o\s*o|aps|pty\s*ltd|uk|usa|us|emea|apac|global|hq|holdings|group)$/;
   while (legalSuffix.test(normalized)) {
     normalized = normalized.replace(legalSuffix, '').trim();
   }

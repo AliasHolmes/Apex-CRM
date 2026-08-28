@@ -56,6 +56,7 @@ export type SearchQueryPlanItem = {
   coveredRequirementIds?: string[];
   family?: QueryFamily;
   intent?: QueryIntent;
+  domainCluster?: string;
   expectedSignal?: string;
   priority?: number;
   lane?: QueryLane;
@@ -74,6 +75,7 @@ export type RetrievalTask = {
   providerPreference: ProviderPreference;
   family?: SearchQueryPlanItem["family"];
   intent?: SearchQueryPlanItem["intent"];
+  domainCluster?: string;
   expectedSignal?: string;
   priority: number;
   tavily: {
@@ -360,7 +362,7 @@ export const buildFallbackQueryPlan = (
     .replace(/\b(owner|founder|ceo|co-founder|director|managing partner|president|proprietor)\b/gi, "")
     .replace(/[/\\|]/g, " ")
     .replace(/\s+/g, " ")
-    .trim() || "AI agency";
+    .trim() || base.trim() || "B2B company";
 
   const plans: SearchQueryPlanItem[] = [
     {
@@ -479,7 +481,20 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   const roundSummaryRaw = { ...(params.previousRoundSummary || {}) };
   const summaryBullets: string[] = [];
   if (Array.isArray(roundSummaryRaw.missingHardRequirementIds) && roundSummaryRaw.missingHardRequirementIds.length > 0) {
-    summaryBullets.push(`Missing requirements: ${roundSummaryRaw.missingHardRequirementIds.slice(0, 5).join(', ')}`);
+    const missingDesc = roundSummaryRaw.missingHardRequirementIds
+      .map((id: string) => {
+        const req = (params.contract?.requirements || []).find((r: any) => r.id === id);
+        return req ? `${req.description || id} (${(req.acceptableTerms || []).slice(0, 3).join('/')})` : id;
+      })
+      .slice(0, 4)
+      .join('; ');
+    summaryBullets.push(`Missing requirements: ${missingDesc}`);
+  }
+  if (roundSummaryRaw.observedNonMatchingAttributes?.locations?.length) {
+    summaryBullets.push(`Observed non-matching locations: ${roundSummaryRaw.observedNonMatchingAttributes.locations.slice(0, 5).join(', ')}`);
+  }
+  if (roundSummaryRaw.observedNonMatchingAttributes?.roles?.length) {
+    summaryBullets.push(`Observed candidate titles: ${roundSummaryRaw.observedNonMatchingAttributes.roles.slice(0, 5).join(', ')}`);
   }
   if (typeof roundSummaryRaw.viableCandidates === 'number') {
     summaryBullets.push(`Viable candidates: ${roundSummaryRaw.viableCandidates}`);

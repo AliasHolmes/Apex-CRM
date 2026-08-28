@@ -30,3 +30,18 @@ A non-dominated subset of candidate leads that excel across multi-objective dime
 
 ### Reverse Flywheel
 The feedback loop where open-web signal searches discover active hiring/tooling accounts, and dynamically generate targeted executive profile queries for decision-makers at those specific accounts.
+
+### Domain-Clustered Multi-Armed Bandit (MAB)
+A contextual Thompson-sampling and UCB scheduler that ranks and throttles query plan arms (`family|lane|provider`) partitioned by business domain cluster (e.g. `b2b_agency`, `b2b_saas`, `executive_coaching`) with exponential moving average time decay ($\lambda = 0.95$).
+
+### Dynamic Semantic Query Expansion
+A non-colliding fallback query planner that synthesizes multi-attribute candidate search queries using domain synonyms, tooling keywords, and pain signals from the prospect contract rather than rigid Cartesian permutation loops.
+
+### Career Trajectory Discounted Cumulative Relevance (DCR)
+An exponential recency decay and domain authority scoring model that evaluates past and current leadership roles across modern executive titles (Founders, C-Suite, Fractional CXOs, Practice Leads, RevOps/GTM Heads, and Principal Consultants).
+
+### Site Probe Buying Signal Extraction
+A multi-tier extraction engine that inspects target company root websites and deep subpaths (`/about`, `/team`, `/pricing`, `/case-studies`, `/careers`) to extract high-fidelity commercial signals (pricing models, customer case studies, tech stack badges, and active hiring roles).
+
+### Global Corporate Entity Resolution
+An alias-matching and normalization system that strips global corporate entity forms (`S.R.L.`, `S.A.S.`, `S.L.`, `AG`, `Pte Ltd`, `Sdn Bhd`, `Sp. z o.o.`, `ApS`, `Pty Ltd`) and regional branch designations (`EMEA`, `APAC`, `Global`, `Holdings`) to prevent company profile duplicates.

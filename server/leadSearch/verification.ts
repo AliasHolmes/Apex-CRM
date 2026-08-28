@@ -11,19 +11,22 @@ const POSITIVE_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'founder', pattern: /\b(co[-\s]?founder|founder|founding partner)\b/ },
   { label: 'owner', pattern: /\b(practice owner|broker owner|agency owner|business owner|company owner|owner[\/\s-]?operator|operator owner|proprietor)\b/ },
   { label: 'owner', pattern: /\bowner\s+(of|at)\b/ },
-  { label: 'c-suite', pattern: /\b(ceo|cfo|coo|cto|cio|cro|cmo|chro|cso|cpo)\b/ },
+  { label: 'fractional_cxo', pattern: /\b(fractional|interim|virtual|part[-\s]?time)\s+(ceo|cfo|coo|cto|cio|cro|cmo|chro|cso|cpo|caio|cgo|cdo|ciso|vp|vice president|director|executive)\b/ },
+  { label: 'c-suite', pattern: /\b(ceo|cfo|coo|cto|cio|cro|cmo|chro|cso|cpo|caio|cgo|cdo|ciso|cxo)\b/ },
   { label: 'c-suite', pattern: /\bchief\s+[a-z&\s-]{2,40}\s+officer\b/ },
   { label: 'president', pattern: /\b(president|general manager)\b/ },
-  { label: 'partner', pattern: /\b(managing partner|partner)\b/ },
+  { label: 'partner', pattern: /\b(managing partner|founding partner|partner|equity partner|senior partner)\b/ },
+  { label: 'practice_lead', pattern: /\bpractice\s+(lead|director|head|leader|partner|principal)\b/ },
   { label: 'managing director', pattern: /\bmanaging director\b/ },
-  { label: 'head', pattern: /\bhead\s+of\s+(growth|sales|revenue|marketing|engineering|operations|business development|customer success|product|technology|it)\b/ },
+  { label: 'head', pattern: /\bhead\s+of\s+(growth|sales|revenue|revops|revenue\s+operations|gtm|go[-\s]?to[-\s]?market|demand\s+gen|marketing|engineering|operations|strategy|partnerships|business development|customer success|product|technology|it|commercial|client\s+services|delivery|ai|data)\b/ },
   { label: 'vp', pattern: /\b(vp|svp|evp|vice president)\b/ },
   { label: 'director', pattern: /\b(director|executive director)\b/ },
-  { label: 'principal', pattern: /\bprincipal\b(?!\s+(engineer|software|architect|developer|designer|researcher|scientist|consultant))\b/ }
+  { label: 'principal', pattern: /\b(managing\s+principal|senior\s+principal|principal\s+consultant|principal\s+advisor|principal\s+partner)\b/ },
+  { label: 'principal', pattern: /\bprincipal\b(?!\s+(engineer|software|architect|developer|designer|researcher|scientist))\b/ }
 ];
 
 const POSITIVE_SENIORITY_PATTERNS = [
-  /\b(c[-\s]?suite|executive|founder|owner|partner|vp|vice president|head|director)\b/
+  /\b(c[-\s]?suite|executive|founder|owner|partner|vp|vice president|head|director|fractional|interim)\b/
 ];
 
 const WEAK_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
@@ -34,11 +37,11 @@ const WEAK_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'associate', pattern: /\bassociate\b/ },
   { label: 'specialist', pattern: /\bspecialist\b/ },
   { label: 'representative', pattern: /\brepresentative\b/ },
-  { label: 'consultant', pattern: /\bconsultant\b/ }
+  { label: 'consultant', pattern: /\bconsultant\b(?!\s+(principal|lead|director))/ }
 ];
 
 const WEAK_REQUEST_PATTERNS = [
-  /\b(interns?|students?|assistants?|coordinators?|associates?|specialists?|representatives?|consultants?)\b/,
+  /\b(interns?|students?|assistants?|coordinators?|associates?|specialists?|representatives?)\b/,
   /\bstudent\s+(clubs?|organizations?)\b/
 ];
 
@@ -80,10 +83,10 @@ export function computeCareerTrajectoryDCR(
     
     // Base seniority weight for role i
     let roleSeniority = 4.0;
-    if (posMatches.includes('founder') || posMatches.includes('owner') || posMatches.includes('c-suite')) roleSeniority = 10.0;
-    else if (posMatches.includes('president') || posMatches.includes('managing partner')) roleSeniority = 9.0;
-    else if (posMatches.includes('vp') || posMatches.includes('head') || posMatches.includes('managing director')) roleSeniority = 8.0;
-    else if (posMatches.includes('director')) roleSeniority = 7.0;
+    if (posMatches.includes('founder') || posMatches.includes('owner') || posMatches.includes('c-suite') || posMatches.includes('fractional_cxo')) roleSeniority = 10.0;
+    else if (posMatches.includes('president') || posMatches.includes('partner') || posMatches.includes('managing partner')) roleSeniority = 9.0;
+    else if (posMatches.includes('vp') || posMatches.includes('head') || posMatches.includes('managing director') || posMatches.includes('practice_lead')) roleSeniority = 8.0;
+    else if (posMatches.includes('director') || posMatches.includes('principal')) roleSeniority = 7.5;
     else if (/\b(lead|manager|principal|supervisor)\b/.test(roleText)) roleSeniority = 5.5;
 
     // Domain relevance (base 0.75 for general tech/business leadership, up to 1.0 for exact keyword matches)

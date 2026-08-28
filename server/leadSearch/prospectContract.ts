@@ -672,21 +672,29 @@ Return only the requested JSON.`;
 
 export const buildRecoveryQueryPrompt = (
   contract: ProspectContract,
-  diagnostics: { missingHardRequirementIds: string[]; viableCandidates: number; classSummary?: any }
+  diagnostics: { missingHardRequirementIds: string[]; viableCandidates: number; classSummary?: any; observedNonMatchingAttributes?: any }
 ) => {
   let bottleneckGuidance = '';
-  if (isFlagEnabled.enhancedDiagnostics() && diagnostics.classSummary?.bottleneckClass) {
+  if (diagnostics.classSummary?.bottleneckClass) {
     const bClass = diagnostics.classSummary.bottleneckClass;
     if (bClass === 'context_hard') {
-      bottleneckGuidance = '\n- Bottleneck identified: Context Hard (Location/Industry/CompanyType). Vary geographic and firmographic acceptable terms while keeping role/persona identity strictly aligned.';
+      bottleneckGuidance = '\n- Bottleneck identified: Context Hard (Location/Industry/CompanyType). Vary geographic and firmographic acceptable terms and synonym phrasing while keeping role/persona identity strictly aligned.';
     } else if (bClass === 'identity_hard') {
-      bottleneckGuidance = '\n- Bottleneck identified: Identity Hard (Role/Seniority). Vary role/title acceptable terms while keeping firmographics constant.';
+      bottleneckGuidance = '\n- Bottleneck identified: Identity Hard (Role/Seniority). Vary role/title acceptable terms and equivalent leadership phrasing while keeping firmographics constant.';
     } else if (bClass === 'evidence_required') {
       bottleneckGuidance = '\n- Bottleneck identified: Evidence Required. Focus queries on open-web sources and company profile sites.';
     }
   }
 
-  return `Generate exactly four distinct recovery retrieval queries for this immutable prospect contract.\n\nContract: ${JSON.stringify({ requirements: contract.requirements, exclusions: contract.exclusions })}\n\nRound evidence: ${JSON.stringify(diagnostics)}\n\nRules:\n- Preserve every hard requirement in every query.\n- Recover only the missing hard requirements; do not widen personas, geography, firmographics, or intent.\n- Use only contract terms. Do not use Google dorks, site:, or the word LinkedIn.\n- Vary only the contract's acceptable terms and retrieval phrasing such as public profile or professional profile.${bottleneckGuidance}\n- Return exactly four query objects.`;
+  let observedContext = '';
+  if (diagnostics.observedNonMatchingAttributes?.locations?.length) {
+    observedContext += `\n- Observed non-matching locations in prior round: [${diagnostics.observedNonMatchingAttributes.locations.slice(0, 5).join(', ')}]. Steer queries towards target contract locations.`;
+  }
+  if (diagnostics.observedNonMatchingAttributes?.roles?.length) {
+    observedContext += `\n- Observed candidate titles in prior round: [${diagnostics.observedNonMatchingAttributes.roles.slice(0, 5).join(', ')}]. Steer queries towards target authority titles.`;
+  }
+
+  return `Generate exactly four distinct recovery retrieval queries for this immutable prospect contract.\n\nContract: ${JSON.stringify({ requirements: contract.requirements, exclusions: contract.exclusions })}\n\nRound evidence: ${JSON.stringify(diagnostics)}${observedContext}\n\nRules:\n- Preserve every hard requirement in every query.\n- Recover missing hard requirements using contract terms, semantic synonyms, and adjacent B2B taxonomy to break through bottlenecks.\n- Do not use Google dorks, site:, or the word LinkedIn.\n- Vary acceptable terms, industry synonyms, and retrieval phrasing such as public profile or professional profile.${bottleneckGuidance}\n- Return exactly four query objects.`;
 };
 
 /** Validate all model output before it influences retrieval. */

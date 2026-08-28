@@ -71,6 +71,10 @@ export type SiteSignals = {
   location?: string;
   headcount?: string;
   services?: string;
+  pricingModel?: string;
+  caseStudies?: string;
+  techStack?: string;
+  openRoles?: string;
   sourceUrl?: string;
   provenance?: DomainProvenance;
 };
@@ -291,6 +295,31 @@ export function extractSiteSignals(markdown: string): SiteSignals | null {
     signals.services = clean(serviceLines.join(' | ')).slice(0, 380);
   }
 
+  // 4. Pricing / packaging signals
+  const pricingMatch = markdown.match(/\b(starts\s+at\s+\$[0-9,]+|\$[0-9,]+\s*\/\s*(?:mo|month|yr|year)|retainer\s+from\s+\$[0-9,]+|pricing\s+tier|enterprise\s+tier|custom\s+pricing|annual\s+billing)\b/i);
+  if (pricingMatch?.[0]) {
+    signals.pricingModel = clean(pricingMatch[0]).slice(0, 100);
+  }
+
+  // 5. Tech stack / partner ecosystem signals
+  const techStackMatches = markdown.match(/\b(hubspot|salesforce|stripe|shopify|next\.js|react|aws|gcp|zapier|make\.com|n8n|wordpress|webflow|supabase|snowflake|segment)\b/gi);
+  if (techStackMatches && techStackMatches.length > 0) {
+    const uniqueTech = Array.from(new Set(techStackMatches.map(t => t.toLowerCase())));
+    signals.techStack = uniqueTech.slice(0, 6).join(', ');
+  }
+
+  // 6. Case studies / social proof
+  const caseStudyMatch = markdown.match(/\b(?:case\s+studies|client\s+stories|trusted\s+by|success\s+stories|featured\s+in|results\s+for)\s*[:\n]\s*([^\n.]{10,120})/i);
+  if (caseStudyMatch?.[1]) {
+    signals.caseStudies = clean(caseStudyMatch[1]).slice(0, 160);
+  }
+
+  // 7. Hiring / open roles
+  const hiringMatch = markdown.match(/\b(?:we're\s+hiring|we\s+are\s+hiring|open\s+positions|join\s+our\s+team|current\s+openings)\s*[:\n]?\s*([^\n.]{10,120})/i);
+  if (hiringMatch?.[1] || /\b(we're\s+hiring|open\s+roles|careers)\b/i.test(markdown)) {
+    signals.openRoles = clean(hiringMatch?.[1] || "Actively hiring").slice(0, 120);
+  }
+
   return Object.keys(signals).length > 0 ? signals : null;
 }
 
@@ -399,7 +428,7 @@ export async function probeCompanySites(
     const hasSignals = Boolean(extractSiteSignals(rootText));
     if (!hasSignals || rootText.length < 400) {
       const cleanRoot = domain.replace(/\/$/, '');
-      const subUrls = [`${cleanRoot}/about`, `${cleanRoot}/team`];
+      const subUrls = [`${cleanRoot}/about`, `${cleanRoot}/team`, `${cleanRoot}/pricing`, `${cleanRoot}/case-studies`, `${cleanRoot}/careers`];
       for (const u of subUrls) {
         subpathUrlsToExtract.push(u);
         probeUrlsToDomain.set(u, domain);

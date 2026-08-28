@@ -174,15 +174,15 @@ const clampEnvInt = (
 // tunable; term-matching evidence is always preserved regardless of caps.
 const MAX_EVIDENCE_ITEMS = clampEnvInt(
   "FINALIST_JUDGE_MAX_EVIDENCE_ITEMS",
-  3,
+  5,
   1,
-  6,
+  8,
 );
 const EVIDENCE_CHARS = clampEnvInt(
   "FINALIST_JUDGE_EVIDENCE_CHARS",
-  400,
+  800,
   200,
-  900,
+  1600,
 );
 
 export function buildFinalistJudgePrompt(
@@ -327,22 +327,33 @@ const normalizeAssessment = (
   const evidenceQuote = clean(raw?.evidenceQuote, 400);
   const evidence = candidate.evidence.find((item) => item.id === evidenceId);
 
+  let matchedEvidenceId = evidenceId;
   let quoteValid = false;
   if (status !== 'pass' || !evidenceQuote) {
     quoteValid = true;
-  } else if (!evidence) {
-    quoteValid = false;
-  } else if (isFlagEnabled.fuzzyQuoteGrounding()) {
-    quoteValid = verifyEvidencePassage(evidence.text, evidenceQuote).valid;
+  } else if (evidence && (isFlagEnabled.fuzzyQuoteGrounding() ? verifyEvidencePassage(evidence.text, evidenceQuote).valid : evidence.text.includes(evidenceQuote))) {
+    quoteValid = true;
   } else {
-    quoteValid = evidence.text.includes(evidenceQuote);
+    // Multi-evidence fallback scan: check if quote is present in any other candidate evidence
+    for (const altEvidence of candidate.evidence) {
+      if (altEvidence.text) {
+        const isMatch = isFlagEnabled.fuzzyQuoteGrounding()
+          ? verifyEvidencePassage(altEvidence.text, evidenceQuote).valid
+          : altEvidence.text.includes(evidenceQuote);
+        if (isMatch) {
+          quoteValid = true;
+          matchedEvidenceId = altEvidence.id;
+          break;
+        }
+      }
+    }
   }
 
   return {
     requirementId: requirement.id,
     status: quoteValid ? status : "unknown",
     fabricatedPass: status === "pass" && !quoteValid,
-    evidenceId: quoteValid ? evidenceId || undefined : undefined,
+    evidenceId: quoteValid ? matchedEvidenceId || undefined : undefined,
     evidenceQuote: quoteValid ? evidenceQuote || undefined : undefined,
     reason: clean(raw?.reason, 280) || undefined,
   };

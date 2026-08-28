@@ -20,7 +20,7 @@ import {
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 18;
+const LATEST_SCHEMA_VERSION = 19;
 export const LEADS_DB_PATH = process.env.APEX_DB_PATH
   ? path.resolve(process.env.APEX_DB_PATH)
   : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
@@ -882,6 +882,19 @@ function runMigrations(db: DatabaseSync) {
         );
         CREATE INDEX IF NOT EXISTS idx_discovered_companies_last_seen
           ON discovered_companies(last_seen_at DESC);
+      `);
+    }
+
+    if (currentVersion < 19) {
+      addColumnIfMissing(
+        db,
+        "query_performance",
+        "domain_cluster",
+        "domain_cluster TEXT NOT NULL DEFAULT 'global'",
+      );
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_query_performance_domain_cluster
+          ON query_performance(domain_cluster, updated_at DESC);
       `);
     }
 
@@ -2619,16 +2632,18 @@ export function updateSavedSearchExcludeList(
 }
 
 export type QueryPerformanceUpdate = {
-  family: string;
-  lane: string;
-  provider: string;
+  domainCluster?: string;
+  scopeKey?: string;
+  family?: string;
+  lane?: string;
+  provider?: string;
   runs?: number;
-  outcomeRuns?: number;
   rawCandidates?: number;
   uniqueCandidates?: number;
   extractedCandidates?: number;
   acceptedCandidates?: number;
   duplicateCandidates?: number;
+  outcomeRuns?: number;
   qualifiedCandidates?: number;
   rescuedCandidates?: number;
   returnedCandidates?: number;
@@ -2641,42 +2656,48 @@ export type QueryPerformanceUpdate = {
 };
 
 export function recordQueryPerformance(update: QueryPerformanceUpdate) {
+  const domainCluster = String(update.domainCluster || "global").trim().toLowerCase().slice(0, 80) || "global";
   const family = String(update.family || "general").slice(0, 80);
   const lane = String(update.lane || "person").slice(0, 80);
   const provider = String(update.provider || "tavily").slice(0, 80);
-  const scopeKey = [family, lane, provider].join("|").toLowerCase();
+  const scopeKey = update.scopeKey && update.scopeKey.includes("|")
+    ? update.scopeKey.toLowerCase()
+    : [domainCluster !== "global" ? domainCluster : "", family, lane, provider].filter(Boolean).join("|").toLowerCase();
+
   getLeadsDb()
     .prepare(
       `
     INSERT INTO query_performance (
-      scope_key, family, lane, provider, runs, raw_candidates, unique_candidates,
+      scope_key, domain_cluster, family, lane, provider, runs, raw_candidates, unique_candidates,
       extracted_candidates, accepted_candidates, duplicate_candidates, outcome_runs,
       qualified_candidates, rescued_candidates, returned_candidates, search_latency_ms,
       provider_units, judged_candidates, hard_failed_candidates, unknown_candidates,
       requirement_fail_digest, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_key) DO UPDATE SET
-      runs = query_performance.runs + excluded.runs,
-      raw_candidates = query_performance.raw_candidates + excluded.raw_candidates,
-      unique_candidates = query_performance.unique_candidates + excluded.unique_candidates,
-      extracted_candidates = query_performance.extracted_candidates + excluded.extracted_candidates,
-      accepted_candidates = query_performance.accepted_candidates + excluded.accepted_candidates,
-      duplicate_candidates = query_performance.duplicate_candidates + excluded.duplicate_candidates,
-      outcome_runs = query_performance.outcome_runs + excluded.outcome_runs,
-      qualified_candidates = query_performance.qualified_candidates + excluded.qualified_candidates,
-      rescued_candidates = query_performance.rescued_candidates + excluded.rescued_candidates,
-      returned_candidates = query_performance.returned_candidates + excluded.returned_candidates,
-      search_latency_ms = query_performance.search_latency_ms + excluded.search_latency_ms,
-      provider_units = query_performance.provider_units + excluded.provider_units,
-      judged_candidates = query_performance.judged_candidates + excluded.judged_candidates,
-      hard_failed_candidates = query_performance.hard_failed_candidates + excluded.hard_failed_candidates,
-      unknown_candidates = query_performance.unknown_candidates + excluded.unknown_candidates,
+      domain_cluster = excluded.domain_cluster,
+      runs = CAST(ROUND(query_performance.runs * 0.95 + excluded.runs) AS INTEGER),
+      raw_candidates = CAST(ROUND(query_performance.raw_candidates * 0.95 + excluded.raw_candidates) AS INTEGER),
+      unique_candidates = CAST(ROUND(query_performance.unique_candidates * 0.95 + excluded.unique_candidates) AS INTEGER),
+      extracted_candidates = CAST(ROUND(query_performance.extracted_candidates * 0.95 + excluded.extracted_candidates) AS INTEGER),
+      accepted_candidates = CAST(ROUND(query_performance.accepted_candidates * 0.95 + excluded.accepted_candidates) AS INTEGER),
+      duplicate_candidates = CAST(ROUND(query_performance.duplicate_candidates * 0.95 + excluded.duplicate_candidates) AS INTEGER),
+      outcome_runs = CAST(ROUND(query_performance.outcome_runs * 0.95 + excluded.outcome_runs) AS INTEGER),
+      qualified_candidates = CAST(ROUND(query_performance.qualified_candidates * 0.95 + excluded.qualified_candidates) AS INTEGER),
+      rescued_candidates = CAST(ROUND(query_performance.rescued_candidates * 0.95 + excluded.rescued_candidates) AS INTEGER),
+      returned_candidates = CAST(ROUND(query_performance.returned_candidates * 0.95 + excluded.returned_candidates) AS INTEGER),
+      search_latency_ms = CAST(ROUND(query_performance.search_latency_ms * 0.95 + excluded.search_latency_ms) AS INTEGER),
+      provider_units = CAST(ROUND(query_performance.provider_units * 0.95 + excluded.provider_units) AS INTEGER),
+      judged_candidates = CAST(ROUND(query_performance.judged_candidates * 0.95 + excluded.judged_candidates) AS INTEGER),
+      hard_failed_candidates = CAST(ROUND(query_performance.hard_failed_candidates * 0.95 + excluded.hard_failed_candidates) AS INTEGER),
+      unknown_candidates = CAST(ROUND(query_performance.unknown_candidates * 0.95 + excluded.unknown_candidates) AS INTEGER),
       requirement_fail_digest = COALESCE(excluded.requirement_fail_digest, query_performance.requirement_fail_digest),
       updated_at = excluded.updated_at
   `,
     )
     .run(
       scopeKey,
+      domainCluster,
       family,
       lane,
       provider,
@@ -2700,14 +2721,24 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     );
 }
 
-export function readQueryPerformance(limit = 100) {
-  return getLeadsDb()
+export function readQueryPerformance(limit = 100, domainCluster?: string) {
+  const safeLimit = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
+  const db = getLeadsDb();
+  if (domainCluster && domainCluster !== "global") {
+    try {
+      const clusterRows = db
+        .prepare(
+          `SELECT * FROM query_performance WHERE domain_cluster = ? OR domain_cluster = 'global' ORDER BY updated_at DESC LIMIT ?`
+        )
+        .all(domainCluster.toLowerCase(), safeLimit) as any[];
+      if (clusterRows.length > 0) return clusterRows;
+    } catch {}
+  }
+  return db
     .prepare(
-      `
-    SELECT * FROM query_performance ORDER BY updated_at DESC LIMIT ?
-  `,
+      `SELECT * FROM query_performance ORDER BY updated_at DESC LIMIT ?`
     )
-    .all(Math.min(Math.max(Math.floor(limit) || 100, 1), 500)) as any[];
+    .all(safeLimit) as any[];
 }
 
 const usagePeriod = (date = new Date()) => date.toISOString().slice(0, 7);

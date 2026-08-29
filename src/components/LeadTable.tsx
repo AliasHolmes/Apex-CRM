@@ -34,7 +34,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -709,19 +709,28 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
 
   const { rows } = table.getRowModel();
 
-  const rowVirtualizer = useVirtualizer({
+  const rowVirtualizer = useWindowVirtualizer({
     count: rows.length,
-    getScrollElement: () => tableContainerRef.current,
     estimateSize: () => 76,
     overscan: 10,
+    scrollMargin: tableContainerRef.current?.offsetTop ?? 0,
     useFlushSync: false,
   });
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const totalSize = rowVirtualizer.getTotalSize();
-  const paddingTop = virtualRows.length > 0 ? virtualRows[0]?.start ?? 0 : 0;
+  const scrollMargin = rowVirtualizer.options.scrollMargin ?? 0;
+  const paddingTop =
+    virtualRows.length > 0
+      ? Math.max(0, (virtualRows[0]?.start ?? 0) - scrollMargin)
+      : 0;
   const paddingBottom =
-    virtualRows.length > 0 ? totalSize - (virtualRows[virtualRows.length - 1]?.end ?? 0) : 0;
+    virtualRows.length > 0
+      ? Math.max(
+          0,
+          totalSize - ((virtualRows[virtualRows.length - 1]?.end ?? 0) - scrollMargin),
+        )
+      : 0;
 
   React.useEffect(() => {
     setCurrentPage(1);
@@ -1524,13 +1533,13 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         </div>
       </div>
 
-      {/* Real Table Grid scrollable container with virtualized rows */}
+      {/* Real Table Grid container with window-virtualized rows */}
       <div
         ref={tableContainerRef}
-        className="relative max-h-[720px] overflow-auto border rounded-xl mb-16 shadow-inner"
+        className="border rounded-xl mb-16"
       >
-        <Table className="relative w-full">
-          <TableHeader className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur-md shadow-xs">
+        <Table>
+          <TableHeader>
             <TableRow>
               <TableHead className="w-10 text-center">
                 <input
@@ -1598,7 +1607,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           </TableBody>
         </Table>
         {filteredLeads.length > PROSPECTS_PAGE_SIZE && (
-          <div className="sticky bottom-0 z-10 flex flex-col gap-3 border-t bg-slate-950/95 backdrop-blur-md px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 border-t bg-slate-950/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-xs font-medium text-muted-foreground">
               Showing <span className="text-foreground">{pageStart}-{pageEnd}</span> of <span className="text-foreground">{filteredLeads.length}</span> matching prospects
             </div>

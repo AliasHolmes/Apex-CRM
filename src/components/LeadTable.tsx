@@ -96,7 +96,6 @@ const LeadTableRow = React.memo(
     const addedTime = hasValidAddedAt
       ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : '';
-    const stageMeta = getPipelineStageMeta(lead.stage);
     const provenance = getLeadProvenance(lead);
     const scout = provenance.scout;
     const linkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
@@ -326,11 +325,6 @@ const LeadTableRow = React.memo(
         ) : (
           <span className="text-xs text-slate-600">--</span>
         )}
-      </TableCell>
-      <TableCell className="text-center">
-        <Badge variant="outline" className={`text-xs ${stageMeta.badgeClassName}`}>
-          {stageMeta.shortLabel}
-        </Badge>
       </TableCell>
       <TableCell className="text-right">
         <Button
@@ -688,10 +682,6 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       {
         id: 'qualificationScore',
         header: 'Qualification Score',
-      },
-      {
-        accessorKey: 'stage',
-        header: 'Pipeline status',
       },
       {
         id: 'actions',
@@ -1560,14 +1550,13 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <TableHead>Authority & Match Reason</TableHead>
               <TableHead>Added</TableHead>
               <TableHead className="text-center">Qualification Score</TableHead>
-              <TableHead className="text-center">Pipeline status</TableHead>
               <TableHead className="text-right">Delete</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filteredLeads.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="text-center text-muted-foreground font-medium py-8">
+                <TableCell colSpan={9} className="text-center text-muted-foreground font-medium py-8">
                   No records stored matching your current directory queries.
                 </TableCell>
               </TableRow>
@@ -1575,7 +1564,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <>
                 {paddingTop > 0 && (
                   <tr>
-                    <td style={{ height: `${paddingTop}px` }} colSpan={10} />
+                    <td style={{ height: `${paddingTop}px` }} colSpan={9} />
                   </tr>
                 )}
                 {virtualRows.map((virtualRow) => {
@@ -1599,7 +1588,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 })}
                 {paddingBottom > 0 && (
                   <tr>
-                    <td style={{ height: `${paddingBottom}px` }} colSpan={10} />
+                    <td style={{ height: `${paddingBottom}px` }} colSpan={9} />
                   </tr>
                 )}
               </>

@@ -29,6 +29,12 @@ import {
   UserCheck,
   Zap
 } from 'lucide-react';
+import {
+  ColumnDef,
+  getCoreRowModel,
+  useReactTable,
+} from '@tanstack/react-table';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -57,6 +63,7 @@ import {
 
 interface LeadTableRowProps {
   lead: Lead;
+  dataIndex?: number;
   isSelected: boolean;
   isDuplicate: boolean;
   isAsyncLocked: boolean;
@@ -66,38 +73,45 @@ interface LeadTableRowProps {
   onRequestDelete: (lead: Lead) => void;
 }
 
-const LeadTableRow = React.memo(function LeadTableRow({
-  lead,
-  isSelected,
-  isDuplicate,
-  isAsyncLocked,
-  isMutationLocked,
-  onSelect,
-  onOpenDetails,
-  onRequestDelete,
-}: LeadTableRowProps) {
-  const addedAt = lead.createdAt ? new Date(lead.createdAt) : null;
-  const hasValidAddedAt = !!addedAt && !Number.isNaN(addedAt.getTime());
-  const addedDate = hasValidAddedAt
-    ? addedAt.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
-    : 'Unknown';
-  const addedTime = hasValidAddedAt
-    ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '';
-  const stageMeta = getPipelineStageMeta(lead.stage);
-  const provenance = getLeadProvenance(lead);
-  const scout = provenance.scout;
-  const linkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
-  const linkedInSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(
-    [lead.profile.fullName, lead.profile.currentCompany].filter(Boolean).join(' '),
-  )}`;
+const LeadTableRow = React.memo(
+  React.forwardRef<HTMLTableRowElement, LeadTableRowProps>(function LeadTableRow(
+    {
+      lead,
+      dataIndex,
+      isSelected,
+      isDuplicate,
+      isAsyncLocked,
+      isMutationLocked,
+      onSelect,
+      onOpenDetails,
+      onRequestDelete,
+    },
+    ref,
+  ) {
+    const addedAt = lead.createdAt ? new Date(lead.createdAt) : null;
+    const hasValidAddedAt = !!addedAt && !Number.isNaN(addedAt.getTime());
+    const addedDate = hasValidAddedAt
+      ? addedAt.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+      : 'Unknown';
+    const addedTime = hasValidAddedAt
+      ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '';
+    const stageMeta = getPipelineStageMeta(lead.stage);
+    const provenance = getLeadProvenance(lead);
+    const scout = provenance.scout;
+    const linkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
+    const linkedInSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(
+      [lead.profile.fullName, lead.profile.currentCompany].filter(Boolean).join(' '),
+    )}`;
 
-  return (
-    <TableRow
-      className={`${isSelected ? 'bg-muted/50' : ''} ${
-        isDuplicate ? 'border-l-2 border-l-amber-500 bg-amber-500/5' : ''
-      }`}
-    >
+    return (
+      <TableRow
+        ref={ref}
+        data-index={dataIndex}
+        className={`${isSelected ? 'bg-muted/50' : ''} ${
+          isDuplicate ? 'border-l-2 border-l-amber-500 bg-amber-500/5' : ''
+        }`}
+      >
       <TableCell className="text-center">
         <input
           type="checkbox"
@@ -334,7 +348,7 @@ const LeadTableRow = React.memo(function LeadTableRow({
       </TableCell>
     </TableRow>
   );
-});
+}));
 
 export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => void }) {
   const {
@@ -638,6 +652,76 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     () => leads.find(lead => lead.id === detailsLeadId) || null,
     [detailsLeadId, leads],
   );
+
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+
+  const columns = useMemo<ColumnDef<Lead>[]>(
+    () => [
+      {
+        id: 'select',
+        header: 'Select',
+      },
+      {
+        accessorKey: 'profile.fullName',
+        header: 'Contact Profile Name',
+      },
+      {
+        accessorKey: 'profile.currentTitle',
+        header: 'Primary Title',
+      },
+      {
+        accessorKey: 'profile.currentCompany',
+        header: 'Employer / Company Name',
+      },
+      {
+        id: 'buyingSignals',
+        header: 'Buying Signals & Intent',
+      },
+      {
+        id: 'authority',
+        header: 'Authority & Match Reason',
+      },
+      {
+        accessorKey: 'createdAt',
+        header: 'Added',
+      },
+      {
+        id: 'qualificationScore',
+        header: 'Qualification Score',
+      },
+      {
+        accessorKey: 'stage',
+        header: 'Pipeline status',
+      },
+      {
+        id: 'actions',
+        header: 'Delete',
+      },
+    ],
+    [],
+  );
+
+  const table = useReactTable({
+    data: paginatedLeads,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
+  const { rows } = table.getRowModel();
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => 76,
+    overscan: 10,
+    useFlushSync: false,
+  });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0]?.start ?? 0 : 0;
+  const paddingBottom =
+    virtualRows.length > 0 ? totalSize - (virtualRows[virtualRows.length - 1]?.end ?? 0) : 0;
 
   React.useEffect(() => {
     setCurrentPage(1);
@@ -1440,10 +1524,13 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         </div>
       </div>
 
-      {/* Real Table Grid scrollable container */}
-      <div className="border rounded-xl mb-16">
-        <Table>
-          <TableHeader>
+      {/* Real Table Grid scrollable container with virtualized rows */}
+      <div
+        ref={tableContainerRef}
+        className="relative max-h-[720px] overflow-auto border rounded-xl mb-16 shadow-inner"
+      >
+        <Table className="relative w-full">
+          <TableHeader className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur-md shadow-xs">
             <TableRow>
               <TableHead className="w-10 text-center">
                 <input
@@ -1476,24 +1563,42 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 </TableCell>
               </TableRow>
             ) : (
-              paginatedLeads.map((lead) => (
-                <LeadTableRow
-                  key={lead.id}
-                  lead={lead}
-                  isSelected={selectedLeadIds.has(lead.id)}
-                  isDuplicate={duplicateIds.has(lead.id)}
-                  isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
-                  isMutationLocked={isBulkMutating}
-                  onSelect={handleSelectRow}
-                  onOpenDetails={handleOpenDetails}
-                  onRequestDelete={handleRequestDeleteLead}
-                />
-              ))
+              <>
+                {paddingTop > 0 && (
+                  <tr>
+                    <td style={{ height: `${paddingTop}px` }} colSpan={10} />
+                  </tr>
+                )}
+                {virtualRows.map((virtualRow) => {
+                  const row = rows[virtualRow.index];
+                  const lead = row.original;
+                  return (
+                    <LeadTableRow
+                      key={lead.id}
+                      lead={lead}
+                      ref={rowVirtualizer.measureElement}
+                      dataIndex={virtualRow.index}
+                      isSelected={selectedLeadIds.has(lead.id)}
+                      isDuplicate={duplicateIds.has(lead.id)}
+                      isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
+                      isMutationLocked={isBulkMutating}
+                      onSelect={handleSelectRow}
+                      onOpenDetails={handleOpenDetails}
+                      onRequestDelete={handleRequestDeleteLead}
+                    />
+                  );
+                })}
+                {paddingBottom > 0 && (
+                  <tr>
+                    <td style={{ height: `${paddingBottom}px` }} colSpan={10} />
+                  </tr>
+                )}
+              </>
             )}
           </TableBody>
         </Table>
         {filteredLeads.length > PROSPECTS_PAGE_SIZE && (
-          <div className="flex flex-col gap-3 border-t bg-slate-950/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="sticky bottom-0 z-10 flex flex-col gap-3 border-t bg-slate-950/95 backdrop-blur-md px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-xs font-medium text-muted-foreground">
               Showing <span className="text-foreground">{pageStart}-{pageEnd}</span> of <span className="text-foreground">{filteredLeads.length}</span> matching prospects
             </div>

@@ -122,7 +122,7 @@ flowchart TD
 
 #### 9. Lean Adaptive Collection & Targeted Post-Selection Enrichment (ADR-0004)
 
-- **Proportional Collection Capacity**: Calibrates candidate pool targets with a tight 1.15x–1.25x cushion (e.g. 25 candidates for a 20-lead target instead of 80–120).
+- **Proportional Collection Capacity**: Calibrates candidate pool targets with a tight 1.15x-1.25x cushion (e.g. 25 candidates for a 20-lead target instead of 80-120).
 - **Decoupled Early Exit**: Automatically terminates discovery rounds when verified candidate volume satisfies target limits, eliminating false-recovery round loops caused by keyword heuristics.
 - **Targeted Post-Selection Enrichment**: Defers heavy company site probing (Phase 4) and LinkedIn post SERP intent (Phase 5) until after Finalist Judging and Pareto diversification, eliminating 70%+ of wasted network and LLM token overhead.
 - **Capped Judge Batches**: Prioritizes top pre-ranked candidates for LLM evaluation, bounding judge batches to $1.35\times$ target limit.

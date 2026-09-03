@@ -10,6 +10,7 @@
         "start": "node dist/server.cjs --production",
         "clean": "node -e \"const fs=require('fs');['dist','server.js'].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch{}});\"",
         "lint": "tsc --noEmit",
+        "test": "tsx --test \"test/*.test.ts\"",
         "test:enrichment": "tsx --test test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/linkedinPostIntent.test.ts",
         "test:lead-search": "tsx --test test/leadSearchHelpers.test.ts",
         "test:prospect-quality": "tsx --test test/prospectQuality.test.ts test/contractShape.test.ts",

@@ -22,6 +22,8 @@ type SessionBroadcast = {
   lastLogTotal: number;
   lastTraceTotal: number;
   missingTicks: number;
+  lastDbReadAt: number;
+  cachedSession: Record<string, any> | null;
 };
 
 const POLL_INTERVAL_MS = 250;
@@ -38,6 +40,8 @@ class SessionStreamHub {
         lastLogTotal: 0,
         lastTraceTotal: 0,
         missingTicks: 0,
+        lastDbReadAt: 0,
+        cachedSession: null,
       };
       this.broadcasts.set(sessionId, broadcast);
     }
@@ -73,9 +77,33 @@ class SessionStreamHub {
     if (!broadcast) return;
 
     try {
+      const now = Date.now();
+      const totalLogs = discoveryEngine.getLiveLogTotal(sessionId);
+      const totalTraces = discoveryEngine.getLiveTraceTotal(sessionId);
+      const memoryCountersChanged =
+        totalLogs > broadcast.lastLogTotal ||
+        totalTraces > broadcast.lastTraceTotal;
+
+      const isEngineActive = discoveryEngine.isActive(sessionId);
+      const wasActiveInCache =
+        broadcast.cachedSession?.status === "running" ||
+        broadcast.cachedSession?.status === "cancellation_requested";
+      const engineTransitionedToInactive = wasActiveInCache && !isEngineActive;
+
+      const shouldReadDb =
+        broadcast.lastDbReadAt === 0 ||
+        memoryCountersChanged ||
+        engineTransitionedToInactive ||
+        now - broadcast.lastDbReadAt >= 1000;
+
+      if (shouldReadDb) {
+        broadcast.cachedSession = readMiningSessionSummaryById(sessionId);
+        broadcast.lastDbReadAt = now;
+      }
+
+      const session = broadcast.cachedSession;
       const logs = discoveryEngine.getLiveLogs(sessionId) || [];
       const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
-      const session = readMiningSessionSummaryById(sessionId);
 
       const isMissing = !session && logs.length === 0 && traceEvents.length === 0;
       if (isMissing) {
@@ -101,9 +129,6 @@ class SessionStreamHub {
         }
         return;
       }
-
-      const totalLogs = discoveryEngine.getLiveLogTotal(sessionId);
-      const totalTraces = discoveryEngine.getLiveTraceTotal(sessionId);
 
       const newLogCount = Math.max(
         0,

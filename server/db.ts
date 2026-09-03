@@ -1856,7 +1856,40 @@ export function upsertLead(
 
 export function deleteLead(id: string) {
   const db = getLeadsDb();
-  db.prepare("DELETE FROM leads WHERE id = ?").run(id);
+  const shouldManageTransaction = !(db as any).inTransaction;
+  let startedTransaction = false;
+  if (shouldManageTransaction) {
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      startedTransaction = true;
+    } catch (e: any) {
+      if (!e?.message?.includes("cannot start a transaction within a transaction")) {
+        throw e;
+      }
+    }
+  }
+
+  try {
+    db.prepare("DELETE FROM lead_activities WHERE lead_id = ?").run(id);
+    db.prepare("DELETE FROM outreach_drafts WHERE lead_id = ?").run(id);
+    db.prepare(
+      "DELETE FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?",
+    ).run(id, id);
+    db.prepare("DELETE FROM leads WHERE id = ?").run(id);
+
+    if (startedTransaction) {
+      db.exec("COMMIT");
+    }
+  } catch (error) {
+    if (startedTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* ignore rollback failure */
+      }
+    }
+    throw error;
+  }
 }
 
 export function transferLeadIdentities(
@@ -3172,7 +3205,7 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
     .prepare(
       `
       SELECT * FROM mining_sessions
-      WHERE status = 'interrupted' AND checkpoint_json IS NOT NULL
+      WHERE status IN ('interrupted', 'error') AND checkpoint_json IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 20
     `,
@@ -3469,7 +3502,10 @@ export type LeadActivityRecord = {
 // -- Lead Activity Helpers ----------------------------------------------------
 
 export function insertLeadActivity(
-  entry: Omit<LeadActivityRecord, "id"> & { id?: string },
+  entry: Omit<LeadActivityRecord, "id" | "createdAt"> & {
+    id?: string;
+    createdAt?: string;
+  },
 ): void {
   try {
     const db = getLeadsDb();

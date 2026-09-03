@@ -661,11 +661,10 @@ router.delete("/leads", (req, res): any => {
         });
     }
     const db = getLeadsDb();
-    const stmt = db.prepare("DELETE FROM leads WHERE id = ?");
     db.exec("BEGIN IMMEDIATE");
     try {
       for (const id of ids) {
-        stmt.run(id);
+        deleteLead(id);
       }
       db.exec("COMMIT");
     } catch (err) {
@@ -2036,6 +2035,39 @@ router.post("/chat", async (req, res): Promise<any> => {
             )
             .join("\n");
 
+    // Augment with search-relevant leads for the user query
+    let searchContext = "";
+    try {
+      const STOP_WORDS = new Set([
+        "a", "about", "all", "an", "and", "any", "are", "as", "at", "be", "been",
+        "can", "could", "did", "do", "does", "for", "from", "had", "has", "have",
+        "how", "i", "in", "is", "it", "lead", "leads", "me", "my", "of", "on", "or",
+        "our", "pipeline", "prospect", "prospects", "show", "status", "tell", "that",
+        "the", "these", "this", "those", "to", "us", "was", "were", "what", "when",
+        "where", "which", "who", "why", "will", "with", "would",
+      ]);
+      const searchTokens = query
+        .replace(/[^\p{L}\p{N}\s_@.-]/gu, " ")
+        .split(/\s+/)
+        .filter((w: string) => w.length > 1 && !STOP_WORDS.has(w.toLowerCase()));
+
+      if (searchTokens.length > 0) {
+        const searchQuery = searchTokens.slice(0, 6).join(" ");
+        const searchRes = readLeadsSummary({ search: searchQuery, limit: 15 });
+        if (searchRes.leads && searchRes.leads.length > 0) {
+          const searchFormatted = searchRes.leads
+            .map(
+              (l: any, i: number) =>
+                `${i + 1}. ${l.profile?.fullName || l.fullName || "Unknown"} - ${l.profile?.currentTitle || l.title || "Unknown"} at ${l.profile?.currentCompany || l.company || "Unknown"} | Stage: ${l.stage || "Unknown"} | Fit: ${l.fitScore ?? "?"}/10 | Intent: ${l.intentScore ?? "?"}/10`,
+            )
+            .join("\n");
+          searchContext = `\n\n### Search-Relevant Prospects for Current Query:\n${searchFormatted}`;
+        }
+      }
+    } catch (searchError) {
+      console.warn("[Copilot Chat] Search augmentation fallback:", searchError);
+    }
+
     const systemPrompt = `${APEX_SYSTEM_PROMPT}
 
 ## Current CRM Pipeline Context
@@ -2045,7 +2077,7 @@ Total Leads: ${totalLeads}
 ${stageSummary}
 
 ### Active Leads List (Showing top 50 by qualification):
-${leadsContext}
+${leadsContext}${searchContext}
 
 Answer the user's question about their CRM pipeline, leads, outreach strategy, or any sales-related query. Be direct, concise, and actionable. Format responses in markdown.`;
 

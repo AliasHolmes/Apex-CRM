@@ -10,6 +10,9 @@ process.env.APEX_DB_PATH = path.join(dataDirectory, 'leads.sqlite');
 const {
   deleteLead,
   getLeadsDb,
+  insertLeadActivity,
+  upsertOutreachDraft,
+  readResumableMiningSessions,
   LeadNotFoundError,
   LeadRevisionConflictError,
   readMiningSessionById,
@@ -344,3 +347,159 @@ test('F6: persists and accumulates saved search exclude lists up to maxLimit', (
   const boundedUpdate = getSavedSearchExcludeList(search.id);
   assert.equal(boundedUpdate.length, 2);
 });
+
+test('deleteLead cascades deletion to lead_activities, outreach_drafts, and lead_identity_conflicts', () => {
+  const db = getLeadsDb();
+  const lead = upsertLead(createLead('cascade-lead-1'));
+
+  // Insert an activity
+  insertLeadActivity({
+    leadId: lead.id,
+    type: 'stage_change',
+    fromValue: 'SCRAPED',
+    toValue: 'ENRICHED',
+    actor: 'user',
+    createdAt: new Date().toISOString(),
+  });
+
+  // Insert an outreach draft
+  upsertOutreachDraft({
+    id: 'draft-1',
+    leadId: lead.id,
+    leadName: 'Cascade Test',
+    companyName: 'Acme',
+    tone: 'professional',
+    medium: 'email',
+    sequenceStep: 'step_1',
+    wordCount: 1,
+    body: 'Hello',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  // Insert an identity conflict record
+  db.prepare(`
+    INSERT INTO lead_identity_conflicts (identity_key, canonical_lead_id, duplicate_lead_id, detected_at)
+    VALUES (?, ?, ?, datetime('now'))
+  `).run('linkedin:cascadetest', lead.id, 'other-lead-id');
+
+  // Verify records exist before delete
+  const activitiesBefore = db.prepare('SELECT COUNT(*) as cnt FROM lead_activities WHERE lead_id = ?').get(lead.id) as any;
+  assert.equal(activitiesBefore.cnt, 1);
+  const draftsBefore = db.prepare('SELECT COUNT(*) as cnt FROM outreach_drafts WHERE lead_id = ?').get(lead.id) as any;
+  assert.equal(draftsBefore.cnt, 1);
+  const conflictsBefore = db.prepare('SELECT COUNT(*) as cnt FROM lead_identity_conflicts WHERE canonical_lead_id = ?').get(lead.id) as any;
+  assert.equal(conflictsBefore.cnt, 1);
+
+  // Perform delete
+  deleteLead(lead.id);
+
+  // Verify all cascaded records are deleted
+  const activitiesAfter = db.prepare('SELECT COUNT(*) as cnt FROM lead_activities WHERE lead_id = ?').get(lead.id) as any;
+  assert.equal(activitiesAfter.cnt, 0);
+  const draftsAfter = db.prepare('SELECT COUNT(*) as cnt FROM outreach_drafts WHERE lead_id = ?').get(lead.id) as any;
+  assert.equal(draftsAfter.cnt, 0);
+  const conflictsAfter = db.prepare('SELECT COUNT(*) as cnt FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?').get(lead.id, lead.id) as any;
+  assert.equal(conflictsAfter.cnt, 0);
+  const leadAfter = db.prepare('SELECT COUNT(*) as cnt FROM leads WHERE id = ?').get(lead.id) as any;
+  assert.equal(leadAfter.cnt, 0);
+});
+
+test('deleteLead functions correctly inside an existing transaction without throw or rollback error', () => {
+  const db = getLeadsDb();
+  const lead = upsertLead(createLead('cascade-lead-tx'));
+  insertLeadActivity({
+    leadId: lead.id,
+    type: 'note',
+    toValue: 'test note',
+    actor: 'user',
+  });
+
+  db.exec('BEGIN IMMEDIATE');
+  deleteLead(lead.id);
+  db.exec('COMMIT');
+
+  const activitiesAfter = db.prepare('SELECT COUNT(*) as cnt FROM lead_activities WHERE lead_id = ?').get(lead.id) as any;
+  assert.equal(activitiesAfter.cnt, 0);
+  const leadAfter = db.prepare('SELECT COUNT(*) as cnt FROM leads WHERE id = ?').get(lead.id) as any;
+  assert.equal(leadAfter.cnt, 0);
+});
+
+
+test('readResumableMiningSessions returns both interrupted and error sessions with checkpoints, excluding null checkpoints', () => {
+  const db = getLeadsDb();
+  const cpObj = {
+    sessionId: 'test-cp',
+    round: 2,
+    stage: 'scout',
+    promptQuery: 'test prompt',
+    targetLimit: 10,
+    contract: {},
+    queryRuns: [],
+    acceptedLeads: [],
+    qualifiedLeads: [],
+    finalLeads: [],
+    rejectionCounts: {},
+    failureCounts: {},
+    brightDataStats: {},
+    updatedAt: new Date().toISOString(),
+  };
+
+  // 1. Interrupted with checkpoint -> SHOULD be returned
+  upsertMiningSession({
+    id: 'resumable-interrupted-with-cp',
+    status: 'interrupted',
+    prompt: 'test prompt',
+    requestedLimit: 10,
+    startedAt: new Date().toISOString(),
+    checkpoint: cpObj as any,
+  });
+
+  // 2. Error with checkpoint -> SHOULD be returned
+  upsertMiningSession({
+    id: 'resumable-error-with-cp',
+    status: 'error',
+    prompt: 'test error prompt',
+    requestedLimit: 10,
+    startedAt: new Date().toISOString(),
+    checkpoint: cpObj as any,
+  });
+
+  // 3. Interrupted without checkpoint -> should NOT be returned
+  upsertMiningSession({
+    id: 'not-resumable-interrupted-no-cp',
+    status: 'interrupted',
+    prompt: 'test no cp prompt',
+    requestedLimit: 10,
+    startedAt: new Date().toISOString(),
+  });
+
+  // 4. Error without checkpoint -> should NOT be returned
+  upsertMiningSession({
+    id: 'not-resumable-error-no-cp',
+    status: 'error',
+    prompt: 'test no cp error prompt',
+    requestedLimit: 10,
+    startedAt: new Date().toISOString(),
+  });
+
+  // 5. Completed session -> should NOT be returned
+  upsertMiningSession({
+    id: 'not-resumable-completed',
+    status: 'success',
+    prompt: 'completed prompt',
+    requestedLimit: 10,
+    startedAt: new Date().toISOString(),
+    checkpoint: cpObj as any,
+  });
+
+  const resumable = readResumableMiningSessions();
+  const ids = resumable.map(s => s.id);
+
+  assert.ok(ids.includes('resumable-interrupted-with-cp'), 'Should include interrupted session with checkpoint');
+  assert.ok(ids.includes('resumable-error-with-cp'), 'Should include error session with checkpoint');
+  assert.ok(!ids.includes('not-resumable-interrupted-no-cp'), 'Should not include interrupted session without checkpoint');
+  assert.ok(!ids.includes('not-resumable-error-no-cp'), 'Should not include error session without checkpoint');
+  assert.ok(!ids.includes('not-resumable-completed'), 'Should not include completed session');
+});
+

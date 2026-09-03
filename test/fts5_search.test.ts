@@ -123,3 +123,46 @@ test("SQLite FTS5 indexes leads and supports instant text search across fields",
     deleteLead(testId2);
   }
 });
+
+test("Copilot chat query token extraction retrieves search-relevant prospects via FTS5", () => {
+  const testId = `test-fts-copilot-${Date.now()}`;
+  try {
+    upsertLeadWithIdentity({
+      id: testId,
+      fullName: "Copilot Retrieval Lead",
+      company: "Aether Dynamics",
+      title: "VP of Quantum Computing",
+      stage: "ENRICHED",
+      profile: {
+        fullName: "Copilot Retrieval Lead",
+        currentCompany: "Aether Dynamics",
+        currentTitle: "VP of Quantum Computing",
+      },
+    });
+
+    const STOP_WORDS = new Set([
+      "a", "about", "all", "an", "and", "any", "are", "as", "at", "be", "been",
+      "can", "could", "did", "do", "does", "for", "from", "had", "has", "have",
+      "how", "i", "in", "is", "it", "lead", "leads", "me", "my", "of", "on", "or",
+      "our", "pipeline", "prospect", "prospects", "show", "status", "tell", "that",
+      "the", "these", "this", "those", "to", "us", "was", "were", "what", "when",
+      "where", "which", "who", "why", "will", "with", "would",
+    ]);
+
+    const userMessage = "Tell me about the prospects at Aether Dynamics and Quantum Computing";
+    const searchTokens = userMessage
+      .replace(/[^\p{L}\p{N}\s_@.-]/gu, " ")
+      .split(/\s+/)
+      .filter((w: string) => w.length > 1 && !STOP_WORDS.has(w.toLowerCase()));
+
+    assert.deepEqual(searchTokens, ["Aether", "Dynamics", "Quantum", "Computing"]);
+
+    const searchQuery = searchTokens.slice(0, 6).join(" ");
+    const searchRes = readLeadsSummary({ search: searchQuery, limit: 15 });
+    assert.ok(searchRes.leads.some((l) => l.id === testId));
+    assert.equal(searchRes.leads.find((l) => l.id === testId)?.profile?.currentCompany || searchRes.leads.find((l) => l.id === testId)?.company, "Aether Dynamics");
+  } finally {
+    deleteLead(testId);
+  }
+});
+

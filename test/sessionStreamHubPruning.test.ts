@@ -44,4 +44,28 @@ describe('sessionStreamHub subscriber auto-pruning and lifecycle', () => {
     stats = sessionStreamHub.getStats().find(s => s.sessionId === sessionId);
     assert.equal(stats, undefined);
   });
+
+  it('throttles redundant SQLite polling when memory counters are unchanged', () => {
+    const sessionId = 'test-throttling-session';
+    const sub = () => {};
+    const unsub = sessionStreamHub.subscribe(sessionId, sub);
+
+    const broadcast = (sessionStreamHub as any).broadcasts.get(sessionId);
+    assert.ok(broadcast, 'Broadcast should exist');
+
+    // Manually trigger poll
+    (sessionStreamHub as any).poll(sessionId);
+    const initialDbReadAt = broadcast.lastDbReadAt;
+    assert.ok(initialDbReadAt > 0, 'First poll should perform a DB read');
+
+    // Immediate second poll with no log or trace changes
+    (sessionStreamHub as any).poll(sessionId);
+    assert.equal(
+      broadcast.lastDbReadAt,
+      initialDbReadAt,
+      'Second poll within 1000ms and no counter changes should NOT re-query SQLite',
+    );
+
+    unsub();
+  });
 });

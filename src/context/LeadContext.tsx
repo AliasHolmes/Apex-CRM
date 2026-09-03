@@ -335,7 +335,29 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       const stored = await loadLeadsFromSqliteBackend();
       lastRehydrateTimeRef.current = Date.now();
       if (stored.initialized) {
-        saveLeadsToStorage(sanitizeLeads(stored.leads));
+        const sanitizedServerLeads = sanitizeLeads(stored.leads);
+        saveLeadsToStorage((currentLeads) => {
+          const pendingQueues = leadPatchQueuesRef.current;
+          if (pendingQueues.size === 0) {
+            return sanitizedServerLeads;
+          }
+          const currentLeadMap = new Map(currentLeads.map((l) => [l.id, l]));
+          const serverLeadIds = new Set<string>();
+          const nextLeads = sanitizedServerLeads.map((serverLead) => {
+            serverLeadIds.add(serverLead.id);
+            if (pendingQueues.has(serverLead.id)) {
+              const currentLead = currentLeadMap.get(serverLead.id);
+              if (currentLead) return currentLead;
+            }
+            return serverLead;
+          });
+          for (const currentLead of currentLeads) {
+            if (pendingQueues.has(currentLead.id) && !serverLeadIds.has(currentLead.id)) {
+              nextLeads.unshift(currentLead);
+            }
+          }
+          return nextLeads;
+        });
         if (stored.stats) {
           setStats(stored.stats);
         } else {

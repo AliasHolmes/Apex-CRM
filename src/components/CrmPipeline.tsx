@@ -146,6 +146,7 @@ export default function CrmPipeline({
   const [tagMutationPending, setTagMutationPending] = useState(false);
   const [tagMutationError, setTagMutationError] = useState('');
   const [workflowMutationPending, setWorkflowMutationPending] = useState(false);
+  const [columnLimits, setColumnLimits] = useState<Record<string, number>>({});
 
   const notesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -624,6 +625,9 @@ export default function CrmPipeline({
           const previousStage = PREVIOUS_PIPELINE_STAGE[stage.id];
           const nextStage = NEXT_PIPELINE_STAGE[stage.id];
           const stageHeadingId = getPipelineStageDomId(stage.id);
+          const limit = columnLimits[stage.id] ?? 30;
+          const visibleLeads = stageLeads.slice(0, limit);
+          const remainingCount = stageLeads.length - visibleLeads.length;
 
           return (
             <section
@@ -654,12 +658,12 @@ export default function CrmPipeline({
 
               <div className="max-h-[600px] flex-1 space-y-4 overflow-y-auto pr-1">
                 <AnimatePresence initial={!reduceMotion} mode="popLayout">
-                  {stageLeads.length === 0 ? (
+                  {visibleLeads.length === 0 ? (
                     <p className="my-4 rounded-xl border border-dashed border-slate-800/80 p-6 text-center text-xs font-medium text-slate-500">
                       No leads in this stage
                     </p>
                   ) : (
-                    stageLeads.map((lead) => (
+                    visibleLeads.map((lead) => (
                       <motion.article
                         key={lead.id}
                         layout={!reduceMotion}
@@ -799,6 +803,38 @@ export default function CrmPipeline({
                     ))
                   )}
                 </AnimatePresence>
+                {remainingCount > 0 && (
+                  <div className="pt-2 pb-1 flex flex-col gap-1.5">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full text-xs font-semibold text-slate-300 border-slate-800 hover:bg-slate-800"
+                      onClick={() =>
+                        setColumnLimits((prev) => ({
+                          ...prev,
+                          [stage.id]: (prev[stage.id] ?? 30) + 30,
+                        }))
+                      }
+                    >
+                      Show more (+{remainingCount} remaining)
+                    </Button>
+                    {remainingCount > 30 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full text-xs text-slate-400 hover:text-white"
+                        onClick={() =>
+                          setColumnLimits((prev) => ({
+                            ...prev,
+                            [stage.id]: stageLeads.length,
+                          }))
+                        }
+                      >
+                        Show all
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
           );

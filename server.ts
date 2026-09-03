@@ -60,7 +60,7 @@ app.use((_, res, next) => {
   );
   next();
 });
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // DNS-Rebinding Guard
 // Validates Host and Origin headers on every API request. Even though the server is
@@ -117,7 +117,7 @@ app.use(
     ) {
       return res
         .status(413)
-        .json({ error: "Request body exceeds the 1 MB limit." });
+        .json({ error: "Request body exceeds the 10 MB limit." });
     }
     return next(error);
   },

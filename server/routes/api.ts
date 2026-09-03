@@ -16,6 +16,7 @@ import {
 import {
   readStoredLeads,
   readLeadsSummary,
+  readLeadsStats,
   readExistingIdentityKeys,
   readLeadsStageSummary,
   readStoredLeadById,
@@ -282,10 +283,11 @@ router.get("/leads", (req, res): any => {
       const total =
         (db.prepare("SELECT COUNT(*) as count FROM leads").get() as any)
           ?.count ?? rows.length;
+      const stats = readLeadsStats();
       const initialized = hasLeadStoreBeenInitialized();
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       return res.send(
-        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${total},"initialized":${initialized}}`,
+        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${stats.total},"stats":${JSON.stringify(stats)},"initialized":${initialized}}`,
       );
     }
 
@@ -299,15 +301,36 @@ router.get("/leads", (req, res): any => {
       summaryOnly: isSummary,
     });
 
+    const stats = readLeadsStats();
     res.json({
       apiVersion: 1,
       leads: result.leads,
       total: result.total,
+      stats,
       initialized: hasLeadStoreBeenInitialized(),
     });
   } catch (error: any) {
     console.error("Failed to read leads from SQLite:", error);
     res.status(500).json({ error: error.message || "Failed to read leads" });
+  }
+});
+
+router.get("/leads/stats", (_req, res): any => {
+  try {
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, proxy-revalidate",
+    );
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    const stats = readLeadsStats();
+    res.json({
+      apiVersion: 1,
+      ...stats,
+    });
+  } catch (error: any) {
+    console.error("Failed to read leads stats from SQLite:", error);
+    res.status(500).json({ error: error.message || "Failed to read leads stats" });
   }
 });
 
@@ -373,12 +396,17 @@ router.patch("/leads/:id", (req, res): any => {
 
     const previousReviewStatus = previousLead?.reviewStatus;
     const isNewRejection =
-      (storedLead.reviewStatus === "REJECTED" && previousReviewStatus !== "REJECTED") ||
-      (storedLead.stage === "UNQUALIFIED" && previousStage !== "UNQUALIFIED");
+      ((storedLead.reviewStatus === "REJECT" || storedLead.reviewStatus === "REJECTED") &&
+        previousReviewStatus !== "REJECT" && previousReviewStatus !== "REJECTED") ||
+      ((storedLead.stage === "LOST" || storedLead.stage === "UNQUALIFIED") &&
+        previousStage !== "LOST" && previousStage !== "UNQUALIFIED");
     const isNewVerification =
-      (storedLead.reviewStatus === "VERIFIED" && previousReviewStatus !== "VERIFIED") ||
-      (storedLead.stage === "CLOSED_WON" && previousStage !== "CLOSED_WON") ||
-      (storedLead.stage === "MEETING_SCHEDULED" && previousStage !== "MEETING_SCHEDULED");
+      ((storedLead.reviewStatus === "KEEP" || storedLead.reviewStatus === "VERIFIED") &&
+        previousReviewStatus !== "KEEP" && previousReviewStatus !== "VERIFIED") ||
+      ((storedLead.stage === "CONVERTED" || storedLead.stage === "CLOSED_WON") &&
+        previousStage !== "CONVERTED" && previousStage !== "CLOSED_WON") ||
+      ((storedLead.stage === "MEETING BOOKED" || storedLead.stage === "MEETING_SCHEDULED") &&
+        previousStage !== "MEETING BOOKED" && previousStage !== "MEETING_SCHEDULED");
 
     if (isNewRejection || isNewVerification) {
       const family = storedLead.evidence?.discoveryFamily || storedLead.scout?.family || "general";
@@ -393,7 +421,7 @@ router.patch("/leads/:id", (req, res): any => {
           outcomeRuns: 1,
           qualifiedCandidates: isNewVerification ? 1 : 0,
           hardFailedCandidates: isNewRejection ? 1 : 0,
-          rescuedCandidates: isNewRejection ? 1 : 0,
+          rescuedCandidates: 0,
         });
       } catch (err) {
         console.warn("[lead-review-feedback] Failed to record query performance feedback:", err);
@@ -1509,6 +1537,13 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     return res.status(400).json({ error: "Invalid sessionId." });
   }
 
+  const promptQuery = String(req.body?.query || "").trim();
+  if (!promptQuery || promptQuery.length > 2000) {
+    return res.status(400).json({
+      error: "query must be a non-empty string of 2,000 characters or fewer.",
+    });
+  }
+
   const savedSearchId =
     typeof req.body?.savedSearchId === "string" && req.body.savedSearchId.trim()
       ? req.body.savedSearchId.trim()
@@ -1534,10 +1569,17 @@ router.post("/find-leads", async (req, res): Promise<any> => {
   const targetSessionId = suppliedSessionId || `session-${crypto.randomUUID()}`;
 
   if (isAsyncMode) {
+    if (discoveryEngine.isActive(targetSessionId)) {
+      return res.status(409).json({
+        error: `A lead mining session with this sessionId is already active: ${targetSessionId}`,
+        sessionId: targetSessionId,
+      });
+    }
+
     discoveryEngine
       .execute({
         sessionId: targetSessionId,
-        promptQuery: req.body?.query,
+        promptQuery,
         requestedLimit: req.body?.limit,
         discoveryProviderMode:
           req.body?.discoveryMode || req.body?.discoveryProviderMode,
@@ -1572,7 +1614,7 @@ router.post("/find-leads", async (req, res): Promise<any> => {
   try {
     const result = await discoveryEngine.execute({
       sessionId: targetSessionId,
-      promptQuery: req.body?.query,
+      promptQuery,
       requestedLimit: req.body?.limit,
       discoveryProviderMode:
         req.body?.discoveryMode || req.body?.discoveryProviderMode,
@@ -1977,7 +2019,7 @@ router.post("/chat", async (req, res): Promise<any> => {
       .map(([stage, count]) => `- ${stage}: ${count}`)
       .join("\n");
 
-    const topLeads = readLeadsSummary({ limit: 50 }).leads;
+    const topLeads = readLeadsSummary({ limit: 50, orderBy: "score" }).leads;
     const leadsContext =
       topLeads.length === 0
         ? "The CRM pipeline is currently empty."

@@ -6,6 +6,7 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
+import { buildProfileDedupeKeys } from '../utils/leadDedupe';
 import Papa from 'papaparse';
 import { 
   FileDown, 
@@ -525,33 +526,23 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     [deferredSearch, industryFilter, locationFilter, nextActionFilter, reviewFilter, searchableLeads, stageFilter],
   );
 
-  // Consolidated single-pass duplicate analysis on all leads
+  // Consolidated single-pass duplicate analysis on all leads using authoritative dedupe keys
   const duplicateAnalysis = useMemo(() => {
     const duplicateIdSet = new Set<string>();
     const redundantIdsToDelete: string[] = [];
-    const seenEmails = new Map<string, string>();
-    const seenLinks = new Map<string, string>();
-    const seenNames = new Map<string, string>();
+    const seenKeyToId = new Map<string, string>();
 
     for (const lead of leads) {
-      const p = (lead.profile || {}) as Partial<any>;
-      const email = p.contactDetails?.email?.toLowerCase();
-      const linkedin = p.contactDetails?.linkedinUrl?.toLowerCase();
-      const comp = (p.currentCompany || '').toLowerCase();
-      const nameKey = `${(p.fullName || '').toLowerCase()}::${comp}`;
-
+      const keys = buildProfileDedupeKeys(lead);
       let isRedundant = false;
       let matchedFirstId: string | undefined;
 
-      if (email && seenEmails.has(email)) {
-        isRedundant = true;
-        matchedFirstId = seenEmails.get(email);
-      } else if (linkedin && seenLinks.has(linkedin)) {
-        isRedundant = true;
-        matchedFirstId = seenLinks.get(linkedin);
-      } else if (nameKey !== '::' && seenNames.has(nameKey)) {
-        isRedundant = true;
-        matchedFirstId = seenNames.get(nameKey);
+      for (const key of keys) {
+        if (seenKeyToId.has(key)) {
+          isRedundant = true;
+          matchedFirstId = seenKeyToId.get(key);
+          break;
+        }
       }
 
       if (isRedundant) {
@@ -559,9 +550,9 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         duplicateIdSet.add(lead.id);
         redundantIdsToDelete.push(lead.id);
       } else {
-        if (email) seenEmails.set(email, lead.id);
-        if (linkedin) seenLinks.set(linkedin, lead.id);
-        if (nameKey !== '::') seenNames.set(nameKey, lead.id);
+        for (const key of keys) {
+          seenKeyToId.set(key, lead.id);
+        }
       }
     }
 

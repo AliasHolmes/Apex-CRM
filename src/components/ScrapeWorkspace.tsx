@@ -597,17 +597,9 @@ export default function ScrapeWorkspace() {
     activeDiscoveryRef.current = activeDiscovery;
 
     try {
-      // Build exclusions list of already scraped identifiers to pass to backend search
+      // The backend natively deduplicates candidates against existing SQLite identities
+      // via readExistingIdentityKeys(). We only pass explicit unstaged/workspace exclusions here.
       const excludeUrlsAndEmails: string[] = [];
-      leads.forEach(l => {
-        if (l.profile.contactDetails?.email) {
-          excludeUrlsAndEmails.push(l.profile.contactDetails.email);
-        }
-        if (l.profile.contactDetails?.linkedinUrl) {
-          excludeUrlsAndEmails.push(l.profile.contactDetails.linkedinUrl);
-        }
-        excludeUrlsAndEmails.push(l.profile.fullName);
-      });
 
       const response = await fetch('/api/find-leads', {
         method: 'POST',

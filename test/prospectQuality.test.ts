@@ -94,11 +94,11 @@ describe('evidence-grounded prospect quality', () => {
       baseRounds: 6
     });
 
-    assert.equal(capacity.candidateBatchSize, 30);
-    assert.equal(capacity.rerankPoolTarget, 200);
-    assert.equal(capacity.requestedJudgePool, 200);
-    assert.equal(capacity.requiredRounds, 7);
-    assert.equal(capacity.maxRounds, 8);
+    assert.equal(capacity.candidateBatchSize, 38);
+    assert.equal(capacity.rerankPoolTarget, 100);
+    assert.equal(capacity.requestedJudgePool, 100);
+    assert.equal(capacity.requiredRounds, 3);
+    assert.equal(capacity.maxRounds, 4);
     assert.equal(capacity.poolCapped, false);
     const refinements = new Set(Array.from({ length: capacity.maxRounds - 2 }, (_, index) => collectionRefinementForRound(index + 3)));
     assert.equal(refinements.size, capacity.maxRounds - 2);
@@ -110,10 +110,10 @@ describe('evidence-grounded prospect quality', () => {
       contractHardReqCount: 2
     });
 
-    assert.equal(capacity.candidateBatchSize, 18);
-    assert.equal(capacity.rerankPoolTarget, 53); // 30 * 1.75 = 53
-    assert.equal(capacity.requiredRounds, 3);
-    assert.equal(capacity.maxRounds, 4); // bounded to 4-6 rounds
+    assert.equal(capacity.candidateBatchSize, 23);
+    assert.equal(capacity.rerankPoolTarget, 36);
+    assert.equal(capacity.requiredRounds, 2);
+    assert.equal(capacity.maxRounds, 3);
   });
 
   it('uses the full bounded recovery budget when a 20-prospect search stalls below target', () => {
@@ -125,17 +125,17 @@ describe('evidence-grounded prospect quality', () => {
       contractHardReqCount: 2
     });
 
-    assert.equal(capacity.rerankPoolTarget, 80);
-    assert.equal(capacity.requiredRounds, 7);
-    assert.equal(capacity.maxRounds, 6);
+    assert.equal(capacity.rerankPoolTarget, 40);
+    assert.equal(capacity.requiredRounds, 3);
+    assert.equal(capacity.maxRounds, 3);
     assert.equal(shouldKeepCollectingAfterStall({
-      completedRound: 5,
+      completedRound: 2,
       maxRounds: capacity.maxRounds,
       acceptedLeads: 5,
       rerankPoolTarget: capacity.rerankPoolTarget
     }), true);
     assert.equal(shouldKeepCollectingAfterStall({
-      completedRound: 6,
+      completedRound: 3,
       maxRounds: capacity.maxRounds,
       acceptedLeads: 5,
       rerankPoolTarget: capacity.rerankPoolTarget
@@ -150,10 +150,10 @@ describe('evidence-grounded prospect quality', () => {
       baseRounds: 6
     });
 
-    assert.equal(capacity.candidateBatchSize, 36);
+    assert.equal(capacity.candidateBatchSize, 40);
     assert.equal(capacity.rerankPoolTarget, 240);
-    assert.equal(capacity.requiredRounds, 7);
-    assert.equal(capacity.maxRounds, 8);
+    assert.equal(capacity.requiredRounds, 6);
+    assert.equal(capacity.maxRounds, 6);
     assert.equal(capacity.poolCapped, true);
   });
 

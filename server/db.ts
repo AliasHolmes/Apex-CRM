@@ -1223,6 +1223,11 @@ export function getLeadsDb() {
         ON prospect_contract_cache(expires_at);
     `);
     runMigrations(leadsDb);
+    if (getTableColumns(leadsDb, "leads").has("stage")) {
+      leadsDb.exec(
+        "CREATE INDEX IF NOT EXISTS idx_leads_stage_created ON leads(stage, created_at DESC);",
+      );
+    }
     setLlmStageLogger(insertLlmStageLog);
   }
 
@@ -1276,6 +1281,7 @@ export type ReadLeadsOptions = {
   limit?: number;
   offset?: number;
   summaryOnly?: boolean;
+  orderBy?: "score" | "recency";
 };
 
 export type LeadSummary = {
@@ -1306,28 +1312,30 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
     limit,
     offset,
     summaryOnly,
+    orderBy,
   } = options;
   const conditions: string[] = [];
   const params: any[] = [];
 
   if (stage && stage !== "All") {
-    conditions.push("stage = ?");
+    conditions.push("leads.stage = ?");
     params.push(stage);
   }
   if (reviewStatus && reviewStatus !== "All") {
-    conditions.push("review_status = ?");
+    conditions.push("leads.review_status = ?");
     params.push(reviewStatus);
   }
   if (nextAction && nextAction !== "All") {
-    conditions.push("next_action = ?");
+    conditions.push("leads.next_action = ?");
     params.push(nextAction);
   }
+
+  let fromClause = "FROM leads";
+  const ftsQuery = search && search.trim() ? sanitizeFtsQuery(search) : null;
   if (search && search.trim()) {
-    const ftsQuery = sanitizeFtsQuery(search);
     if (ftsQuery) {
-      conditions.push(
-        "id IN (SELECT id FROM leads_fts WHERE leads_fts MATCH ?)",
-      );
+      fromClause = "FROM leads JOIN leads_fts ON leads.id = leads_fts.id";
+      conditions.push("leads_fts MATCH ?");
       params.push(ftsQuery);
     } else {
       conditions.push("0 = 1");
@@ -1337,11 +1345,22 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
   const where =
     conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const totalRow = db
-    .prepare(`SELECT COUNT(*) AS total FROM leads ${where}`)
+    .prepare(`SELECT COUNT(*) AS total ${fromClause} ${where}`)
     .get(...params) as { total?: number } | undefined;
   const total = Number(totalRow?.total || 0);
 
-  let query = `SELECT ${summaryOnly ? "id, full_name, company, title, stage, review_status, next_action, score, email, revision, created_at, updated_at" : "payload, revision"} FROM leads ${where} ORDER BY created_at DESC, updated_at DESC`;
+  let orderClause = "leads.created_at DESC, leads.updated_at DESC";
+  if (orderBy === "score") {
+    orderClause = "leads.score DESC, leads.created_at DESC";
+  } else if (ftsQuery) {
+    orderClause = "leads_fts.rank, leads.created_at DESC, leads.updated_at DESC";
+  }
+
+  const selectCols = summaryOnly
+    ? "leads.id, leads.full_name, leads.company, leads.title, leads.stage, leads.review_status, leads.next_action, leads.score, leads.email, leads.revision, leads.created_at, leads.updated_at"
+    : "leads.payload, leads.revision";
+
+  let query = `SELECT ${selectCols} ${fromClause} ${where} ORDER BY ${orderClause}`;
 
   const queryParams = [...params];
   if (typeof limit === "number" && limit > 0) {
@@ -1393,6 +1412,66 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
 
 export function readStoredLeads() {
   return readLeadsSummary().leads;
+}
+
+export type LeadsStats = {
+  total: number;
+  stageCounts: Record<string, number>;
+  averageQualification: number;
+  conversionRate: number;
+  initialized: boolean;
+};
+
+export function readLeadsStats(): LeadsStats {
+  const db = getLeadsDb();
+  const summaryRow = db
+    .prepare(
+      `SELECT 
+        COUNT(*) AS total,
+        AVG(CASE WHEN score IS NOT NULL AND score > 0 THEN (CASE WHEN score <= 10 THEN score * 10 ELSE score END) ELSE NULL END) AS avgScore
+      FROM leads`,
+    )
+    .get() as { total?: number; avgScore?: number | null } | undefined;
+
+  const total = Number(summaryRow?.total || 0);
+  const rawAvg = Number(summaryRow?.avgScore || 0);
+  const averageQualification = Math.round(rawAvg * 10) / 10;
+
+  const stageRows = db
+    .prepare("SELECT stage, COUNT(*) as count FROM leads GROUP BY stage")
+    .all() as { stage: string; count: number }[];
+
+  const stageCounts: Record<string, number> = {};
+  for (const s of [
+    "SCRAPED",
+    "ENRICHED",
+    "SEQUENCE ACTIVE",
+    "REPLIED",
+    "MEETING BOOKED",
+    "NEGOTIATING",
+    "CONVERTED",
+    "LOST",
+    "NURTURE",
+  ]) {
+    stageCounts[s] = 0;
+  }
+  for (const row of stageRows) {
+    if (row.stage) {
+      stageCounts[row.stage] = Number(row.count || 0);
+    }
+  }
+
+  const convertedCount = stageCounts["CONVERTED"] || 0;
+  const conversionRate =
+    total > 0 ? Math.round((convertedCount / total) * 100) : 0;
+
+  return {
+    total,
+    stageCounts,
+    averageQualification,
+    conversionRate,
+    initialized: hasLeadStoreBeenInitialized(),
+  };
 }
 
 export function readExistingIdentityKeys(): Set<string> {

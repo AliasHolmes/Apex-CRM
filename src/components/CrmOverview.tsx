@@ -6,12 +6,14 @@
 import { useMemo } from 'react';
 import { Award, Briefcase, Clock, Percent, TrendingUp, Users } from 'lucide-react';
 import type { Lead, LeadStage } from '../types';
+import type { LeadContextStats } from '../context/LeadContext';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { PIPELINE_STAGES } from '@/lib/pipeline';
 
 interface CrmOverviewProps {
   leads: Lead[];
+  stats?: LeadContextStats;
 }
 
 function normalizedQualificationScore(lead: Lead): number | null {
@@ -27,7 +29,7 @@ function scoreLabel(score: number): string {
   return score > 0 ? 'Low priority' : 'Unrated';
 }
 
-export default function CrmOverview({ leads }: CrmOverviewProps) {
+export default function CrmOverview({ leads, stats }: CrmOverviewProps) {
   const analytics = useMemo(() => {
     const stageCounts = Object.fromEntries(
       PIPELINE_STAGES.map((stage) => [stage.id, 0]),
@@ -64,12 +66,15 @@ export default function CrmOverview({ leads }: CrmOverviewProps) {
     };
   }, [leads]);
 
-  const totalLeads = leads.length;
-  const convertedCount = analytics.stageCounts.CONVERTED;
-  const conversionRate = totalLeads > 0
-    ? Math.round((convertedCount / totalLeads) * 100)
-    : 0;
-  const averageQualification = Math.round(analytics.averageQualification * 10) / 10;
+  const totalLeads = stats ? stats.total : leads.length;
+  const stageCounts = stats?.stageCounts ?? analytics.stageCounts;
+  const convertedCount = stageCounts['CONVERTED'] ?? 0;
+  const conversionRate = stats
+    ? stats.conversionRate
+    : (totalLeads > 0 ? Math.round((convertedCount / totalLeads) * 100) : 0);
+  const averageQualification = stats
+    ? Math.round(stats.averageQualification * 10) / 10
+    : Math.round(analytics.averageQualification * 10) / 10;
 
   return (
     <div className="space-y-6">
@@ -138,7 +143,7 @@ export default function CrmOverview({ leads }: CrmOverviewProps) {
 
             <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
               {PIPELINE_STAGES.map((stage) => {
-                const count = analytics.stageCounts[stage.id] ?? 0;
+                const count = stageCounts[stage.id] ?? 0;
                 const percentage = totalLeads > 0 ? (count / totalLeads) * 100 : 0;
                 return (
                   <div key={stage.id} className="space-y-1.5">

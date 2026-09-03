@@ -209,6 +209,36 @@ export function getAPIKey(): string {
  * Default: 45s timeout, no retries. Provider fallback owns recovery so the
  * same overloaded endpoint is not repeatedly charged before failover.
  */
+export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) {
+    const abortErr = new Error("LLM request was aborted by caller.");
+    abortErr.name = "AbortError";
+    return Promise.reject(abortErr);
+  }
+  return new Promise<void>((resolve, reject) => {
+    let onAbort: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve();
+    }, waitMs);
+    if (signal) {
+      onAbort = () => {
+        clearTimeout(timer);
+        const abortErr = new Error("LLM request was aborted by caller.");
+        abortErr.name = "AbortError";
+        reject(abortErr);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+/**
+ * Executes an HTTP fetch with automatic retry on 5xx/429.
+ * When a request fails, backoff sleep listens to callerSignal and throws AbortError immediately.
+ */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
@@ -285,7 +315,7 @@ async function fetchWithRetry(
         console.warn(
           `[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`,
         );
-        await new Promise((r) => setTimeout(r, waitMs));
+        await sleepWithSignal(waitMs, callerSignal);
         continue;
       }
       return res;
@@ -310,7 +340,7 @@ async function fetchWithRetry(
         console.warn(
           `[llm] Fetch error on attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}. Retrying in ${waitMs}ms...`,
         );
-        await new Promise((r) => setTimeout(r, waitMs));
+        await sleepWithSignal(waitMs, callerSignal);
       }
     }
   }

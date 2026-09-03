@@ -295,6 +295,49 @@ export function candidateStableId(
   return `id:${crypto.randomUUID()}`;
 }
 
+export function isExcludedCandidate(
+  lead: any,
+  excludedValues: Iterable<string>,
+): boolean {
+  const name = normalizeDedupeValue(lead?.fullName || lead?.profile?.fullName);
+  const email = normalizeDedupeValue(
+    lead?.contactDetails?.email || lead?.email || lead?.profile?.contactDetails?.email,
+  );
+  const rawCandidateUrl =
+    lead?.contactDetails?.linkedinUrl ||
+    lead?.profileUrl ||
+    lead?.linkedinUrl ||
+    lead?.sourceUrl ||
+    lead?.profile?.sourceUrl ||
+    lead?.url ||
+    lead?.profile?.contactDetails?.linkedinUrl ||
+    "";
+  const linkedin = normalizeDedupeValue(rawCandidateUrl);
+  const username = extractLinkedInUsername(rawCandidateUrl);
+  const canonicalKey = username ? `linkedin:${username}` : "";
+  for (const rawExclusion of excludedValues) {
+    const exclusion = normalizeDedupeValue(rawExclusion);
+    if (!exclusion) continue;
+    if (email && email === exclusion) return true;
+    const exclusionUsername = extractLinkedInUsername(rawExclusion);
+    if (username && exclusionUsername && username === exclusionUsername) return true;
+    if (linkedin) {
+      if (linkedin === exclusion) return true;
+      if (
+        (exclusion.includes("linkedin.com/in/") ||
+          exclusion.startsWith("linkedin:")) &&
+        linkedin.includes(exclusion)
+      ) {
+        return true;
+      }
+    }
+    if (name && name === exclusion) return true;
+    if (username && (username === exclusion || exclusion === canonicalKey))
+      return true;
+  }
+  return false;
+}
+
 // Canonical candidate-to-lead mapping lives in leadMapping.ts; re-exported here
 // so checkpoint persistence and existing tests share one implementation.
 export { mapCandidateToPersistedLead } from "./leadMapping.js";
@@ -917,25 +960,7 @@ export async function executeDiscoverySession(
 
     const matchesExcludeList = (lead: any) => {
       if (excludedValues.size === 0) return false;
-      const name = normalizeDedupeValue(lead?.fullName);
-      const email = normalizeDedupeValue(lead?.contactDetails?.email);
-      const linkedin = normalizeDedupeValue(lead?.contactDetails?.linkedinUrl);
-      const username = extractLinkedInUsername(
-        lead?.contactDetails?.linkedinUrl || "",
-      );
-      const canonicalKey = username ? `linkedin:${username}` : "";
-      for (const exclusion of excludedValues) {
-        if (email && email === exclusion) return true;
-        if (
-          linkedin &&
-          (linkedin === exclusion || linkedin.includes(exclusion))
-        )
-          return true;
-        if (name && name === exclusion) return true;
-        if (username && (username === exclusion || exclusion === canonicalKey))
-          return true;
-      }
-      return false;
+      return isExcludedCandidate(lead, excludedValues);
     };
 
     const checkpointAcceptedLeads = (candidates: any[], stageLabel: string) => {
@@ -1826,30 +1851,39 @@ export class DiscoverySessionEngine {
       throw new SessionAlreadyActiveError(sessionId);
     }
 
-    const sessionAbortController = new AbortController();
-    this.activeSessionControllers.set(sessionId, sessionAbortController);
+    try {
+      const sessionAbortController = new AbortController();
+      this.activeSessionControllers.set(sessionId, sessionAbortController);
 
-    return executeDiscoverySession({
-      sessionId,
-      promptQuery,
-      requestedLimit: Math.min(
-        Math.max(Number(request.requestedLimit || 5), 1),
-        200,
-      ),
-      startedAt: Date.now(),
-      sessionAbortController,
-      activeSessions: this.activeSessions,
-      activeSessionLogTotals: this.activeSessionLogTotals,
-      activeSessionControllers: this.activeSessionControllers,
-      activeSessionEvents: this.activeSessionEvents,
-      cancelledSessions: this.cancelledSessions,
-      searchSpec: request.searchSpec,
-      discoveryMode: request.discoveryMode,
-      discoveryProviderMode: request.discoveryProviderMode,
-      excludeList: request.excludeList,
-      savedSearchId: request.savedSearchId,
-      listener,
-    });
+      return await executeDiscoverySession({
+        sessionId,
+        promptQuery,
+        requestedLimit: Math.min(
+          Math.max(Number(request.requestedLimit || 5), 1),
+          200,
+        ),
+        startedAt: Date.now(),
+        sessionAbortController,
+        activeSessions: this.activeSessions,
+        activeSessionLogTotals: this.activeSessionLogTotals,
+        activeSessionControllers: this.activeSessionControllers,
+        activeSessionEvents: this.activeSessionEvents,
+        cancelledSessions: this.cancelledSessions,
+        searchSpec: request.searchSpec,
+        discoveryMode: request.discoveryMode,
+        discoveryProviderMode: request.discoveryProviderMode,
+        excludeList: request.excludeList,
+        savedSearchId: request.savedSearchId,
+        listener,
+      });
+    } catch (err) {
+      this.activeSessions.delete(sessionId);
+      this.activeSessionLogTotals.delete(sessionId);
+      this.activeSessionControllers.delete(sessionId);
+      this.activeSessionEvents.delete(sessionId);
+      this.cancelledSessions.delete(sessionId);
+      throw err;
+    }
   }
 
   getResumableSessions() {

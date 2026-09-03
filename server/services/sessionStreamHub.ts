@@ -21,6 +21,7 @@ type SessionBroadcast = {
   interval: NodeJS.Timeout | null;
   lastLogTotal: number;
   lastTraceTotal: number;
+  missingTicks: number;
 };
 
 const POLL_INTERVAL_MS = 250;
@@ -36,6 +37,7 @@ class SessionStreamHub {
         interval: null,
         lastLogTotal: 0,
         lastTraceTotal: 0,
+        missingTicks: 0,
       };
       this.broadcasts.set(sessionId, broadcast);
     }
@@ -74,6 +76,31 @@ class SessionStreamHub {
       const logs = discoveryEngine.getLiveLogs(sessionId) || [];
       const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
       const session = readMiningSessionSummaryById(sessionId);
+
+      const isMissing = !session && logs.length === 0 && traceEvents.length === 0;
+      if (isMissing) {
+        broadcast.missingTicks = (broadcast.missingTicks || 0) + 1;
+      } else {
+        broadcast.missingTicks = 0;
+      }
+
+      // If session remains missing after a 5-second grace period (20 ticks * 250ms), close cleanly
+      if (broadcast.missingTicks >= 20) {
+        const frame: SessionStreamFrame = {
+          logs: ["Session not found or expired."],
+          traceEvents: [],
+          session: null,
+        };
+        for (const subscriber of Array.from(broadcast.subscribers)) {
+          try {
+            subscriber(frame);
+          } catch {
+            // ignore
+          }
+          this.unsubscribe(sessionId, subscriber);
+        }
+        return;
+      }
 
       const totalLogs = discoveryEngine.getLiveLogTotal(sessionId);
       const totalTraces = discoveryEngine.getLiveTraceTotal(sessionId);

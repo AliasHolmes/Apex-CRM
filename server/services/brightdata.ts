@@ -427,12 +427,39 @@ export const isBrightDataProviderDisabledError = (error: unknown) =>
 export const isBrightDataTransientTargetError = (error: unknown) =>
   classifyBrightDataError(error).reasonCode === "target_transient";
 
+export function abortableSleep(delayMs: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) {
+    const error = new Error("Bright Data operation was aborted.");
+    error.name = "AbortError";
+    return Promise.reject(error);
+  }
+  return new Promise<void>((resolve, reject) => {
+    let onAbort: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      resolve();
+    }, delayMs);
+    if (signal) {
+      onAbort = () => {
+        clearTimeout(timer);
+        const error = new Error("Bright Data operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
 export type BrightDataSearchRetryOptions = {
   maxRetries?: number;
   baseDelayMs?: number;
   jitterMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
   random?: () => number;
+  signal?: AbortSignal;
   onRetry?: (context: {
     error: BrightDataError;
     attempt: number;
@@ -459,8 +486,7 @@ export async function executeBrightDataSearchWithRetry<T>(
   );
   const sleep =
     options.sleep ||
-    ((delayMs: number) =>
-      new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    ((delayMs: number) => abortableSleep(delayMs, options.signal));
   const random = options.random || Math.random;
 
   for (let attempt = 1; ; attempt++) {
@@ -513,6 +539,7 @@ export type BrightDataEmptyBodyRetryOptions = {
   maxRetries?: number;
   delayMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
+  signal?: AbortSignal;
   onRetry?: (context: {
     error: BrightDataError;
     attempt: number;
@@ -555,7 +582,7 @@ export async function executeBrightDataSearchWithEmptyBodyRecovery<T>(
   );
   const sleep =
     options.sleep ||
-    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    ((ms: number) => abortableSleep(ms, options.signal));
 
   for (let attempt = 0; ; attempt++) {
     try {

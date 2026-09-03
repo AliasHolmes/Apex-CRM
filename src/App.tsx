@@ -153,6 +153,7 @@ import { predictiveScoreFromComposite, scoreLeadDeterministically } from './util
 function Dashboard() {
   const {
     leads,
+    stats,
     isHydrated,
     rehydrateLeads,
     handleBulkLeadsAdded,
@@ -338,7 +339,7 @@ function Dashboard() {
                 Apex CRM
               </h1>
               <Badge variant="secondary" className="mt-0.5 text-xs font-bold">
-                {leads.length} prospect{leads.length === 1 ? '' : 's'}
+                {stats.total} prospect{stats.total === 1 ? '' : 's'}
               </Badge>
             </div>
           </div>
@@ -426,7 +427,7 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <Suspense fallback={<TabLoading />}><CrmOverview leads={leads} /></Suspense>
+                <Suspense fallback={<TabLoading />}><CrmOverview leads={leads} stats={stats} /></Suspense>
               </motion.section>
             )}
             {activeTab === 'pipeline' && (

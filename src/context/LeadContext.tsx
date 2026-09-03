@@ -8,7 +8,7 @@ import React, {
   useState,
   ReactNode,
 } from 'react';
-import { Lead, LinkedInProfile, NextAction, QualifiedLeadProfile, ReviewStatus } from '../types';
+import { Lead, LeadStage, LEAD_STAGES, LinkedInProfile, NextAction, QualifiedLeadProfile, ReviewStatus } from '../types';
 import { predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 import { preferNewerCanonical, rebaseLeadChanges } from '@/lib/leadMutations';
@@ -16,9 +16,68 @@ import { ConflictDialog } from '@/components/ConflictDialog';
 
 const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
 
+export type LeadContextStats = {
+  total: number;
+  stageCounts: Record<LeadStage, number>;
+  averageQualification: number;
+  conversionRate: number;
+  initialized: boolean;
+};
+
+export const INITIAL_LEAD_STATS: LeadContextStats = {
+  total: 0,
+  stageCounts: {
+    'SCRAPED': 0,
+    'ENRICHED': 0,
+    'SEQUENCE ACTIVE': 0,
+    'REPLIED': 0,
+    'MEETING BOOKED': 0,
+    'NEGOTIATING': 0,
+    'CONVERTED': 0,
+    'LOST': 0,
+    'NURTURE': 0,
+  },
+  averageQualification: 0,
+  conversionRate: 0,
+  initialized: false,
+};
+
+function computeStatsFromLeads(leadsList: Lead[]): LeadContextStats {
+  const stageCounts = Object.fromEntries(
+    LEAD_STAGES.map((s) => [s, 0])
+  ) as Record<LeadStage, number>;
+  let qualTotal = 0;
+  let qualCount = 0;
+
+  for (const l of leadsList) {
+    if (l.stage && stageCounts[l.stage] !== undefined) {
+      stageCounts[l.stage]++;
+    }
+    const score = l.qualificationScore ?? l.predictiveScore ?? l.compositeScore;
+    if (typeof score === 'number' && Number.isFinite(score) && score > 0) {
+      qualTotal += score <= 10 ? score * 10 : score;
+      qualCount++;
+    }
+  }
+
+  const total = leadsList.length;
+  const converted = stageCounts['CONVERTED'] || 0;
+  const conversionRate = total > 0 ? Math.round((converted / total) * 100) : 0;
+  const averageQualification = qualCount > 0 ? Math.round((qualTotal / qualCount) * 10) / 10 : 0;
+
+  return {
+    total,
+    stageCounts,
+    averageQualification,
+    conversionRate,
+    initialized: true,
+  };
+}
+
 type StoredLeadsResponse = {
   leads: Lead[];
   initialized: boolean;
+  stats?: LeadContextStats;
 };
 
 async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
@@ -36,8 +95,32 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
   const data = await response.json();
   return {
     leads: Array.isArray(data.leads) ? sanitizeLeads(data.leads) : [],
-    initialized: Boolean(data.initialized)
+    initialized: Boolean(data.initialized),
+    stats: data.stats,
   };
+}
+
+async function fetchLeadsStats(): Promise<LeadContextStats | null> {
+  try {
+    const response = await fetch(`/api/leads/stats?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      }
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return {
+      total: Number(data.total || 0),
+      stageCounts: data.stageCounts || INITIAL_LEAD_STATS.stageCounts,
+      averageQualification: Number(data.averageQualification || 0),
+      conversionRate: Number(data.conversionRate || 0),
+      initialized: Boolean(data.initialized),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
@@ -143,7 +226,9 @@ async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<{ lead
 
 interface LeadContextType {
   leads: Lead[];
+  stats: LeadContextStats;
   isHydrated: boolean;
+  refreshStats: () => Promise<void>;
   saveLeadsToStorage: (updater: Lead[] | ((prev: Lead[]) => Lead[])) => void;
   rehydrateLeads: (preserveExistingOnFailure?: boolean) => Promise<boolean>;
   handleLeadAdded: (profile: LinkedInProfile) => Promise<{ added: boolean }>;
@@ -179,11 +264,21 @@ const LeadContext = createContext<LeadContextType | undefined>(undefined);
 
 export function LeadProvider({ children }: { children: ReactNode }) {
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [stats, setStats] = useState<LeadContextStats>(INITIAL_LEAD_STATS);
   const [isHydrated, setIsHydrated] = useState(false);
   const leadsRef = useRef<Lead[]>([]);
   const leadPatchQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const leadPatchRollbackRef = useRef<Map<string, Lead | null>>(new Map());
   const lastRehydrateTimeRef = useRef<number>(0);
+
+  const refreshStats = useCallback(async () => {
+    const s = await fetchLeadsStats();
+    if (s) {
+      setStats(s);
+    } else {
+      setStats(computeStatsFromLeads(leadsRef.current));
+    }
+  }, []);
 
   const [conflictModal, setConflictModal] = useState<{
     open: boolean;
@@ -241,23 +336,31 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       lastRehydrateTimeRef.current = Date.now();
       if (stored.initialized) {
         saveLeadsToStorage(sanitizeLeads(stored.leads));
+        if (stored.stats) {
+          setStats(stored.stats);
+        } else {
+          void refreshStats();
+        }
         return true;
       }
 
       const initialLeads = loadLegacyBrowserLeads() || [];
       saveLeadsToStorage(initialLeads);
+      setStats(computeStatsFromLeads(initialLeads));
       persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
       return true;
     } catch (error) {
       console.error('SQLite lead load failed:', error);
       if (!preserveExistingOnFailure) {
-        saveLeadsToStorage(loadLegacyBrowserLeads() || []);
+        const fallback = loadLegacyBrowserLeads() || [];
+        saveLeadsToStorage(fallback);
+        setStats(computeStatsFromLeads(fallback));
       }
       return false;
     } finally {
       setIsHydrated(true);
     }
-  }, [saveLeadsToStorage]);
+  }, [refreshStats, saveLeadsToStorage]);
 
   useEffect(() => {
     void rehydrateLeads();
@@ -453,6 +556,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
     const didPersist = await reconcileLeadPatch(leadToPersist, null, true);
     if (!didPersist) throw new Error(`Could not save ${profile.fullName} to the CRM.`);
+    void refreshStats();
     return { added: true };
   }, [reconcileLeadPatch, saveLeadsToStorage]);
 
@@ -629,6 +733,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         ? bulkError
         : new Error('Failed to save bulk leads to the CRM.');
     }
+    void refreshStats();
     return {
       addedCount: persistedCreatedCount,
       skippedCount: skippedCount + serverDuplicateCount,
@@ -654,8 +759,9 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       if (!didPersist) {
         throw new Error('The pipeline stage could not be saved.');
       }
+      void refreshStats();
     }
-  }, [reconcileLeadPatch, saveLeadsToStorage]);
+  }, [reconcileLeadPatch, refreshStats, saveLeadsToStorage]);
 
   // 6. Update internal notes for a lead
   const handleUpdateLeadNotes = useCallback(async (leadId: string, notes: string) => {
@@ -772,12 +878,13 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           currentLeads.map(l => (l.id === winnerId ? (data.lead as Lead) : l))
         );
       }
+      void refreshStats();
     } catch (err) {
       console.error('[App] Lead merge failed:', err);
       restoreLeadSubset(affectedIds, rollbackLeads);
       throw err;
     }
-  }, [restoreLeadSubset, saveLeadsToStorage]);
+  }, [refreshStats, restoreLeadSubset, saveLeadsToStorage]);
 
   // 7. Update custom tags for a lead
   const handleUpdateLeadTags = useCallback(async (leadId: string, tags: string[]) => {
@@ -815,12 +922,13 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       if (!response.ok) {
         throw new Error(`Failed to delete lead: ${response.status}`);
       }
+      void refreshStats();
     } catch (e) {
       console.error(`[App] Error during lead deletion:`, e);
       restoreLeadSubset(new Set([leadId]), rollbackLead ? [rollbackLead] : []);
       throw e;
     }
-  }, [restoreLeadSubset, saveLeadsToStorage]);
+  }, [refreshStats, restoreLeadSubset, saveLeadsToStorage]);
 
   const handleDeleteLeads = useCallback(async (leadIds: string[]) => {
     await Promise.all(
@@ -844,12 +952,13 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         if (!response.ok) {
           throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
         }
+        void refreshStats();
     } catch (e) {
       console.error(`[App] Error during bulk lead deletion:`, e);
       restoreLeadSubset(idSet, rollbackLeads);
       throw e;
     }
-  }, [restoreLeadSubset, saveLeadsToStorage]);
+  }, [refreshStats, restoreLeadSubset, saveLeadsToStorage]);
 
   const handleUpdateLeadsStage = useCallback(async (leadIds: string[], stage: Lead['stage']) => {
     await Promise.all(
@@ -968,12 +1077,15 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         ? operationError
         : new Error('Failed to update selected prospect stages.');
     }
+    void refreshStats();
     return { updatedCount, removedCount, rebasedCount };
-  }, [restoreLeadSubset, saveLeadsToStorage]);
+  }, [refreshStats, restoreLeadSubset, saveLeadsToStorage]);
 
   const contextValue = useMemo<LeadContextType>(() => ({
     leads,
+    stats,
     isHydrated,
+    refreshStats,
     saveLeadsToStorage,
     rehydrateLeads,
     handleLeadAdded,
@@ -1007,8 +1119,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     isHydrated,
     leads,
     openConflictDialog,
+    refreshStats,
     rehydrateLeads,
     saveLeadsToStorage,
+    stats,
   ]);
 
   return (

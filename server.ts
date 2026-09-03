@@ -14,6 +14,7 @@ import {
   reconcileOrphanedMiningSessions,
 } from "./server/db.js";
 import { validateEngineConfig } from "./server/configValidation.js";
+import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -72,18 +73,7 @@ app.use(
     res: express.Response,
     next: express.NextFunction,
   ): any => {
-    const rawHost = (req.headers.host || "").toLowerCase();
-    const colonIdx = rawHost.lastIndexOf(":");
-    const hostname = colonIdx !== -1 ? rawHost.slice(0, colonIdx) : rawHost;
-    const portStr = colonIdx !== -1 ? rawHost.slice(colonIdx + 1) : "";
-    const port = portStr ? Number(portStr) : (req.socket?.localPort || 80);
-
-    const isLoopbackHost = hostname === "localhost" || hostname === "127.0.0.1";
-    const isCorrectPort = portStr
-      ? port === PORT
-      : PORT === 80 || PORT === 443 || req.socket?.localPort === PORT;
-
-    if (!isLoopbackHost || !isCorrectPort) {
+    if (!isAllowedHost(req.headers.host || "", PORT, req.socket?.localPort)) {
       return res
         .status(400)
         .type("text/plain")
@@ -92,28 +82,11 @@ app.use(
         );
     }
 
-    const originHeader = req.headers.origin;
-    if (originHeader) {
-      let originOk = false;
-      try {
-        const originUrl = new URL(originHeader);
-        const oHost = originUrl.hostname.toLowerCase();
-        const oPort = originUrl.port
-          ? Number(originUrl.port)
-          : originUrl.protocol === "https:"
-            ? 443
-            : 80;
-        originOk =
-          (oHost === "localhost" || oHost === "127.0.0.1") && oPort === PORT;
-      } catch {
-        // Malformed Origin header - reject.
-      }
-      if (!originOk) {
-        return res
-          .status(400)
-          .type("text/plain")
-          .send("Cross-origin API access is blocked.");
-      }
+    if (!isAllowedOrigin(req.headers.origin, PORT)) {
+      return res
+        .status(400)
+        .type("text/plain")
+        .send("Cross-origin API access is blocked.");
     }
 
     next();

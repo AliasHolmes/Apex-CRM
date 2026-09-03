@@ -35,6 +35,7 @@ import {
   deleteMiningSession,
   deleteMiningSessions,
   clearInterruptedMiningSessions,
+  clearResumableMiningSessions,
   upsertMiningSession,
   LeadNotFoundError,
   LeadRevisionConflictError,
@@ -46,6 +47,7 @@ import {
   upsertLeadInExistingTransaction,
   upsertLeadWithIdentity,
   deleteLead,
+  deleteLeadInExistingTransaction,
   upsertLeadsWithIdentity,
   transferLeadIdentities,
   insertLeadActivity,
@@ -664,11 +666,15 @@ router.delete("/leads", (req, res): any => {
     db.exec("BEGIN IMMEDIATE");
     try {
       for (const id of ids) {
-        deleteLead(id);
+        deleteLeadInExistingTransaction(db, id);
       }
       db.exec("COMMIT");
     } catch (err) {
-      db.exec("ROLLBACK");
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* ignore rollback failure */
+      }
       throw err;
     }
     res.json({ apiVersion: 1, success: true, count: ids.length });
@@ -1211,7 +1217,7 @@ router.delete("/mining-sessions/resumable", (req, res): any => {
       });
     }
 
-    const deletedCount = clearInterruptedMiningSessions();
+    const deletedCount = clearResumableMiningSessions();
     return res.json({ apiVersion: 1, success: true, deletedCount });
   } catch (error: any) {
     console.error("Failed to delete resumable mining sessions:", error);
@@ -1989,6 +1995,16 @@ Use normal paragraph breaks so the result can be pasted into email, LinkedIn, or
   }
 });
 
+export const COPILOT_STOP_WORDS = new Set([
+  "a", "about", "all", "an", "and", "any", "anybody", "anyone", "are", "as", "at", "be", "been",
+  "best", "by", "can", "contact", "contacts", "could", "did", "do", "does", "find", "for",
+  "from", "get", "give", "good", "had", "has", "have", "help", "how", "i", "in", "is", "it",
+  "lead", "leads", "list", "look", "looking", "me", "my", "need", "of", "on", "or", "our",
+  "out", "pipeline", "prospect", "prospects", "reach", "recommend", "search", "show",
+  "somebody", "someone", "status", "suggest", "suggests", "tell", "that", "the", "these", "this", "those", "to", "today", "top", "up",
+  "us", "want", "was", "were", "what", "when", "where", "which", "who", "why", "will", "with", "would",
+]);
+
 // -----------------------------------------------------------------------------
 // Conversational CRM Copilot
 // -----------------------------------------------------------------------------
@@ -2038,14 +2054,7 @@ router.post("/chat", async (req, res): Promise<any> => {
     // Augment with search-relevant leads for the user query
     let searchContext = "";
     try {
-      const STOP_WORDS = new Set([
-        "a", "about", "all", "an", "and", "any", "are", "as", "at", "be", "been",
-        "can", "could", "did", "do", "does", "for", "from", "had", "has", "have",
-        "how", "i", "in", "is", "it", "lead", "leads", "me", "my", "of", "on", "or",
-        "our", "pipeline", "prospect", "prospects", "show", "status", "tell", "that",
-        "the", "these", "this", "those", "to", "us", "was", "were", "what", "when",
-        "where", "which", "who", "why", "will", "with", "would",
-      ]);
+      const STOP_WORDS = COPILOT_STOP_WORDS;
       const searchTokens = query
         .replace(/[^\p{L}\p{N}\s_@.-]/gu, " ")
         .split(/\s+/)

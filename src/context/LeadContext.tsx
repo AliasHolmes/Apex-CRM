@@ -269,6 +269,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const leadsRef = useRef<Lead[]>([]);
   const leadPatchQueuesRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const leadPatchRollbackRef = useRef<Map<string, Lead | null>>(new Map());
+  const inFlightDeletionsRef = useRef<Set<string>>(new Set());
   const lastRehydrateTimeRef = useRef<number>(0);
 
   const refreshStats = useCallback(async () => {
@@ -338,27 +339,53 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         const sanitizedServerLeads = sanitizeLeads(stored.leads);
         saveLeadsToStorage((currentLeads) => {
           const pendingQueues = leadPatchQueuesRef.current;
-          if (pendingQueues.size === 0) {
-            return sanitizedServerLeads;
-          }
+          const pendingRollbacks = leadPatchRollbackRef.current;
           const currentLeadMap = new Map(currentLeads.map((l) => [l.id, l]));
+
+          const isDeleting = (id: string) =>
+            inFlightDeletionsRef.current.has(id) ||
+            (pendingQueues.has(id) &&
+              pendingRollbacks.get(id) === null &&
+              !currentLeadMap.has(id));
+
+          const activeServerLeads = sanitizedServerLeads.filter(
+            (serverLead) => !isDeleting(serverLead.id),
+          );
+
+          if (
+            pendingQueues.size === 0 &&
+            inFlightDeletionsRef.current.size === 0
+          ) {
+            return activeServerLeads;
+          }
+
           const serverLeadIds = new Set<string>();
-          const nextLeads = sanitizedServerLeads.map((serverLead) => {
+          const nextLeads: Lead[] = [];
+
+          for (const serverLead of activeServerLeads) {
             serverLeadIds.add(serverLead.id);
             if (pendingQueues.has(serverLead.id)) {
               const currentLead = currentLeadMap.get(serverLead.id);
-              if (currentLead) return currentLead;
+              if (currentLead) {
+                nextLeads.push(currentLead);
+                continue;
+              }
             }
-            return serverLead;
-          });
+            nextLeads.push(serverLead);
+          }
+
           for (const currentLead of currentLeads) {
-            if (pendingQueues.has(currentLead.id) && !serverLeadIds.has(currentLead.id)) {
+            if (
+              !isDeleting(currentLead.id) &&
+              pendingQueues.has(currentLead.id) &&
+              !serverLeadIds.has(currentLead.id)
+            ) {
               nextLeads.unshift(currentLead);
             }
           }
           return nextLeads;
         });
-        if (stored.stats) {
+        if (stored.stats && inFlightDeletionsRef.current.size === 0) {
           setStats(stored.stats);
         } else {
           void refreshStats();
@@ -434,13 +461,16 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   }, [rehydrateLeads]);
 
   const reconcileLeadPatch = useCallback((lead: Lead, rollbackLead: Lead | null, allowCreate = false): Promise<boolean> => {
+    if (inFlightDeletionsRef.current.has(lead.id)) {
+      return Promise.resolve(false);
+    }
     const existingOperation = leadPatchQueuesRef.current.get(lead.id);
     if (!existingOperation) leadPatchRollbackRef.current.set(lead.id, rollbackLead);
     const previousOperation = existingOperation ?? Promise.resolve(true);
     let operation: Promise<boolean>;
 
     operation = previousOperation.then(async (previousSucceeded) => {
-      if (!previousSucceeded) return false;
+      if (!previousSucceeded || inFlightDeletionsRef.current.has(lead.id)) return false;
       try {
         const stableCanonicalLead = leadPatchRollbackRef.current.get(lead.id) ?? rollbackLead;
         const leadWithCurrentRevision = !allowCreate && stableCanonicalLead && rollbackLead
@@ -855,7 +885,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   }, [reconcileLeadPatch, saveLeadsToStorage]);
 
   const handleMergeLead = useCallback((updatedLead: Lead) => {
-    if (!updatedLead || !updatedLead.id) return;
+    if (!updatedLead || !updatedLead.id || inFlightDeletionsRef.current.has(updatedLead.id)) return;
     const hasPendingMutation = leadPatchQueuesRef.current.has(updatedLead.id);
     const currentLocalLead = leadsRef.current.find(lead => lead.id === updatedLead.id);
     const canonicalLead = preferNewerCanonical(
@@ -910,6 +940,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
   // 7. Update custom tags for a lead
   const handleUpdateLeadTags = useCallback(async (leadId: string, tags: string[]) => {
+    if (inFlightDeletionsRef.current.has(leadId)) return;
     const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
     let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
@@ -933,8 +964,18 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   // 8. Delete lead or leads permanently
   const handleDeleteLead = useCallback(async (leadId: string) => {
     const pendingPatch = leadPatchQueuesRef.current.get(leadId);
-    if (pendingPatch) await pendingPatch;
+    if (pendingPatch) await pendingPatch.catch(() => {});
     const rollbackLead = leadsRef.current.find(lead => lead.id === leadId);
+
+    let deleteResolve: (val: boolean) => void;
+    const deletePromise = new Promise<boolean>((resolve) => {
+      deleteResolve = resolve;
+    });
+
+    inFlightDeletionsRef.current.add(leadId);
+    leadPatchRollbackRef.current.set(leadId, null);
+    leadPatchQueuesRef.current.set(leadId, deletePromise);
+
     try {
       saveLeadsToStorage(currentLeads => {
         return currentLeads.filter(l => l.id !== leadId);
@@ -944,41 +985,71 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       if (!response.ok) {
         throw new Error(`Failed to delete lead: ${response.status}`);
       }
+      deleteResolve!(false);
       void refreshStats();
     } catch (e) {
+      deleteResolve!(false);
       console.error(`[App] Error during lead deletion:`, e);
       restoreLeadSubset(new Set([leadId]), rollbackLead ? [rollbackLead] : []);
       throw e;
+    } finally {
+      inFlightDeletionsRef.current.delete(leadId);
+      if (leadPatchQueuesRef.current.get(leadId) === deletePromise) {
+        leadPatchQueuesRef.current.delete(leadId);
+        leadPatchRollbackRef.current.delete(leadId);
+      }
     }
   }, [refreshStats, restoreLeadSubset, saveLeadsToStorage]);
 
   const handleDeleteLeads = useCallback(async (leadIds: string[]) => {
     await Promise.all(
       leadIds
-        .map(id => leadPatchQueuesRef.current.get(id))
-        .filter((operation): operation is Promise<boolean> => Boolean(operation)),
+        .map(id => leadPatchQueuesRef.current.get(id)?.catch(() => {}))
+        .filter((operation): operation is Promise<boolean | void> => Boolean(operation)),
     );
     const idSet = new Set(leadIds);
     let rollbackLeads = leadsRef.current.filter(lead => idSet.has(lead.id));
+
+    let deleteResolve: (val: boolean) => void;
+    const deletePromise = new Promise<boolean>((resolve) => {
+      deleteResolve = resolve;
+    });
+
+    for (const id of leadIds) {
+      inFlightDeletionsRef.current.add(id);
+      leadPatchRollbackRef.current.set(id, null);
+      leadPatchQueuesRef.current.set(id, deletePromise);
+    }
+
     try {
       saveLeadsToStorage(currentLeads => {
         return currentLeads.filter(l => !idSet.has(l.id));
       });
 
-        const response = await fetch('/api/leads', {
+      const response = await fetch('/api/leads', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: leadIds })
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
-        }
-        void refreshStats();
+        body: JSON.stringify({ ids: leadIds })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
+      }
+      deleteResolve!(false);
+      void refreshStats();
     } catch (e) {
+      deleteResolve!(false);
       console.error(`[App] Error during bulk lead deletion:`, e);
       restoreLeadSubset(idSet, rollbackLeads);
       throw e;
+    } finally {
+      for (const id of leadIds) {
+        inFlightDeletionsRef.current.delete(id);
+        if (leadPatchQueuesRef.current.get(id) === deletePromise) {
+          leadPatchQueuesRef.current.delete(id);
+          leadPatchRollbackRef.current.delete(id);
+        }
+      }
     }
   }, [refreshStats, restoreLeadSubset, saveLeadsToStorage]);
 

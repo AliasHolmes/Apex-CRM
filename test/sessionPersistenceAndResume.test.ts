@@ -23,7 +23,8 @@ const {
   readMiningSessionById,
   deleteMiningSession,
   deleteMiningSessions,
-  clearInterruptedMiningSessions
+  clearInterruptedMiningSessions,
+  clearResumableMiningSessions
 } = await import('../server/db.js');
 type MiningSessionCheckpoint = import('../server/db.js').MiningSessionCheckpoint;
 const { discoveryEngine } = await import('../server/leadSearch/discoveryEngine.js');
@@ -190,6 +191,32 @@ test('deleteMiningSession and deleteMiningSessions delete target sessions', asyn
   const cleared = deleteMiningSessions([s4]);
   assert.equal(cleared, 1);
   assert.equal(readMiningSessionById(s4), null);
+});
+
+test('clearResumableMiningSessions clears interrupted and error sessions with checkpoints', () => {
+  const s1 = `test-resumable-clear-1-${Date.now()}`;
+  const s2 = `test-resumable-clear-2-${Date.now()}`;
+  const cp = {
+    sessionId: s1,
+    round: 1,
+    stage: 'plan' as const,
+    promptQuery: 'test prompt',
+    targetLimit: 5,
+  };
+
+  upsertMiningSession({ id: s1, status: 'interrupted', prompt: 'test 1', checkpoint: cp as any });
+  upsertMiningSession({ id: s2, status: 'error', prompt: 'test 2', checkpoint: cp as any });
+
+  const initial = readResumableMiningSessions();
+  assert.ok(initial.some(s => s.id === s1));
+  assert.ok(initial.some(s => s.id === s2));
+
+  const deleted = clearResumableMiningSessions();
+  assert.ok(deleted >= 2);
+
+  const after = readResumableMiningSessions();
+  assert.ok(!after.some(s => s.id === s1));
+  assert.ok(!after.some(s => s.id === s2));
 });
 
 test('discoveryEngine.isActive protects currently running session from premature deletion', () => {

@@ -1854,6 +1854,28 @@ export function upsertLead(
   return upsertLeadWithIdentity(lead, options).lead;
 }
 
+export function deleteLeadInExistingTransaction(
+  db: DatabaseSync,
+  id: string,
+): void {
+  getCachedStatement(
+    db,
+    "DELETE FROM lead_activities WHERE lead_id = ?",
+  ).run(id);
+  getCachedStatement(
+    db,
+    "DELETE FROM outreach_drafts WHERE lead_id = ?",
+  ).run(id);
+  getCachedStatement(
+    db,
+    "DELETE FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?",
+  ).run(id, id);
+  getCachedStatement(
+    db,
+    "DELETE FROM leads WHERE id = ?",
+  ).run(id);
+}
+
 export function deleteLead(id: string) {
   const db = getLeadsDb();
   const shouldManageTransaction = !(db as any).inTransaction;
@@ -1870,12 +1892,7 @@ export function deleteLead(id: string) {
   }
 
   try {
-    db.prepare("DELETE FROM lead_activities WHERE lead_id = ?").run(id);
-    db.prepare("DELETE FROM outreach_drafts WHERE lead_id = ?").run(id);
-    db.prepare(
-      "DELETE FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?",
-    ).run(id, id);
-    db.prepare("DELETE FROM leads WHERE id = ?").run(id);
+    deleteLeadInExistingTransaction(db, id);
 
     if (startedTransaction) {
       db.exec("COMMIT");
@@ -3472,13 +3489,17 @@ export function deleteMiningSessions(sessionIds: string[]): number {
   return Number(info.changes);
 }
 
-export function clearInterruptedMiningSessions(): number {
+export function clearResumableMiningSessions(): number {
   const db = getLeadsDb();
   const info = db
-    .prepare("DELETE FROM mining_sessions WHERE status = 'interrupted'")
+    .prepare(
+      "DELETE FROM mining_sessions WHERE status IN ('interrupted', 'error') AND checkpoint_json IS NOT NULL",
+    )
     .run();
   return Number(info.changes);
 }
+
+export const clearInterruptedMiningSessions = clearResumableMiningSessions;
 
 // -- Lead Activities ----------------------------------------------------------
 

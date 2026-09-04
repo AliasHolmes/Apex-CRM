@@ -77,7 +77,10 @@ const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequ
   return false;
 };
 
-/** Deterministic recovery trigger based on contract terms and session-wide progress. */
+/** 
+ * Deterministic recovery trigger based on contract terms and session-wide progress. 
+ * @param params.alreadyQualified Cumulative count of verified/viable candidates from previous rounds (not raw unjudged extraction counts).
+ */
 export function buildRoundDiagnostics(params: {
   round: number;
   rawCandidates: number;

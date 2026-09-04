@@ -1,4 +1,4 @@
-import { readQueryPerformance, readDiscoveredCompanyNames } from "../../db.js";
+import { readQueryPerformance } from "../../db.js";
 import {
   openAIStructured,
   searchQueriesSchema,
@@ -119,12 +119,9 @@ export async function executePlanStage(
       `Round ${round}: executing recovery query planning (attempt ${currentAttempt}/2) for missing criteria: [${missingHardReqs.join(", ")}].`,
     );
   } else {
-    const sessionDiscovered = ctx.state.signalStore
+    const discoveredCompanies = ctx.state.signalStore
       ? ctx.state.signalStore.getUniqueCompanyNames()
       : [];
-    const discoveredCompanies = sessionDiscovered.length > 0
-      ? sessionDiscovered
-      : readDiscoveredCompanyNames(15);
 
     strategistPrompt = buildScoutStrategistPrompt({
       query: config.promptQuery,

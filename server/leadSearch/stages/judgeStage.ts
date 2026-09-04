@@ -40,6 +40,7 @@ export type JudgeStageInput = {
     | LeadQueryRunTracker
     | WeakMap<Record<string, any>, QueryRunStats>;
   checkpointAcceptedLeads: (leads: any[], stageLabel: string) => void;
+  rerankPoolTarget?: number;
 };
 
 export type JudgeStageOutput = {
@@ -56,6 +57,7 @@ export async function executeJudgeStage(
     stats,
     leadQueryRuns,
     checkpointAcceptedLeads,
+    rerankPoolTarget,
   } = input;
   const { config, state, logEvent, recordTrace } = ctx;
   const { acceptedLeads, qualifiedLeads, llmCircuitBreaker, debugLogs } = state;
@@ -113,7 +115,11 @@ export async function executeJudgeStage(
     finalistCandidates,
     contract,
   );
-  const candidatePoolCap = Math.max(Math.ceil(targetLimit * 1.35), 24);
+  const effectivePoolCap = rerankPoolTarget || Math.ceil(targetLimit * 1.35);
+  const candidatePoolCap = Math.max(
+    targetLimit,
+    Math.min(60, Math.max(effectivePoolCap, 24)),
+  );
   const prioritizedNeedsJudge = needsJudge.length > candidatePoolCap
     ? [...needsJudge].sort((a, b) => (effectiveScore(b.lead) || 0) - (effectiveScore(a.lead) || 0)).slice(0, candidatePoolCap)
     : needsJudge;
@@ -218,10 +224,6 @@ export async function executeJudgeStage(
             reason: outcome.reason,
           });
         }
-        judgeOutcomeTotals.qualified += validation.counts.qualified;
-        judgeOutcomeTotals.hardFail += validation.counts.hardFail;
-        judgeOutcomeTotals.unknown += validation.counts.unknown;
-        judgeOutcomeTotals.unjudged += validation.counts.unjudged;
         const minimumValid = Math.ceil(batch.length * 0.6);
         if (validation.validJudgmentCount < minimumValid) {
           recordTrace({
@@ -272,8 +274,17 @@ export async function executeJudgeStage(
             );
             return [...left, ...right];
           }
+          judgeOutcomeTotals.qualified += validation.counts.qualified;
+          judgeOutcomeTotals.hardFail += validation.counts.hardFail;
+          judgeOutcomeTotals.unknown += validation.counts.unknown;
+          judgeOutcomeTotals.unjudged += validation.counts.unjudged;
           return [] as any[];
         }
+
+        judgeOutcomeTotals.qualified += validation.counts.qualified;
+        judgeOutcomeTotals.hardFail += validation.counts.hardFail;
+        judgeOutcomeTotals.unknown += validation.counts.unknown;
+        judgeOutcomeTotals.unjudged += validation.counts.unjudged;
         const batchQualified = batch.flatMap((candidate) => {
           const qualification = validation.qualifications.get(
             candidate.candidateId,

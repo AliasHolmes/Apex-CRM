@@ -132,6 +132,16 @@ export async function executePersistStage(
         ? "partial"
         : "failed";
 
+  if (
+    mappedLeads.length < targetLimit &&
+    stats.stopReason === "target_fulfilled_early"
+  ) {
+    stats.stopReason = "partial_fulfillment";
+    logEvent(
+      `Stop reason corrected: collection met early target threshold, but judging yielded ${mappedLeads.length}/${targetLimit} leads - recording partial_fulfillment.`,
+    );
+  }
+
   telemetry.finish("success", stats);
   const traceSummary = telemetry.getSummary();
   const detailedLogsText = `${sessionLogs.join("\n")}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;

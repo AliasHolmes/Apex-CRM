@@ -1018,6 +1018,9 @@ export async function executeDiscoverySession(
     let consecutiveStalledRounds = 0;
     let providerImpairedStallRounds = 0;
     let acceptedCountBeforeRound = 0;
+    let accumulatedViableCount = Number(
+      options.initialCheckpoint?.previousRoundSummary?.viableCandidates || 0,
+    );
     const defaultJudgePassRate = clampEnvFloat(
       "LEAD_JUDGE_PASS_RATE_ASSUMPTION",
       0.7,
@@ -1138,8 +1141,12 @@ export async function executeDiscoverySession(
       }
       if (cp.brightDataStats)
         Object.assign(brightDataStats, cp.brightDataStats);
-      if (cp.previousRoundSummary)
+      if (cp.previousRoundSummary) {
         previousRoundSummary = cp.previousRoundSummary;
+        accumulatedViableCount = Number(
+          cp.previousRoundSummary.viableCandidates || 0,
+        );
+      }
       if (Array.isArray(cp.acceptedLeads)) {
         for (const lead of cp.acceptedLeads) {
           acceptedLeads.push(lead);
@@ -1443,8 +1450,10 @@ export async function executeDiscoverySession(
           ),
           contract,
           targetLimit,
-          alreadyQualified: acceptedCountBeforeRound,
+          alreadyQualified: accumulatedViableCount,
         });
+
+        accumulatedViableCount += roundDiagnosticsObj.viableCandidates;
 
         previousRoundSummary = {
           rawCandidates: roundDiagnosticsObj.rawCandidates,
@@ -1457,7 +1466,7 @@ export async function executeDiscoverySession(
             (sum, run) => sum + run.acceptedLeads,
             0,
           ),
-          viableCandidates: roundDiagnosticsObj.viableCandidates,
+          viableCandidates: accumulatedViableCount,
           shouldRecover: roundDiagnosticsObj.shouldRecover,
           missingHardRequirementIds:
             roundDiagnosticsObj.missingHardRequirementIds,
@@ -1481,7 +1490,7 @@ export async function executeDiscoverySession(
         }
 
         logEvent(
-          `Round ${round} diagnostics: ${previousRoundSummary.viableCandidates} candidates show all hard terms; recovery=${previousRoundSummary.shouldRecover ? "needed" : "not needed"}.`,
+          `Round ${round} diagnostics: ${roundDiagnosticsObj.viableCandidates} round candidates (${accumulatedViableCount} cumulative) show all hard terms; recovery=${previousRoundSummary.shouldRecover ? "needed" : "not needed"}.`,
         );
         checkpointAcceptedLeads(
           acceptedLeads.slice(acceptedCountBeforeRound),
@@ -1531,11 +1540,10 @@ export async function executeDiscoverySession(
           acceptedLeads.length >= rerankPoolTarget ||
           (acceptedLeads.length >= targetLimit &&
             (acceptedLeads.length >= earlyStopTargetThreshold ||
-              previousRoundSummary.viableCandidates >= Math.ceil(targetLimit * 0.6) ||
-              !previousRoundSummary.shouldRecover))
+              accumulatedViableCount >= Math.ceil(targetLimit * 0.6)))
         ) {
           logEvent(
-            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${previousRoundSummary.viableCandidates}, target=${targetLimit}) collected. Stopping discovery loop early.`,
+            `Round ${round}: Sufficient high-quality candidates (accepted=${acceptedLeads.length}, viable=${accumulatedViableCount}, target=${targetLimit}) collected. Stopping discovery loop early.`,
           );
           stats.stopReason = "target_fulfilled_early";
           break;
@@ -1658,6 +1666,7 @@ export async function executeDiscoverySession(
       stats,
       leadQueryRuns,
       checkpointAcceptedLeads,
+      rerankPoolTarget,
     });
 
     if (acceptedLeads.length > 0 && qualifiedLeads.length > 0) {

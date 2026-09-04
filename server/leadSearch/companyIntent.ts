@@ -75,16 +75,31 @@ const isBlockedUrl = (url: string) => {
   return !isPublicDomain(host) || BLOCKED_DOMAINS.some(domain => host === domain || host.endsWith(`.${domain}`));
 };
 
+const PRESERVED_2LETTER_TECH_TOKENS = new Set([
+  'ai', 'ml', 'vr', 'ar', 'hr', 'bi', 'cx', 'qa', 'io'
+]);
+
 const companyMatchScore = (companyName: string, result: SearchResult) => {
   const normalizedCompany = normalizeCompanyToken(companyName);
-  const tokens = normalizedCompany.split(/\s+/).filter(token => token.length > 2);
+  const tokens = normalizedCompany
+    .split(/\s+/)
+    .filter(token => token.length > 2 || PRESERVED_2LETTER_TECH_TOKENS.has(token));
   if (tokens.length === 0) return 0;
 
   const host = hostnameFor(result.url).replace(/\.[a-z.]+$/, '').replace(/[^a-z0-9]+/g, ' ');
-  const text = `${host} ${result.title || ''} ${result.content || ''}`.toLowerCase();
+  const title = (result.title || '').toLowerCase();
+  const text = `${host} ${title} ${result.content || ''}`.toLowerCase();
   const hostMatches = tokens.filter(token => host.includes(token));
-  if (hostMatches.length === 0) return 0;
-  return tokens.reduce((score, token) => score + (text.includes(token) ? 1 : 0), 0) + hostMatches.length * 3;
+
+  // Relax mandatory host match when page title strongly matches company name
+  const titleMatches = tokens.filter(token => title.includes(token));
+  const strongTitleMatch = titleMatches.length === tokens.length || title.includes(normalizedCompany);
+
+  if (hostMatches.length === 0 && !strongTitleMatch) return 0;
+
+  const tokenMatches = tokens.reduce((score, token) => score + (text.includes(token) ? 1 : 0), 0);
+  const titleBonus = strongTitleMatch ? 4 : 0;
+  return tokenMatches + hostMatches.length * 3 + titleBonus;
 };
 
 export function cleanCompanyForDomainSearch(raw: string): string {
@@ -108,26 +123,36 @@ export async function findCompanyWebsite(input: {
   const rawName = input.companyName?.trim();
   if (!rawName) return null;
   const cleanName = cleanCompanyForDomainSearch(rawName) || rawName;
+  const nameQueryTerm = cleanName.includes(" ") ? `"${cleanName}"` : cleanName;
 
   const query = input.location
-    ? `${cleanName} official website ${input.location}`
-    : `${cleanName} official website`;
+    ? `${nameQueryTerm} official website ${input.location}`
+    : `${nameQueryTerm} official website`;
 
   let results = await input.brightDataSearch(query).catch(() => []);
-  if ((!results || results.length === 0) && input.tavilySearchFallback) {
-    results = await input.tavilySearchFallback(query).catch(() => []);
-  }
-
-  const ranked = results
+  let scoredResults = (results || [])
     .filter((result) => result.url && !isBlockedUrl(result.url))
     .map((result) => ({
       result,
       score: companyMatchScore(cleanName, result),
     }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
+    .filter((item) => item.score > 0);
 
-  return ranked[0]?.result.url || null;
+  if (scoredResults.length === 0 && input.tavilySearchFallback) {
+    const fallbackResults = await input.tavilySearchFallback(query).catch(() => []);
+    const fallbackScored = (fallbackResults || [])
+      .filter((result) => result.url && !isBlockedUrl(result.url))
+      .map((result) => ({
+        result,
+        score: companyMatchScore(cleanName, result),
+      }))
+      .filter((item) => item.score > 0);
+
+    scoredResults = fallbackScored;
+  }
+
+  scoredResults.sort((a, b) => b.score - a.score);
+  return scoredResults[0]?.result.url || null;
 }
 
 export async function checkCompanyIntent(
@@ -143,7 +168,7 @@ export async function checkCompanyIntent(
   if (!websiteUrl || isBlockedUrl(websiteUrl)) return null;
 
   try {
-    const markdown = await scrapeAsMarkdown(websiteUrl, 12000);
+    const markdown = await scrapeAsMarkdown(websiteUrl, 25000);
     if (!markdown) return null;
 
     const lowerMarkdown = markdown.toLowerCase();

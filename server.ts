@@ -5,6 +5,7 @@
 
 import "dotenv/config";
 import express from "express";
+import compression from "compression";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import apiRouter from "./server/routes/api.js";
@@ -24,24 +25,27 @@ const isProduction =
   process.argv.includes("--production");
 const scriptSourcePolicy = isProduction ? "'self'" : "'self' 'unsafe-inline'";
 
-// Request timing & performance monitoring
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    const isStreaming =
-      req.originalUrl?.includes("/stream") ||
-      req.originalUrl?.includes("/live") ||
-      req.originalUrl?.includes("/find-leads") ||
-      res.getHeader("content-type")?.toString().includes("text/event-stream");
-    if (req.originalUrl?.startsWith("/api") && !isStreaming && duration > 500) {
-      console.log(
-        `[PERF] Slow API request: ${req.method} ${req.originalUrl} (${duration}ms)`,
-      );
-    }
+// Request timing & performance monitoring (disabled by default; toggle with APEX_PERF_LOGS=true)
+if (process.env.APEX_PERF_LOGS === "true") {
+  const slowThreshold = Number(process.env.APEX_PERF_SLOW_THRESHOLD_MS) || 2000;
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on("finish", () => {
+      const duration = Date.now() - start;
+      const isStreaming =
+        req.originalUrl?.includes("/stream") ||
+        req.originalUrl?.includes("/live") ||
+        req.originalUrl?.includes("/find-leads") ||
+        res.getHeader("content-type")?.toString().includes("text/event-stream");
+      if (req.originalUrl?.startsWith("/api") && !isStreaming && duration > slowThreshold) {
+        console.log(
+          `[PERF] Slow API request: ${req.method} ${req.originalUrl} (${duration}ms)`,
+        );
+      }
+    });
+    next();
   });
-  next();
-});
+}
 
 // This is a single-user, local desktop service. Keep it loopback-only and avoid
 // accepting arbitrarily large bodies before an API handler has a chance to validate them.
@@ -60,6 +64,16 @@ app.use((_, res, next) => {
   );
   next();
 });
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.headers["accept"]?.includes("text/event-stream")) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
+  }),
+);
 app.use(express.json({ limit: "10mb" }));
 
 // DNS-Rebinding Guard

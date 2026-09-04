@@ -119,10 +119,6 @@ export class CompanyRegistry {
       return true;
     }
 
-    if (entityA.isShortBrand || entityB.isShortBrand) {
-      return entityA.normalizedName === entityB.normalizedName;
-    }
-
     const setB = new Set(entityB.distinctiveTokens);
     const hasSharedDistinctive = entityA.distinctiveTokens.some(token => setB.has(token));
     if (!hasSharedDistinctive) return false;

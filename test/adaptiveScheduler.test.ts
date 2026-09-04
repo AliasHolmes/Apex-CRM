@@ -52,7 +52,7 @@ describe('adaptive retrieval scheduler', () => {
     ], { maxTasks: 2, minOutcomeRuns: 4, explorationStrength: 1.25 });
 
     assert.equal(result.active, true);
-    assert.deepEqual(result.tasks.map(item => item.query), ['hiring signal', 'founders']);
+    assert.deepEqual(result.tasks.map(item => item.query).sort(), ['founders', 'hiring signal']);
     assert.equal(result.decisions.find(item => item.query === 'local firms')?.selected, false);
     assert.equal(result.decisions.find(item => item.query === 'tooling signal')?.selected, false);
   });

@@ -104,12 +104,17 @@ export function buildRoundDiagnostics(params: {
   });
   const hardRequirementIds = new Set(params.contract.requirements.filter(item => item.importance === 'hard').map(item => item.id));
   const missingHardRequirementIds = requirements.filter(item => hardRequirementIds.has(item.requirementId) && item.passRate < 0.20).map(item => item.requirementId);
-  const viableCandidates = params.leads.filter(lead => 
-    lead.decisionMakerVerification?.verified === true ||
-    params.contract.requirements
-      .filter(requirement => requirement.importance === 'hard')
-      .every(requirement => matchesRequirement(lead, requirement))
-  ).length;
+  const viableCandidates = params.leads.filter(lead => {
+    if (isFlagEnabled.progressiveQualification() && lead.qualification?.verdict) {
+      return lead.qualification.verdict === 'qualified' || lead.qualification.verdict === 'qualified_partial';
+    }
+    return (
+      lead.decisionMakerVerification?.verified === true ||
+      params.contract.requirements
+        .filter(requirement => requirement.importance === 'hard')
+        .every(requirement => matchesRequirement(lead, requirement))
+    );
+  }).length;
 
   let classSummary: ClassDiagnosticSummary | undefined;
   if (isFlagEnabled.enhancedDiagnostics()) {

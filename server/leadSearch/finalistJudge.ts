@@ -187,13 +187,16 @@ export function buildFinalistJudgePrompt(
   contract: ProspectContract,
   candidates: FinalistCandidate[],
 ) {
-  const requirementText = contract.requirements
+  const activeRequirements = isFlagEnabled.progressiveQualification()
+    ? contract.requirements.filter((r) => r.importance === "hard")
+    : contract.requirements;
+  const requirementText = activeRequirements
     .map(
       (requirement) =>
         `- ${requirement.id} [${requirement.importance}/${requirement.scope}]: ${requirement.description}; acceptable terms and semantic equivalents: ${requirement.acceptableTerms.join(" | ")}`,
     )
     .join("\n");
-  const allTerms = contract.requirements.flatMap((requirement) =>
+  const allTerms = activeRequirements.flatMap((requirement) =>
     requirement.acceptableTerms.map((term) => String(term).toLowerCase()),
   );
   const candidateText = candidates
@@ -567,15 +570,38 @@ export function validateFinalistJudgments(
     const stronglyRatedIdentity =
       semanticFit >= 6.5 && authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
 
+    const hasOnlyCompanyTypeFail =
+      contextFails > 0 &&
+      requirements.every((req) => {
+        if (req.status !== "fail") return true;
+        const contractReq = contract.requirements.find(
+          (item) => item.id === req.requirementId,
+        );
+        return (
+          contractReq?.scope === "company_type" ||
+          contractReq?.scope === "company_industry"
+        );
+      });
+    const isHighAuthority =
+      authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
+
     let status: FinalistOutcomeStatus = "unknown";
     if (fabricatedHardPass) {
       // A "pass" whose cited quote does not exist in the evidence packet is a
       // fabrication signal; it blocks qualification entirely.
       status = "unknown";
       counts.unknown++;
-    } else if (identityFails > 0 || contextFails > 0) {
+    } else if (identityFails > 0) {
       status = "hard_fail";
       counts.hardFail++;
+    } else if (contextFails > 0) {
+      if (identityVerified && isHighAuthority && hasOnlyCompanyTypeFail) {
+        status = "qualified_partial";
+        counts.qualified++;
+      } else {
+        status = "hard_fail";
+        counts.hardFail++;
+      }
     } else if (identityVerified && contextVerified && signalsSatisfied) {
       status = "qualified";
       counts.qualified++;
@@ -779,4 +805,160 @@ export function partitionCandidatesByStrictEvidence(
   }
 
   return { autoQualified, needsJudge };
+}
+
+export type TriPartitionResult = {
+  autoQualified: DeterministicFinalist[];
+  autoFailed: Array<{
+    candidate: FinalistCandidate;
+    reason: string;
+    failedRequirementId: string;
+  }>;
+  needsJudge: FinalistCandidate[];
+};
+
+export function checkStrictContradiction(
+  lead: Record<string, any>,
+  contract: ProspectContract,
+): { reason: string; requirementId: string } | null {
+  // 1. Explicit Exclusions Check
+  for (const exclusion of contract.exclusions || []) {
+    const term = clean(exclusion, 100).toLowerCase();
+    if (!term || term.length < 2) continue;
+    const title = clean(lead.currentTitle || lead.headline || "", 200).toLowerCase();
+    const company = clean(lead.currentCompany || lead.company || "", 200).toLowerCase();
+    if (title.includes(term) || company.includes(term)) {
+      return {
+        reason: `Matches contract exclusion: '${exclusion}'`,
+        requirementId: "exclusion",
+      };
+    }
+  }
+
+  // 2. Strict Negative Seniority Check (when authorityRequired = true)
+  if (contract.authorityRequired) {
+    const dm = lead.decisionMakerVerification;
+    if (dm?.ignoredTitle === true && dm.confidence !== undefined && dm.confidence <= 2) {
+      return {
+        reason: `Explicit non-decision maker or entry-level role: ${dm.reason || "low authority"}`,
+        requirementId: "authority",
+      };
+    }
+  }
+
+  // 3. Strict Monotonic Location Contradiction
+  const locReq = contract.requirements.find(
+    (r) => r.scope === "person_location" && r.importance === "hard",
+  );
+  if (locReq && locReq.acceptableTerms?.length) {
+    const rawLoc = clean(`${lead.location || ""} ${lead.profile?.location || ""}`, 300).toLowerCase();
+    if (rawLoc.trim().length > 0) {
+      const acceptable = locReq.acceptableTerms.map((t) => t.toLowerCase());
+      const hasAnyAcceptable = acceptable.some((term) => rawLoc.includes(term));
+      const hasRemoteTag = /\b(remote|telecommute|worldwide|global|anywhere)\b/i.test(rawLoc);
+
+      // Explicit contradiction ONLY if candidate explicitly states a foreign country
+      // AND has ZERO target terms AND NO remote indicators:
+      const hasForeignCountry = /\b(india|united kingdom|uk|england|scotland|london|australia|germany|france|netherlands|brazil|nigeria|philippines|pakistan)\b/i.test(rawLoc);
+      const isTargetUS = acceptable.some((t) => ["us", "usa", "united states", "america"].includes(t));
+
+      if (isTargetUS && hasForeignCountry && !hasAnyAcceptable && !hasRemoteTag) {
+        return {
+          reason: `Location '${rawLoc}' explicitly contradicts target '${locReq.acceptableTerms.join(", ")}'`,
+          requirementId: locReq.id,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+export function triPartitionCandidatesByEvidence(
+  candidates: FinalistCandidate[],
+  contract: ProspectContract,
+): TriPartitionResult {
+  const hardRequirements = contract.requirements.filter(
+    (requirement) =>
+      requirement.importance === "hard" &&
+      (requirement.evidenceModality ||
+        (requirement.scope === "signal"
+          ? "open_web_signal"
+          : "structured_profile")) !== "open_web_signal",
+  );
+  const hasOpenWebSignalHardReqs = contract.requirements.some(
+    (r) =>
+      r.importance === "hard" &&
+      (r.evidenceModality ||
+        (r.scope === "signal" ? "open_web_signal" : "structured_profile")) ===
+        "open_web_signal",
+  );
+
+  const autoQualified: DeterministicFinalist[] = [];
+  const autoFailed: TriPartitionResult["autoFailed"] = [];
+  const needsJudge: FinalistCandidate[] = [];
+
+  for (const candidate of candidates) {
+    const { lead } = candidate;
+
+    // 1. Check Explicit Contradictions (Auto-Fail Gate)
+    const contradiction = checkStrictContradiction(lead, contract);
+    if (contradiction) {
+      autoFailed.push({
+        candidate,
+        reason: contradiction.reason,
+        failedRequirementId: contradiction.requirementId,
+      });
+      continue;
+    }
+
+    // 2. Check Strict Positive Matches (Auto-Pass Gate)
+    if (
+      hasOpenWebSignalHardReqs ||
+      !hardRequirements.length ||
+      !hardRequirements.every((requirement) =>
+        hasStrictStructuredMatch(lead, requirement),
+      )
+    ) {
+      needsJudge.push(candidate);
+      continue;
+    }
+
+    const requirements: RequirementAssessment[] = contract.requirements.map(
+      (requirement) => ({
+        requirementId: requirement.id,
+        status: requirement.importance === "hard" ? "pass" : "unknown",
+        evidenceId: requirement.importance === "hard" ? "e0" : undefined,
+      }),
+    );
+    const authorityFit = contract.authorityRequired
+      ? bounded(
+          lead.decisionMakerVerification?.confidence ??
+            lead.audit?.authorityConfidence ??
+            7,
+        )
+      : 0;
+    const evidenceConfidence = bounded(
+      lead.scout?.evidenceCoverageScore ??
+        lead.scoreBreakdown?.evidenceQualityScore ??
+        7,
+    );
+    autoQualified.push({
+      candidate,
+      qualification: {
+        policyVersion: contract.policyVersion,
+        verdict: "qualified",
+        qualificationSource: "deterministic",
+        finalScore: rankLeadForFinalSelection(lead),
+        requirements,
+        reason:
+          "Direct structured profile fields satisfy every hard requirement; no semantic inference was needed.",
+        semanticFit: 10,
+        evidenceConfidence,
+        authorityFit,
+      },
+    });
+  }
+
+  return { autoQualified, autoFailed, needsJudge };
 }

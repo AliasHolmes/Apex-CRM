@@ -1422,7 +1422,39 @@ export type LeadsStats = {
   initialized: boolean;
 };
 
+let cachedLeadsStats: LeadsStats | null = null;
+let cachedLeadsStatsExpiresAt = 0;
+let dbMutationCounter = 0;
+
+export function invalidateLeadsStatsCache() {
+  cachedLeadsStats = null;
+  cachedLeadsStatsExpiresAt = 0;
+  dbMutationCounter++;
+}
+
+export function getLeadsDbMutationCounter(): number {
+  return dbMutationCounter;
+}
+
+export function getLeadsETag(queryParams?: Record<string, any>): string {
+  const db = getLeadsDb();
+  const row = db
+    .prepare("SELECT MAX(updated_at) as max_updated, COUNT(*) as count FROM leads")
+    .get() as { max_updated?: string; count?: number } | undefined;
+  const maxUpdated = row?.max_updated || "0";
+  const count = Number(row?.count || 0);
+  const mutation = dbMutationCounter;
+  const qStr = queryParams ? JSON.stringify(queryParams) : "";
+  const hash = crypto.createHash("md5").update(`${maxUpdated}:${count}:${mutation}:${qStr}`).digest("hex").slice(0, 16);
+  return `W/"${hash}"`;
+}
+
 export function readLeadsStats(): LeadsStats {
+  const now = Date.now();
+  if (cachedLeadsStats && now < cachedLeadsStatsExpiresAt) {
+    return cachedLeadsStats;
+  }
+
   const db = getLeadsDb();
   const summaryRow = db
     .prepare(
@@ -1465,13 +1497,17 @@ export function readLeadsStats(): LeadsStats {
   const conversionRate =
     total > 0 ? Math.round((convertedCount / total) * 100) : 0;
 
-  return {
+  const stats: LeadsStats = {
     total,
     stageCounts,
     averageQualification,
     conversionRate,
     initialized: hasLeadStoreBeenInitialized(),
   };
+
+  cachedLeadsStats = stats;
+  cachedLeadsStatsExpiresAt = now + 60_000;
+  return stats;
 }
 
 export function readExistingIdentityKeys(): Set<string> {
@@ -1626,6 +1662,7 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
     ).run(now);
 
     db.exec("COMMIT");
+    invalidateLeadsStatsCache();
   } catch (error) {
     try {
       db.exec("ROLLBACK");
@@ -1836,6 +1873,7 @@ export function upsertLeadWithIdentity(
   try {
     const result = upsertLeadInExistingTransaction(db, lead, options);
     db.exec("COMMIT");
+    invalidateLeadsStatsCache();
     return result;
   } catch (error) {
     try {
@@ -1874,6 +1912,7 @@ export function deleteLeadInExistingTransaction(
     db,
     "DELETE FROM leads WHERE id = ?",
   ).run(id);
+  invalidateLeadsStatsCache();
 }
 
 export function deleteLead(id: string) {
@@ -1896,6 +1935,7 @@ export function deleteLead(id: string) {
 
     if (startedTransaction) {
       db.exec("COMMIT");
+      invalidateLeadsStatsCache();
     }
   } catch (error) {
     if (startedTransaction) {
@@ -1933,6 +1973,7 @@ export function upsertLeadsWithIdentity(
       results.push(upsertLeadInExistingTransaction(db, lead, options));
     }
     db.exec("COMMIT");
+    invalidateLeadsStatsCache();
     return results;
   } catch (error) {
     try {
@@ -1949,6 +1990,28 @@ export function upsertLeads(
   options: LeadWriteOptions = {},
 ) {
   return upsertLeadsWithIdentity(leads, options).map((result) => result.lead);
+}
+
+export function bulkPersistLeads(
+  leads: Record<string, any>[],
+  options: LeadWriteOptions = {},
+): LeadWriteResult[] {
+  const results = upsertLeadsWithIdentity(leads, options);
+  invalidateLeadsStatsCache();
+  return results;
+}
+
+export function markLeadReviewed(
+  leadId: string,
+  reviewStatus: string,
+): boolean {
+  const db = getLeadsDb();
+  const now = new Date().toISOString();
+  const res = db
+    .prepare("UPDATE leads SET review_status = ?, updated_at = ? WHERE id = ?")
+    .run(reviewStatus, now, leadId);
+  invalidateLeadsStatsCache();
+  return Number(res.changes || 0) > 0;
 }
 
 const normalizeCacheValue = (value?: string) =>

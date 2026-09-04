@@ -917,7 +917,7 @@ export async function executeEnrichStage(
 
   // 3. Optional company intent enrichment via canonical runIntentEnrichment module
   const leadsNeedingIntent = acceptedLeads.filter(
-    (l) => !l.companyIntentEvidence,
+    (l) => !l.companyIntentEvidence && !l._autoFailed && l.judgmentInsight?.status !== "hard_fail",
   );
   if (
     companyIntentEnabled &&

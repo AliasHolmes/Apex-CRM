@@ -7,9 +7,9 @@ import { SignalStore } from '../server/leadSearch/signalStore.js';
 import type { ProspectContract } from '../server/leadSearch/prospectContract.js';
 import type { SessionContext } from '../server/leadSearch/pipelineTypes.js';
 
-const createMockContract = (): ProspectContract => ({
+const createMockContract = (): any => ({
   version: 1,
-  policyVersion: 'test',
+  policyVersion: 'evidence-contract-v8',
   brief: 'VP Engineering at AI SaaS startups',
   requirements: [
     {
@@ -108,9 +108,10 @@ describe('Engine Bug Fixes Verification', () => {
         text: 'Acme AI launched enterprise model',
         url: 'https://acme.ai',
         round: 1,
+        query: 'test',
       });
 
-      const mockCtx: SessionContext = {
+      const mockCtx: any = {
         config: {
           sessionId: 'session-test-pollute',
           promptQuery: 'Find AI founders',
@@ -143,7 +144,7 @@ describe('Engine Bug Fixes Verification', () => {
         recordTrace: () => {},
       };
 
-      const emptyStoreCtx: SessionContext = {
+      const emptyStoreCtx: any = {
         ...mockCtx,
         state: {
           ...mockCtx.state,
@@ -176,7 +177,7 @@ describe('Engine Bug Fixes Verification', () => {
       }));
 
       const qualifiedLeads: any[] = [];
-      const mockCtx: SessionContext = {
+      const mockCtx: any = {
         config: {
           sessionId: 'session-cap-test',
           promptQuery: 'VP Engineering',
@@ -269,7 +270,7 @@ describe('Engine Bug Fixes Verification', () => {
       }));
 
       const qualifiedLeads: any[] = [];
-      const mockCtx: SessionContext = {
+      const mockCtx: any = {
         config: {
           sessionId: 'session-split-test',
           promptQuery: 'VP Engineering',
@@ -400,7 +401,7 @@ describe('Engine Bug Fixes Verification', () => {
         queryRuns: [],
       };
 
-      const mockCtx: SessionContext = {
+      const mockCtx: any = {
         config: {
           sessionId: 'session-partial-fulfillment-test',
           promptQuery: 'VP AI Engineering',
@@ -473,7 +474,7 @@ describe('Engine Bug Fixes Verification', () => {
         queryRuns: [],
       };
 
-      const mockCtx: SessionContext = {
+      const mockCtx: any = {
         config: {
           sessionId: 'session-fulfilled-test',
           promptQuery: 'VP AI Engineering',

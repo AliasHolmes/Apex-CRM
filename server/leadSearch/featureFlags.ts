@@ -91,5 +91,11 @@ export const isFlagEnabled = {
    * Optimization 7: Proactive Token Regulator & Load Shedder
    * Meters sliding-window token rates to prevent 429 rate limits
    */
-  proactiveTokenRegulator: () => readFlag('PROACTIVE_TOKEN_REGULATOR_ENABLED')
+  proactiveTokenRegulator: () => readFlag('PROACTIVE_TOKEN_REGULATOR_ENABLED'),
+
+  /**
+   * PIQ-BOS: Progressive Interleaved Qualification with Bounded Multi-Objective Selection
+   * Interleaves two-way triage and micro-batch qualification into the discovery loop.
+   */
+  progressiveQualification: () => readFlag('PROGRESSIVE_QUALIFICATION_ENABLED')
 };

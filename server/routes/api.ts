@@ -17,6 +17,8 @@ import {
   readStoredLeads,
   readLeadsSummary,
   readLeadsStats,
+  invalidateLeadsStatsCache,
+  getLeadsETag,
   readExistingIdentityKeys,
   readLeadsStageSummary,
   readStoredLeadById,
@@ -242,12 +244,14 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
 
 router.get("/leads", (req, res): any => {
   try {
-    res.setHeader(
-      "Cache-Control",
-      "no-store, no-cache, must-revalidate, proxy-revalidate",
-    );
+    const etag = getLeadsETag(req.query);
+    res.setHeader("ETag", etag);
+    res.setHeader("Cache-Control", "no-cache, must-revalidate");
     res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
+
+    if (req.headers["if-none-match"] === etag) {
+      return res.status(304).end();
+    }
 
     const {
       stage,
@@ -317,14 +321,16 @@ router.get("/leads", (req, res): any => {
   }
 });
 
-router.get("/leads/stats", (_req, res): any => {
+router.get("/leads/stats", (req, res): any => {
   try {
-    res.setHeader(
-      "Cache-Control",
-      "no-store, no-cache, must-revalidate, proxy-revalidate",
-    );
+    const etag = getLeadsETag({ route: "stats" });
+    res.setHeader("ETag", etag);
+    res.setHeader("Cache-Control", "no-cache, must-revalidate");
     res.setHeader("Pragma", "no-cache");
-    res.setHeader("Expires", "0");
+
+    if (req.headers["if-none-match"] === etag) {
+      return res.status(304).end();
+    }
     const stats = readLeadsStats();
     res.json({
       apiVersion: 1,
@@ -631,6 +637,8 @@ router.post("/leads/:id/merge", (req, res): any => {
       });
 
       db.exec("COMMIT");
+
+      invalidateLeadsStatsCache();
 
       const savedMerged = readStoredLeadById(winner.id);
       res.json({ apiVersion: 1, lead: savedMerged, deleted: duplicateId });

@@ -117,11 +117,14 @@ export function buildCollectionCapacity(input: {
   const defaultMaxRoundsCap = targetLimit <= 30 ? 3 : targetLimit <= 50 ? 4 : 6;
   const maxRoundsCap = clampInteger(input.maxRoundsCap ?? defaultMaxRoundsCap, 2, MAX_COLLECTION_ROUNDS);
 
-  // Add 1 recovery round pad, bounded by baseRounds and strictly capped by maxRoundsCap
-  const maxRounds = Math.min(
-    Math.max(baseRounds, requiredRounds + 1),
-    maxRoundsCap
-  );
+  // When maxRoundsCap is explicitly supplied by configuration/caller, respect that budget;
+  // otherwise, bound by baseRounds and defaultMaxRoundsCap.
+  const maxRounds = input.maxRoundsCap !== undefined
+    ? maxRoundsCap
+    : Math.min(
+        Math.max(baseRounds, requiredRounds + 1),
+        defaultMaxRoundsCap
+      );
 
   return {
     candidateBatchSize,

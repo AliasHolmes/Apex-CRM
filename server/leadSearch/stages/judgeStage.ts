@@ -100,7 +100,8 @@ export async function executeJudgeStage(
   const finalistCandidates: FinalistCandidate[] = acceptedLeads.map(
     (lead, index) => {
       const evidence = getEvidenceForLead(lead);
-      const stableId = `c${normalizeDedupeValue(lead.contactDetails?.linkedinUrl || lead.sourceUrl || "") || index}`;
+      const dedupeKey = normalizeDedupeValue(lead.contactDetails?.linkedinUrl || lead.sourceUrl || "");
+      const stableId = dedupeKey ? `c${dedupeKey}` : (lead.id ? `c_${lead.id}` : `c_r${stats.rounds || 1}_${index}`);
       candidateIdByLead.set(lead, stableId);
       return finalistCandidateFromLead(
         stableId,
@@ -201,7 +202,14 @@ export async function executeJudgeStage(
             maxTokens: dynamicMaxTokens,
             temperature: 0,
             retryOnParseFailure: false,
-            timeoutMs: Number(process.env.LLM_FINALIST_TIMEOUT_MS || 90_000),
+            timeoutMs: Math.max(
+              180_000,
+              Number(
+                process.env.LLM_FINALIST_TIMEOUT_MS ||
+                  process.env.LLM_TIMEOUT_MS ||
+                  180_000,
+              ),
+            ),
             circuitBreaker: llmCircuitBreaker,
             signal: state.abortController.signal,
             onProviderAttempt: (attempt) => judgeAttempts.push(attempt),
@@ -521,7 +529,14 @@ export async function executeJudgeStage(
           index,
           url: lead.contactDetails?.linkedinUrl || lead.sourceUrl || "",
         }))
-        .filter((entry) => !qualifiedUrls.has(entry.url));
+        .filter((entry) => !qualifiedUrls.has(entry.url))
+        .filter((entry) => !entry.lead._autoFailed)
+        .filter((entry) => {
+          const insight = judgmentInsight.get(
+            candidateIdByLead.get(entry.lead) || `c${entry.index}`,
+          );
+          return !insight || insight.status !== "hard_fail";
+        });
 
       for (const entry of fallbackRescuePool) {
         entry.lead.finalSelectionScore = rankLeadForFinalSelection(entry.lead);
@@ -565,4 +580,272 @@ export async function executeJudgeStage(
   );
 
   return { qualifiedLeads };
+}
+
+export type IncrementalJudgeInput = {
+  candidates: FinalistCandidate[];
+  contract: ProspectContract;
+  stats: any;
+  leadQueryRuns?:
+    | LeadQueryRunTracker
+    | WeakMap<Record<string, any>, QueryRunStats>;
+  round: number;
+  targetCushion?: number;
+  currentQualifiedCount?: number;
+};
+
+export type IncrementalJudgeOutput = {
+  qualifiedCandidates: any[];
+  judgmentInsights: Map<
+    string,
+    { status: FinalistOutcomeStatus; score: number; reason?: string }
+  >;
+};
+
+export async function evaluateIncrementalJudgeBatches(
+  ctx: SessionContext,
+  input: IncrementalJudgeInput,
+): Promise<IncrementalJudgeOutput> {
+  const {
+    candidates,
+    contract,
+    stats,
+    leadQueryRuns,
+    round,
+    targetCushion,
+  } = input;
+  const { config, state, logEvent, recordTrace } = ctx;
+  const { llmCircuitBreaker } = state;
+
+  const judgmentInsights = new Map<
+    string,
+    { status: FinalistOutcomeStatus; score: number; reason?: string }
+  >();
+  const qualifiedCandidates: any[] = [];
+
+  if (!candidates || candidates.length === 0) {
+    return { qualifiedCandidates, judgmentInsights };
+  }
+
+  // Micro-batch size: 3-4 candidates per batch for optimal token amortization and zero omission
+  const microBatchSize = Math.max(
+    2,
+    Math.min(4, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 3)),
+  );
+  const judgeConcurrency = Math.max(
+    1,
+    Math.min(3, config.judgeConcurrency || 2),
+  );
+
+  const microBatches: FinalistCandidate[][] = [];
+  for (let i = 0; i < candidates.length; i += microBatchSize) {
+    microBatches.push(candidates.slice(i, i + microBatchSize));
+  }
+
+  // Chunk micro-batches into waves according to concurrency
+  const waves: FinalistCandidate[][][] = [];
+  for (let i = 0; i < microBatches.length; i += judgeConcurrency) {
+    waves.push(microBatches.slice(i, i + judgeConcurrency));
+  }
+
+  let cumulativeQualified = input.currentQualifiedCount || 0;
+
+  const evaluateSingleBatch = async (
+    batch: FinalistCandidate[],
+    batchIndex: number,
+    depth = 0,
+  ): Promise<any[]> => {
+    const judgeStarted = Date.now();
+    const judgeAttempts: LLMProviderAttempt[] = [];
+    let judgeUsage: LLMUsage | undefined;
+    const judgePrompt = buildFinalistJudgePrompt(contract, batch);
+    const dynamicMaxTokens = Math.min(
+      2_500,
+      Math.max(600, batch.length * 450),
+    );
+    const estimatedInputTokens = estimateTokenCount(judgePrompt);
+
+    try {
+      const judgmentResult = await openAIStructured<any>(
+        judgePrompt,
+        finalistJudgeSchema,
+        FINALIST_JUDGE_SYSTEM_PROMPT,
+        {
+          maxTokens: dynamicMaxTokens,
+          temperature: 0,
+          retryOnParseFailure: false,
+          timeoutMs: Math.max(
+            180_000,
+            Number(
+              process.env.LLM_FINALIST_TIMEOUT_MS ||
+                process.env.LLM_TIMEOUT_MS ||
+                180_000,
+            ),
+          ),
+          circuitBreaker: llmCircuitBreaker,
+          signal: state.abortController.signal,
+          onProviderAttempt: (attempt) => judgeAttempts.push(attempt),
+          onUsage: (usage) => {
+            judgeUsage = usage;
+          },
+        },
+      );
+
+      const validation = validateFinalistJudgments(
+        judgmentResult,
+        contract,
+        batch,
+      );
+
+      for (const [judgedId, outcome] of validation.outcomes) {
+        judgmentInsights.set(judgedId, {
+          status: outcome.status,
+          score:
+            outcome.qualification?.finalScore ??
+            (outcome.status === "hard_fail" ? -100 : -1),
+          reason: outcome.reason,
+        });
+      }
+
+      // Candidate omission check: retry split if too many omitted
+      const minimumValid = Math.ceil(batch.length * 0.6);
+      if (validation.validJudgmentCount < minimumValid && batch.length > 1 && depth < 2) {
+        logEvent(
+          `Incremental Judge: Batch ${batchIndex + 1} omitted judgments; splitting ${batch.length} candidates.`,
+        );
+        const mid = Math.ceil(batch.length / 2);
+        const left = await evaluateSingleBatch(batch.slice(0, mid), batchIndex, depth + 1);
+        const right = await evaluateSingleBatch(batch.slice(mid), batchIndex, depth + 1);
+        return [...left, ...right];
+      }
+
+      const batchQualified = batch.flatMap((candidate) => {
+        const qualification = validation.qualifications.get(
+          candidate.candidateId,
+        );
+        if (!qualification) return [];
+        candidate.lead.qualification = qualification;
+        candidate.lead.whyThisLead = qualification.reason;
+        candidate.lead.finalSelectionScore = qualification.finalScore;
+        if (candidate.lead.scoreBreakdown) {
+          candidate.lead.scoreBreakdown.finalScore = qualification.finalScore;
+        }
+        candidate.lead.scoreOverride = qualification.finalScore;
+        return [candidate.lead];
+      });
+
+      // Attribute failures back to queryRun
+      const rawJudgments = Array.isArray(judgmentResult?.judgments)
+        ? judgmentResult.judgments
+        : [];
+      for (const candidate of batch) {
+        const queryRun =
+          leadQueryRuns?.get?.(candidate.lead) ||
+          leadQueryRuns?.get?.(candidate);
+        if (queryRun) {
+          const jm = rawJudgments.find(
+            (j: any) =>
+              String(j?.candidateId || "").trim() === candidate.candidateId,
+          );
+          if (Array.isArray(jm?.requirements)) {
+            if (!queryRun.requirementFailCounts) {
+              queryRun.requirementFailCounts = {};
+            }
+            for (const req of jm.requirements) {
+              if (req && req.status === "fail" && req.requirementId) {
+                queryRun.requirementFailCounts[req.requirementId] =
+                  (queryRun.requirementFailCounts[req.requirementId] || 0) + 1;
+              }
+            }
+          }
+        }
+      }
+
+      recordTrace({
+        phase: "candidate_processing",
+        operation: "incremental_finalist_judge",
+        status: "success",
+        provider: "llm",
+        round,
+        latencyMs: Date.now() - judgeStarted,
+        counts: {
+          batchSize: batch.length,
+          validJudgments: validation.validJudgmentCount,
+          qualified: batchQualified.length,
+        },
+        llm: summarizeLLM(
+          "incremental_finalist_judge",
+          judgePrompt,
+          judgmentResult,
+          Date.now() - judgeStarted,
+          0,
+          judgeAttempts,
+          judgeUsage,
+        ),
+        metadata: {
+          batch: `${batchIndex + 1}_d${depth}`,
+          policyVersion: contract.policyVersion,
+          estimatedInputTokens,
+          requestedOutputTokens: dynamicMaxTokens,
+        },
+      });
+
+      return batchQualified;
+    } catch (error: any) {
+      logEvent(
+        `WARN: Incremental judge batch ${batchIndex + 1} failed: ${error.message || String(error)}`,
+      );
+      recordTrace({
+        phase: "candidate_processing",
+        operation: "incremental_finalist_judge",
+        status: "error",
+        provider: "llm",
+        round,
+        latencyMs: Date.now() - judgeStarted,
+        error: { message: error.message || String(error) },
+        llm: summarizeLLM(
+          "incremental_finalist_judge",
+          judgePrompt,
+          "",
+          Date.now() - judgeStarted,
+          0,
+          judgeAttempts,
+          judgeUsage,
+        ),
+        metadata: {
+          batch: `${batchIndex + 1}_d${depth}`,
+          policyVersion: contract.policyVersion,
+          estimatedInputTokens,
+          requestedOutputTokens: dynamicMaxTokens,
+        },
+      });
+      return [];
+    }
+  };
+
+  for (let w = 0; w < waves.length; w++) {
+    const waveBatches = waves[w];
+    const waveResults = await Promise.all(
+      waveBatches.map((batch, idx) =>
+        evaluateSingleBatch(batch, w * judgeConcurrency + idx),
+      ),
+    );
+    const newlyQualified = waveResults.flat();
+    qualifiedCandidates.push(...newlyQualified);
+    cumulativeQualified += newlyQualified.length;
+
+    // Check wave short-circuit:
+    if (
+      targetCushion !== undefined &&
+      cumulativeQualified >= targetCushion &&
+      w < waves.length - 1
+    ) {
+      logEvent(
+        `Incremental Judge Round ${round}: Wave ${w + 1}/${waves.length} reached target cushion (${cumulativeQualified}/${targetCushion}); short-circuiting remaining ${waves.length - w - 1} wave(s).`,
+      );
+      break;
+    }
+  }
+
+  return { qualifiedCandidates, judgmentInsights };
 }

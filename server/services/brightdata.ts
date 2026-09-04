@@ -10,6 +10,7 @@ import {
 } from "./keyRotator.js";
 import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
 import { normalizeLinkedInUrl } from "./linkedinEvidence.js";
+import { hasTavilyKey, tavilyExtract } from "./llm.js";
 
 type BrightDataTransport = "hosted" | "local";
 export type BrightDataReasonCode =
@@ -1104,36 +1105,90 @@ export function isAuthwalledUrl(url: string): boolean {
   return AUTHWALLED_HOST_PATTERN.test(url);
 }
 
-export async function scrapeAsMarkdown(
-  url: string,
-  timeoutMs = baseTimeoutMs(),
-) {
-  const scrapeUrl = normalizeBrightDataUrl(url);
-  if (!scrapeUrl) {
-    return null;
-  }
+const PRIVATE_IP_PATTERNS = [
+  /^localhost$/i,
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+  /^169\.254\./,
+  /^0\./,
+  /^::1$/,
+  /^fc00:/i,
+  /^fe80:/i,
+  /\.local$/i,
+  /\.internal$/i,
+  /\.lan$/i,
+  /\.localhost$/i,
+];
 
-  const isAuthwalled = isAuthwalledUrl(scrapeUrl);
+function isPrivateOrInternalHost(host: string): boolean {
+  if (!host) return true;
+  const cleanHost = host.trim().toLowerCase().replace(/^www\./i, "");
+  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(cleanHost));
+}
 
-  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
-    if (isAuthwalled) return null;
-    try {
-      const response = await fetch(scrapeUrl, {
+async function nativeHttpScrape(
+  scrapeUrl: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  try {
+    let currentUrl = scrapeUrl;
+    let redirectCount = 0;
+    const maxRedirects = 3;
+    const deadlineSignal = AbortSignal.timeout(Math.min(timeoutMs, 12000));
+
+    while (redirectCount <= maxRedirects) {
+      const parsed = new URL(currentUrl);
+      const host = parsed.hostname.toLowerCase().replace(/^www\./i, "");
+      if (!host || isPrivateOrInternalHost(host)) {
+        return null;
+      }
+      const response = await fetch(currentUrl, {
         headers: {
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
-        signal: AbortSignal.timeout(Math.min(timeoutMs, 12000)),
+        redirect: "manual",
+        signal: deadlineSignal,
       });
+
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) {
+          return null;
+        }
+        const nextUrl = new URL(location, currentUrl).toString();
+        const nextHost = new URL(nextUrl).hostname
+          .toLowerCase()
+          .replace(/^www\./i, "");
+        if (!nextHost || isPrivateOrInternalHost(nextHost)) {
+          return null;
+        }
+        currentUrl = nextUrl;
+        redirectCount++;
+        continue;
+      }
+
       if (response.ok) {
         const html = await response.text();
-        const jsonLdMatches = Array.from(html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi))
-          .map(m => m[1].trim())
+        const jsonLdMatches = Array.from(
+          html.matchAll(
+            /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+          ),
+        )
+          .map((m) => m[1].trim())
           .filter(Boolean);
-        const metaDesc = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i)?.[1] || '';
-        const ogTitle = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i)?.[1] || '';
+        const metaDesc =
+          html.match(
+            /<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i,
+          )?.[1] || "";
+        const ogTitle =
+          html.match(
+            /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i,
+          )?.[1] || "";
 
         const textContent = html
           .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
@@ -1148,50 +1203,115 @@ export async function scrapeAsMarkdown(
           .replace(/\s+/g, " ")
           .trim();
 
-        const parts = [ogTitle ? `# ${ogTitle}` : '', metaDesc ? `> ${metaDesc}` : '', textContent, ...jsonLdMatches.map(j => `\`\`\`json\n${j}\n\`\`\``)].filter(Boolean);
-        const result = parts.join('\n\n');
+        const parts = [
+          ogTitle ? `# ${ogTitle}` : "",
+          metaDesc ? `> ${metaDesc}` : "",
+          textContent,
+          ...jsonLdMatches.map((j) => `\`\`\`json\n${j}\n\`\`\``),
+        ].filter(Boolean);
+        const result = parts.join("\n\n");
         if (result.length > 50) return result;
       }
-    } catch {
-      // Fallback fetch failed
+      break;
     }
+  } catch {
+    // Fallback fetch failed
+  }
+  return null;
+}
+
+async function tavilyExtractFallback(scrapeUrl: string): Promise<string | null> {
+  try {
+    if (!hasTavilyKey()) return null;
+    const extractResults = await tavilyExtract([scrapeUrl], "", {
+      extractDepth: "basic",
+    });
+    const content = extractResults[0]?.rawContent || "";
+    if (content.trim().length > 50) {
+      return content.trim();
+    }
+  } catch {
+    // Tavily extract fallback failed
+  }
+  return null;
+}
+
+export async function scrapeAsMarkdown(
+  url: string,
+  timeoutMs = baseTimeoutMs(),
+) {
+  const scrapeUrl = normalizeBrightDataUrl(url);
+  if (!scrapeUrl) {
     return null;
   }
 
-  return withBrightDataClient(
-    "scrape_as_markdown",
-    async (client) => {
-      const result = await withHardTimeout(
-        client.callTool(
-          { name: "scrape_as_markdown", arguments: { url: scrapeUrl } },
-          undefined,
-          { timeout: timeoutMs },
-        ),
-        timeoutMs,
-        "Bright Data scrape_as_markdown",
-      );
+  const isAuthwalled = isAuthwalledUrl(scrapeUrl);
 
-      if ((result as any)?.isError) {
-        throw new Error(
-          textFromToolResult(result) ||
-            "Bright Data scrape_as_markdown returned an error",
-        );
-      }
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
+    if (isAuthwalled) return null;
+    const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs);
+    if (nativeResult) return nativeResult;
+    return await tavilyExtractFallback(scrapeUrl);
+  }
 
-      const markdown = textFromToolResult(result);
-      if (!markdown) {
-        throw new BrightDataError(
-          "Bright Data scrape_as_markdown returned empty body",
-          {
-            reasonCode: "target_transient",
-            retryable: true,
-          },
+  try {
+    const result = await withBrightDataClient(
+      "scrape_as_markdown",
+      async (client) => {
+        const toolResult = await withHardTimeout(
+          client.callTool(
+            { name: "scrape_as_markdown", arguments: { url: scrapeUrl } },
+            undefined,
+            { timeout: timeoutMs },
+          ),
+          timeoutMs,
+          "Bright Data scrape_as_markdown",
         );
-      }
-      return markdown;
-    },
-    { throwOnUnavailable: true, throwOnFailure: true },
-  );
+
+        if ((toolResult as any)?.isError) {
+          throw new Error(
+            textFromToolResult(toolResult) ||
+              "Bright Data scrape_as_markdown returned an error",
+          );
+        }
+
+        const markdown = textFromToolResult(toolResult);
+        if (!markdown || !markdown.trim()) {
+          throw new BrightDataError(
+            "Bright Data scrape_as_markdown returned empty body",
+            {
+              reasonCode: "target_transient",
+              retryable: true,
+            },
+          );
+        }
+        return markdown;
+      },
+      { throwOnUnavailable: true, throwOnFailure: true },
+    );
+
+    if (result && result.trim()) {
+      return result;
+    }
+  } catch (error) {
+    console.warn(
+      `[brightdata] scrape_as_markdown failed for ${scrapeUrl}: ${error instanceof Error ? error.message : String(error)}. Attempting native/tavily fallback...`,
+    );
+  }
+
+  // If Bright Data timed out or returned empty body for non-authwalled URL, fall back to native fetch then Tavily
+  if (!isAuthwalled) {
+    const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs);
+    if (nativeResult && nativeResult.trim().length > 50) {
+      return nativeResult;
+    }
+    const tavilyResult = await tavilyExtractFallback(scrapeUrl);
+    if (tavilyResult && tavilyResult.trim().length > 50) {
+      return tavilyResult;
+    }
+  }
+
+  return null;
 }
 
 export type BrightDataBatchResult = {
@@ -1596,12 +1716,36 @@ export function buildBrightDataSearchArguments(
   };
 }
 
+let googleSerpChallengeCount = 0;
+let stickyBingActive = false;
+const GOOGLE_CHALLENGE_STICKY_THRESHOLD = 2;
+
+export function resetStickyBingFallback() {
+  googleSerpChallengeCount = 0;
+  stickyBingActive = false;
+}
+
+export function isStickyBingActive(): boolean {
+  return stickyBingActive;
+}
+
 export async function brightDataSearch(
   query: string,
   options?: BrightDataSearchOptions,
 ): Promise<BrightDataSearchResult[]> {
+  // Add randomized search jitter (500-1200ms) between search calls
+  const jitterMs = Math.floor(500 + Math.random() * 700);
+  await new Promise((resolve) => setTimeout(resolve, jitterMs));
+
   const timeoutMs = options?.timeoutMs || baseTimeoutMs();
-  const engine = options?.engine || "google";
+  const defaultEngine =
+    (process.env.BRIGHTDATA_DEFAULT_SEARCH_ENGINE as "google" | "bing" | "yandex") ||
+    "google";
+  let engine = options?.engine || defaultEngine;
+  if (stickyBingActive && engine === "google") {
+    engine = "bing";
+  }
+
   const allowBingFallback =
     (options?.allowBingFallback ??
       process.env.BRIGHTDATA_FALLBACK_ENGINE !== "false") &&
@@ -1690,12 +1834,29 @@ export async function brightDataSearch(
         return await runSearch(engine);
       } catch (error) {
         const classified = classifyBrightDataError(error);
+        const isBotChallenge =
+          classified.reasonCode === "target_transient" ||
+          classified.reasonCode === "target_blocked" ||
+          /unexpected non-json response|captcha|challenge|bot|blocked/i.test(classified.message);
+
+        if (engine === "google" && isBotChallenge) {
+          googleSerpChallengeCount++;
+          if (googleSerpChallengeCount >= GOOGLE_CHALLENGE_STICKY_THRESHOLD) {
+            stickyBingActive = true;
+            console.warn(
+              `[brightdata] Google SERP bot challenges reached threshold (${googleSerpChallengeCount}). Activated sticky Bing fallback for session.`,
+            );
+          }
+        }
+
         if (
           allowBingFallback &&
-          (classified.reasonCode === "target_transient" ||
-            /unexpected non-json response/i.test(classified.message))
+          isBotChallenge
         ) {
           try {
+            console.warn(
+              `[brightdata] Google SERP challenge encountered; seamlessly falling back to Bing...`,
+            );
             const bingResults = await runSearch("bing");
             if (bingResults && bingResults.length > 0) {
               options?.onBingFallback?.({

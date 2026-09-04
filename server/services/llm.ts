@@ -141,6 +141,13 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
     },
     {
+      id: "groq",
+      name: "Groq",
+      baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
+      model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+      apiKey: process.env.GROQ_API_KEY || "",
+    },
+    {
       id: "openrouter",
       name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
       baseUrl: cleanBaseUrl(
@@ -149,13 +156,6 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
       apiKey: process.env.OPENROUTER_API_KEY || "",
       headers: getOpenRouterHeaders(),
-    },
-    {
-      id: "groq",
-      name: "Groq",
-      baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
-      model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
-      apiKey: process.env.GROQ_API_KEY || "",
     },
   ];
 }
@@ -245,7 +245,10 @@ async function fetchWithRetry(
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 240000),
   maxRetries = Number(process.env.LLM_MAX_RETRIES || 1),
 ): Promise<Response> {
-  const retry429 = process.env.LLM_RETRY_429 !== "false";
+  const retry429 =
+    process.env.LLM_RETRY_429 === "true" ||
+    (process.env.LLM_RETRY_429 !== "false" && maxRetries > 0);
+  const effectiveMaxRetries = retry429 ? Math.max(maxRetries, 2) : maxRetries;
 
   const headers = {
     "User-Agent":
@@ -259,7 +262,8 @@ async function fetchWithRetry(
   };
 
   let lastError: Error = new Error("Unknown fetch error");
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  let lastResponse: Response | undefined;
+  for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
     const callerSignal = requestOptions.signal;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -285,15 +289,17 @@ async function fetchWithRetry(
         signal: compositeSignal,
       });
       clearTimeout(timer);
+      lastResponse = res;
 
       // 413 is a deterministic payload-budget failure and must never be
-      // retried unchanged. A 429 is retried only when explicitly enabled.
+      // retried unchanged. 429 rate limit responses use exponential backoff.
+      const is429 = res.status === 429;
       const isRetryableStatus =
         res.status !== 413 &&
-        ((res.status >= 500 && res.status <= 599) ||
-          (res.status === 429 && retry429));
+        ((res.status >= 500 && res.status <= 599) || (is429 && retry429));
 
-      if (isRetryableStatus && attempt < maxRetries) {
+      const statusMaxRetries = is429 ? Math.max(maxRetries, 2) : maxRetries;
+      if (isRetryableStatus && attempt < statusMaxRetries) {
         const retryAfter = res.headers.get("retry-after");
         const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
         const retryAfterDateMs =
@@ -303,17 +309,18 @@ async function fetchWithRetry(
         const advertisedWaitMs = Number.isFinite(retryAfterSeconds)
           ? retryAfterSeconds * 1000
           : retryAfterDateMs;
+        const exponentialWaitMs = Math.pow(2, attempt) * 1500 + Math.floor(Math.random() * 500);
         const waitMs = Math.min(
           Math.max(
             Number.isFinite(advertisedWaitMs)
               ? advertisedWaitMs
-              : Math.pow(2, attempt) * 2000,
-            0,
+              : exponentialWaitMs,
+            1000,
           ),
           30_000,
         );
         console.warn(
-          `[llm] HTTP ${res.status} on attempt ${attempt + 1}/${maxRetries + 1}. Retrying in ${waitMs}ms...`,
+          `[llm] HTTP ${res.status} on attempt ${attempt + 1}/${statusMaxRetries + 1}. Retrying in ${waitMs}ms...`,
         );
         await sleepWithSignal(waitMs, callerSignal);
         continue;
@@ -321,6 +328,7 @@ async function fetchWithRetry(
       return res;
     } catch (err: any) {
       clearTimeout(timer);
+      lastResponse = undefined;
       if (
         callerSignal?.aborted ||
         (err?.name === "AbortError" && callerSignal?.aborted)
@@ -343,6 +351,9 @@ async function fetchWithRetry(
         await sleepWithSignal(waitMs, callerSignal);
       }
     }
+  }
+  if (lastResponse) {
+    return lastResponse;
   }
   throw lastError;
 }
@@ -488,6 +499,16 @@ async function withProviderFallback<T>(
             `[llm] ${provider.name} disabled for the rest of this mining session after ${failuresForProvider} availability failures.`,
           );
         }
+      }
+      if (normalized instanceof LLMProviderError && normalized.status === 429) {
+        const cascadeBackoffMs = Math.min(
+          Math.pow(2, failures.length - 1) * 1500 + Math.random() * 500,
+          10_000,
+        );
+        console.warn(
+          `[llm] ${provider.name} rate limited (429). Backing off for ${Math.round(cascadeBackoffMs)}ms before trying next provider...`,
+        );
+        await sleepWithSignal(cascadeBackoffMs, executionOptions.signal);
       }
       console.warn(
         `[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`,

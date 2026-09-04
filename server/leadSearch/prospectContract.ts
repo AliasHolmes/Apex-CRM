@@ -193,9 +193,41 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
     }
   }
 
-  if (scope === 'company_type') {
-    if (terms.some(t => /\bai\s+agenc/i.test(t) || /\bagenc/i.test(t))) {
-      expanded.push('AI agency', 'AI agencies', 'AI marketing agency', 'AI consultancy', 'AI studio', 'AI firm', 'artificial intelligence agency', 'AI-powered agency');
+  if (scope === 'company_type' || scope === 'company_industry') {
+    if (terms.some(t => /\b(agenc|firm|consult|service|solution|advisory|studio|partner|integrat)/i.test(t))) {
+      const isAI = terms.some(t => /\b(ai|artificial intelligence|machine learning|ml)\b/i.test(t));
+      if (isAI) {
+        expanded.push(
+          'AI agency',
+          'AI agencies',
+          'AI consultancy',
+          'AI consulting firm',
+          'AI services firm',
+          'AI solutions provider',
+          'AI advisory firm',
+          'AI studio',
+          'AI marketing agency',
+          'AI firm',
+          'artificial intelligence agency',
+          'AI-powered agency',
+          'AI partner',
+          'AI integrator'
+        );
+      } else {
+        expanded.push(
+          'agency',
+          'agencies',
+          'consultancy',
+          'consulting firm',
+          'services firm',
+          'solutions provider',
+          'advisory firm',
+          'studio',
+          'firm',
+          'partner',
+          'integrator'
+        );
+      }
     }
   }
 
@@ -713,7 +745,8 @@ export function normalizeProspectContract(
     const sourcePhrase = clean(item?.sourcePhrase);
     const importance = item?.importance === 'soft' ? 'soft' : 'hard';
     if (importance === 'hard' && !sourceAppearsInBrief(sourcePhrase, brief)) continue;
-    const terms = unique(Array.isArray(item?.acceptableTerms) ? item.acceptableTerms : [sourcePhrase]);
+    const rawTerms = unique(Array.isArray(item?.acceptableTerms) ? item.acceptableTerms : [sourcePhrase]);
+    const terms = expandAcceptableTerms(scope, rawTerms);
     if (!terms.length || !sourcePhrase) continue;
     const count = scopeCounts.get(scope) || 0;
     scopeCounts.set(scope, count + 1);

@@ -2,6 +2,7 @@ import { runLinkedInPostIntentEnrichment } from '../linkedinPostIntent.js';
 import { selectDiversifiedLeads } from '../scoutScoring.js';
 import { recordQueryPerformance } from '../../db.js';
 import { hasTavilyKey } from '../../services/llm.js';
+import { deriveDomainCluster } from '../adaptiveScheduler.js';
 import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
 import type { ProspectContract } from '../prospectContract.js';
 import type { SearchSpec } from '../searchSpec.js';
@@ -64,6 +65,7 @@ export async function executeSelectStage(
     const queryRun = leadQueryRuns.get(lead);
     if (queryRun) queryRun.returnedFinalists++;
   }
+  const domainCluster = deriveDomainCluster(contract.brief || (ctx.config as any)?.promptQuery || '');
   for (const run of stats.queryRuns) {
     const failDigest =
       run.requirementFailCounts &&
@@ -71,6 +73,7 @@ export async function executeSelectStage(
         ? JSON.stringify(run.requirementFailCounts)
         : undefined;
     recordQueryPerformance({
+      domainCluster,
       family: run.family || 'general',
       lane: run.lane || 'person',
       provider: run.providerPreference || 'tavily',

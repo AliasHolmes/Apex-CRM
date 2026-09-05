@@ -60,6 +60,13 @@ export function structuredFieldsForRequirement(lead: Record<string, any>, requir
 }
 
 export function hasStrictStructuredMatch(lead: Record<string, any>, requirement: ProspectRequirement): boolean {
+  if (requirement.scope === 'company_type' || requirement.scope === 'company_industry') {
+    const hasCompany = Boolean(clean(lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || ''));
+    const isEntityVerified = Boolean(lead.companyEntityResolution?.verified && lead.companyEntityResolution?.companyName);
+    if (!hasCompany && !isEntityVerified) {
+      return false;
+    }
+  }
   return structuredFieldsForRequirement(lead, requirement)
     .filter(value => value !== undefined && value !== null)
     .some(value => matchingTerms(String(value), requirement).length > 0);

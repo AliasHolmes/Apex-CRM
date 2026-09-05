@@ -1,8 +1,10 @@
 import { Type } from "../services/llm.js";
-import type {
-  ProspectContract,
-  ProspectRequirement,
+import {
+  isAgencyContract,
+  type ProspectContract,
+  type ProspectRequirement,
 } from "./prospectContract.js";
+import { isFlagEnabled } from "./featureFlags.js";
 import {
   hasStrictStructuredMatch,
   selectEvidenceForFinalist,
@@ -144,9 +146,11 @@ CORE RULES:
 3. ROLE & OWNERSHIP equivalence:
    - "Founder", "Co-Founder", "Proprietor", "Owner", "Managing Partner", "Managing Director", "Principal", "CEO", "President" satisfy executive leadership and ownership requirements for agencies and businesses.
    - When a brief seeks agency owners/founders (e.g. "owner/founder", "agency owner", "founder or CEO"), verified Founders, Co-Founders, Owners, CEOs, and Managing Directors of the firm satisfy the person_role requirement.
-4. COMPANY TYPE equivalence:
-   - "AI agency", "AI consultancy", "AI services firm", "AI studio", "AI marketing agency" satisfy an AI agency requirement.
-   - A generic AI software product company or tech vendor does NOT satisfy an AI agency requirement without client-service model evidence.
+4. COMPANY TYPE & CLIENT SERVICES vs SOFTWARE PRODUCTS:
+   - "AI agency", "AI consultancy", "AI services firm", "AI studio", "AI marketing agency", "AI integrator" satisfy an AI agency requirement.
+   - When the contract specifies agencies, consultancies, studios, integrators, or client services: the candidate's firm MUST be a client-services business.
+   - Software products, SaaS platforms, consumer apps, B2C mobile apps (e.g. personal trainer apps, habit trackers, consumer utilities), developer tools, and tech vendor platforms do NOT satisfy an agency requirement. Mark status: "fail" for company_type.
+   - Non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI, etc.) and individual contributor roles (Staff/Principal Engineer, Product Manager) do NOT satisfy agency owner/founder requirements. Mark status: "fail".
 5. EVIDENCE rules:
    - A requirement status is enough when the shown evidence is clear. Include an evidence id, quote, or explanation only when it resolves real ambiguity.
    - "unknown" is used when evidence is insufficient or ambiguous.
@@ -226,7 +230,12 @@ export function buildFinalistJudgePrompt(
       return `### ${candidate.candidateId}\nName: ${clean(lead.fullName, 160) || "Unknown"}\nTitle: ${clean(lead.currentTitle || lead.headline, 180) || "Unknown"}\nCompany: ${clean(lead.currentCompany, 180) || "Unknown"}\nLocation: ${clean(lead.location, 160) || "Unknown"}\nEvidence:\n${evidence}`;
     })
     .join("\n\n");
-  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. Omit evidenceId, evidenceQuote, and reason unless they clarify an ambiguous verdict. Return judgments only.`;
+  const isAgencyBrief = /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(contract.brief) ||
+    contract.requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(`${r.description} ${r.acceptableTerms.join(' ')}`));
+  const agencyGuidance = isAgencyBrief
+    ? `\nClient Services vs Software Products: The contract requires a client-services firm (agency/consultancy/studio/integrator). Pure software products, SaaS platforms, consumer apps, Big Tech employees, and IC roles FAIL company_type or person_role with status: 'fail'.\n`
+    : '';
+  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. Omit evidenceId, evidenceQuote, and reason unless they clarify an ambiguous verdict. Return judgments only.`;
 }
 
 const normalizePassage = (text: string): string =>
@@ -329,6 +338,8 @@ const normalizeAssessment = (
   let quoteValid = false;
   if (status !== 'pass' || !evidenceQuote) {
     quoteValid = true;
+  } else if (!isFlagEnabled.fuzzyQuoteGrounding()) {
+    quoteValid = Boolean(evidence && evidence.text.includes(evidenceQuote));
   } else if (evidence && verifyEvidencePassage(evidence.text, evidenceQuote).valid) {
     quoteValid = true;
   } else {
@@ -538,38 +549,16 @@ export function validateFinalistJudgments(
     const stronglyRatedIdentity =
       semanticFit >= 6.5 && authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
 
-    const hasOnlyCompanyTypeFail =
-      contextFails > 0 &&
-      requirements.every((req) => {
-        if (req.status !== "fail") return true;
-        const contractReq = contract.requirements.find(
-          (item) => item.id === req.requirementId,
-        );
-        return (
-          contractReq?.scope === "company_type" ||
-          contractReq?.scope === "company_industry"
-        );
-      });
-    const isHighAuthority =
-      authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
-
     let status: FinalistOutcomeStatus = "unknown";
     if (fabricatedHardPass) {
       // A "pass" whose cited quote does not exist in the evidence packet is a
       // fabrication signal; it blocks qualification entirely.
       status = "unknown";
       counts.unknown++;
-    } else if (identityFails > 0) {
+    } else if (identityFails > 0 || contextFails > 0) {
+      // Any failed hard requirement (identity, company type, location, or industry) is a hard fail.
       status = "hard_fail";
       counts.hardFail++;
-    } else if (contextFails > 0) {
-      if (identityVerified && isHighAuthority && hasOnlyCompanyTypeFail) {
-        status = "qualified_partial";
-        counts.qualified++;
-      } else {
-        status = "hard_fail";
-        counts.hardFail++;
-      }
     } else if (identityVerified && contextVerified && signalsSatisfied) {
       status = "qualified";
       counts.qualified++;
@@ -790,13 +779,57 @@ export function checkStrictContradiction(
   lead: Record<string, any>,
   contract: ProspectContract,
 ): { reason: string; requirementId: string } | null {
+  const candidateText = `${lead.currentTitle || ""} ${lead.headline || ""} ${lead.currentCompany || lead.company || ""} ${lead.summary || ""}`.toLowerCase();
+  const hasAgencyTerm = /\b(agenc(?:y|ies)?|consult(?:an(?:cy|cies|t|ts)|ing)?|studios?|firms?|services?|integrat(?:or|ors|ion)?|advisory|solutions\s+provider|partners?)\b/i.test(candidateText);
+  const isAgencyContractOrBrief =
+    isAgencyContract(contract) ||
+    /\b(agenc(?:y|ies)?|consult(?:an(?:cy|cies|t|ts)|ing)?|studios?|firms?|integrat(?:or|ors)?|client\s+services?)\b/i.test(contract.brief) ||
+    contract.requirements.some(
+      (r) =>
+        (r.scope === "company_type" || r.scope === "company_industry") &&
+        /\b(agenc(?:y|ies)?|consult(?:an(?:cy|cies|t|ts)|ing)?|studios?|firms?|integrat(?:or|ors)?)\b/i.test(`${r.description} ${r.acceptableTerms?.join(" ") || ""}`),
+    );
+  const isBusinessOwnerQuery =
+    contract.requirements.some(
+      (r) =>
+        r.scope === "person_role" &&
+        /\b(owners?|founders?|co-?founders?|proprietors?|managing\s+partners?)\b/i.test(
+          `${r.description} ${r.acceptableTerms?.join(" ") || ""}`,
+        ),
+    ) ||
+    /\b(owners?|founders?|co-?founders?|proprietors?|managing\s+partners?)\b/i.test(contract.brief);
+  const isOwnerOrFounderQuery =
+    isBusinessOwnerQuery ||
+    contract.requirements.some(
+      (r) =>
+        r.scope === "person_role" &&
+        /\b(ceo|chief executive|proprietor|(?<!vice\s+|vice-)president)\b/i.test(
+          `${r.description} ${r.acceptableTerms?.join(" ") || ""}`,
+        ),
+    ) ||
+    /\b(ceo|chief executive|proprietor|(?<!vice\s+|vice-)president)\b/i.test(contract.brief);
+
   // 1. Explicit Exclusions Check
+  const hasFounderOrOwnerLeadership = /\b(owners?|founders?|co-?founders?|ceo|chief executive|managing partner|proprietor|(?<!vice\s+|vice-)president)\b/i.test(
+    clean(lead.currentTitle || lead.headline || "", 200),
+  );
   for (const exclusion of contract.exclusions || []) {
     const term = clean(exclusion, 100).toLowerCase();
     if (!term || term.length < 2) continue;
+    const isIcRoleTerm = /\b(staff\s+engineer|principal\s+engineer|principal\s+product\s+manager|product\s+manager|senior\s+software\s+engineer)\b/i.test(term);
+    if (isIcRoleTerm && hasFounderOrOwnerLeadership) {
+      continue;
+    }
+    const isProductTerm = /\b(saas|software\s+product|software\s+platform|consumer\s+app|mobile\s+app)\b/i.test(term);
+    if (isProductTerm && hasAgencyTerm) {
+      // An agency serving SaaS or providing software services is client-services, not a pure product firm
+      continue;
+    }
     const title = clean(lead.currentTitle || lead.headline || "", 200).toLowerCase();
     const company = clean(lead.currentCompany || lead.company || "", 200).toLowerCase();
-    if (title.includes(term) || company.includes(term)) {
+    const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const termRegex = new RegExp(`(^|\\W)${escapedTerm}($|\\W)`, 'i');
+    if (termRegex.test(title) || termRegex.test(company)) {
       return {
         reason: `Matches contract exclusion: '${exclusion}'`,
         requirementId: "exclusion",
@@ -815,7 +848,80 @@ export function checkStrictContradiction(
     }
   }
 
-  // 3. Strict Monotonic Location Contradiction
+  // 3. Mandatory Company Verification
+  const companyHardReq = contract.requirements.find(
+    (r) => (r.scope === "company_type" || r.scope === "company_industry") && r.importance === "hard",
+  );
+  const isBusinessOwnerOrAgencyContract = isAgencyContractOrBrief || isBusinessOwnerQuery;
+  if (isBusinessOwnerOrAgencyContract && companyHardReq) {
+    const rawCompany = clean(
+      lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || "",
+      200,
+    );
+    const isEntityVerified = Boolean(
+      lead.companyEntityResolution?.verified && lead.companyEntityResolution?.companyName,
+    );
+    if (!rawCompany && !isEntityVerified) {
+      return {
+        reason: `Candidate has no verified company or organization for hard requirement '${companyHardReq.description}'`,
+        requirementId: companyHardReq.id,
+      };
+    }
+  }
+
+  // 4. Deterministic Anti-Personas: Big-Tech Non-Agency Employers
+  const BIG_TECH_REGEX =
+    /\b(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm)\b/i;
+
+  if (isAgencyContractOrBrief) {
+    const rawCompany = clean(
+      lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || "",
+      200,
+    ).toLowerCase();
+    const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200).toLowerCase();
+
+    const bigTechCompanyMatch = rawCompany.match(BIG_TECH_REGEX);
+    const bigTechTitleMatch = rawTitle.match(/(?:@|at|\bin\b)\s*(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm)\b/i);
+    const matchedBigTech = bigTechCompanyMatch?.[1] || bigTechTitleMatch?.[1];
+
+    if (matchedBigTech) {
+      return {
+        reason: `Candidate is employed by non-agency tech enterprise: '${matchedBigTech}'`,
+        requirementId: companyHardReq ? companyHardReq.id : "company_type",
+      };
+    }
+  }
+
+  // 5. Deterministic Anti-Personas: IC Roles (Staff/Principal Engineer, Product Manager)
+  if (isOwnerOrFounderQuery) {
+    const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200).toLowerCase();
+    const IC_ROLE_REGEX =
+      /\b(staff\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+product\s+manager|principal\s+architect|principal\s+scientist|senior\s+software\s+engineer|software\s+engineer(?:\s+ii|\s+iii|\s+iv)?|research\s+scientist|applied\s+scientist|product\s+manager)\b/i;
+    const hasExecutiveTitle =
+      /\b(owners?|founders?|co-?founders?|ceo|chief executive|managing partner|proprietor|president)\b/i.test(
+        rawTitle,
+      );
+
+    if (IC_ROLE_REGEX.test(rawTitle) && !hasExecutiveTitle) {
+      return {
+        reason: `Individual contributor role ('${lead.currentTitle || lead.headline}') contradicts required owner/founder leadership`,
+        requirementId: "authority",
+      };
+    }
+  }
+
+  // 6. Hard Seam: Client Services / Agencies vs Software Products
+  if (isAgencyContractOrBrief) {
+    const hasExplicitProductApp = /\b(mobile app|ios app|android app|b2c app|personal trainer app|habit tracker|consumer app|saas platform|software product)\b/i.test(candidateText);
+    if (hasExplicitProductApp && !hasAgencyTerm) {
+      return {
+        reason: `Candidate operates a software product/app rather than a client services agency`,
+        requirementId: companyHardReq ? companyHardReq.id : "company_type",
+      };
+    }
+  }
+
+  // 7. Strict Monotonic Location Contradiction
   const locReq = contract.requirements.find(
     (r) => r.scope === "person_location" && r.importance === "hard",
   );

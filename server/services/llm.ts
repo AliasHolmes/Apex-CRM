@@ -64,6 +64,7 @@ export type LLMExecutionOptions = {
   onProviderAttempt?: (attempt: LLMProviderAttempt) => void;
   onUsage?: (usage: LLMUsage) => void;
   timeoutMs?: number;
+  maxRetries?: number;
   circuitBreaker?: LLMSessionCircuitBreaker;
   signal?: AbortSignal;
 };
@@ -530,9 +531,13 @@ async function sendChatCompletion(
     maxTokens?: number;
     temperature?: number;
     responseFormat?: { type: "json_object" };
-  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "signal">,
+  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "maxRetries" | "signal">,
 ): Promise<string> {
   let res: Response;
+  const effectiveMaxTokens =
+    provider.id === "groq"
+      ? Math.min(options?.maxTokens ?? 1000, Number(process.env.GROQ_MAX_TOKENS || 1000))
+      : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
   try {
     res = await fetchWithRetry(
       `${provider.baseUrl}/chat/completions`,
@@ -551,8 +556,7 @@ async function sendChatCompletion(
           stream: false,
           temperature:
             options?.temperature !== undefined ? options.temperature : 0.1,
-          max_tokens:
-            options?.maxTokens !== undefined ? options.maxTokens : 4000,
+          max_tokens: effectiveMaxTokens,
           ...(options?.responseFormat
             ? { response_format: options.responseFormat }
             : {}),
@@ -560,6 +564,7 @@ async function sendChatCompletion(
         signal: options?.signal,
       },
       options?.timeoutMs,
+      options?.maxRetries,
     );
   } catch (error: any) {
     if (error?.name === "AbortError" || options?.signal?.aborted) {

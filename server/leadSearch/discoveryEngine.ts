@@ -203,6 +203,7 @@ import {
   finalistJudgeSchema,
   partitionCandidatesByStrictEvidence,
   triPartitionCandidatesByEvidence,
+  checkStrictContradiction,
   validateFinalistJudgments,
   type FinalistCandidate,
 } from "./finalistJudge.js";
@@ -211,6 +212,7 @@ import {
   buildCollectionCapacity,
   shouldKeepCollectingAfterStall,
 } from "./collectionCapacity.js";
+import { isFlagEnabled } from "./featureFlags.js";
 import { scheduleAdaptiveRetrievalTasks } from "./adaptiveScheduler.js";
 import { runProviderQueue } from "./providerQueue.js";
 import { runLinkedInPostIntentEnrichment } from "./linkedinPostIntent.js";
@@ -762,9 +764,15 @@ export async function executeDiscoverySession(
             prospectContractSchema,
             `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
             {
-              maxTokens: 1800,
+              maxTokens: 1000,
               temperature: 0,
               signal: sessionAbortController.signal,
+              timeoutMs: Math.min(
+                Number(process.env.LLM_CONTRACT_TIMEOUT_MS || 15000),
+                25000,
+              ),
+              maxRetries: 0,
+              retryOnParseFailure: false,
             },
           );
           contract = normalizeProspectContract(compiled, query, fallbackContract);
@@ -772,13 +780,14 @@ export async function executeDiscoverySession(
             (req) => req.importance === "hard",
           ).length;
           logEvent(
-            `Compiled prospect quality contract v${contract.policyVersion} with ${hardCount} hard requirements.`,
+            `Compiled prospect quality contract v${contract.policyVersion} with ${hardCount} hard requirements in ${Date.now() - contractStarted}ms.`,
           );
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
         } catch (err: any) {
           logEvent(
-            `WARN: Prospect contract compiler failed: ${err.message || String(err)}. Using deterministic contract.`,
+            `WARN: Prospect contract compiler failed (${Date.now() - contractStarted}ms): ${err.message || String(err)}. Using deterministic contract.`,
           );
+          upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, fallbackContract);
         }
       }
     }
@@ -1199,9 +1208,13 @@ export async function executeDiscoverySession(
         `Resuming session directly at Finalist Judging stage with ${acceptedLeads.length} checkpointed candidate leads and restored evidence map.`,
       );
     } else {
+      const maxCandidatePoolLimit = isFlagEnabled.progressiveQualification()
+        ? collectionCapacity.candidateCeiling
+        : rerankPoolTarget;
+
       for (
         let round = initialRound;
-        round <= maxRounds && acceptedLeads.length < rerankPoolTarget;
+        round <= maxRounds && acceptedLeads.length < maxCandidatePoolLimit;
         round++
       ) {
         if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
@@ -1249,6 +1262,24 @@ export async function executeDiscoverySession(
           collectionCapacity.candidateCeiling,
           Math.max(Math.ceil(remainingQualifiedNeeded * 1.8), remainingQualifiedNeeded > 0 ? 4 : 0),
         );
+
+        const passRateForTarget = Math.max(
+          0.15,
+          Math.min(1.0, Number(previousRoundSummary?.judgePassRateEstimate) || defaultJudgePassRate),
+        );
+        const roundStagePoolTarget = isFlagEnabled.progressiveQualification()
+          ? (effectiveQualifiedCount >= qualifiedTargetWithCushion
+              ? rerankPoolTarget
+              : Math.min(
+                  collectionCapacity.candidateCeiling,
+                  Math.max(
+                    rerankPoolTarget,
+                    acceptedLeads.length + collectionCapacity.candidateBatchSize,
+                    Math.ceil((qualifiedTargetWithCushion * 1.33) / passRateForTarget),
+                  ),
+                ))
+          : rerankPoolTarget;
+        stats.rerank.poolTarget = roundStagePoolTarget;
 
         const currentGen = planningGeneration.value;
         const planResult = await executePlanStage(sessionCtx, {
@@ -1334,7 +1365,7 @@ export async function executeDiscoverySession(
         const extractResult = await executeExtractStage(sessionCtx, {
           round,
           candidateItems,
-          rerankPoolTarget,
+          rerankPoolTarget: roundStagePoolTarget,
           brightDataReady,
           brightDataProviderDisabled,
           tavilyCapabilities,
@@ -1421,7 +1452,7 @@ export async function executeDiscoverySession(
         const enrichResult = await executeEnrichStage(sessionCtx, {
           round,
           postFilterLeads: candidateLeadsForEnrichment,
-          rerankPoolTarget,
+          rerankPoolTarget: roundStagePoolTarget,
           profileEnrichmentStage,
           profileMaxPerSearch,
           enrichmentCap,
@@ -1593,16 +1624,24 @@ export async function executeDiscoverySession(
           );
           stats.stopReason = "target_fulfilled_early";
           break;
-        } else if (
-          acceptedLeads.length >= rerankPoolTarget ||
-          (acceptedLeads.length >= targetLimit &&
-            (acceptedLeads.length >= earlyStopTargetThreshold ||
-              accumulatedViableCount >= Math.ceil(targetLimit * 0.6)))
-        ) {
+        } else if (!isFlagEnabled.progressiveQualification()) {
+          if (
+            acceptedLeads.length >= rerankPoolTarget ||
+            (acceptedLeads.length >= targetLimit &&
+              (acceptedLeads.length >= earlyStopTargetThreshold ||
+                accumulatedViableCount >= Math.ceil(targetLimit * 0.6)))
+          ) {
+            logEvent(
+              `Round ${round}: Sufficient candidates (accepted=${acceptedLeads.length}, viable=${accumulatedViableCount}, target=${targetLimit}) collected. Stopping discovery loop early.`,
+            );
+            stats.stopReason = "target_fulfilled_early";
+            break;
+          }
+        } else if (acceptedLeads.length >= collectionCapacity.candidateCeiling) {
           logEvent(
-            `Round ${round}: Sufficient candidates (accepted=${acceptedLeads.length}, viable=${accumulatedViableCount}, target=${targetLimit}) collected. Stopping discovery loop early.`,
+            `Round ${round}: Reached candidate ceiling safety cap (${acceptedLeads.length}/${collectionCapacity.candidateCeiling} candidates). Stopping discovery loop.`,
           );
-          stats.stopReason = "target_fulfilled_early";
+          stats.stopReason = "max_rounds";
           break;
         }
 
@@ -1647,7 +1686,7 @@ export async function executeDiscoverySession(
                   completedRound: round,
                   maxRounds,
                   acceptedLeads: acceptedLeads.length,
-                  rerankPoolTarget,
+                  rerankPoolTarget: roundStagePoolTarget,
                 })
               ) {
                 logEvent(
@@ -1745,66 +1784,72 @@ export async function executeDiscoverySession(
     if (qualifiedLeads.length < targetLimit) {
       const shortfall = targetLimit - qualifiedLeads.length;
       logEvent(
-        `Progressive Qualification complete: ${qualifiedLeads.length}/${targetLimit} leads verified. Running non-destructive Safety Net for shortfall (${shortfall}).`,
-      );
-      const qualifiedUrls = new Set(
-        qualifiedLeads
-          .map((l) => l.contactDetails?.linkedinUrl || l.sourceUrl || "")
-          .filter(Boolean),
-      );
-      const qualifiedIds = new Set(
-        qualifiedLeads.map((l) => l.id).filter(Boolean),
+        `Progressive Qualification complete: ${qualifiedLeads.length}/${targetLimit} leads verified. Honest shortfall: ${shortfall} lead(s) below target due to strict qualification standards.`,
       );
 
-      const safetyNetCandidates = acceptedLeads.filter((lead) => {
-        if (lead.id && qualifiedIds.has(lead.id)) return false;
-        const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
-        if (url && qualifiedUrls.has(url)) return false;
-        if (lead._autoFailed) return false;
-        if (lead.judgmentInsight?.status === "hard_fail") return false;
-        if (
-          (lead.qualification as any)?.status === "hard_fail" ||
-          lead.qualification?.verdict === "disqualified"
-        ) {
-          return false;
-        }
-        return true;
-      });
-
-      for (const lead of safetyNetCandidates) {
-        lead.finalSelectionScore = rankLeadForFinalSelection(lead);
-      }
-
-      safetyNetCandidates.sort((a, b) => {
-        const rankDelta =
-          Number(b.finalSelectionScore || 0) -
-          Number(a.finalSelectionScore || 0);
-        if (rankDelta !== 0) return rankDelta;
-        return effectiveScore(b) - effectiveScore(a);
-      });
-
-      const promoted = safetyNetCandidates.slice(0, shortfall);
-      for (const lead of promoted) {
-        lead.qualification = lead.qualification || {
-          verdict: "rescued",
-          reason:
-            "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool",
-          finalScore: lead.finalSelectionScore || 5.0,
-        };
-        lead.whyThisLead =
-          lead.whyThisLead ||
-          "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool";
-        lead.isRescued = true;
-        qualifiedLeads.push(lead);
-        if (lead.id) qualifiedIds.add(lead.id);
-        const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
-        if (url) qualifiedUrls.add(url);
-      }
-
-      if (promoted.length > 0) {
-        logEvent(
-          `Safety Net: Promoted ${promoted.length} candidate(s) to fulfill shortfall. Cumulative qualified: ${qualifiedLeads.length}.`,
+      // Deprecate unverified safety net promotions.
+      // Quota fulfillment must never promote candidates that fail hard requirements or lack positive evidence.
+      if (process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION === "true") {
+        const qualifiedUrls = new Set(
+          qualifiedLeads
+            .map((l) => l.contactDetails?.linkedinUrl || l.sourceUrl || "")
+            .filter(Boolean),
         );
+        const qualifiedIds = new Set(
+          qualifiedLeads.map((l) => l.id).filter(Boolean),
+        );
+
+        const safetyNetCandidates = acceptedLeads.filter((lead) => {
+          if (lead.id && qualifiedIds.has(lead.id)) return false;
+          const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
+          if (url && qualifiedUrls.has(url)) return false;
+          if (lead._autoFailed) return false;
+          if (checkStrictContradiction(lead, contract) !== null) return false;
+          if (lead.judgmentInsight?.status === "hard_fail") return false;
+          if (
+            (lead.qualification as any)?.status === "hard_fail" ||
+            lead.qualification?.verdict === "disqualified"
+          ) {
+            return false;
+          }
+          return true;
+        });
+
+        for (const lead of safetyNetCandidates) {
+          lead.finalSelectionScore = rankLeadForFinalSelection(lead);
+        }
+
+        safetyNetCandidates.sort((a, b) => {
+          const rankDelta =
+            Number(b.finalSelectionScore || 0) -
+            Number(a.finalSelectionScore || 0);
+          if (rankDelta !== 0) return rankDelta;
+          return effectiveScore(b) - effectiveScore(a);
+        });
+
+        const promoted = safetyNetCandidates.slice(0, shortfall);
+        for (const lead of promoted) {
+          lead.qualification = lead.qualification || {
+            verdict: "rescued",
+            reason:
+              "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool",
+            finalScore: lead.finalSelectionScore || 5.0,
+          };
+          lead.whyThisLead =
+            lead.whyThisLead ||
+            "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool";
+          lead.isRescued = true;
+          qualifiedLeads.push(lead);
+          if (lead.id) qualifiedIds.add(lead.id);
+          const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
+          if (url) qualifiedUrls.add(url);
+        }
+
+        if (promoted.length > 0) {
+          logEvent(
+            `Safety Net (Legacy Override): Promoted ${promoted.length} candidate(s) to fulfill shortfall. Cumulative qualified: ${qualifiedLeads.length}.`,
+          );
+        }
       }
     }
     checkpointAcceptedLeads(qualifiedLeads, "post_finalist_judge");

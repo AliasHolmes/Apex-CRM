@@ -5,6 +5,7 @@ import {
   validateFinalistJudgments,
   finalistJudgeSchema,
   FINALIST_JUDGE_SYSTEM_PROMPT,
+  checkStrictContradiction,
   type FinalistCandidate,
   type FinalistOutcomeStatus,
 } from "../finalistJudge.js";
@@ -466,6 +467,8 @@ export async function executeJudgeStage(
         url: lead.contactDetails?.linkedinUrl || lead.sourceUrl || "",
       }))
       .filter((entry) => !qualifiedUrls.has(entry.url))
+      .filter((entry) => !entry.lead._autoFailed)
+      .filter((entry) => checkStrictContradiction(entry.lead, contract) === null)
       // The judge said no on hard requirements; the safety net must not override that.
       .filter((entry) => {
         const insight = judgmentInsight.get(
@@ -531,6 +534,7 @@ export async function executeJudgeStage(
         }))
         .filter((entry) => !qualifiedUrls.has(entry.url))
         .filter((entry) => !entry.lead._autoFailed)
+        .filter((entry) => checkStrictContradiction(entry.lead, contract) === null)
         .filter((entry) => {
           const insight = judgmentInsight.get(
             candidateIdByLead.get(entry.lead) || `c${entry.index}`,

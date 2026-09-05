@@ -248,6 +248,14 @@ export function detectDecompositionMode(brief: string): DecompositionMode {
   return 'single_stream_identity';
 }
 
+export function isAgencyContract(contractOrBrief: ProspectContract | string): boolean {
+  if (!contractOrBrief) return false;
+  const text = typeof contractOrBrief === 'string'
+    ? contractOrBrief
+    : `${contractOrBrief.brief} ${contractOrBrief.requirements.map(r => `${r.description} ${r.acceptableTerms?.join(' ') || ''}`).join(' ')}`;
+  return /\b(agenc(y|ies)?|consultan(cy|cies|t|ts)?|consulting|studios?|integrat(or|ors)?|client\s+services?|advisory\s+firm)\b/i.test(text);
+}
+
 /**
  * The fallback never adds an inferred audience. It keeps a search usable when
  * the contract compiler is unavailable, while still preserving supplied spec
@@ -426,7 +434,13 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     });
   }
 
+  const isAgency = isAgencyContract(brief);
+  const agencyExclusions = isAgency
+    ? ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product']
+    : [];
+
   const exclusions = unique([
+    ...agencyExclusions,
     ...(spec?.person?.excludeTitles || []),
     ...(spec?.exclusions?.companies || []),
     ...(spec?.exclusions?.domains || [])
@@ -595,9 +609,10 @@ export function buildContractFallbackQueries(
   identitySpec?: IdentitySpec
 ): SearchQueryPlanItem[] {
   const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
-  const isAgencyBrief = /\b(agenc|consult|studio|firm|services)\b/i.test(brief) ||
-    requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && /\b(agenc|consult|studio|firm|services)\b/i.test(`${r.description} ${r.acceptableTerms.join(' ')}`));
-  const agencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
+  const isAgencyBrief = isAgencyContract(brief) ||
+    requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && isAgencyContract(`${r.description} ${r.acceptableTerms.join(' ')}`));
+  const fullAgencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS -Microsoft -Google -Meta -Apple -Amazon -OpenAI' : '';
+  const shortAgencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
   
   const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
   const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
@@ -606,8 +621,13 @@ export function buildContractFallbackQueries(
     const idTerms = identityReqs.map(r => r.acceptableTerms[index % Math.max(r.acceptableTerms.length, 1)] || r.sourcePhrase).filter(Boolean);
     const ctxReq = contextReqs.length ? contextReqs[index % contextReqs.length] : null;
     const ctxTerm = ctxReq ? (ctxReq.acceptableTerms[index % Math.max(ctxReq.acceptableTerms.length, 1)] || ctxReq.sourcePhrase) : '';
-    const disambig = (index > 0 && agencyDisambiguation) ? agencyDisambiguation : '';
-    return [...idTerms, ctxTerm, disambig].filter(Boolean).join(' ');
+    if (!isAgencyBrief) {
+      return [...idTerms, ctxTerm].filter(Boolean).join(' ');
+    }
+    const full = [...idTerms, ctxTerm, fullAgencyDisambiguation].filter(Boolean).join(' ');
+    if (full.length <= 240) return full;
+    const short = [...idTerms, ctxTerm, shortAgencyDisambiguation].filter(Boolean).join(' ');
+    return short.length <= 240 ? short : [...idTerms, ctxTerm].filter(Boolean).join(' ');
   });
   
   const base = queryTermsFor(requirements).join(' ') || clean(brief);
@@ -708,6 +728,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - In person-lane profile discovery queries, include ONLY identity terms (Role + Location + Company Type). NEVER include intent/hiring/tooling trigger words in person-lane queries.
 - For open_web_signal / intent requirements (e.g. hiring for n8n, Zapier, Make.com, AI agents, workflow automation), generate dedicated signal-lane queries searching the open web.
 - Comma-or-conjunction separated company niches (e.g. "marketing, lead-generation, SEO, or creative agencies") MUST be unified under a single company_type requirement whose acceptableTerms list all distinct expanded forms (e.g. ["marketing agency", "lead-generation agency", "SEO agency", "creative agency"]).
+- When targeting agencies, consultancies, studios, or client services: enforce a strict hard seam against software products. Exclude non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI), individual contributor roles (Staff/Principal Engineer, Product Manager), and pure software products/SaaS/apps. Ensure company_type acceptableTerms specify client services firms.
 - Multiple requested roles (e.g. "founders, CEOs, or operations directors") MUST be unified into a single person_role requirement with matchRule: "any_of" and groupId: "person_role_group".
 - Headcount / employee size ranges (e.g. "with 2 to 15 employees" or "(3 to 20 employees)") MUST be extracted as a company_size requirement with evidenceModality: "inferred" and importance: "soft".
 - A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.
@@ -961,12 +982,27 @@ export function normalizeProspectContract(
 
 const includesAny = (query: string, terms: string[]) => terms.some(term => lower(query).includes(lower(term)));
 
+const queryHasPositiveExclusion = (query: string, exclusionTerms: string[]): boolean => {
+  const queryWords = lower(query).split(/\s+/).filter(Boolean);
+  const positiveWords = queryWords
+    .filter(w => !w.startsWith('-'))
+    .map(w => w.replace(/^[^a-z0-9_-]+|[^a-z0-9_-]+$/gi, ''))
+    .filter(Boolean);
+  const positiveText = ` ${positiveWords.join(' ')} `;
+  return exclusionTerms.some(term => {
+    if (!term) return false;
+    const cleanTerm = lower(term).trim();
+    return positiveText.includes(` ${cleanTerm} `) || positiveWords.some(w => w === cleanTerm);
+  });
+};
+
 /** Reject or repair model queries so the retrieval surface cannot drift. */
 export function enforceContractQueries(input: unknown, contract: ProspectContract): SearchQueryPlanItem[] {
   const rawItems = Array.isArray(input) ? input : [];
   const exclusions = contract.exclusions.map(lower).filter(Boolean);
   const seen = new Set<string>();
   const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
+  const isAgency = isAgencyContract(contract);
   const intentTerms = new Set([
     ...(contract.intentSpec?.toolingKeywords || []).map(lower),
     ...(contract.intentSpec?.hiringSignals || []).map(lower),
@@ -989,7 +1025,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     } else {
       query = query.replace(/\s+/g, ' ').trim();
     }
-    if (!query || query.length > 240 || exclusions.some(term => term && lower(query).includes(term))) continue;
+    if (!query || query.length > 240 || queryHasPositiveExclusion(query, exclusions)) continue;
     if (!isSignalLane) {
       const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
       const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
@@ -1016,6 +1052,14 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
               query = `${query} ${addition}`.trim();
             }
           }
+        }
+      }
+
+      // 3. Agency disambiguation
+      if (isAgency && !lower(query).includes('-software')) {
+        const agencyDisambig = '-software -platform -SaaS';
+        if ((query + ' ' + agencyDisambig).length <= 240) {
+          query = `${query} ${agencyDisambig}`.trim();
         }
       }
     }

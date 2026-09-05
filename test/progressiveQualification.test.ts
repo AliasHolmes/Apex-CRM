@@ -247,4 +247,50 @@ describe('PIQ-BOS: Progressive Interleaved Qualification', () => {
       assert.strictEqual(diag.viableCandidates, 2);
     });
   });
+
+  describe('Early-Stop & Candidate Pool Scaling under PIQ-BOS', () => {
+    it('does not trigger premature early stop on unjudged pool when verified qualified count is below target', () => {
+      const targetLimit = 20;
+      const cushionMultiplier = 1.25;
+      const qualifiedTargetWithCushion = Math.ceil(targetLimit * cushionMultiplier); // 25
+
+      const leads = Array.from({ length: 40 }, (_, i) => ({
+        id: `lead-${i}`,
+        qualification: i < 9 ? { verdict: 'qualified' } : { verdict: 'hard_fail' },
+      }));
+
+      const roundEndEffectiveQualified = leads.reduce((acc, lead: any) => {
+        if (lead.qualification?.verdict === 'qualified') return acc + 1;
+        if (lead.qualification?.verdict === 'qualified_partial') return acc + 0.75;
+        return acc;
+      }, 0);
+
+      // Under PIQ-BOS:
+      // Even though acceptedLeads.length (40) >= rerankPoolTarget (40),
+      // roundEndEffectiveQualified is only 9 (< 25).
+      const verifiedTargetReached = roundEndEffectiveQualified >= qualifiedTargetWithCushion;
+      assert.strictEqual(verifiedTargetReached, false, 'Must not claim verified target reached when only 9/25 qualified');
+      assert.strictEqual(roundEndEffectiveQualified, 9);
+    });
+
+    it('triggers early stop only when effective qualified count reaches target with cushion', () => {
+      const targetLimit = 20;
+      const cushionMultiplier = 1.25;
+      const qualifiedTargetWithCushion = Math.ceil(targetLimit * cushionMultiplier); // 25
+
+      const qualifiedLeads = Array.from({ length: 25 }, (_, i) => ({
+        id: `lead-${i}`,
+        qualification: { verdict: 'qualified' },
+      }));
+
+      const roundEndEffectiveQualified = qualifiedLeads.reduce((acc, lead: any) => {
+        if (lead.qualification?.verdict === 'qualified') return acc + 1;
+        if (lead.qualification?.verdict === 'qualified_partial') return acc + 0.75;
+        return acc;
+      }, 0);
+
+      assert.ok(roundEndEffectiveQualified >= qualifiedTargetWithCushion);
+    });
+  });
 });
+

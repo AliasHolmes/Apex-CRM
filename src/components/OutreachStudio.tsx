@@ -511,6 +511,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           profile: generationLead.profile,
           companyAccount: generationLead.companyAccount,
           buyingSignals: generationLead.companyAccount?.buyingSignals,
+          buyingSignalsDetected: generationLead.buyingSignalsDetected,
           evidence: (generationLead as any).evidence,
           qualification: (generationLead as any).qualification,
           postIntentEvidence: (generationLead as any).postIntentEvidence,

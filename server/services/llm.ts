@@ -408,10 +408,12 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     return true;
   if (
     status === 500 &&
-    /empty or invalid response|unable to get json response/i.test(error.message)
+    /empty or invalid response|unable to get json response|connection error|internalservererror|openai.*exception|litellm.*error|econnrefused/i.test(
+      error.message,
+    )
   )
     return true;
-  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|524|origin took too long|origin web server/i.test(
+  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|524|origin took too long|origin web server|connection error|econnrefused|fetch failed/i.test(
     error.message,
   );
 }

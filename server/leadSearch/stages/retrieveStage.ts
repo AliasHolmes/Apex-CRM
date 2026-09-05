@@ -17,6 +17,7 @@ import { incrementCounter } from "../sessionHelpers.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { ExecutableQueryPlan } from "./planStage.js";
 import type { QueryRunStats } from "../strategist.js";
+import { ablateQueryTask, createAblationTracker } from "../constraintAblation.js";
 
 export type RetrieveStageInput = {
   round: number;
@@ -76,6 +77,7 @@ export async function executeRetrieveStage(
   >();
   const roundItems: { item: any; resultIndex: number }[] = [];
   let usingBrightDataSearch = false;
+  const ablationTracker = createAblationTracker(2);
 
   const executeTavilyLane = async (
     plans: { plan: (typeof roundPlans)[0]; index: number }[],
@@ -155,7 +157,78 @@ export async function executeRetrieveStage(
               ...tavilyOptions,
               signal: signal || state.abortController.signal,
             });
-            const resultsCount = res.items?.length || 0;
+            let resultsCount = res.items?.length || 0;
+
+            // Hierarchical Algorithmic Constraint Ablation:
+            // If the query hit a zero-SERP cliff (resultsCount <= 1), dynamically relax the lowest-priority
+            // constraint term (Tier 4 first, then 3, then 2, never Tier 1 identity anchor).
+            if (
+              resultsCount <= 1 &&
+              config.contract &&
+              ablationTracker.attemptsCount < ablationTracker.maxAblatedPerRound &&
+              !ablationTracker.ablatedTasks.has(plan.executableQuery) &&
+              plan.item.lane !== "signal"
+            ) {
+              const ablated = ablateQueryTask(
+                plan.executableQuery,
+                config.contract,
+                plan.item.coveredRequirementIds,
+              );
+              if (ablated) {
+                ablationTracker.attemptsCount++;
+                ablationTracker.ablatedTasks.add(plan.executableQuery);
+                logEvent(
+                  `[Constraint Ablation] Round ${round}: Query "${plan.executableQuery}" yielded ${resultsCount} result(s). Relaxed to "${ablated.ablatedQuery}" (deferred Tier ${ablated.tier} [${ablated.ablatedRequirementId}]: "${ablated.ablatedTerm}").`,
+                );
+                recordTrace({
+                  phase: "search",
+                  operation: "constraint_ablation_relaxation",
+                  status: "started",
+                  provider: "tavily",
+                  round,
+                  query: ablated.ablatedQuery,
+                  metadata: {
+                    originalQuery: plan.executableQuery,
+                    ablatedRequirementId: ablated.ablatedRequirementId,
+                    ablatedTerm: ablated.ablatedTerm,
+                    tier: ablated.tier,
+                  },
+                });
+
+                try {
+                  const ablatedRes = await ports.tavilySearch(ablated.ablatedQuery, {
+                    ...tavilyOptions,
+                    signal: signal || state.abortController.signal,
+                  });
+                  const ablatedCount = ablatedRes.items?.length || 0;
+                  if (ablatedCount > 0) {
+                    stats.ablationRescues = (stats.ablationRescues || 0) + ablatedCount;
+                    for (const it of ablatedRes.items) {
+                      it.ablatedRequirementId = ablated.ablatedRequirementId;
+                      it.ablatedTerm = ablated.ablatedTerm;
+                    }
+                    const existingUrls = new Set((res.items || []).map((it: any) => it.url));
+                    const newItems = ablatedRes.items.filter((it: any) => !existingUrls.has(it.url));
+                    res.items = [...(res.items || []), ...newItems];
+                    resultsCount = res.items.length;
+                    if (ablatedRes.text) {
+                      res.text = (res.text ? res.text + "\n\n" : "") + ablatedRes.text;
+                    }
+                    if (ablatedRes.sources) {
+                      res.sources = [...(res.sources || []), ...ablatedRes.sources];
+                    }
+                    logEvent(
+                      `[Constraint Ablation] Rescued ${newItems.length} candidate(s) via ablated query "${ablated.ablatedQuery}".`,
+                    );
+                  }
+                } catch (ablationErr: any) {
+                  logEvent(
+                    `[Constraint Ablation] Ablated query attempt failed: ${ablationErr.message}`,
+                  );
+                }
+              }
+            }
+
             recordTrace({
               phase: "search",
               operation: "tavily_search",
@@ -245,6 +318,34 @@ export async function executeRetrieveStage(
           const bdSearchStarted = Date.now();
           let physicalAttempts = 0;
           let recovered = false;
+
+          if (
+            brightDataProviderDisabled ||
+            (brightDataTransportRetryAfter &&
+              Date.now() < brightDataTransportRetryAfter)
+          ) {
+            state.brightDataStats.skipped++;
+            const skipReason = brightDataProviderDisabled
+              ? "provider_disabled"
+              : "transport_cooldown";
+            logEvent(
+              `Round ${round}: skipped Bright Data search due to ${skipReason} (${Math.max(0, Math.ceil((brightDataTransportRetryAfter - Date.now()) / 1000))}s remaining).`,
+            );
+            recordTrace({
+              phase: "search",
+              operation: "brightdata_search",
+              status: "skipped",
+              provider: "brightdata",
+              round,
+              query: plan.executableQuery,
+              metadata: {
+                reason: skipReason,
+                cooldownRemainingMs: Math.max(0, brightDataTransportRetryAfter - Date.now()),
+              },
+            });
+            return { index, results: [] as any[], fallbackProvider: undefined };
+          }
+
           try {
             const results = await executeBrightDataSearchWithRetry(
               async (attempt) => {
@@ -343,7 +444,7 @@ export async function executeRetrieveStage(
                   if (classified.reasonCode === "transport_transient") {
                     state.brightDataStats.transportFailures++;
                     state.brightDataStats.processRestarts++;
-                    brightDataTransportRetryAfter = Date.now() + 5_000;
+                    brightDataTransportRetryAfter = Date.now() + 15_000;
                   }
                   if (classified.providerDisabled) {
                     state.brightDataStats.providerDisabled++;

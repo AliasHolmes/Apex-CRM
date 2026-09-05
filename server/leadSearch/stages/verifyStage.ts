@@ -186,6 +186,10 @@ export async function executeVerifyStage(
       whyThisLead: lead.evidenceReasons[0],
     });
     lead.discoveryLane = evidenceMeta.lanes?.[0] || "person";
+    if (evidenceMeta.ablatedRequirementId) {
+      lead._ablatedRequirementId = evidenceMeta.ablatedRequirementId;
+      lead._ablatedTerm = evidenceMeta.ablatedTerm;
+    }
     lead.scout = buildScoutEvidence(lead, searchSpec, {
       sourceProviders: evidenceMeta.sourceProviders,
       sourceCount: evidenceMeta.sourceCount,
@@ -211,6 +215,19 @@ export async function executeVerifyStage(
         }
       }
       lead.scout.corroborationScore = Math.min(10, (lead.scout.corroborationScore || 5) + 0.5);
+
+      // Stream C: Check if any of these are active ATS hiring signals
+      const atsSignal = targetSignals.find(s => s.category === 'hiring_signal' || s.category === 'hiring');
+      if (atsSignal) {
+        lead.buyingSignalsDetected = Array.isArray(lead.buyingSignalsDetected) ? lead.buyingSignalsDetected : [];
+        const label = atsSignal.text.startsWith('Active Job Requisition:')
+          ? atsSignal.text.split(' - ')[0]
+          : `Active Job Requisition: ${atsSignal.companyName}`;
+        if (!lead.buyingSignalsDetected.includes(label)) {
+          lead.buyingSignalsDetected.unshift(label);
+        }
+        lead.hiringSignalUrl = atsSignal.url;
+      }
     }
 
     lead.scoreBreakdown = computeScoreBreakdown(

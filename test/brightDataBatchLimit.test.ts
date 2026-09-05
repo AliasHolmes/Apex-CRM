@@ -48,3 +48,25 @@ test("chunkBrightDataBatchItems slices 12 URLs into batches of <= 5", () => {
     [5, 5, 2],
   );
 });
+
+test("classifyBrightDataError classifies getaddrinfo ENOTFOUND as transport_transient", async () => {
+  const { classifyBrightDataError } = await import("../server/services/brightdata.js");
+
+  const dnsErr = new Error("Tool 'search_engine' execution failed: getaddrinfo ENOTFOUND api.brightdata.com");
+  const classifiedDns = classifyBrightDataError(dnsErr);
+  assert.equal(classifiedDns.reasonCode, "transport_transient");
+  assert.equal(classifiedDns.retryable, true);
+  assert.equal(classifiedDns.clearClient, true);
+
+  const connErr = new Error("connect ECONNREFUSED 127.0.0.1:443");
+  const classifiedConn = classifyBrightDataError(connErr);
+  assert.equal(classifiedConn.reasonCode, "transport_transient");
+  assert.equal(classifiedConn.retryable, true);
+  assert.equal(classifiedConn.clearClient, true);
+
+  const netErr = new Error("fetch failed: network timeout");
+  const classifiedNet = classifyBrightDataError(netErr);
+  assert.equal(classifiedNet.reasonCode, "transport_transient");
+  assert.equal(classifiedNet.retryable, true);
+});
+

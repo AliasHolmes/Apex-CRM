@@ -86,12 +86,8 @@ describe('Phase 3: Semantic Grouping Support', () => {
     ]
   };
 
-  describe('When flag is DISABLED (Legacy strict checking)', () => {
-    beforeEach(() => {
-      process.env.SEMANTIC_GROUPING_ENABLED = 'false';
-    });
-
-    it('hard-fails when any individual requirement fails even if in a group', () => {
+  describe('Semantic Grouping Standard Behavior', () => {
+    it('does not hard-fail when an individual requirement in an any_of group fails if another member passes', () => {
       const judgments = [
         {
           candidateId: 'cand-1',
@@ -110,7 +106,7 @@ describe('Phase 3: Semantic Grouping Support', () => {
 
       const { outcomes } = validateFinalistJudgments({ judgments }, baseContract, [candidate]);
       const outcome = outcomes.get('cand-1');
-      assert.equal(outcome?.status, 'hard_fail', 'In legacy mode, failure on req-loc-sf causes hard_fail');
+      assert.equal(outcome?.status, 'qualified', 'In semantic grouping mode, passing req-loc-ny qualifies the any_of group');
     });
   });
 

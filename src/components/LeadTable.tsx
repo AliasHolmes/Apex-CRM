@@ -243,23 +243,50 @@ const LeadTableRow = React.memo(
                 <span className="capitalize">{(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')}</span>
               </Badge>
             </div>
-          ) : lead.companyAccount?.buyingSignals?.length ? (
-            <div className="flex items-center gap-1.5">
-              <Badge variant="outline" className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1">
-                <Zap className="h-3 w-3 text-emerald-400" aria-hidden="true" />
-                <span>{lead.companyAccount.buyingSignals.length} Signals (Pain {lead.companyAccount.operationalPainScore})</span>
-              </Badge>
-            </div>
-          ) : Array.isArray(lead.buyingSignalsDetected) && lead.buyingSignalsDetected.length > 0 ? (
-            <div className="flex items-center gap-1.5">
-              <Badge variant="outline" className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1">
-                <Zap className="h-3 w-3 text-emerald-400" aria-hidden="true" />
-                <span>{lead.buyingSignalsDetected[0]}</span>
-              </Badge>
-            </div>
-          ) : (
-            <span className="text-xs text-slate-500 italic">No active intent trigger</span>
-          )}
+          ) : (() => {
+            const hiringTrigger = lead.buyingSignalsDetected?.find(
+              (s) => s.toLowerCase().includes("hiring") || s.toLowerCase().includes("job requisition")
+            );
+            if (hiringTrigger) {
+              return (
+                <div className="flex items-center gap-1.5">
+                  <Badge
+                    variant="outline"
+                    className="h-5 px-1.5 text-xs text-amber-300 border-amber-500/30 bg-amber-500/10 flex items-center gap-1 max-w-[210px] truncate"
+                    title={hiringTrigger}
+                  >
+                    <Flame className="h-3 w-3 text-amber-400 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{hiringTrigger}</span>
+                  </Badge>
+                </div>
+              );
+            }
+            if (lead.companyAccount?.buyingSignals?.length) {
+              return (
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="outline" className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1">
+                    <Zap className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+                    <span>{lead.companyAccount.buyingSignals.length} Signals (Pain {lead.companyAccount.operationalPainScore})</span>
+                  </Badge>
+                </div>
+              );
+            }
+            if (Array.isArray(lead.buyingSignalsDetected) && lead.buyingSignalsDetected.length > 0) {
+              return (
+                <div className="flex items-center gap-1.5">
+                  <Badge
+                    variant="outline"
+                    className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1 max-w-[210px] truncate"
+                    title={lead.buyingSignalsDetected[0]}
+                  >
+                    <Zap className="h-3 w-3 text-emerald-400 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{lead.buyingSignalsDetected[0]}</span>
+                  </Badge>
+                </div>
+              );
+            }
+            return <span className="text-xs text-slate-500 italic">No active intent trigger</span>;
+          })()}
           {lead.companyAccount?.painSummary ? (
             <div className="text-xs text-slate-400 truncate max-w-[210px]" title={lead.companyAccount.painSummary}>
               {lead.companyAccount.painSummary}
@@ -1321,6 +1348,32 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                           "{provenance.postIntentEvidence.postSnippets[0]}"
                         </div>
                       )}
+                    </div>
+                  </section>
+                )}
+                {Boolean(detailsLead.buyingSignalsDetected?.length) && (
+                  <section>
+                    <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-300">
+                      <Flame className="h-4 w-4 text-amber-400" aria-hidden="true" />
+                      Active Job Requisitions & Live Triggers
+                    </h3>
+                    <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs space-y-2">
+                      {detailsLead.buyingSignalsDetected!.map((signal, idx) => (
+                        <div key={idx} className="flex items-start justify-between gap-2">
+                          <span className="font-semibold text-amber-200">{signal}</span>
+                          {detailsLead.hiringSignalUrl && (
+                            <a
+                              href={detailsLead.hiringSignalUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 shrink-0 underline"
+                            >
+                              <Link2 className="h-3 w-3" aria-hidden="true" />
+                              <span>View Job Post</span>
+                            </a>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </section>
                 )}

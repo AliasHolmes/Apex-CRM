@@ -196,8 +196,7 @@ describe('PIQ-BOS: Progressive Interleaved Qualification', () => {
   });
 
   describe('Prompt Diet++ (Pruning Soft Requirements)', () => {
-    it('prunes soft requirements from prompt when progressiveQualification is ON', () => {
-      process.env.PROGRESSIVE_QUALIFICATION_ENABLED = 'true';
+    it('prunes soft requirements from prompt as permanent PIQ-BOS standard', () => {
       const candidate: FinalistCandidate = {
         candidateId: 'c1',
         lead: { fullName: 'Test', currentTitle: 'CEO', location: 'USA' },
@@ -207,19 +206,6 @@ describe('PIQ-BOS: Progressive Interleaved Qualification', () => {
       assert.match(prompt, /req-role/);
       assert.match(prompt, /req-loc/);
       assert.doesNotMatch(prompt, /req-soft/);
-    });
-
-    it('retains all requirements in prompt when progressiveQualification is OFF', () => {
-      process.env.PROGRESSIVE_QUALIFICATION_ENABLED = 'false';
-      const candidate: FinalistCandidate = {
-        candidateId: 'c1',
-        lead: { fullName: 'Test', currentTitle: 'CEO', location: 'USA' },
-        evidence: [],
-      };
-      const prompt = buildFinalistJudgePrompt(sampleContract, [candidate]);
-      assert.match(prompt, /req-role/);
-      assert.match(prompt, /req-loc/);
-      assert.match(prompt, /req-soft/);
     });
   });
 

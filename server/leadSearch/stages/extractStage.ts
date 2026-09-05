@@ -45,6 +45,8 @@ export type EvidenceMeta = {
   sourceCount?: number;
   lanes?: string[];
   corroborated?: boolean;
+  ablatedRequirementId?: string;
+  ablatedTerm?: string;
 };
 
 const normalizeDedupeValue = (value?: string) =>
@@ -382,6 +384,8 @@ export async function executeExtractStage(
         ? item._lanes
         : [item._queryLane || "person"],
       corroborated: Boolean(item._corroborated),
+      ablatedRequirementId: item._ablatedRequirementId || item.ablatedRequirementId,
+      ablatedTerm: item._ablatedTerm || item.ablatedTerm,
     };
     const primaryKey = normalizedUrl || normalizeDedupeValue(url);
     if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);

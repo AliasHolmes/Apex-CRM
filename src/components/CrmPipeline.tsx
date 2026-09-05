@@ -366,6 +366,7 @@ export default function CrmPipeline({
   const handleGenerateIcebreaker = async (profile: LinkedInProfile) => {
     const leadId = selectedLeadId;
     if (!leadId) return;
+    const selectedLead = leads.find((l) => l.id === leadId);
     icebreakerRequestRef.current?.abort();
     const controller = new AbortController();
     icebreakerRequestRef.current = controller;
@@ -378,7 +379,10 @@ export default function CrmPipeline({
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
+          leadId,
           profile,
+          companyAccount: selectedLead?.companyAccount,
+          buyingSignalsDetected: selectedLead?.buyingSignalsDetected,
           tone: 'High-Value',
           pitchType: 'Short 1-Sentence Intro Hook Icebreaker',
         }),

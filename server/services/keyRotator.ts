@@ -30,17 +30,20 @@ export class KeyRotationError extends Error {
   statusCode?: number;
   responseText?: string;
   retryAfterMs?: number;
+  isNetworkFailure?: boolean;
 
   constructor(message: string, options: {
     statusCode?: number;
     responseText?: string;
     retryAfterMs?: number;
+    isNetworkFailure?: boolean;
   } = {}) {
     super(message);
     this.name = 'KeyRotationError';
     this.statusCode = options.statusCode;
     this.responseText = options.responseText;
     this.retryAfterMs = options.retryAfterMs;
+    this.isNetworkFailure = options.isNetworkFailure;
   }
 }
 
@@ -116,6 +119,20 @@ const retryAfterMsFromError = (error: unknown) => {
   }
   return undefined;
 };
+
+export function isHostNetworkError(error: unknown): boolean {
+  if (!error) return false;
+  const anyError = error as any;
+  const statusCode = statusCodeFromError(error);
+  if (statusCode !== undefined) return false;
+
+  const message = error instanceof Error ? error.message : String(error);
+  const causeMessage = anyError?.cause ? (anyError.cause.message || String(anyError.cause)) : '';
+  const causeCode = String(anyError?.cause?.code || anyError?.code || '');
+  const combined = `${message} ${causeMessage} ${causeCode}`.toLowerCase();
+
+  return /enotfound|econnrefused|econnreset|enetunreach|ehostunreach|fetch failed|und_err_connect_timeout|etimedout|socket hang up|getaddrinfo/.test(combined);
+}
 
 export function classifyKeyRotationError(error: unknown): FailureClassification {
   const anyError = error as any;
@@ -335,6 +352,15 @@ export async function executeWithKeyRotation<T>(
       pool.markSuccess(selected.key);
       return result;
     } catch (error) {
+      if (isHostNetworkError(error)) {
+        // Host-level network or DNS drop. Do NOT rotate across remaining keys on the same dead
+        // interface, and do NOT penalize the individual API key with cooldowns.
+        const msg = error instanceof Error ? error.message : String(error);
+        throw new KeyRotationError(
+          `Host network failure while connecting to ${pool.provider}: ${msg}`,
+          { isNetworkFailure: true }
+        );
+      }
       const classification = classifyKeyRotationError(error);
       if (classification.kind === 'request_invalid' || classification.kind === 'unknown') {
         throw error;

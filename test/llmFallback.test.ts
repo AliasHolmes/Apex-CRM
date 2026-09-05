@@ -424,5 +424,48 @@ describe('LLM gateway and provider fallback', () => {
     // Only attempted the first provider, did not failover to openrouter
     assert.equal(calls.length, 1);
   });
+
+  it('trips the circuit breaker when LiteLLM returns 500 connection errors', async () => {
+    process.env.LLM_GATEWAY_MODE = 'litellm';
+    process.env.LITELLM_MASTER_KEY = 'test-litellm-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('litellm-circuit-breaker');
+    const circuitBreaker = llm.createLLMSessionCircuitBreaker(2);
+    const calls: string[] = [];
+
+    globalThis.fetch = async (url: any) => {
+      const urlStr = url.toString();
+      calls.push(urlStr);
+      if (urlStr.includes('127.0.0.1:4000')) {
+        return new Response(JSON.stringify({
+          error: {
+            message: 'litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.. Received Model Group=apex-primary',
+            code: 500
+          }
+        }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    // Call 1: LiteLLM fails (count = 1), falls back to OpenRouter
+    const res1 = await llm.openAIText('prompt 1', undefined, { circuitBreaker });
+    assert.equal(res1.text, 'openrouter ok');
+
+    // Call 2: LiteLLM fails (count = 2 -> trips breaker!), falls back to OpenRouter
+    const res2 = await llm.openAIText('prompt 2', undefined, { circuitBreaker });
+    assert.equal(res2.text, 'openrouter ok');
+    assert.equal(circuitBreaker.disabledProviderIds.has('litellm'), true);
+
+    // Call 3: LiteLLM is disabled by circuit breaker, directly routes to OpenRouter without hitting 127.0.0.1:4000!
+    const callsBefore3 = calls.length;
+    const res3 = await llm.openAIText('prompt 3', undefined, { circuitBreaker });
+    assert.equal(res3.text, 'openrouter ok');
+    const newCalls = calls.slice(callsBefore3);
+    assert.equal(newCalls.some(u => u.includes('127.0.0.1:4000')), false);
+  });
 });
 

@@ -87,3 +87,34 @@ test('executeWithKeyRotation formats error cleanly when all keys are in cooldown
   );
 });
 
+test('host network failure aborts rotation immediately and does not penalize key health', async () => {
+  const pool = new ApiKeyPool('Tavily', () => ['key1', 'key2', 'key3', 'key4']);
+  const attempts: string[] = [];
+
+  await assert.rejects(
+    executeWithKeyRotation(pool, async (key) => {
+      attempts.push(key);
+      const err = new TypeError('fetch failed');
+      (err as any).cause = { code: 'ENOTFOUND', message: 'getaddrinfo ENOTFOUND api.tavily.com' };
+      throw err;
+    }),
+    (err: any) => {
+      assert.equal(err instanceof KeyRotationError, true);
+      assert.equal(err.isNetworkFailure, true);
+      assert.match(err.message, /Host network failure while connecting to Tavily/);
+      return true;
+    }
+  );
+
+  // Crucial: Only the first key was attempted, no rotation occurred on dead connection
+  assert.deepEqual(attempts, ['key1']);
+
+  // Crucial: All keys remain active, no cooldowns were applied, no transient failure counts
+  const status = pool.getStatus();
+  for (const key of status.keys) {
+    assert.equal(key.status, 'active');
+    assert.equal(key.consecutiveTransientFailures, 0);
+  }
+});
+
+

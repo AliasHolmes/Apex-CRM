@@ -1853,6 +1853,7 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
       customInstruction,
       companyAccount,
       buyingSignals,
+      buyingSignalsDetected,
       evidence,
       qualification,
       postIntentEvidence,
@@ -1913,6 +1914,14 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
       ? companyIntentEvidence.snippets.join(" | ")
       : "";
 
+    const hiringTriggers = [
+      ...(Array.isArray(buyingSignalsDetected) ? buyingSignalsDetected : []),
+      ...(Array.isArray(profile?.buyingSignalsDetected) ? profile.buyingSignalsDetected : []),
+      ...(Array.isArray(buyingSignals) ? buyingSignals.map((s: any) => typeof s === 'string' ? s : s?.label) : []),
+      ...(Array.isArray(companyAccount?.buyingSignals) ? companyAccount.buyingSignals.map((s: any) => typeof s === 'string' ? s : s?.label) : []),
+    ].filter((s): s is string => typeof s === "string" && (s.toLowerCase().includes("hiring") || s.toLowerCase().includes("job requisition")));
+    const liveHiringTrigger = hiringTriggers[0] || "";
+
     const qualificationVerdict =
       qualification?.explanation || qualification?.verdict || "";
     const prospectNotes = typeof notes === "string" ? notes.trim() : "";
@@ -1945,6 +1954,7 @@ router.post("/generate-outbound", async (req, res): Promise<any> => {
 - Buying Signals: ${buyingSignalText || "None provided"}
 
 ## Verified Real-World Triggers & Evidence
+- Active ATS Job Requisition / Live Headcount Trigger: ${liveHiringTrigger || "None active"}
 - Prospect Authored LinkedIn Posts & Quotes: ${postIntentSnippets || "None available"}
 - Company Intent & Website Signals: ${companyIntentSnippets || "None available"}
 - Mined Evidence & Observations: ${evidenceSnippets || "None available"}

@@ -106,6 +106,7 @@ export function mapCandidateToPersistedLead(
     buyingSignalsDetected: Array.from(
       new Set(
         [
+          ...(Array.isArray(p.buyingSignalsDetected) ? p.buyingSignalsDetected : []),
           ...(p.companyAccount?.buyingSignals?.map(
             (signal: any) => signal.label,
           ) || []),

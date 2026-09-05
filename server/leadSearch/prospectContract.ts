@@ -1,7 +1,6 @@
 import { Type } from '../services/llm.js';
 import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
 import type { IntentSignalSpec } from './intentSignals.js';
-import { isFlagEnabled } from './featureFlags.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
@@ -547,70 +546,87 @@ export function buildSignalLaneQueries(
     });
 }
 
-export function buildContractFallbackQueries(brief: string, requirements: ProspectRequirement[]): SearchQueryPlanItem[] {
+export const ATS_SEARCH_DOMAINS = [
+  'boards.greenhouse.io',
+  'jobs.lever.co',
+  'jobs.ashbyhq.com',
+  'apply.workable.com',
+] as const;
+
+export function buildAtsLaneQueries(
+  brief: string,
+  requirements: ProspectRequirement[],
+  identitySpec?: IdentitySpec
+): SearchQueryPlanItem[] {
+  const roleTerms = identitySpec?.roles?.slice(0, 2) ||
+    requirements
+      .filter(r => r.scope === 'person_role')
+      .flatMap(r => r.acceptableTerms.slice(0, 2));
+
+  const contextTerms = identitySpec?.companyTypes?.slice(0, 1) ||
+    identitySpec?.industries?.slice(0, 1) ||
+    requirements
+      .filter(r => r.scope === 'company_type' || r.scope === 'company_industry')
+      .flatMap(r => r.acceptableTerms.slice(0, 1));
+
+  const role = roleTerms[0] || 'Software Engineer';
+  const context = contextTerms[0] || '';
+
+  const atsSiteUnion = '(site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com)';
+  const rawQuery = `${atsSiteUnion} "${role}" ${context}`.trim();
+
+  return [{
+    query: rawQuery.slice(0, 240),
+    family: 'growth_signal' as const,
+    intent: 'find_buying_signal' as const,
+    expectedSignal: `Live ATS job requisitions on Greenhouse, Lever, Ashby, or Workable for ${role}`,
+    priority: 1,
+    lane: 'signal' as const,
+    providerPreference: 'tavily' as const,
+    searchDepth: 'basic' as const,
+    coveredRequirementIds: requirements.filter(r => r.scope === 'signal' || r.scope === 'person_role').map(r => r.id),
+    topic: 'general' as const,
+  }];
+}
+
+export function buildContractFallbackQueries(
+  brief: string,
+  requirements: ProspectRequirement[],
+  identitySpec?: IdentitySpec
+): SearchQueryPlanItem[] {
   const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
   const isAgencyBrief = /\b(agenc|consult|studio|firm|services)\b/i.test(brief) ||
     requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && /\b(agenc|consult|studio|firm|services)\b/i.test(`${r.description} ${r.acceptableTerms.join(' ')}`));
   const agencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
   
-  if (isFlagEnabled.distributedQuery()) {
-    const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
-    const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
-    
-    const variants = [0, 1, 2, 3].map(index => {
-      const idTerms = identityReqs.map(r => r.acceptableTerms[index % Math.max(r.acceptableTerms.length, 1)] || r.sourcePhrase).filter(Boolean);
-      const ctxReq = contextReqs.length ? contextReqs[index % contextReqs.length] : null;
-      const ctxTerm = ctxReq ? (ctxReq.acceptableTerms[index % Math.max(ctxReq.acceptableTerms.length, 1)] || ctxReq.sourcePhrase) : '';
-      const disambig = (index > 0 && agencyDisambiguation) ? agencyDisambiguation : '';
-      return [...idTerms, ctxTerm, disambig].filter(Boolean).join(' ');
-    });
-    
-    const base = queryTermsFor(requirements).join(' ') || clean(brief);
-    const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
-    const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
-      query: query.slice(0, 240).trim(),
-      family: 'persona_title' as const,
-      intent: 'find_decision_makers' as const,
-      expectedSignal: 'Public profile evidence for distributed hard requirements',
-      priority: index + 1,
-      lane: 'person' as const,
-      providerPreference: index === 0 ? 'tavily' as const : 'corroborate' as const,
-      searchDepth: 'basic' as const,
-      coveredRequirementIds: requirements.filter(item => item.importance === 'hard').map(item => item.id)
-    }));
-    const signalQueries = buildSignalLaneQueries(requirements);
-    return [...personQueries, ...signalQueries];
-  }
-
-  const locationReq = hardRequirements.find(r => r.scope === 'person_location');
-  const nonLocationReqs = hardRequirements.filter(r => r.scope !== 'person_location');
-  const locationTerms = locationReq?.acceptableTerms && locationReq.acceptableTerms.length > 0
-    ? locationReq.acceptableTerms
-    : [''];
-
+  const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
+  const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
+  
   const variants = [0, 1, 2, 3].map(index => {
-    const nonLocTerms = nonLocationReqs
-      .map(requirement => requirement.acceptableTerms[index % Math.max(requirement.acceptableTerms.length, 1)] || requirement.sourcePhrase)
-      .filter(Boolean);
-    const locTerm = locationTerms[index % locationTerms.length];
+    const idTerms = identityReqs.map(r => r.acceptableTerms[index % Math.max(r.acceptableTerms.length, 1)] || r.sourcePhrase).filter(Boolean);
+    const ctxReq = contextReqs.length ? contextReqs[index % contextReqs.length] : null;
+    const ctxTerm = ctxReq ? (ctxReq.acceptableTerms[index % Math.max(ctxReq.acceptableTerms.length, 1)] || ctxReq.sourcePhrase) : '';
     const disambig = (index > 0 && agencyDisambiguation) ? agencyDisambiguation : '';
-    return [...nonLocTerms, locTerm, disambig].filter(Boolean).join(' ');
+    return [...idTerms, ctxTerm, disambig].filter(Boolean).join(' ');
   });
+  
   const base = queryTermsFor(requirements).join(' ') || clean(brief);
   const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
   const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
     query: query.slice(0, 240).trim(),
     family: 'persona_title' as const,
     intent: 'find_decision_makers' as const,
-    expectedSignal: 'Public profile evidence for every hard requirement',
+    expectedSignal: 'Public profile evidence for distributed hard requirements',
     priority: index + 1,
     lane: 'person' as const,
     providerPreference: index === 0 ? 'tavily' as const : 'corroborate' as const,
     searchDepth: 'basic' as const,
     coveredRequirementIds: requirements.filter(item => item.importance === 'hard').map(item => item.id)
   }));
-  const signalQueries = buildSignalLaneQueries(requirements);
-  return [...personQueries, ...signalQueries];
+  const signalQueries = buildSignalLaneQueries(requirements, identitySpec);
+  const hasHiringTrigger = /\b(hiring|jobs?|engineer|developer|recruit|growth|headcount|roles?|team|expanding)\b/i.test(brief) || requirements.some(r => r.scope === 'signal');
+  const atsQueries = hasHiringTrigger ? buildAtsLaneQueries(brief, requirements, identitySpec) : [];
+  return [...personQueries, ...signalQueries, ...atsQueries];
 }
 
 export const prospectContractSchema = {
@@ -960,56 +976,45 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   const normalized: SearchQueryPlanItem[] = [];
   for (const raw of rawItems.slice(0, 6)) {
     const candidate = typeof raw === 'string' ? { query: raw } : raw && typeof raw === 'object' ? raw as Record<string, any> : {};
-    let query = clean(candidate.query)
-      .replace(/\bsite:[^\s]+/gi, '')
-      .replace(/\blinkedin\b/gi, '')
-      .replace(/\b(AND|OR|NOT)\b/g, ' ')
-      .replace(/[()"]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!query || query.length > 240 || exclusions.some(term => term && lower(query).includes(term))) continue;
     const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
+    let query = clean(candidate.query);
     if (!isSignalLane) {
-      if (isFlagEnabled.distributedQuery()) {
-        const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
-        const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
+      query = query
+        .replace(/\bsite:[^\s]+/gi, '')
+        .replace(/\blinkedin\b/gi, '')
+        .replace(/\b(AND|OR|NOT)\b/g, ' ')
+        .replace(/[()"]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    } else {
+      query = query.replace(/\s+/g, ' ').trim();
+    }
+    if (!query || query.length > 240 || exclusions.some(term => term && lower(query).includes(term))) continue;
+    if (!isSignalLane) {
+      const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
+      const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
 
-        // 1. Identity terms: required in every persona query
-        for (const req of identityReqs) {
-          if (intentTerms.has(lower(req.sourcePhrase))) continue;
-          if (!includesAny(query, req.acceptableTerms)) {
-            const addition = req.acceptableTerms[0] || req.sourcePhrase;
+      // 1. Identity terms: required in every persona query
+      for (const req of identityReqs) {
+        if (intentTerms.has(lower(req.sourcePhrase))) continue;
+        if (!includesAny(query, req.acceptableTerms)) {
+          const addition = req.acceptableTerms[0] || req.sourcePhrase;
+          if ((query + ' ' + addition).length <= 240) {
+            query = `${query} ${addition}`.trim();
+          }
+        }
+      }
+
+      // 2. Context terms: distributed round-robin across candidate queries
+      if (contextReqs.length > 0) {
+        const alreadyHasContext = contextReqs.some(cr => includesAny(query, cr.acceptableTerms));
+        if (!alreadyHasContext) {
+          const ctxReq = contextReqs[normalized.length % contextReqs.length];
+          if (!intentTerms.has(lower(ctxReq.sourcePhrase))) {
+            const addition = ctxReq.acceptableTerms[0] || ctxReq.sourcePhrase;
             if ((query + ' ' + addition).length <= 240) {
               query = `${query} ${addition}`.trim();
             }
-          }
-        }
-
-        // 2. Context terms: distributed round-robin across candidate queries
-        if (contextReqs.length > 0) {
-          const alreadyHasContext = contextReqs.some(cr => includesAny(query, cr.acceptableTerms));
-          if (!alreadyHasContext) {
-            const ctxReq = contextReqs[normalized.length % contextReqs.length];
-            if (!intentTerms.has(lower(ctxReq.sourcePhrase))) {
-              const addition = ctxReq.acceptableTerms[0] || ctxReq.sourcePhrase;
-              if ((query + ' ' + addition).length <= 240) {
-                query = `${query} ${addition}`.trim();
-              }
-            }
-          }
-        }
-      } else {
-        for (const requirement of hardRequirements) {
-          if (intentTerms.has(lower(requirement.sourcePhrase))) continue;
-          if (!includesAny(query, requirement.acceptableTerms)) {
-            if (requirement.scope === 'person_location') {
-              // If the query already has any location term from the contract, do not append a conflicting one
-              const allLocationTerms = contract.requirements
-                .filter(r => r.scope === 'person_location')
-                .flatMap(r => r.acceptableTerms);
-              if (includesAny(query, allLocationTerms)) continue;
-            }
-            query = `${query} ${requirement.acceptableTerms[0] || requirement.sourcePhrase}`.trim();
           }
         }
       }

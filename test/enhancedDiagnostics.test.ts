@@ -62,12 +62,8 @@ describe('Phase 6: Enhanced Diagnostics & Targeted Recovery', () => {
     { fullName: 'David', currentTitle: 'CEO', location: 'Tokyo' }
   ];
 
-  describe('When flag is DISABLED (Standard Diagnostics)', () => {
-    beforeEach(() => {
-      process.env.ENHANCED_DIAGNOSTICS_ENABLED = 'false';
-    });
-
-    it('builds standard diagnostics without classSummary', () => {
+  describe('Standard Class-Aware Diagnostics', () => {
+    it('always builds diagnostics with classSummary populated', () => {
       const diag = buildRoundDiagnostics({
         round: 1,
         rawCandidates: 4,
@@ -77,7 +73,7 @@ describe('Phase 6: Enhanced Diagnostics & Targeted Recovery', () => {
         targetLimit: 10
       });
 
-      assert.equal(diag.classSummary, undefined);
+      assert.ok(diag.classSummary !== undefined);
       assert.ok(diag.shouldRecover);
     });
   });

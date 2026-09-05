@@ -1,14 +1,14 @@
 /**
  * Feature flag reader for Intelligent Hard Term refactor phases.
- * All flags default to OFF for backward compatibility.
- * Flags are environment-driven; toggle via process.env.
+ * All flags default to ON (true) as standard engine architecture.
+ * Flags remain environment-overridable; toggle via process.env.
  *
  * Usage:
  *   if (isFlagEnabled.taxonomy()) { ... activate Phase 1 ... }
  *   if (isFlagEnabled.distributedQuery()) { ... activate Phase 2 ... }
  */
 
-const readFlag = (envName: string, fallback = false): boolean => {
+const readFlag = (envName: string, fallback = true): boolean => {
   const raw = process.env[envName];
   if (raw === undefined || raw.trim() === '') return fallback;
   return !['0', 'false', 'no', 'off'].includes(raw.trim().toLowerCase());

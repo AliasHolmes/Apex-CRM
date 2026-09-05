@@ -8,7 +8,6 @@ import {
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
 import { rankLeadForFinalSelection } from "./scoring.js";
-import { isFlagEnabled } from "./featureFlags.js";
 
 export type RequirementStatus = "pass" | "fail" | "unknown";
 
@@ -187,9 +186,7 @@ export function buildFinalistJudgePrompt(
   contract: ProspectContract,
   candidates: FinalistCandidate[],
 ) {
-  const activeRequirements = isFlagEnabled.progressiveQualification()
-    ? contract.requirements.filter((r) => r.importance === "hard")
-    : contract.requirements;
+  const activeRequirements = contract.requirements.filter((r) => r.importance === "hard");
   const requirementText = activeRequirements
     .map(
       (requirement) =>
@@ -332,15 +329,13 @@ const normalizeAssessment = (
   let quoteValid = false;
   if (status !== 'pass' || !evidenceQuote) {
     quoteValid = true;
-  } else if (evidence && (isFlagEnabled.fuzzyQuoteGrounding() ? verifyEvidencePassage(evidence.text, evidenceQuote).valid : evidence.text.includes(evidenceQuote))) {
+  } else if (evidence && verifyEvidencePassage(evidence.text, evidenceQuote).valid) {
     quoteValid = true;
   } else {
     // Multi-evidence fallback scan: check if quote is present in any other candidate evidence
     for (const altEvidence of candidate.evidence) {
       if (altEvidence.text) {
-        const isMatch = isFlagEnabled.fuzzyQuoteGrounding()
-          ? verifyEvidencePassage(altEvidence.text, evidenceQuote).valid
-          : altEvidence.text.includes(evidenceQuote);
+        const isMatch = verifyEvidencePassage(altEvidence.text, evidenceQuote).valid;
         if (isMatch) {
           quoteValid = true;
           matchedEvidenceId = altEvidence.id;
@@ -460,92 +455,65 @@ export function validateFinalistJudgments(
     ).length;
     let contextHardTotal = profileHardReqs.length - identityHardTotal;
 
-    if (isFlagEnabled.semanticGrouping()) {
-      const anyOfGroups = new Map<string, ProspectRequirement[]>();
-      const ungroupedHardReqs: ProspectRequirement[] = [];
+    const anyOfGroups = new Map<string, ProspectRequirement[]>();
+    const ungroupedHardReqs: ProspectRequirement[] = [];
 
-      for (const contractReq of profileHardReqs) {
-        if (contractReq.groupId && contractReq.matchRule === 'any_of') {
-          const list = anyOfGroups.get(contractReq.groupId) || [];
-          list.push(contractReq);
-          anyOfGroups.set(contractReq.groupId, list);
-        } else {
-          ungroupedHardReqs.push(contractReq);
-        }
+    for (const contractReq of profileHardReqs) {
+      if (contractReq.groupId && contractReq.matchRule === 'any_of') {
+        const list = anyOfGroups.get(contractReq.groupId) || [];
+        list.push(contractReq);
+        anyOfGroups.set(contractReq.groupId, list);
+      } else {
+        ungroupedHardReqs.push(contractReq);
       }
+    }
 
-      let groupIdentityTotal = 0;
-      let groupContextTotal = 0;
-      for (const [_, groupReqs] of anyOfGroups) {
-        const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
-        if (isIdentityGroup) groupIdentityTotal++;
-        else groupContextTotal++;
+    let groupIdentityTotal = 0;
+    let groupContextTotal = 0;
+    for (const [_, groupReqs] of anyOfGroups) {
+      const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
+      if (isIdentityGroup) groupIdentityTotal++;
+      else groupContextTotal++;
+    }
+
+    identityHardTotal = ungroupedHardReqs.filter(r => r.scope === 'person_role').length + groupIdentityTotal;
+    contextHardTotal = ungroupedHardReqs.filter(r => r.scope !== 'person_role').length + groupContextTotal;
+
+    for (const contractReq of ungroupedHardReqs) {
+      const req = requirements.find(r => r.requirementId === contractReq.id);
+      if (!req) continue;
+      if (req.fabricatedPass) fabricatedHardPass = true;
+      const isIdentity = contractReq.scope === 'person_role';
+      if (req.status === 'pass') {
+        if (isIdentity) identityPasses++;
+        else contextPasses++;
+      } else if (req.status === 'fail') {
+        if (isIdentity) identityFails++;
+        else contextFails++;
       }
+    }
 
-      identityHardTotal = ungroupedHardReqs.filter(r => r.scope === 'person_role').length + groupIdentityTotal;
-      contextHardTotal = ungroupedHardReqs.filter(r => r.scope !== 'person_role').length + groupContextTotal;
+    for (const [_, groupReqs] of anyOfGroups) {
+      const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
+      const groupAssessments = groupReqs.map(gr => requirements.find(r => r.requirementId === gr.id)).filter(Boolean);
+      if (groupAssessments.some(a => a?.fabricatedPass)) fabricatedHardPass = true;
 
-      for (const contractReq of ungroupedHardReqs) {
-        const req = requirements.find(r => r.requirementId === contractReq.id);
-        if (!req) continue;
-        if (req.fabricatedPass) fabricatedHardPass = true;
-        const isIdentity = contractReq.scope === 'person_role';
-        if (req.status === 'pass') {
-          if (isIdentity) identityPasses++;
-          else contextPasses++;
-        } else if (req.status === 'fail') {
-          if (isIdentity) identityFails++;
-          else contextFails++;
-        }
+      const anyPass = groupAssessments.some(a => a?.status === 'pass');
+      const allFail = groupAssessments.length > 0 && groupAssessments.every(a => a?.status === 'fail');
+
+      if (anyPass) {
+        if (isIdentityGroup) identityPasses++;
+        else contextPasses++;
+      } else if (allFail) {
+        if (isIdentityGroup) identityFails++;
+        else contextFails++;
       }
+    }
 
-      for (const [_, groupReqs] of anyOfGroups) {
-        const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
-        const groupAssessments = groupReqs.map(gr => requirements.find(r => r.requirementId === gr.id)).filter(Boolean);
-        if (groupAssessments.some(a => a?.fabricatedPass)) fabricatedHardPass = true;
-
-        const anyPass = groupAssessments.some(a => a?.status === 'pass');
-        const allFail = groupAssessments.length > 0 && groupAssessments.every(a => a?.status === 'fail');
-
-        if (anyPass) {
-          if (isIdentityGroup) identityPasses++;
-          else contextPasses++;
-        } else if (allFail) {
-          if (isIdentityGroup) identityFails++;
-          else contextFails++;
-        }
-      }
-
-      for (const contractReq of signalHardReqs) {
-        const req = requirements.find(r => r.requirementId === contractReq.id);
-        if (req?.fabricatedPass) fabricatedHardPass = true;
-        if (req?.status === 'pass') signalPasses++;
-      }
-    } else {
-      for (const req of requirements) {
-        const contractReq = contract.requirements.find(
-          (item) => item.id === req.requirementId,
-        );
-        if (!contractReq || contractReq.importance !== "hard") continue;
-        if (req.fabricatedPass) fabricatedHardPass = true;
-        const isSignal =
-          (contractReq.evidenceModality ||
-            (contractReq.scope === "signal"
-              ? "open_web_signal"
-              : "structured_profile")) === "open_web_signal";
-        if (isSignal) {
-          if (req.status === "pass") signalPasses++;
-          continue;
-        }
-        const isIdentity = contractReq.scope === "person_role";
-        if (req.status === "pass") {
-          if (isIdentity) identityPasses++;
-          else contextPasses++;
-        } else if (req.status === "fail") {
-          if (isIdentity) identityFails++;
-          else contextFails++;
-        }
-      }
+    for (const contractReq of signalHardReqs) {
+      const req = requirements.find(r => r.requirementId === contractReq.id);
+      if (req?.fabricatedPass) fabricatedHardPass = true;
+      if (req?.status === 'pass') signalPasses++;
     }
 
     const semanticFit = normalizeScoreTo10(judgment.semanticFit, 7);
@@ -758,6 +726,7 @@ export function partitionCandidatesByStrictEvidence(
     if (
       hasOpenWebSignalHardReqs ||
       !hardRequirements.length ||
+      Boolean(candidate.lead._ablatedRequirementId) ||
       !hardRequirements.every((requirement) =>
         hasStrictStructuredMatch(candidate.lead, requirement),
       )
@@ -916,6 +885,7 @@ export function triPartitionCandidatesByEvidence(
     if (
       hasOpenWebSignalHardReqs ||
       !hardRequirements.length ||
+      Boolean(lead._ablatedRequirementId) ||
       !hardRequirements.every((requirement) =>
         hasStrictStructuredMatch(lead, requirement),
       )

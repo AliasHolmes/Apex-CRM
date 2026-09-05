@@ -124,19 +124,50 @@ export async function executeFuseStage(
 
     // STREAM 2: Signal Lane -> Store into session SignalStore and register discovered company
     if (isSignal) {
+      const isAtsObservation = /boards\.greenhouse\.io|jobs\.lever\.co|jobs\.ashbyhq\.com|apply\.workable\.com/i.test(observation.url);
       const companyHint = extractCompanyHintDeterministic(observation) || "";
       if (companyHint && ctx.state.signalStore) {
-        ctx.state.signalStore.add({
-          companyName: companyHint,
-          url: observation.url,
-          text: `${observation.title} - ${observation.content}`.trim(),
-          round,
-          query: observation.query,
-          lane: 'signal',
-          confidence: observation.corroborated ? 0.9 : 0.75,
-          provider: observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
-          category: inferSignalCategory(observation)
-        });
+        if (isAtsObservation) {
+          const rawJobTitle = observation.title
+            .split(/\s+(?:\||-|:|\u2013|\u2014|at)\s+/i)[0]
+            ?.replace(/\b(Careers|Jobs|Job Opening|Hiring)\b/gi, '')
+            .trim();
+          const jobTitle = rawJobTitle || "Open Role";
+          let atsHost = "ATS";
+          try {
+            atsHost = new URL(observation.url).hostname.replace(/^www\./, '');
+          } catch {}
+          const signalText = `Active Job Requisition: ${jobTitle} at ${companyHint} (${atsHost}) - ${observation.url}`;
+
+          ctx.state.signalStore.add({
+            companyName: companyHint,
+            url: observation.url,
+            text: signalText,
+            round,
+            query: observation.query,
+            lane: 'signal',
+            confidence: 0.95,
+            provider: observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
+            category: 'hiring_signal'
+          });
+
+          stats.atsSignalsDetected = (stats.atsSignalsDetected || 0) + 1;
+          logEvent(
+            `[Stream C: ATS] Ingested active job requisition for "${companyHint}": "${jobTitle}" via ${atsHost}`,
+          );
+        } else {
+          ctx.state.signalStore.add({
+            companyName: companyHint,
+            url: observation.url,
+            text: `${observation.title} - ${observation.content}`.trim(),
+            round,
+            query: observation.query,
+            lane: 'signal',
+            confidence: observation.corroborated ? 0.9 : 0.75,
+            provider: observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
+            category: inferSignalCategory(observation)
+          });
+        }
       }
       if (queryRun) {
         queryRun.evidenceBlocks = (queryRun.evidenceBlocks || 0) + 1;
@@ -220,6 +251,8 @@ export async function executeFuseStage(
     item._sourceCount = observation.sourceCount;
     item._lanes = observation.lanes;
     item._corroborated = observation.corroborated;
+    item._ablatedRequirementId = (observation.raw as any)?.ablatedRequirementId;
+    item._ablatedTerm = (observation.raw as any)?.ablatedTerm;
     const rawHint = extractCompanyHintDeterministic(observation) || "";
     item._companyHint = normalizeCompanyName(rawHint);
 

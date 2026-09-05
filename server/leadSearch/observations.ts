@@ -88,7 +88,8 @@ const cleanCompanyHint = (value: unknown) => String(value || '')
 const COMPANY_HINT_BLOCKLIST = new Set([
   'short notice', 'home', 'large', 'will', 'present', 'remote', 'available',
   'your service', 'your company', 'clients', 'request', 'application',
-  'stealth', 'freelance', 'self employed', 'confidential', 'various'
+  'stealth', 'freelance', 'self employed', 'confidential', 'various',
+  'we', 'we are', 'our team', 'i am', 'who', 'who is', 'someone'
 ]);
 
 const looksLikeCompanyHint = (value: string) => {
@@ -152,10 +153,12 @@ export function extractCompanyHintDeterministic(obs: FusedObservation): string {
   );
   if (looksLikeCompanyHint(rawCompany)) return rawCompany;
 
-  // Strategy 1: multi-part page title, such as "n8n Developer | TechFlow AI".
+  // Strategy 1: multi-part page title, such as "n8n Developer | TechFlow AI" or "Senior Engineer | Stripe Careers".
   const titleParts = obs.title.split(/\s+(?:\||-|:|\u2013|\u2014)\s+/);
   if (titleParts.length > 1) {
-    const lastPart = cleanCompanyHint(titleParts.at(-1));
+    const rawPart = titleParts.at(-1) || '';
+    const stripped = rawPart.replace(/\s+(?:careers|jobs?|hiring|openings)\s*$/i, '');
+    const lastPart = cleanCompanyHint(stripped);
     if (looksLikeCompanyHint(lastPart)) return lastPart;
   }
 

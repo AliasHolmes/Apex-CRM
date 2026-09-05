@@ -156,6 +156,8 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   paretoSkyline?: boolean;
   postIntentEvidence?: PostIntentEvidence;
   intentEnrichmentState?: IntentEnrichmentState;
+  buyingSignalsDetected?: string[];
+  hiringSignalUrl?: string;
   confidenceInterval?: {
     lower: number;
     upper: number;
@@ -200,6 +202,7 @@ export interface Lead {
   tier?: 'TIER 1: PRIORITY' | 'TIER 2: ACTIVE' | 'TIER 3: WATCH' | 'TIER 4: DEPRIORITIZE';
   
   buyingSignalsDetected?: string[];
+  hiringSignalUrl?: string;
   companyAccount?: CompanyAccount;
   decisionMakerVerification?: DecisionMakerVerification;
   sourceProvider?: LeadSourceProvider;

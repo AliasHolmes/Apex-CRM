@@ -347,7 +347,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     });
   }
   if (
-    /connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000/.test(
+    /connection closed|sse stream disconnected|stdio|process exited|terminated|econnreset|socket hang up|mcp error -32000|getaddrinfo|enotfound|econnrefused|ehostunreach|enetunreach|network|dns/.test(
       lower,
     )
   ) {

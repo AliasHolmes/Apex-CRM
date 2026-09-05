@@ -1,5 +1,4 @@
 import type { ProspectContract, ProspectRequirement, RequirementClass } from './prospectContract.js';
-import { isFlagEnabled } from './featureFlags.js';
 
 export type RequirementDiagnostic = {
   requirementId: string;
@@ -105,7 +104,7 @@ export function buildRoundDiagnostics(params: {
   const hardRequirementIds = new Set(params.contract.requirements.filter(item => item.importance === 'hard').map(item => item.id));
   const missingHardRequirementIds = requirements.filter(item => hardRequirementIds.has(item.requirementId) && item.passRate < 0.20).map(item => item.requirementId);
   const viableCandidates = params.leads.filter(lead => {
-    if (isFlagEnabled.progressiveQualification() && lead.qualification?.verdict) {
+    if (lead.qualification?.verdict) {
       return lead.qualification.verdict === 'qualified' || lead.qualification.verdict === 'qualified_partial';
     }
     return (
@@ -116,35 +115,32 @@ export function buildRoundDiagnostics(params: {
     );
   }).length;
 
-  let classSummary: ClassDiagnosticSummary | undefined;
-  if (isFlagEnabled.enhancedDiagnostics()) {
-    const calcClassRate = (cls: RequirementClass) => {
-      const matchingReqs = params.contract.requirements.filter(r => (r.requirementClass || (r.scope === 'person_role' ? 'identity_hard' : 'context_hard')) === cls && r.importance === 'hard');
-      if (!matchingReqs.length) return 1.0;
-      const diagMatches = requirements.filter(d => matchingReqs.some(m => m.id === d.requirementId));
-      const avg = diagMatches.reduce((sum, d) => sum + d.passRate, 0) / diagMatches.length;
-      return Number(avg.toFixed(2));
-    };
+  const calcClassRate = (cls: RequirementClass) => {
+    const matchingReqs = params.contract.requirements.filter(r => (r.requirementClass || (r.scope === 'person_role' ? 'identity_hard' : 'context_hard')) === cls && r.importance === 'hard');
+    if (!matchingReqs.length) return 1.0;
+    const diagMatches = requirements.filter(d => matchingReqs.some(m => m.id === d.requirementId));
+    const avg = diagMatches.reduce((sum, d) => sum + d.passRate, 0) / diagMatches.length;
+    return Number(avg.toFixed(2));
+  };
 
-    const identityPassRate = calcClassRate('identity_hard');
-    const contextPassRate = calcClassRate('context_hard');
-    const evidencePassRate = calcClassRate('evidence_required');
+  const identityPassRate = calcClassRate('identity_hard');
+  const contextPassRate = calcClassRate('context_hard');
+  const evidencePassRate = calcClassRate('evidence_required');
 
-    let bottleneckClass: RequirementClass | null = null;
-    const lowest = Math.min(identityPassRate, contextPassRate, evidencePassRate);
-    if (lowest < 0.5) {
-      if (lowest === identityPassRate) bottleneckClass = 'identity_hard';
-      else if (lowest === contextPassRate) bottleneckClass = 'context_hard';
-      else bottleneckClass = 'evidence_required';
-    }
-
-    classSummary = {
-      identityPassRate,
-      contextPassRate,
-      evidencePassRate,
-      bottleneckClass
-    };
+  let bottleneckClass: RequirementClass | null = null;
+  const lowest = Math.min(identityPassRate, contextPassRate, evidencePassRate);
+  if (lowest < 0.5) {
+    if (lowest === identityPassRate) bottleneckClass = 'identity_hard';
+    else if (lowest === contextPassRate) bottleneckClass = 'context_hard';
+    else bottleneckClass = 'evidence_required';
   }
+
+  const classSummary: ClassDiagnosticSummary = {
+    identityPassRate,
+    contextPassRate,
+    evidencePassRate,
+    bottleneckClass
+  };
 
   const nonMatchingLocations = new Set<string>();
   const nonMatchingRoles = new Set<string>();

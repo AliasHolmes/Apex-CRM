@@ -152,7 +152,7 @@ export async function executeVerifyStage(
     }
 
     const hasCompany = Boolean(
-      (lead?.currentCompany || lead?.company || lead?.profile?.currentCompany || "").trim() ||
+      (lead?.currentCompany || lead?.company || lead?.profile?.currentCompany || lead?.organization || "").trim() ||
       (lead?.companyEntityResolution?.verified && lead?.companyEntityResolution?.companyName)
     );
     const hasCompanyRequirement = Boolean(

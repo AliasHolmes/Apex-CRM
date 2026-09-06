@@ -454,7 +454,10 @@ export async function executeJudgeStage(
   );
   const maxRescuesAllowed = Math.ceil(targetLimit * maxRescueRatio);
 
-  if (qualifiedLeads.length < targetLimit) {
+  if (
+    process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION === "true" &&
+    qualifiedLeads.length < targetLimit
+  ) {
     const needed = targetLimit - qualifiedLeads.length;
     const rescueCap = Math.min(needed, maxRescuesAllowed);
     logEvent(
@@ -525,7 +528,11 @@ export async function executeJudgeStage(
     // Zero-yield safety net: if qualified leads are still 0 but accepted candidates exist,
     // perform best-effort rescue of top-scoring candidates from acceptedLeads so the user
     // never receives an empty result when viable profiles were discovered.
-    if (qualifiedLeads.length === 0 && acceptedLeads.length > 0) {
+    if (
+      process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION === "true" &&
+      qualifiedLeads.length === 0 &&
+      acceptedLeads.length > 0
+    ) {
       const fallbackRescuePool = acceptedLeads
         .map((lead, index) => ({
           lead,

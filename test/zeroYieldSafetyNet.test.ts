@@ -87,6 +87,8 @@ describe('Zero-Yield Prevention & Starvation Safety Net', () => {
     });
 
     const originalFetch = globalThis.fetch;
+    const originalSafetyNet = process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
+    process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION = 'true';
     try {
       globalThis.fetch = async () => {
         return {
@@ -133,6 +135,11 @@ describe('Zero-Yield Prevention & Starvation Safety Net', () => {
       });
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalSafetyNet !== undefined) {
+        process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION = originalSafetyNet;
+      } else {
+        delete process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
+      }
     }
 
     assert.ok(qualifiedLeads.length > 0, `Expected at least 1 rescued lead, got ${qualifiedLeads.length}`);

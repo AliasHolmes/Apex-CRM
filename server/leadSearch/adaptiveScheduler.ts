@@ -73,6 +73,9 @@ export function deriveDomainCluster(queryOrBrief: string): string {
   if (/\b(legal|law firm|attorney|accounting|cpa|tax firm)\b/i.test(text)) {
     return 'professional_services';
   }
+  if (/\b(manufacturing|industrial|factory|fabrication|plant manager|industrial production)\b/i.test(text)) {
+    return 'manufacturing_industrial';
+  }
   return 'global';
 }
 

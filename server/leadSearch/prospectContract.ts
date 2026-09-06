@@ -1,6 +1,8 @@
 import { Type } from '../services/llm.js';
 import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
 import type { IntentSignalSpec } from './intentSignals.js';
+import { deriveDomainCluster } from './adaptiveScheduler.js';
+import { sanitizeQueryText } from './strategist.js';
 
 // Bump this whenever normalization changes so old under-specified contracts
 // cannot be reused from the SQLite cache.
@@ -163,6 +165,108 @@ const inferredAuthority = (requirements: ProspectRequirement[]) => requirements.
 
 const includeTerms = (values: string[], brief: string) => unique(values.filter(value => sourceAppearsInBrief(value, brief)));
 
+export type BusinessArchetype = {
+  id: string;
+  name: string;
+  domainCluster: string;
+  defaultRoles: string[];
+  mandatoryNegativeFilters: string[];
+  companyTypeExpansions: string[];
+  roleExpansions: string[];
+  exclusions: string[];
+  seamDescription: string;
+};
+
+export const BUSINESS_ARCHETYPES: Record<string, BusinessArchetype> = {
+  b2b_agency: {
+    id: 'b2b_agency',
+    name: 'B2B Agency & Client Services',
+    domainCluster: 'b2b_agency',
+    defaultRoles: ['owner', 'owners', 'firm owner', 'agency owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor'],
+    mandatoryNegativeFilters: ['-software', '-saas', '-platform', '-recruiter'],
+    companyTypeExpansions: [
+      'agency', 'agencies', 'consultancy', 'consulting firm', 'services firm', 'solutions provider',
+      'advisory firm', 'studio', 'firm', 'partner', 'integrator', 'AI agency', 'AI agencies',
+      'AI consultancy', 'AI consulting firm', 'AI services firm', 'AI solutions provider', 'AI advisory firm',
+      'AI studio', 'AI marketing agency', 'AI firm', 'artificial intelligence agency', 'AI-powered agency',
+      'AI partner', 'AI integrator'
+    ],
+    roleExpansions: ['owner', 'owners', 'firm owner', 'agency owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor'],
+    exclusions: ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'DeepMind', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product', 'recruiter'],
+    seamDescription: 'client services required; SaaS/products fail'
+  },
+  b2b_saas: {
+    id: 'b2b_saas',
+    name: 'B2B SaaS & Software Platform',
+    domainCluster: 'b2b_saas',
+    defaultRoles: ['founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'CTO', 'chief technology officer', 'VP Engineering', 'vice president engineering', 'VP Product', 'vice president product'],
+    mandatoryNegativeFilters: ['-agency', '-consulting', '-devshop', '-freelance'],
+    companyTypeExpansions: ['SaaS', 'software company', 'B2B SaaS', 'software platform', 'cloud software', 'enterprise software', 'software vendor'],
+    roleExpansions: ['founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'CTO', 'chief technology officer', 'VP Engineering', 'vice president engineering', 'VP Product', 'vice president product'],
+    exclusions: ['agency', 'consulting', 'devshop', 'freelance', 'marketing agency'],
+    seamDescription: 'software license/SaaS platform required; agencies/client services fail'
+  },
+  healthcare_life_sciences: {
+    id: 'healthcare_life_sciences',
+    name: 'Healthcare & Life Sciences Practice',
+    domainCluster: 'healthcare_life_sciences',
+    defaultRoles: ['practice owner', 'medical director', 'managing physician', 'clinical director', 'CMO', 'chief medical officer', 'clinic owner', 'doctor', 'physician owner'],
+    mandatoryNegativeFilters: ['-software', '-saas', '-staffing', '-nurse', '-billing'],
+    companyTypeExpansions: ['medical practice', 'private practice', 'clinic', 'healthcare clinic', 'medical center', 'clinical practice', 'healthcare group'],
+    roleExpansions: ['practice owner', 'medical director', 'managing physician', 'clinical director', 'CMO', 'chief medical officer', 'clinic owner', 'doctor', 'physician owner'],
+    exclusions: ['software', 'saas', 'staffing', 'nurse', 'billing', 'recruiter', 'healthtech'],
+    seamDescription: 'clinical/patient practice required; healthtech SaaS fails company_type'
+  },
+  professional_services: {
+    id: 'professional_services',
+    name: 'Professional Services (Legal & Accounting)',
+    domainCluster: 'professional_services',
+    defaultRoles: ['managing partner', 'equity partner', 'founding partner', 'name partner', 'senior partner', 'partner', 'practice leader', 'owner'],
+    mandatoryNegativeFilters: ['-software', '-saas', '-paralegal', '-clerk', '-"law student"'],
+    companyTypeExpansions: ['law firm', 'legal practice', 'accounting firm', 'cpa firm', 'tax firm', 'advisory firm', 'consulting firm'],
+    roleExpansions: ['managing partner', 'equity partner', 'founding partner', 'name partner', 'senior partner', 'partner', 'practice leader', 'owner'],
+    exclusions: ['software', 'saas', 'paralegal', 'clerk', 'law student', 'legaltech'],
+    seamDescription: 'licensed firm required; legaltech SaaS fails'
+  },
+  local_services: {
+    id: 'local_services',
+    name: 'Local Services & Contracting',
+    domainCluster: 'local_services',
+    defaultRoles: ['owner', 'owners', 'founder', 'president', 'general manager', 'proprietor'],
+    mandatoryNegativeFilters: ['-software', '-saas', '-national', '-franchise'],
+    companyTypeExpansions: ['contractor', 'clinic', 'dental practice', 'plumbing company', 'hvac contractor', 'roofing contractor', 'electrical contractor', 'local business'],
+    roleExpansions: ['owner', 'owners', 'founder', 'president', 'general manager', 'proprietor'],
+    exclusions: ['software', 'saas', 'national', 'franchise', 'marketplace'],
+    seamDescription: 'local physical service / contractor; national software/platforms fail'
+  },
+  manufacturing_industrial: {
+    id: 'manufacturing_industrial',
+    name: 'Manufacturing & Industrial Operations',
+    domainCluster: 'manufacturing_industrial',
+    defaultRoles: ['plant manager', 'director of manufacturing', 'VP Operations', 'vice president operations', 'president & owner', 'president', 'owner', 'founder'],
+    mandatoryNegativeFilters: ['-software', '-saas', '-retail', '-warehouse'],
+    companyTypeExpansions: ['manufacturing company', 'manufacturer', 'fabrication facility', 'industrial plant', 'factory', 'production facility'],
+    roleExpansions: ['plant manager', 'director of manufacturing', 'VP Operations', 'vice president operations', 'president & owner', 'president', 'owner', 'founder'],
+    exclusions: ['software', 'saas', 'retail', 'warehouse', 'drop shipping'],
+    seamDescription: 'physical manufacturing, fabrication, industrial production required'
+  }
+};
+
+export function resolveBusinessArchetype(briefOrQuery: string): BusinessArchetype | undefined {
+  const cluster = deriveDomainCluster(briefOrQuery);
+  if (cluster && BUSINESS_ARCHETYPES[cluster]) {
+    return BUSINESS_ARCHETYPES[cluster];
+  }
+  const text = String(briefOrQuery || '').toLowerCase();
+  if (/\b(agency|agencies|consulting|studio|client\s+services)\b/i.test(text)) return BUSINESS_ARCHETYPES.b2b_agency;
+  if (/\b(saas|software\s+company|platform)\b/i.test(text)) return BUSINESS_ARCHETYPES.b2b_saas;
+  if (/\b(medical|clinic|doctor|physician|healthcare)\b/i.test(text)) return BUSINESS_ARCHETYPES.healthcare_life_sciences;
+  if (/\b(law\s*firm|attorney|lawyer|cpa|accounting|accounting\s+firm)\b/i.test(text)) return BUSINESS_ARCHETYPES.professional_services;
+  if (/\b(manufacturing|industrial|factory|fabrication)\b/i.test(text)) return BUSINESS_ARCHETYPES.manufacturing_industrial;
+  if (/\b(plumbing|hvac|roofing|electrician|contractor|dental)\b/i.test(text)) return BUSINESS_ARCHETYPES.local_services;
+  return undefined;
+}
+
 const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
   const expanded = [...terms];
   const hasTerm = (list: string[], matches: string[]) =>
@@ -189,6 +293,18 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   if (scope === 'person_role') {
     if (terms.some(t => /\b(owner|owners?|firm owner|agency owner|founder|founders?|co-?founder|ceo|chief executive officer|president|managing partner|managing director|principal|partner|proprietor)\b/i.test(t))) {
       expanded.push('owner', 'owners', 'firm owner', 'agency owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor');
+    }
+    if (terms.some(t => /\b(cto|chief technology officer|vp engineering|vice president engineering|vp product|vice president product)\b/i.test(t))) {
+      expanded.push('CTO', 'chief technology officer', 'VP Engineering', 'vice president engineering', 'VP Product', 'vice president product', 'founder', 'co-founder', 'CEO');
+    }
+    if (terms.some(t => /\b(practice owner|medical director|managing physician|clinical director|cmo|chief medical officer|clinic owner|doctor|physician)\b/i.test(t))) {
+      expanded.push('practice owner', 'medical director', 'managing physician', 'clinical director', 'CMO', 'chief medical officer', 'clinic owner', 'doctor', 'physician owner');
+    }
+    if (terms.some(t => /\b(managing partner|equity partner|founding partner|name partner|senior partner|practice leader)\b/i.test(t))) {
+      expanded.push('managing partner', 'equity partner', 'founding partner', 'name partner', 'senior partner', 'partner', 'practice leader', 'owner');
+    }
+    if (terms.some(t => /\b(plant manager|director of manufacturing|vp operations|vice president operations)\b/i.test(t))) {
+      expanded.push('plant manager', 'director of manufacturing', 'VP Operations', 'vice president operations', 'president & owner', 'president', 'owner', 'founder');
     }
   }
 
@@ -227,6 +343,21 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
           'integrator'
         );
       }
+    }
+    if (terms.some(t => /\b(saas|software|platform|cloud\s+software)\b/i.test(t))) {
+      expanded.push('SaaS', 'software company', 'B2B SaaS', 'software platform', 'cloud software', 'enterprise software', 'software vendor');
+    }
+    if (terms.some(t => /\b(clinic|medical|healthcare|hospital|practice|dental)\b/i.test(t))) {
+      expanded.push('medical practice', 'private practice', 'clinic', 'healthcare clinic', 'medical center', 'clinical practice', 'healthcare group');
+    }
+    if (terms.some(t => /\b(law\s*firm|legal|attorney|accounting|cpa|tax\s*firm)\b/i.test(t))) {
+      expanded.push('law firm', 'legal practice', 'accounting firm', 'cpa firm', 'tax firm', 'advisory firm', 'consulting firm');
+    }
+    if (terms.some(t => /\b(manufacturing|industrial|manufacturer|fabrication|factory|production\s+plant)\b/i.test(t))) {
+      expanded.push('manufacturing company', 'manufacturer', 'fabrication facility', 'industrial plant', 'factory', 'production facility');
+    }
+    if (terms.some(t => /\b(contractor|plumbing|hvac|roofing|electrician)\b/i.test(t))) {
+      expanded.push('contractor', 'clinic', 'dental practice', 'plumbing company', 'hvac contractor', 'roofing contractor', 'electrical contractor', 'local business');
     }
   }
 
@@ -434,13 +565,16 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     });
   }
 
-  const isAgency = isAgencyContract(brief);
-  const agencyExclusions = isAgency
-    ? ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product']
-    : [];
+  const archetype = resolveBusinessArchetype(brief);
+  const isAgency = isAgencyContract(brief) || archetype?.id === 'b2b_agency';
+  const defaultExclusions = archetype
+    ? [...archetype.exclusions, ...archetype.mandatoryNegativeFilters]
+    : isAgency
+      ? ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'DeepMind', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product']
+      : [];
 
   const exclusions = unique([
-    ...agencyExclusions,
+    ...defaultExclusions,
     ...(spec?.person?.excludeTitles || []),
     ...(spec?.exclusions?.companies || []),
     ...(spec?.exclusions?.domains || [])
@@ -991,7 +1125,7 @@ const queryHasPositiveExclusion = (query: string, exclusionTerms: string[]): boo
   const positiveText = ` ${positiveWords.join(' ')} `;
   return exclusionTerms.some(term => {
     if (!term) return false;
-    const cleanTerm = lower(term).trim();
+    const cleanTerm = lower(term).replace(/^[-"]+|["+]+$/g, '').trim();
     return positiveText.includes(` ${cleanTerm} `) || positiveWords.some(w => w === cleanTerm);
   });
 };
@@ -1015,13 +1149,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
     let query = clean(candidate.query);
     if (!isSignalLane) {
-      query = query
-        .replace(/\bsite:[^\s]+/gi, '')
-        .replace(/\blinkedin\b/gi, '')
-        .replace(/\b(AND|OR|NOT)\b/g, ' ')
-        .replace(/[()"]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+      query = sanitizeQueryText(query);
     } else {
       query = query.replace(/\s+/g, ' ').trim();
     }

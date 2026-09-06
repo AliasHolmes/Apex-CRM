@@ -12,6 +12,8 @@ const clean = (value: unknown, max = 1_400) => String(value || '').replace(/\s+/
 const normalize = (value: unknown) => clean(value, 3_000).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const unique = (items: string[], maxChars = 12_000) => Array.from(new Set(items.map(item => clean(item, maxChars)).filter(Boolean)));
 
+const CLIENT_SERVICE_STEM_REGEX = /\b(clients?|client[-\s]services?|partner(?:s|ing)?\s+with|bespoke|retainer|custom|deliver(?:ing|s|y)?|solutions?\s+for|services?\s+for|advis(?:ing|ory)\s+for|consulting\s+for|workflows?|enterprise\s+(?:customers?|clients?)|projects?\s+for|build(?:ing)?\s+for)\b/i;
+
 const hasWholeTerm = (text: string, term: string) => {
   const normalizedText = ` ${normalize(text)} `;
   const normalizedTerm = normalize(term);
@@ -19,7 +21,35 @@ const hasWholeTerm = (text: string, term: string) => {
 };
 
 export function matchingTerms(text: string, requirement: ProspectRequirement): string[] {
-  return requirement.acceptableTerms.filter(term => hasWholeTerm(text, term));
+  const directMatches = requirement.acceptableTerms.filter(term => hasWholeTerm(text, term));
+  if (directMatches.length > 0) return directMatches;
+
+  // Semantic token co-occurrence scoring for company_type / company_industry
+  if (requirement.scope === 'company_type' || requirement.scope === 'company_industry') {
+    const normText = ` ${normalize(text)} `;
+    const genericWords = new Set(['agency', 'agencies', 'consultancy', 'consulting', 'firm', 'firms', 'studio', 'studios', 'services', 'service', 'solutions', 'solution', 'provider', 'providers', 'partner', 'partners', 'group', 'company', 'companies', 'or', 'and', 'for', 'with', 'the', 'a', 'an']);
+
+    const domainStems = new Set<string>();
+    for (const term of requirement.acceptableTerms) {
+      const words = normalize(term).split(/\s+/).filter(w => w.length >= 2 && !genericWords.has(w));
+      for (const w of words) domainStems.add(w);
+    }
+    if ([...domainStems].some(s => ['ai', 'artificial', 'intelligence', 'learning', 'ml'].includes(s))) {
+      domainStems.add('llm');
+      domainStems.add('llms');
+      domainStems.add('gpt');
+      domainStems.add('genai');
+    }
+
+    const hasDomainMatch = Array.from(domainStems).some(stem => normText.includes(` ${stem} `));
+    const hasClientServiceMatch = CLIENT_SERVICE_STEM_REGEX.test(text);
+
+    if (hasDomainMatch && hasClientServiceMatch) {
+      return [requirement.acceptableTerms[0] || requirement.description];
+    }
+  }
+
+  return [];
 }
 
 export function structuredProfileEvidence(lead: Record<string, any>, maxChars = 280): string {
@@ -141,6 +171,9 @@ export function selectEvidenceForFinalist(
       .map(requirement => requirement.id);
     const hardMatches = hardRequirements.filter(requirement => matchedRequirementIds.includes(requirement.id)).length;
     let score = hardMatches * 4 + matchedRequirementIds.length;
+    if (CLIENT_SERVICE_STEM_REGEX.test(text) && matchedRequirementIds.length > 0) {
+      score += 3;
+    }
     
     if (isFlagEnabled.evidenceAware()) {
       for (const id of matchedRequirementIds) {

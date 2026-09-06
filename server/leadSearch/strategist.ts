@@ -35,35 +35,65 @@ export type ProviderRunStats = {
 };
 
 export function sanitizeQueryText(query: string) {
-  let cleaned = (query || '')
-    .replace(/site:linkedin\.com\/in\//gi, '')
-    .replace(/site:[^\s]+/gi, '')
-    .replace(/\blinkedin\b/gi, '')
-    .replace(/\b(AND|OR|NOT)\b/gi, ' ')
-    .replace(/[()"]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  let raw = (query || '')
+    .replace(/site:linkedin\.com\/in\//gi, ' ')
+    .replace(/site:[^\s]+/gi, ' ')
+    .replace(/\blinkedin\b/gi, ' ')
+    .replace(/\b(AND|OR|NOT)\b/g, ' ')
+    .replace(/[()]/g, ' ');
 
-  // Strip leading/trailing prepositions and conjunctions
-  cleaned = cleaned
-    .replace(/^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\s+/i, '')
-    .replace(/\s+(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i, '')
-    .trim();
+  // Handle unclosed quotes: if odd number of quotes, strip all quotes
+  const quoteCount = (raw.match(/"/g) || []).length;
+  if (quoteCount % 2 !== 0) {
+    raw = raw.replace(/"/g, ' ');
+  }
 
-  // Deduplicate repeated words (case-insensitive) while preserving original sequence
-  const words = cleaned.split(/\s+/).filter(Boolean);
+  // Tokenize preserving quoted phrases (-?"phrase" or "phrase") and unquoted words (-word or word)
+  const tokenRegex = /(-?"[^"]*")|(-?[\w.-]+)|([^\s]+)/g;
+  const tokens: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(raw)) !== null) {
+    let token = match[0].trim();
+    if (!token) continue;
+
+    if (token === '""' || token === '-""' || token === '"' || token === '-') continue;
+
+    if (token.startsWith('"') && token.endsWith('"')) {
+      const inner = token.slice(1, -1).trim();
+      if (!inner) continue;
+      token = `"${inner}"`;
+    } else if (token.startsWith('-"') && token.endsWith('"')) {
+      const inner = token.slice(2, -1).trim();
+      if (!inner) continue;
+      token = `-"${inner}"`;
+    }
+
+    tokens.push(token);
+  }
+
+  // Strip leading/trailing prepositions and conjunctions (from unquoted plain tokens only)
+  const isStopWord = (t: string) => /^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i.test(t);
+
+  while (tokens.length > 0 && isStopWord(tokens[0])) {
+    tokens.shift();
+  }
+  while (tokens.length > 0 && isStopWord(tokens[tokens.length - 1])) {
+    tokens.pop();
+  }
+
+  // Deduplicate repeated words (case-insensitive) while preserving original sequence and quotes/hyphens
   const seenLower = new Set<string>();
   const dedupedWords: string[] = [];
-  for (const word of words) {
-    const lower = word.toLowerCase();
-    // Allow non-role words to repeat only if separated, but drop duplicate roles/locations
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
     if (!seenLower.has(lower)) {
       seenLower.add(lower);
-      dedupedWords.push(word);
+      dedupedWords.push(token);
     }
   }
 
-  return dedupedWords.join(' ');
+  return dedupedWords.join(' ').trim();
 }
 
 export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {

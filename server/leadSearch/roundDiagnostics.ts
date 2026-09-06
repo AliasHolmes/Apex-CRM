@@ -27,7 +27,9 @@ export type RoundDiagnostics = {
   observedNonMatchingAttributes?: {
     locations?: string[];
     roles?: string[];
+    rejectedCompanies?: string[];
   };
+  rejectedCompanies?: string[];
 };
 
 const normalize = (value: unknown) => String(value || '').toLowerCase();
@@ -144,16 +146,23 @@ export function buildRoundDiagnostics(params: {
 
   const nonMatchingLocations = new Set<string>();
   const nonMatchingRoles = new Set<string>();
+  const rejectedCompanies = new Set<string>();
   for (const lead of params.leads) {
     const loc = String(lead.location || lead.profile?.location || '').trim();
     if (loc && loc.length > 2 && loc.length < 50) nonMatchingLocations.add(loc);
     const title = String(lead.currentTitle || lead.profile?.currentTitle || lead.title || '').trim();
     if (title && title.length > 2 && title.length < 50) nonMatchingRoles.add(title);
+    const company = String(lead.currentCompany || lead.company || lead.profile?.currentCompany || '').trim();
+    const isDisqualified = lead._autoFailed || lead.judgmentInsight?.status === 'hard_fail' || (lead.qualification as any)?.verdict === 'disqualified';
+    if (isDisqualified && company && company.length >= 2 && company.length <= 60) {
+      rejectedCompanies.add(company);
+    }
   }
 
   const banked = params.alreadyQualified ?? 0;
   const totalViable = banked + viableCandidates;
   const targetThreshold = Math.ceil(params.targetLimit * 0.5);
+  const rejectedCompaniesList = Array.from(rejectedCompanies).slice(0, 8);
   return {
     round: params.round,
     rawCandidates: params.rawCandidates,
@@ -166,7 +175,9 @@ export function buildRoundDiagnostics(params: {
     observedNonMatchingAttributes: {
       locations: Array.from(nonMatchingLocations).slice(0, 8),
       roles: Array.from(nonMatchingRoles).slice(0, 8),
-    }
+      rejectedCompanies: rejectedCompaniesList,
+    },
+    rejectedCompanies: rejectedCompaniesList,
   };
 }
 

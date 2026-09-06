@@ -151,6 +151,20 @@ export async function executeVerifyStage(
       continue;
     }
 
+    const hasCompany = Boolean(
+      (lead?.currentCompany || lead?.company || lead?.profile?.currentCompany || "").trim() ||
+      (lead?.companyEntityResolution?.verified && lead?.companyEntityResolution?.companyName)
+    );
+    const hasCompanyRequirement = Boolean(
+      config.contract?.requirements?.some(
+        (r: any) => (r.scope === "company_type" || r.scope === "company_industry") && r.importance === "hard"
+      )
+    );
+    if (!hasCompany && hasCompanyRequirement) {
+      noteRejection("missing_company_entity", queryRun);
+      continue;
+    }
+
     if (matchesExcludeList(lead) || hasDuplicateKeys(lead, existingKeys)) {
       noteRejection("duplicate_existing_lead", queryRun);
       continue;

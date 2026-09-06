@@ -510,6 +510,10 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
       .join(', ');
     if (topRejections) summaryBullets.push(`Top rejections: ${topRejections}`);
   }
+  const rejectedCompanies = roundSummaryRaw.rejectedCompanies || roundSummaryRaw.observedNonMatchingAttributes?.rejectedCompanies;
+  if (Array.isArray(rejectedCompanies) && rejectedCompanies.length > 0) {
+    summaryBullets.push(`Previously rejected companies to exclude: ${rejectedCompanies.slice(0, 6).join(', ')}`);
+  }
   const roundSummaryStr = summaryBullets.length > 0 ? summaryBullets.join(' | ') : 'No previous round diagnostics';
   // Compact yield digest: top scope keys by accepted-per-run instead of raw JSON.
   const performanceEntries = Object.entries(params.queryPerformance || {})
@@ -576,7 +580,9 @@ Prior round summary: ${roundSummaryStr}
 Historical family/provider yield: ${performanceStr}
 
 Rules:
-- NEVER use boolean operators (AND, OR, NOT, site:, parentheses, or quotes). Use ONLY clean, natural language keyword phrases (3 to 6 words).
+- NEVER use boolean operator words (AND, OR, NOT, site:, or parentheses).
+- Balanced double quotes are permitted ONLY around multi-word roles or company types (e.g. "AI agency", "managing partner").
+- Hyphenated negative keywords are permitted for exclusions (e.g. -software, -saas, -recruiter).
 - Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
 - Query length must be concise (3 to 6 words).
 - When a country or region is targeted (e.g. USA, UK, Canada, Australia), distribute queries across distinct major metropolitan tech/agency hubs (e.g. New York, San Francisco, Austin, Los Angeles, Chicago, Boston, Seattle, London, Toronto, Sydney) and rotate executive title variants (founder, CEO, owner, managing partner) across the 4 queries.

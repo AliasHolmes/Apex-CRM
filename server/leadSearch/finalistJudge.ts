@@ -780,7 +780,9 @@ export function checkStrictContradiction(
   contract: ProspectContract,
 ): { reason: string; requirementId: string } | null {
   const candidateText = `${lead.currentTitle || ""} ${lead.headline || ""} ${lead.currentCompany || lead.company || ""} ${lead.summary || ""}`.toLowerCase();
-  const hasAgencyTerm = /\b(agenc(?:y|ies)?|consult(?:an(?:cy|cies|t|ts)|ing)?|studios?|firms?|services?|integrat(?:or|ors|ion)?|advisory|solutions\s+provider|partners?)\b/i.test(candidateText);
+  const hasStrictAgencyNoun = /\b(agenc(?:y|ies)|consultan(?:cy|cies)|studios?|firms?|boutique)\b/i.test(candidateText);
+  const hasGenericServicesWord = /\b(consult(?:ant|ing)|services?|integrat(?:or|ors|ion)?|advisory|solutions\s+provider|partners?)\b/i.test(candidateText);
+  const hasAgencyTerm = hasStrictAgencyNoun || hasGenericServicesWord;
   const isAgencyContractOrBrief =
     isAgencyContract(contract) ||
     /\b(agenc(?:y|ies)?|consult(?:an(?:cy|cies|t|ts)|ing)?|studios?|firms?|integrat(?:or|ors)?|client\s+services?)\b/i.test(contract.brief) ||
@@ -821,7 +823,7 @@ export function checkStrictContradiction(
       continue;
     }
     const isProductTerm = /\b(saas|software\s+product|software\s+platform|consumer\s+app|mobile\s+app)\b/i.test(term);
-    if (isProductTerm && hasAgencyTerm) {
+    if (isProductTerm && hasStrictAgencyNoun) {
       // An agency serving SaaS or providing software services is client-services, not a pure product firm
       continue;
     }
@@ -849,10 +851,10 @@ export function checkStrictContradiction(
   }
 
   // 3. Mandatory Company Verification
+  const isBusinessOwnerOrAgencyContract = isAgencyContractOrBrief || isBusinessOwnerQuery;
   const companyHardReq = contract.requirements.find(
     (r) => (r.scope === "company_type" || r.scope === "company_industry") && r.importance === "hard",
   );
-  const isBusinessOwnerOrAgencyContract = isAgencyContractOrBrief || isBusinessOwnerQuery;
   if (isBusinessOwnerOrAgencyContract && companyHardReq) {
     const rawCompany = clean(
       lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || "",
@@ -871,7 +873,7 @@ export function checkStrictContradiction(
 
   // 4. Deterministic Anti-Personas: Big-Tech Non-Agency Employers
   const BIG_TECH_REGEX =
-    /\b(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm)\b/i;
+    /\b(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm|deepmind|github|instagram|whatsapp|aws|azure|youtube)\b/i;
 
   if (isAgencyContractOrBrief) {
     const rawCompany = clean(
@@ -881,7 +883,7 @@ export function checkStrictContradiction(
     const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200).toLowerCase();
 
     const bigTechCompanyMatch = rawCompany.match(BIG_TECH_REGEX);
-    const bigTechTitleMatch = rawTitle.match(/(?:@|at|\bin\b)\s*(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm)\b/i);
+    const bigTechTitleMatch = rawTitle.match(/(?:@|at|\bin\b|[-|,]\s*)\s*(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm|deepmind|github|instagram|whatsapp|aws|azure|youtube)\b/i);
     const matchedBigTech = bigTechCompanyMatch?.[1] || bigTechTitleMatch?.[1];
 
     if (matchedBigTech) {
@@ -913,7 +915,7 @@ export function checkStrictContradiction(
   // 6. Hard Seam: Client Services / Agencies vs Software Products
   if (isAgencyContractOrBrief) {
     const hasExplicitProductApp = /\b(mobile app|ios app|android app|b2c app|personal trainer app|habit tracker|consumer app|saas platform|software product)\b/i.test(candidateText);
-    if (hasExplicitProductApp && !hasAgencyTerm) {
+    if (hasExplicitProductApp && !hasStrictAgencyNoun) {
       return {
         reason: `Candidate operates a software product/app rather than a client services agency`,
         requirementId: companyHardReq ? companyHardReq.id : "company_type",

@@ -62,19 +62,28 @@ describe('Query Sanitization & Multi-Metro Geographic Expansion', () => {
     assert.ok(personTask.tavily.maxResults >= 12);
   });
 
-  it('sanitizeQueryText and enforceContractQueries strip all boolean syntax and site: tokens', () => {
-    const rawQuery = 'owner OR founder OR CEO AND USA AND "AI agency" site:linkedin.com/in/';
+  it('sanitizeQueryText and enforceContractQueries strip boolean syntax and site: tokens while preserving balanced quotes and hyphenated negations', () => {
+    const rawQuery = 'owner OR founder OR CEO AND USA AND "AI agency" -software -saas site:linkedin.com/in/';
     const sanitized = sanitizeQueryText(rawQuery);
     assert.ok(!/\b(AND|OR|NOT)\b/.test(sanitized));
     assert.ok(!sanitized.includes('site:'));
     assert.ok(!sanitized.includes('linkedin'));
-    assert.ok(!sanitized.includes('"'));
+    assert.ok(sanitized.includes('"AI agency"'), 'Must preserve balanced phrase quotes');
+    assert.ok(sanitized.includes('-software'), 'Must preserve hyphenated negative operators');
+    assert.ok(sanitized.includes('-saas'), 'Must preserve hyphenated negative operators');
+
+    // Unclosed quotes must be stripped
+    const unclosedQuery = 'founder OR CEO AND "AI studio';
+    const sanitizedUnclosed = sanitizeQueryText(unclosedQuery);
+    assert.ok(!sanitizedUnclosed.includes('"'), 'Must strip unclosed quotes');
+    assert.ok(sanitizedUnclosed.includes('AI studio'));
 
     const contract = buildDeterministicProspectContract('AI agency owner from USA', buildFallbackSearchSpec('AI agency owner from USA'));
-    const enforced = enforceContractQueries([{ query: 'founder OR CEO AND "AI studio"' }], contract);
+    const enforced = enforceContractQueries([{ query: 'founder OR CEO AND "AI studio" -software' }], contract);
     assert.ok(enforced.length > 0);
     assert.ok(!/\b(AND|OR|NOT)\b/.test(enforced[0].query));
-    assert.ok(!enforced[0].query.includes('"'));
+    assert.ok(enforced[0].query.includes('"AI studio"'), 'enforceContractQueries must preserve balanced quotes');
+    assert.ok(enforced[0].query.includes('-software'), 'enforceContractQueries must preserve hyphenated negative operators');
   });
 
   it('buildSignalLaneQueries generates natural search keywords without OR joins', () => {

@@ -35,7 +35,6 @@ import {
   getCoreRowModel,
   useReactTable,
 } from '@tanstack/react-table';
-import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -717,28 +716,6 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
 
   const { rows } = table.getRowModel();
 
-  const rowVirtualizer = useWindowVirtualizer({
-    count: rows.length,
-    estimateSize: () => 76,
-    overscan: 10,
-    scrollMargin: tableContainerRef.current?.offsetTop ?? 0,
-    useFlushSync: false,
-  });
-
-  const virtualRows = rowVirtualizer.getVirtualItems();
-  const totalSize = rowVirtualizer.getTotalSize();
-  const scrollMargin = rowVirtualizer.options.scrollMargin ?? 0;
-  const paddingTop =
-    virtualRows.length > 0
-      ? Math.max(0, (virtualRows[0]?.start ?? 0) - scrollMargin)
-      : 0;
-  const paddingBottom =
-    virtualRows.length > 0
-      ? Math.max(
-          0,
-          totalSize - ((virtualRows[virtualRows.length - 1]?.end ?? 0) - scrollMargin),
-        )
-      : 0;
 
   React.useEffect(() => {
     setCurrentPage(1);
@@ -1567,10 +1544,10 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         </div>
       </div>
 
-      {/* Real Table Grid container with window-virtualized rows */}
+      {/* Real Table Grid container */}
       <div
         ref={tableContainerRef}
-        className="border rounded-xl mb-16"
+        className="border rounded-xl mb-16 overflow-hidden bg-card"
       >
         <Table>
           <TableHeader>
@@ -1587,14 +1564,14 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                   aria-label={`Select all ${selectableVisibleLeadIds.length} available prospects on this page`}
                 />
               </TableHead>
-              <TableHead>Contact Profile Name</TableHead>
-              <TableHead>Primary Title</TableHead>
-              <TableHead>Employer / Company Name</TableHead>
-              <TableHead>Buying Signals & Intent</TableHead>
-              <TableHead>Authority & Match Reason</TableHead>
-              <TableHead>Added</TableHead>
-              <TableHead className="text-center">Qualification Score</TableHead>
-              <TableHead className="text-right">Delete</TableHead>
+              <TableHead className="min-w-[180px]">Contact Profile Name</TableHead>
+              <TableHead className="min-w-[160px]">Primary Title</TableHead>
+              <TableHead className="min-w-[160px]">Employer / Company Name</TableHead>
+              <TableHead className="min-w-[200px]">Buying Signals & Intent</TableHead>
+              <TableHead className="min-w-[180px]">Authority & Match Reason</TableHead>
+              <TableHead className="min-w-[110px]">Added</TableHead>
+              <TableHead className="w-[140px] text-center">Qualification Score</TableHead>
+              <TableHead className="w-[80px] text-right">Delete</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1605,37 +1582,23 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 </TableCell>
               </TableRow>
             ) : (
-              <>
-                {paddingTop > 0 && (
-                  <tr>
-                    <td style={{ height: `${paddingTop}px` }} colSpan={9} />
-                  </tr>
-                )}
-                {virtualRows.map((virtualRow) => {
-                  const row = rows[virtualRow.index];
-                  const lead = row.original;
-                  return (
-                    <LeadTableRow
-                      key={lead.id}
-                      lead={lead}
-                      ref={rowVirtualizer.measureElement}
-                      dataIndex={virtualRow.index}
-                      isSelected={selectedLeadIds.has(lead.id)}
-                      isDuplicate={duplicateIds.has(lead.id)}
-                      isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
-                      isMutationLocked={isBulkMutating}
-                      onSelect={handleSelectRow}
-                      onOpenDetails={handleOpenDetails}
-                      onRequestDelete={handleRequestDeleteLead}
-                    />
-                  );
-                })}
-                {paddingBottom > 0 && (
-                  <tr>
-                    <td style={{ height: `${paddingBottom}px` }} colSpan={9} />
-                  </tr>
-                )}
-              </>
+              rows.map((row, index) => {
+                const lead = row.original;
+                return (
+                  <LeadTableRow
+                    key={lead.id}
+                    lead={lead}
+                    dataIndex={currentPageStartIndex + index}
+                    isSelected={selectedLeadIds.has(lead.id)}
+                    isDuplicate={duplicateIds.has(lead.id)}
+                    isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
+                    isMutationLocked={isBulkMutating}
+                    onSelect={handleSelectRow}
+                    onOpenDetails={handleOpenDetails}
+                    onRequestDelete={handleRequestDeleteLead}
+                  />
+                );
+              })
             )}
           </TableBody>
         </Table>

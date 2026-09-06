@@ -229,6 +229,7 @@ export type MiningTraceSummary = {
   phaseTimeline: PhaseTimelineItem[];
   targetEffort?: TargetEffortStats;
   finalistJudge?: FinalistJudgeStats;
+  existingCrmLeadsSkipped?: number;
 };
 
 export type MiningSessionTrace = MiningTraceSummary & {
@@ -555,6 +556,7 @@ export class MiningTelemetryRecorder {
           : undefined,
       stopReason: this.finalStats?.stopReason,
       returned,
+      existingCrmLeadsSkipped: this.finalStats?.existingCrmLeadsSkipped,
       eventCount: this.sequence,
       providerSummary,
       costSummary,

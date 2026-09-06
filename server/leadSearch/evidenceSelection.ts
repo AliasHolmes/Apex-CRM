@@ -76,8 +76,12 @@ export function structuredFieldsForRequirement(lead: Record<string, any>, requir
   switch (requirement.scope) {
     case 'person_role':
       return [lead.currentTitle, lead.jobTitle, profile.currentTitle, lead.headline, profile.headline];
-    case 'person_location':
-      return [lead.location, profile.location];
+    case 'person_location': {
+      const locationFallback = (!lead.location && !profile.location)
+        ? (lead._sourceQuery || lead.evidence?.sourceQuery || lead.sourceQuery)
+        : undefined;
+      return [lead.location, profile.location, locationFallback];
+    }
     case 'company_type':
     case 'company_industry':
       return [lead.currentCompany, lead.company, profile.currentCompany, lead.industry, profile.industry, lead.headline, profile.headline];

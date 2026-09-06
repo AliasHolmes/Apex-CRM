@@ -41,6 +41,7 @@ const LeadTable = lazy(() => import('./components/LeadTable'));
 const OutreachStudio = lazy(() => import('./components/OutreachStudio'));
 const CrmOverview = lazy(() => import('./components/CrmOverview'));
 const CrmCopilot = lazy(() => import('./components/CrmCopilot'));
+import TabErrorBoundary from './components/TabErrorBoundary';
 
 interface NavigationItem {
   id: DashboardTab;
@@ -416,7 +417,11 @@ function Dashboard() {
                   <h2 id="discover-heading" className="text-2xl font-extrabold text-white tracking-tight">Discover prospects</h2>
                   <p className="text-sm leading-6 text-slate-400 mt-1">Find qualified people, review the evidence, then add only the prospects you want to enrich.</p>
                 </div>
-                <Suspense fallback={<TabLoading />}><ScrapeWorkspace /></Suspense>
+                <Suspense fallback={<TabLoading />}>
+                  <TabErrorBoundary tabName="Discover prospects">
+                    <ScrapeWorkspace />
+                  </TabErrorBoundary>
+                </Suspense>
               </motion.section>
             )}
             {activeTab === 'overview' && (
@@ -428,7 +433,11 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <Suspense fallback={<TabLoading />}><CrmOverview leads={leads} stats={stats} /></Suspense>
+                <Suspense fallback={<TabLoading />}>
+                  <TabErrorBoundary tabName="CRM overview">
+                    <CrmOverview leads={leads} stats={stats} />
+                  </TabErrorBoundary>
+                </Suspense>
               </motion.section>
             )}
             {activeTab === 'pipeline' && (
@@ -446,14 +455,18 @@ function Dashboard() {
                     <p className="text-sm leading-6 text-slate-400 mt-1">Move prospects through review, outreach, and follow-up without losing context.</p>
                   </div>
                 </div>
-                <Suspense fallback={<TabLoading />}><CrmPipeline
-                  leads={leads}
-                  onUpdateLeadStage={handleUpdateLeadStage}
-                  onUpdateLeadNotes={handleUpdateLeadNotes}
-                  onUpdateLeadTags={handleUpdateLeadTags}
-                  onDeleteLead={handleDeleteLead}
-                  onSelectLeadForOutreach={handleSelectLeadForOutreach}
-                /></Suspense>
+                <Suspense fallback={<TabLoading />}>
+                  <TabErrorBoundary tabName="Pipeline">
+                    <CrmPipeline
+                      leads={leads}
+                      onUpdateLeadStage={handleUpdateLeadStage}
+                      onUpdateLeadNotes={handleUpdateLeadNotes}
+                      onUpdateLeadTags={handleUpdateLeadTags}
+                      onDeleteLead={handleDeleteLead}
+                      onSelectLeadForOutreach={handleSelectLeadForOutreach}
+                    />
+                  </TabErrorBoundary>
+                </Suspense>
               </motion.section>
             )}
 
@@ -467,7 +480,11 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <Suspense fallback={<TabLoading />}><LeadTable onAddManualLead={() => setShowManualModal(true)} /></Suspense>
+                <Suspense fallback={<TabLoading />}>
+                  <TabErrorBoundary tabName="Prospect inventory">
+                    <LeadTable onAddManualLead={() => setShowManualModal(true)} />
+                  </TabErrorBoundary>
+                </Suspense>
               </motion.section>
             )}
 
@@ -484,10 +501,14 @@ function Dashboard() {
                   <h2 id="outreach-heading" className="text-2xl font-extrabold text-white tracking-tight">Outreach</h2>
                   <p className="text-sm leading-6 text-slate-400 mt-1">Draft personalized messages from the prospect and account evidence already in your CRM.</p>
                 </div>
-                <Suspense fallback={<TabLoading />}><OutreachStudio
-                  selectedLeadForOutreach={selectedLeadForOutreach}
-                  leads={leads}
-                /></Suspense>
+                <Suspense fallback={<TabLoading />}>
+                  <TabErrorBoundary tabName="Outreach">
+                    <OutreachStudio
+                      selectedLeadForOutreach={selectedLeadForOutreach}
+                      leads={leads}
+                    />
+                  </TabErrorBoundary>
+                </Suspense>
               </motion.section>
             )}
       </main>
@@ -501,7 +522,9 @@ function Dashboard() {
             </div>
           )}
         >
-          <CrmCopilot defaultOpen />
+          <TabErrorBoundary tabName="Apex Copilot">
+            <CrmCopilot defaultOpen />
+          </TabErrorBoundary>
         </Suspense>
       ) : (
         <button

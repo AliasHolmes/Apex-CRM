@@ -219,6 +219,7 @@ export async function executeFuseStage(
     // 1. Check against existing CRM leads in SQLite
     if (candidateKeys.some(k => existingKeys.has(k))) {
       noteRejection("duplicate_existing_lead", queryRun);
+      stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
       continue;
     }
 

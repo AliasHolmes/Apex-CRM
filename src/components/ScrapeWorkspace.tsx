@@ -203,6 +203,7 @@ export default function ScrapeWorkspace() {
   const [loading, setLoading] = useState(false);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [crmDuplicatesFiltered, setCrmDuplicatesFiltered] = useState<number>(0);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [sourceLinks, setSourceLinks] = useState<{ title: string; uri: string }[]>([]);
 
@@ -292,12 +293,12 @@ export default function ScrapeWorkspace() {
     const activeDiscovery = activeDiscoveryRef.current;
     if (!activeDiscovery) return;
 
-    void fetch(`/api/mining-sessions/${activeDiscovery.sessionId}/cancel`, { method: 'POST' })
-      .catch(() => undefined);
-    if (activeDiscovery.pollTimer) clearTimeout(activeDiscovery.pollTimer);
-    activeDiscovery.pollController?.abort();
+    miningTraceStore.disconnect(activeDiscovery.sessionId);
+    if (activeDiscovery.pollTimer) {
+      clearTimeout(activeDiscovery.pollTimer as any);
+      clearInterval(activeDiscovery.pollTimer as any);
+    }
     activeDiscovery.sseSource?.close();
-    activeDiscovery.controller.abort();
     activeDiscoveryRef.current = null;
   }, []);
 
@@ -316,6 +317,176 @@ export default function ScrapeWorkspace() {
   const updateTaskStatus = (taskId: string, status: 'completed' | 'failed' | 'cancelled', resultCount?: number) => {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status, resultCount } : t));
   };
+
+  const attachActiveSessionWatcher = useCallback((
+    sessionId: string,
+    options?: {
+      taskId?: string;
+      promptQuery?: string;
+      isResume?: boolean;
+    },
+  ) => {
+    const taskId = options?.taskId;
+    const isResume = options?.isResume;
+    const requestController = new AbortController();
+
+    const disconnectStream = miningTraceStore.connect(sessionId, () => {
+      void rehydrateLeads(true);
+      notifyLeadsUpdated();
+    });
+
+    let watchTimer: ReturnType<typeof setInterval> | undefined;
+    let pollCount = 0;
+
+    const cleanupDiscoveryUi = () => {
+      if (watchTimer) clearInterval(watchTimer);
+      disconnectStream();
+      if (activeDiscoveryRef.current?.sessionId === sessionId) {
+        activeDiscoveryRef.current = null;
+      }
+      setLoading(false);
+    };
+
+    activeDiscoveryRef.current = {
+      controller: requestController,
+      sessionId,
+      pollController: requestController,
+      pollTimer: undefined,
+      sseSource: null,
+    };
+
+    watchTimer = setInterval(() => {
+      pollCount += 1;
+      // Hard cap (~40 min at 3s) so the watcher can never leak indefinitely.
+      if (pollCount > 800 || requestController.signal.aborted) {
+        const aborted = requestController.signal.aborted;
+        cleanupDiscoveryUi();
+        if (aborted) {
+          if (taskId) updateTaskStatus(taskId, 'cancelled', 0);
+          setInfoMsg(isResume ? 'Detached from resumed session.' : 'Discovery cancelled.');
+        } else {
+          if (taskId) updateTaskStatus(taskId, 'failed');
+          setErrorCode('Stopped watching the mining session before it finished. Check Mining history for its outcome.');
+        }
+        return;
+      }
+
+      void (async () => {
+        try {
+          const statusRes = await fetch(`/api/mining-sessions/${sessionId}`, { signal: requestController.signal });
+          if (!statusRes.ok) return;
+          const payload = await statusRes.json();
+          const sessionRow = payload.session;
+          const status = String(sessionRow?.status || '');
+          if (!status || status === 'running' || status === 'cancellation_requested') return;
+
+          cleanupDiscoveryUi();
+          const stats = sessionRow?.stats || {};
+          const createdCount = Number(stats?.createdCount || 0);
+          const updatedCount = Number(stats?.updatedCount || 0);
+          const totalReturned = Number(stats?.returned ?? stats?.persistedCount ?? (createdCount + updatedCount));
+          const skippedCount = Number(stats?.duplicateCount || 0);
+          const skippedInfo = skippedCount > 0 ? ` ${skippedCount} duplicate${skippedCount === 1 ? ' was' : 's were'} skipped.` : '';
+          const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;
+          const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
+                                  (stats?.brightData?.profileScrapesAttempted || 0) + 
+                                  (stats?.brightData?.companyScrapesAttempted || 0) + 
+                                  (stats?.brightData?.batchScrapesAttempted || 0) + 
+                                  (stats?.enriched || 0);
+          const cacheHits = stats?.cacheHits || 0;
+          const metricsInfo = stats ? ` (Queries: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
+          const crmDuplicatesSkipped = Number(
+            stats?.existingCrmLeadsSkipped ||
+            stats?.rejectionReasons?.duplicate_existing_lead ||
+            sessionRow?.traceSummary?.existingCrmLeadsSkipped ||
+            0,
+          );
+          setCrmDuplicatesFiltered(crmDuplicatesSkipped);
+
+          await rehydrateLeads(true);
+          notifyLeadsUpdated();
+
+          if (status === 'success') {
+            if (taskId) updateTaskStatus(taskId, 'completed', totalReturned);
+            if (isResume) {
+              setSuccessMsg(`Resumed discovery finished: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}${metricsInfo}`);
+              triggerToast(`Resumed session finished with ${totalReturned} prospect${totalReturned === 1 ? '' : 's'}.`, 'success');
+            } else if (stats?.shortfall > 0 || stats?.shortfallReason) {
+              setSuccessMsg(`${stats.shortfallReason || `Found ${totalReturned} verified matches after exhausting search queries.`}${skippedInfo}${metricsInfo}`);
+            } else if (totalReturned === 0) {
+              setSuccessMsg(`Discovery completed, but 0 verified prospects matched criteria.${metricsInfo}`);
+            } else if (stats?.stopReason === 'target_reached') {
+              const leadBreakdown = createdCount > 0 && updatedCount > 0
+                ? `${createdCount} new, ${updatedCount} refreshed`
+                : `${totalReturned}`;
+              setSuccessMsg(`Target reached: ${leadBreakdown} qualified prospects ready.${skippedInfo}${metricsInfo}`);
+            } else if (stats?.stopReason) {
+              setSuccessMsg(`Discovery finished with ${totalReturned} qualified prospects (stop reason: ${String(stats.stopReason).replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
+            } else {
+              setSuccessMsg(`Discovery complete: ${totalReturned} LinkedIn-indexed profile${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}`);
+            }
+            if (!isResume) {
+              triggerToast(`Discovery complete: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.`, 'success');
+            }
+          } else if (status === 'cancelled') {
+            const savedCount = Number(stats?.persistedCount || 0);
+            if (taskId) updateTaskStatus(taskId, 'cancelled', savedCount);
+            if (savedCount > 0) {
+              setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
+              triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
+            } else {
+              setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
+              triggerToast('Lead discovery cancelled.', 'info');
+            }
+          } else {
+            if (taskId) updateTaskStatus(taskId, 'failed', totalReturned);
+            setErrorCode(sessionRow?.errorMessage || `Mining session ended with status "${status}".`);
+          }
+          void refreshScoutWorkspace().catch(() => {});
+        } catch {
+          // Transient network errors: keep polling until the hard cap.
+        }
+      })();
+    }, 3000);
+
+    if (activeDiscoveryRef.current) {
+      activeDiscoveryRef.current.pollTimer = watchTimer as any;
+    }
+  }, [rehydrateLeads, triggerToast, refreshScoutWorkspace]);
+
+  useEffect(() => {
+    let disposed = false;
+    const checkActiveSession = async () => {
+      try {
+        const response = await fetch('/api/mining-sessions/active');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (disposed) return;
+        if (data.active && data.sessionId) {
+          const activeId = data.sessionId;
+          if (activeDiscoveryRef.current?.sessionId === activeId) return;
+
+          setActiveTab('find');
+          setLoading(true);
+          setCurrentSessionId(activeId);
+          if (data.session?.prompt) {
+            setFindQuery((prev) => prev || data.session.prompt);
+          }
+          setInfoMsg(`Connected to running mining session (${data.session?.prompt || activeId})...`);
+          attachActiveSessionWatcher(activeId, { promptQuery: data.session?.prompt });
+        } else {
+          void rehydrateLeads(true);
+        }
+      } catch {
+        // Silently ignore active session check failures
+      }
+    };
+
+    void checkActiveSession();
+    return () => {
+      disposed = true;
+    };
+  }, [attachActiveSessionWatcher, rehydrateLeads]);
 
   const cancelPreviewRequest = useCallback(() => {
     previewRequestIdRef.current += 1;
@@ -575,33 +746,20 @@ export default function ScrapeWorkspace() {
     setLoading(true);
     setErrorCode(null);
     setSuccessMsg(null);
-      setInfoMsg(null);
+    setCrmDuplicatesFiltered(0);
+    setInfoMsg(null);
     setSourceLinks([]);
 
     const taskId = handleTaskAdd('search', findQuery);
-    const requestController = new AbortController();
-    const sessionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36);
+    const sessionId = crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).substring(2) + Date.now().toString(36);
     setCurrentSessionId(sessionId);
-    const disconnectStream = miningTraceStore.connect(sessionId, () => {
-      void rehydrateLeads(true);
-      notifyLeadsUpdated();
-    });
-
-    const activeDiscovery = {
-      controller: requestController,
-      sessionId,
-      pollController: null as AbortController | null,
-      pollTimer: undefined as ReturnType<typeof setTimeout> | undefined,
-      sseSource: null as EventSource | null,
-    };
-    activeDiscoveryRef.current = activeDiscovery;
 
     try {
-      // The backend natively deduplicates candidates against existing SQLite identities
-      // via readExistingIdentityKeys(). We only pass explicit unstaged/workspace exclusions here.
       const excludeUrlsAndEmails: string[] = [];
 
-      const response = await fetch('/api/find-leads', {
+      const response = await fetch('/api/find-leads?mode=job', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -614,7 +772,6 @@ export default function ScrapeWorkspace() {
           savedSearchId: selectedSavedSearchId || undefined,
           profileEnrichmentStage: 'on_demand'
         }),
-        signal: requestController.signal,
       });
 
       if (!response.ok) {
@@ -622,113 +779,58 @@ export default function ScrapeWorkspace() {
         throw new Error(errData.error || `Tavily search server returned error ${response.status}`);
       }
 
-      const data = await response.json();
-      const fetchedLeads = data.leads || [];
-
-      if (fetchedLeads.length === 0) {
-        await rehydrateLeads(true);
-        notifyLeadsUpdated();
-        const zeroMsg = data.shortfallReason || 'Search completed: 0 verified prospects found after exhausting available search queries.';
-        setSuccessMsg(zeroMsg);
-        updateTaskStatus(taskId, 'completed', 0);
-        return;
-      }
-
-      // /find-leads is the authoritative persistence path. Rehydrating here
-      // avoids sending the same candidates through a second bulk write.
-      await rehydrateLeads(true);
-      notifyLeadsUpdated();
-      const createdCount = Number(data.persistence?.createdCount || 0);
-      const updatedCount = Number(data.persistence?.updatedCount || 0);
-      const addedCount = createdCount + updatedCount;
-      const totalReturned = fetchedLeads.length || addedCount;
-      const skippedCount = Number(data.persistence?.duplicateCount || 0);
-      updateTaskStatus(taskId, 'completed', totalReturned);
-      const stats = data.stats;
-      const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;
-      const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
-                              (stats?.brightData?.profileScrapesAttempted || 0) + 
-                              (stats?.brightData?.companyScrapesAttempted || 0) + 
-                              (stats?.brightData?.batchScrapesAttempted || 0) + 
-                              (stats?.enriched || 0);
-      const cacheHits = stats?.cacheHits || 0;
-      const metricsInfo = stats ? ` (Queries: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
-
-      const skippedInfo = skippedCount > 0 ? ` ${skippedCount} duplicate${skippedCount === 1 ? ' was' : 's were'} skipped.` : '';
-      if (data.shortfall > 0 || data.shortfallReason) {
-        setSuccessMsg(`${data.shortfallReason || `Found ${fetchedLeads.length}/${leadLimit} verified matches after exhausting search queries.`}${skippedInfo}${metricsInfo}`);
-      } else if (fetchedLeads.length === 0 && addedCount === 0) {
-        setSuccessMsg(`Discovery completed, but 0 verified prospects matched criteria.${metricsInfo}`);
-      } else if (stats?.stopReason === 'target_reached') {
-        const leadBreakdown = createdCount > 0 && updatedCount > 0
-          ? `${createdCount} new, ${updatedCount} refreshed`
-          : `${totalReturned}`;
-        setSuccessMsg(`Target reached: ${leadBreakdown}/${leadLimit} qualified prospects ready.${skippedInfo}${metricsInfo}`);
-      } else if (stats) {
-        setSuccessMsg(`Discovery finished with ${totalReturned}/${leadLimit} qualified prospects (stop reason: ${String(stats.stopReason || 'exhausted').replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
-      } else {
-        setSuccessMsg(`Discovery complete: ${totalReturned} LinkedIn-indexed profile${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}`);
-      }
-      if (data.persistenceStatus === 'partial') {
-        setSuccessMsg(prev => `${prev ?? 'Discovery finished.'} Partial save: some prospects came from mid-session checkpoints.`);
-      }
+      setInfoMsg('Discovery session started in background. Live progress is streaming below.');
+      attachActiveSessionWatcher(sessionId, { taskId, promptQuery: findQuery });
     } catch (err: any) {
-      if (err?.name === 'AbortError') {
-        setErrorCode(null);
-        // Incremental checkpointing may have already persisted leads before the stop.
-        // Consult the session record (brief retries while the engine writes its final state)
-        // instead of claiming that nothing was saved.
-        let savedCount = 0;
-        for (let attempt = 0; attempt < 4; attempt++) {
-          await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 500 : 900));
-          try {
-            const res = await fetch(`/api/mining-sessions/${sessionId}`);
-            if (!res.ok) continue;
-            const data = await res.json();
-            const stats: any = data?.session?.stats || {};
-            const status: string = String(data?.session?.status || '');
-            savedCount = Number(stats.persistedCount || 0);
-            const terminal = ['cancelled', 'error', 'success', 'interrupted'].includes(status);
-            if (terminal || savedCount > 0) break;
-          } catch {
-            // Session endpoint not ready yet; retry.
-          }
-        }
-        if (savedCount > 0) {
-          setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
-          updateTaskStatus(taskId, 'cancelled', savedCount);
-          triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
-          void rehydrateLeads(true).then(() => notifyLeadsUpdated()).catch(() => {});
-        } else {
-          setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
-          updateTaskStatus(taskId, 'cancelled', 0);
-          triggerToast('Lead discovery cancelled.', 'info');
-        }
-      } else {
-        console.error(err);
-        setErrorCode(err.message || 'Lead lookup failed.');
-        updateTaskStatus(taskId, 'failed', 0);
-        void rehydrateLeads(true).then(() => notifyLeadsUpdated()).catch(() => {});
-      }
-    } finally {
-      void rehydrateLeads(true);
-      notifyLeadsUpdated();
-      miningTraceStore.disconnect(sessionId);
-      if (activeDiscoveryRef.current?.sessionId === sessionId) {
-        activeDiscoveryRef.current = null;
-      }
+      console.error(err);
+      setErrorCode(err.message || 'Lead lookup failed.');
+      updateTaskStatus(taskId, 'failed', 0);
       setLoading(false);
-      void refreshScoutWorkspace().catch(() => {});
+      setCurrentSessionId(null);
     }
   };
 
-  const handleCancelDiscovery = () => {
+  const handleCancelDiscovery = async () => {
     const activeDiscovery = activeDiscoveryRef.current;
     if (!activeDiscovery) return;
-    miningTraceStore.disconnect(activeDiscovery.sessionId);
-    void fetch(`/api/mining-sessions/${activeDiscovery.sessionId}/cancel`, { method: 'POST' })
-      .catch(() => undefined);
-    activeDiscovery.controller.abort();
+    const sessionId = activeDiscovery.sessionId;
+    setInfoMsg('Cancelling discovery session...');
+    miningTraceStore.disconnect(sessionId);
+    try {
+      await fetch(`/api/mining-sessions/${sessionId}/cancel`, { method: 'POST' });
+    } catch (err) {
+      console.error('Failed to cancel mining session:', err);
+    }
+    try {
+      const statusRes = await fetch(`/api/mining-sessions/${sessionId}`);
+      if (statusRes.ok) {
+        const payload = await statusRes.json();
+        const sessionRow = payload.session;
+        if (sessionRow?.status === 'cancelled') {
+          const stats = sessionRow?.stats || {};
+          const savedCount = Number(stats?.persistedCount || 0);
+          if (activeDiscovery.pollTimer) {
+            clearInterval(activeDiscovery.pollTimer as any);
+          }
+          if (activeDiscoveryRef.current?.sessionId === sessionId) {
+            activeDiscoveryRef.current = null;
+          }
+          setLoading(false);
+          await rehydrateLeads(true);
+          notifyLeadsUpdated();
+          if (savedCount > 0) {
+            setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
+            triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
+          } else {
+            setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
+            triggerToast('Lead discovery cancelled.', 'info');
+          }
+          void refreshScoutWorkspace().catch(() => {});
+        }
+      }
+    } catch {
+      // If immediate check was still transitioning, the watchTimer interval will handle it.
+    }
   };
 
   const handleResumeInterruptedSession = async (session: ResumableSession) => {
@@ -742,28 +844,13 @@ export default function ScrapeWorkspace() {
     setInfoMsg(`Resuming mining session "${session.prompt}" from checkpoint...`);
     
     const taskId = handleTaskAdd('search', session.prompt);
-    const requestController = new AbortController();
     const sessionId = session.id;
     setCurrentSessionId(sessionId);
-    const disconnectStream = miningTraceStore.connect(sessionId, () => {
-      void rehydrateLeads(true);
-      notifyLeadsUpdated();
-    });
-
-    const activeDiscovery = {
-      controller: requestController,
-      sessionId,
-      pollController: null as AbortController | null,
-      pollTimer: undefined as ReturnType<typeof setTimeout> | undefined,
-      sseSource: null as EventSource | null,
-    };
-    activeDiscoveryRef.current = activeDiscovery;
 
     try {
       const response = await fetch(`/api/mining-sessions/${sessionId}/resume?mode=job`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: requestController.signal,
       });
 
       if (!response.ok) {
@@ -771,81 +858,14 @@ export default function ScrapeWorkspace() {
         throw new Error(errData.error || `Resume failed with status ${response.status}`);
       }
 
-      await rehydrateLeads(true);
-      notifyLeadsUpdated();
-      setLoading(false);
       setInfoMsg('Resume accepted - the session is running again. Live progress is streaming below.');
-
-      // mode=job returns 202 immediately; the session keeps executing server-side.
-      // Keep the task "running" and the trace stream attached until the session
-      // reaches a terminal status, then report the real returned-prospect count.
-      // (Never persistence dispositions: checkpointed leads read createdCount 0.)
-      let watchTimer: ReturnType<typeof setInterval> | undefined;
-      let pollCount = 0;
-      const cleanupDiscoveryUi = () => {
-        if (watchTimer) clearInterval(watchTimer);
-        disconnectStream();
-        if (activeDiscoveryRef.current?.sessionId === sessionId) {
-          activeDiscoveryRef.current = null;
-        }
-      };
-
-      watchTimer = setInterval(() => {
-        pollCount += 1;
-        // Hard cap (~40 min at 3s) so the watcher can never leak indefinitely.
-        if (pollCount > 800 || requestController.signal.aborted) {
-          const aborted = requestController.signal.aborted;
-          cleanupDiscoveryUi();
-          if (aborted) {
-            updateTaskStatus(taskId, 'cancelled', 0);
-            setInfoMsg('Detached from resumed session.');
-          } else {
-            updateTaskStatus(taskId, 'failed');
-            setErrorCode('Stopped watching the resumed session before it finished. Check Mining history for its outcome.');
-          }
-          return;
-        }
-        void (async () => {
-          try {
-            const statusRes = await fetch(`/api/mining-sessions/${sessionId}`, { signal: requestController.signal });
-            if (!statusRes.ok) return;
-            const payload = await statusRes.json();
-            const sessionRow = payload.session;
-            const status = String(sessionRow?.status || '');
-            if (!status || status === 'running' || status === 'cancellation_requested') return;
-
-            cleanupDiscoveryUi();
-            const stats = sessionRow?.stats || {};
-            const totalReturned = Number(stats.returned ?? stats.persistedCount ?? 0);
-            await rehydrateLeads(true);
-            notifyLeadsUpdated();
-
-            if (status === 'success') {
-              updateTaskStatus(taskId, 'completed', totalReturned);
-              setSuccessMsg(`Resumed discovery finished: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.`);
-              triggerToast(`Resumed session finished with ${totalReturned} prospect${totalReturned === 1 ? '' : 's'}.`, 'success');
-            } else if (status === 'cancelled') {
-              updateTaskStatus(taskId, 'cancelled', totalReturned);
-              setInfoMsg('Resumed discovery was cancelled.');
-            } else {
-              updateTaskStatus(taskId, 'failed', totalReturned);
-              setErrorCode(sessionRow?.errorMessage || `Resumed session ended with status "${status}".`);
-            }
-          } catch {
-            // Transient network errors: keep polling until the hard cap.
-          }
-        })();
-      }, 3000);
+      attachActiveSessionWatcher(sessionId, { taskId, promptQuery: session.prompt, isResume: true });
     } catch (err: any) {
-      if (err?.name !== 'AbortError') {
-        setErrorCode(err.message || 'Failed to resume mining session.');
-        updateTaskStatus(taskId, 'failed');
-      }
+      console.error(err);
+      setErrorCode(err.message || 'Failed to resume mining session.');
+      updateTaskStatus(taskId, 'failed');
       setLoading(false);
-      disconnectStream();
-      if (activeDiscoveryRef.current?.sessionId === sessionId) {
-        activeDiscoveryRef.current = null;
-      }
+      setCurrentSessionId(null);
     }
   };
 
@@ -1156,6 +1176,16 @@ export default function ScrapeWorkspace() {
               <Check className="w-5 h-5 text-emerald-400 shrink-0" />
               <div>
                 <p className="font-semibold text-emerald-200">{successMsg}</p>
+                {crmDuplicatesFiltered > 0 && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className="border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono text-xs py-0.5 px-2.5"
+                    >
+                      CRM Duplicates Filtered: {crmDuplicatesFiltered}
+                    </Badge>
+                  </div>
+                )}
                 {sourceLinks.length > 0 && (
                   <div className="mt-2.5">
                     <span className="text-xs font-semibold text-emerald-400 block mb-1">Sources</span>
@@ -1365,6 +1395,11 @@ export default function ScrapeWorkspace() {
                           <>
                             <div className="text-xs text-slate-400"><span className="text-slate-300 font-semibold">{log.rawResultsCount}</span> source results</div>
                             <div className="text-xs text-slate-400"><span className="text-emerald-400 font-semibold">{log.leadsFound}</span> prospects found</div>
+                            {Boolean(log.traceSummary?.existingCrmLeadsSkipped || (log as any).existingCrmLeadsSkipped) && (
+                              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs py-0 px-2 flex items-center gap-1">
+                                CRM Duplicates Filtered: {log.traceSummary?.existingCrmLeadsSkipped || (log as any).existingCrmLeadsSkipped}
+                              </Badge>
+                            )}
                           </>
                         )}
                       </div>

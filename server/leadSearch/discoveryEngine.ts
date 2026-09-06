@@ -614,6 +614,7 @@ export async function executeDiscoverySession(
     brightDataFailures: 0,
     rounds: 0,
     stopReason: "not_started",
+    existingCrmLeadsSkipped: 0,
     rejectionReasons: {} as Record<string, number>,
     queryRuns: [] as QueryRunStats[],
     brightData: brightDataStats,
@@ -1358,7 +1359,161 @@ export async function executeDiscoverySession(
           break;
         }
 
-        const { candidateItems, roundCandidateKeys } = fuseResult;
+        const { roundCandidateKeys } = fuseResult;
+        let candidateItems = [...fuseResult.candidateItems];
+
+        // Dynamic In-Round Replenishment:
+        // If CRM duplicates starve candidateItems below the desired batch threshold,
+        // run up to 2 replenishment passes using single-concept unvisited metro/role queries.
+        const desiredBatchThreshold = Math.min(
+          collectionCapacity.candidateBatchSize,
+          Math.max(4, remaining),
+        );
+        const crmDuplicatesEncountered =
+          (stats.rejectionReasons?.duplicate_existing_lead || 0) > 0 ||
+          (stats.existingCrmLeadsSkipped || 0) > 0;
+
+        if (
+          candidateItems.length < desiredBatchThreshold &&
+          crmDuplicatesEncountered &&
+          hasTavilyKey()
+        ) {
+          const roleTerms = (contract?.requirements || [])
+            .filter((r: any) => r.scope === "person_role")
+            .flatMap((r: any) => r.acceptableTerms || [])
+            .filter(Boolean);
+          const baseRoles =
+            roleTerms.length > 0
+              ? roleTerms
+              : ["founder", "CEO", "owner", "managing director"];
+
+          const locTerms = (contract?.requirements || [])
+            .filter((r: any) => r.scope === "person_location")
+            .flatMap((r: any) => r.acceptableTerms || [])
+            .filter(Boolean);
+          const topMetros = [
+            "London", "New York", "San Francisco", "Austin", "Toronto",
+            "Sydney", "Chicago", "Boston", "Los Angeles", "Seattle", "Melbourne", "Berlin"
+          ];
+          const candidateLocations =
+            locTerms.length > 0
+              ? Array.from(new Set([...locTerms, ...topMetros]))
+              : topMetros;
+
+          const companyTypeReq = (contract?.requirements || []).find(
+            (r: any) => r.scope === "company_type" || r.scope === "company_industry",
+          );
+          const verticalBase = (companyTypeReq?.acceptableTerms?.[0] || companyTypeReq?.sourcePhrase || contract?.brief || "")
+            .replace(/[^\w\s-]/g, "")
+            .trim();
+          const verticalTerm = verticalBase.includes(" ") ? `"${verticalBase}"` : verticalBase;
+
+          for (let pass = 1; pass <= 2 && candidateItems.length < desiredBatchThreshold; pass++) {
+            let replenishQuery = "";
+            for (const loc of candidateLocations) {
+              for (const role of baseRoles) {
+                const q = `${verticalTerm} ${role} ${loc}`.replace(/\s+/g, " ").trim();
+                const key = q.toLowerCase();
+                if (!seenQueryTexts.has(key)) {
+                  replenishQuery = q;
+                  seenQueryTexts.add(key);
+                  generatedQueries.push(q);
+                  break;
+                }
+              }
+              if (replenishQuery) break;
+            }
+
+            if (!replenishQuery) break;
+
+            logEvent(
+              `[Dynamic Replenishment] Round ${round}: CRM duplicates starved batch (${candidateItems.length}/${desiredBatchThreshold}). Running replenishment pass ${pass}/2 for "${replenishQuery}".`,
+            );
+
+            const replenishStart = Date.now();
+            try {
+              recordProviderUsage("tavily", 1);
+              const replenishRes = await tavilySearch(replenishQuery, {
+                searchDepth: "basic",
+                maxResults: 15,
+                signal: sessionAbortController.signal,
+              });
+
+              const rawReplenishItems = replenishRes.items || [];
+              let addedCount = 0;
+
+              for (const item of rawReplenishItems) {
+                const url = item.url;
+                const username = extractLinkedInUsername(url);
+                const normalizedUrl = normalizeLinkedInUrl(url);
+                if (!username || !normalizedUrl) continue;
+
+                const candidateKeys = [
+                  `linkedin:${username}`,
+                  username,
+                  `linkedin:${normalizedUrl}`,
+                  `url:${normalizedUrl}`,
+                  normalizedUrl,
+                ];
+
+                if (candidateKeys.some((k) => existingKeys.has(k))) {
+                  incrementRejection(stats.rejectionReasons, "duplicate_existing_lead");
+                  stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
+                  continue;
+                }
+
+                if (candidateKeys.some((k) => seenCandidateKeys.has(k) || roundCandidateKeys.has(k))) {
+                  continue;
+                }
+
+                for (const k of candidateKeys) {
+                  roundCandidateKeys.add(k);
+                }
+
+                item.sourceProvider = "tavily";
+                item._normalizedUrl = normalizedUrl;
+                item._linkedinUsername = username;
+                item._sourceQuery = replenishQuery;
+                item._sourceRound = round;
+                item._queryFamily = "replenishment_metro";
+                item._queryIntent = "find_decision_makers";
+                item._expectedSignal = "Replenished decision maker";
+                item._sourceProviders = ["tavily"];
+                item._lanes = ["person"];
+
+                candidateItems.push(item);
+                addedCount++;
+                if (candidateItems.length >= desiredBatchThreshold) break;
+              }
+
+              logEvent(
+                `[Dynamic Replenishment] Pass ${pass}/2 added ${addedCount} candidate(s); batch now at ${candidateItems.length}/${desiredBatchThreshold}.`,
+              );
+              stats.queryRuns.push({
+                round,
+                query: replenishQuery,
+                family: "replenishment_metro",
+                intent: "find_decision_makers",
+                rawCandidates: rawReplenishItems.length,
+                uniqueCandidates: addedCount,
+                evidenceBlocks: 0,
+                extractedLeads: 0,
+                acceptedLeads: 0,
+                rejectionReasons: {},
+                lane: "person",
+                providerPreference: "tavily",
+                searchLatencyMs: Date.now() - replenishStart,
+                providerUnits: 1,
+                qualifiedFinalists: 0,
+                rescuedFinalists: 0,
+                returnedFinalists: 0,
+              });
+            } catch (err: any) {
+              logEvent(`[Dynamic Replenishment] Pass ${pass} failed: ${err.message}`);
+            }
+          }
+        }
+
         rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
         stats.rawCandidates = rawResultsCount;
 
@@ -1589,6 +1744,7 @@ export async function executeDiscoverySession(
           rejectionCounts: stats.rejectionReasons,
           failureCounts: brightDataStats.failureReasons,
           brightDataStats,
+          existingCrmLeadsSkipped: stats.existingCrmLeadsSkipped,
           previousRoundSummary,
           evidenceByUrl: buildCheckpointEvidence(
             evidenceByUrl,
@@ -1743,6 +1899,7 @@ export async function executeDiscoverySession(
       rejectionCounts: stats.rejectionReasons,
       failureCounts: brightDataStats.failureReasons,
       brightDataStats,
+      existingCrmLeadsSkipped: stats.existingCrmLeadsSkipped,
       previousRoundSummary,
       evidenceByUrl: buildCheckpointEvidence(
         evidenceByUrl,
@@ -1991,6 +2148,11 @@ export class DiscoverySessionEngine {
 
   isActive(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);
+  }
+
+  getActiveSessionId(): string | null {
+    const first = this.activeSessions.keys().next().value;
+    return first || null;
   }
 
   getLiveTrace(sessionId: string): MiningTraceEvent[] | null {

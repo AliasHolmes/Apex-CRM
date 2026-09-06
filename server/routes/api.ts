@@ -1235,6 +1235,26 @@ router.delete("/mining-sessions/resumable", (req, res): any => {
   }
 });
 
+router.get("/mining-sessions/active", (req, res): any => {
+  try {
+    const sessionId = discoveryEngine.getActiveSessionId();
+    if (sessionId) {
+      return res.json({
+        apiVersion: 1,
+        active: true,
+        sessionId,
+        session: readMiningSessionById(sessionId),
+      });
+    }
+    return res.json({ apiVersion: 1, active: false });
+  } catch (error: any) {
+    console.error("Failed to check active mining session:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to check active mining session." });
+  }
+});
+
 router.get("/mining-sessions/:sessionId", (req, res): any => {
   if (!isSafeSessionId(req.params.sessionId))
     return res.status(400).json({ error: "Invalid sessionId." });

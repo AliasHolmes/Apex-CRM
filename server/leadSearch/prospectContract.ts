@@ -742,31 +742,49 @@ export function buildContractFallbackQueries(
   requirements: ProspectRequirement[],
   identitySpec?: IdentitySpec
 ): SearchQueryPlanItem[] {
-  const hardRequirements = requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
   const isAgencyBrief = isAgencyContract(brief) ||
     requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && isAgencyContract(`${r.description} ${r.acceptableTerms.join(' ')}`));
   const fullAgencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS -Microsoft -Google -Meta -Apple -Amazon -OpenAI' : '';
   const shortAgencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
-  
-  const identityReqs = hardRequirements.filter(r => r.queryHardness === 'required_in_every_query' || r.requirementClass === 'identity_hard');
-  const contextReqs = hardRequirements.filter(r => r.queryHardness === 'distributed_across_queries' || r.requirementClass === 'context_hard' || r.requirementClass === 'evidence_required');
-  
-  const variants = [0, 1, 2, 3].map(index => {
-    const idTerms = identityReqs.map(r => r.acceptableTerms[index % Math.max(r.acceptableTerms.length, 1)] || r.sourcePhrase).filter(Boolean);
-    const ctxReq = contextReqs.length ? contextReqs[index % contextReqs.length] : null;
-    const ctxTerm = ctxReq ? (ctxReq.acceptableTerms[index % Math.max(ctxReq.acceptableTerms.length, 1)] || ctxReq.sourcePhrase) : '';
-    if (!isAgencyBrief) {
-      return [...idTerms, ctxTerm].filter(Boolean).join(' ');
+
+  // Extract single roles (e.g. founder, owner, CEO, managing director)
+  const roleReqs = requirements.filter(r => r.scope === 'person_role');
+  const extractedRoles = unique(roleReqs.flatMap(r => r.acceptableTerms || []));
+  const defaultRoles = ['founder', 'owner', 'CEO', 'managing director'];
+  const roles = extractedRoles.length > 0 ? extractedRoles : defaultRoles;
+
+  // Extract single locations / geos / metros (e.g. Australia, UK, Canada, USA)
+  const locReqs = requirements.filter(r => r.scope === 'person_location');
+  const extractedLocations = unique(locReqs.flatMap(r => r.acceptableTerms || []));
+  const defaultLocations = ['Australia', 'UK', 'Canada', 'USA'];
+  const locations = extractedLocations.length > 0 ? extractedLocations : defaultLocations;
+
+  // Extract core vertical / company type term (e.g. "AI agency")
+  const compReq = requirements.find(r => r.scope === 'company_type' || r.scope === 'company_industry');
+  const rawVertical = compReq?.acceptableTerms?.[0] || compReq?.sourcePhrase || (isAgencyBrief ? 'AI agency' : clean(brief));
+  const vertical = rawVertical.includes(' ') && !rawVertical.startsWith('"')
+    ? `"${rawVertical}"`
+    : rawVertical;
+
+  // Generate Cartesian grid of single roles x single locations
+  const gridQueries: string[] = [];
+  const maxPairs = 4;
+  for (let i = 0; i < maxPairs; i++) {
+    const role = roles[i % roles.length];
+    const loc = locations[i % locations.length];
+    const parts = [vertical, role, loc].filter(Boolean);
+    let baseQuery = parts.join(' ');
+    if (isAgencyBrief) {
+      if ((baseQuery + ' ' + fullAgencyDisambiguation).length <= 240) {
+        baseQuery = `${baseQuery} ${fullAgencyDisambiguation}`;
+      } else if ((baseQuery + ' ' + shortAgencyDisambiguation).length <= 240) {
+        baseQuery = `${baseQuery} ${shortAgencyDisambiguation}`;
+      }
     }
-    const full = [...idTerms, ctxTerm, fullAgencyDisambiguation].filter(Boolean).join(' ');
-    if (full.length <= 240) return full;
-    const short = [...idTerms, ctxTerm, shortAgencyDisambiguation].filter(Boolean).join(' ');
-    return short.length <= 240 ? short : [...idTerms, ctxTerm].filter(Boolean).join(' ');
-  });
-  
-  const base = queryTermsFor(requirements).join(' ') || clean(brief);
-  const retrievalHints = ['', 'public profile', 'professional profile', 'leadership profile'];
-  const personQueries = unique(variants.map((variant, index) => [variant || base, retrievalHints[index]].filter(Boolean).join(' ')), 4).map((query, index) => ({
+    gridQueries.push(baseQuery);
+  }
+
+  const personQueries = unique(gridQueries, 4).map((query, index) => ({
     query: query.slice(0, 240).trim(),
     family: 'persona_title' as const,
     intent: 'find_decision_makers' as const,
@@ -869,6 +887,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - At most 4 hard requirements (e.g. person_role, company_type, person_location) and at most 5 soft requirements.
 - For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
 - acceptableTerms are short alternatives for the same stated requirement, never broader personas.
+- Strict single-role and single-geo query constraint: Each query in initialQueries must target EXACTLY ONE role (e.g. founder OR CEO OR owner) and at most ONE location/metro (e.g. Australia OR London). NEVER concatenate multiple synonym roles in a single query (e.g. FORBIDDEN: 'owner founder CEO managing director'). Distribute different roles and locations across distinct queries instead.
 - Do not use Google dorks, site:, or the word LinkedIn in initialQueries.
 - coveredRequirementIds may reference only the returned requirement ids.
 Return only the requested JSON.`;
@@ -1130,6 +1149,88 @@ const queryHasPositiveExclusion = (query: string, exclusionTerms: string[]): boo
   });
 };
 
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export function deconcatenateContractQuery(query: string, contract: ProspectContract): string {
+  let cleaned = query;
+
+  // 1. Algorithmic de-concatenation of roles:
+  // If query contains multiple role titles, retain only the primary role.
+  const contractRoles = contract.requirements
+    .filter(r => r.scope === 'person_role')
+    .flatMap(r => r.acceptableTerms || [])
+    .concat(['owner', 'founder', 'ceo', 'managing director', 'co-founder', 'president', 'partner', 'director'])
+    .map(r => r.trim().toLowerCase())
+    .filter(r => r.length > 1);
+  const uniqueRoles = Array.from(new Set(contractRoles));
+
+  const matchedRoles: { role: string; index: number }[] = [];
+  for (const role of uniqueRoles) {
+    const escaped = escapeRegex(role);
+    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+    const match = regex.exec(cleaned);
+    if (match) {
+      matchedRoles.push({ role, index: match.index });
+    }
+  }
+
+  if (matchedRoles.length > 1) {
+    matchedRoles.sort((a, b) => a.index - b.index);
+    const primaryRole = matchedRoles[0].role;
+    for (let i = 1; i < matchedRoles.length; i++) {
+      const redundantRole = matchedRoles[i].role;
+      if (primaryRole.includes(redundantRole)) continue;
+      const escaped = escapeRegex(redundantRole);
+      const stripRegex = new RegExp(`(?:\\s*(?:or|and|[\\/,])\\s*)?\\b${escaped}\\b(?:\\s*(?:or|and|[\\/,]))?`, 'gi');
+      cleaned = cleaned.replace(stripRegex, ' ');
+    }
+  }
+
+  // 2. Algorithmic de-concatenation of countries/geos:
+  // If multiple countries are concatenated, retain the primary country.
+  const contractLocations = contract.requirements
+    .filter(r => r.scope === 'person_location')
+    .flatMap(r => r.acceptableTerms || [])
+    .concat([
+      'australia', 'united states', 'usa', 'united kingdom', 'uk',
+      'canada', 'germany', 'france', 'netherlands', 'singapore',
+      'new zealand', 'ireland', 'spain', 'italy', 'switzerland', 'sweden'
+    ])
+    .map(l => l.trim().toLowerCase())
+    .filter(l => l.length > 1);
+  const uniqueLocations = Array.from(new Set(contractLocations));
+
+  const matchedLocations: { loc: string; index: number }[] = [];
+  for (const loc of uniqueLocations) {
+    const escaped = escapeRegex(loc);
+    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+    const match = regex.exec(cleaned);
+    if (match) {
+      matchedLocations.push({ loc, index: match.index });
+    }
+  }
+
+  if (matchedLocations.length > 1) {
+    matchedLocations.sort((a, b) => a.index - b.index);
+    const primaryLoc = matchedLocations[0].loc;
+    for (let i = 1; i < matchedLocations.length; i++) {
+      const redundantLoc = matchedLocations[i].loc;
+      if (primaryLoc.includes(redundantLoc)) continue;
+      const escaped = escapeRegex(redundantLoc);
+      const stripRegex = new RegExp(`(?:\\s*(?:or|and|[\\/,])\\s*)?\\b${escaped}\\b(?:\\s*(?:or|and|[\\/,]))?`, 'gi');
+      cleaned = cleaned.replace(stripRegex, ' ');
+    }
+  }
+
+  // Clean up any remaining orphaned conjunctions or punctuation left over from de-concatenation
+  cleaned = cleaned
+    .replace(/(?:^|\s)(?:or|and|\/|,)+(?=\s|$)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return cleaned;
+}
+
 /** Reject or repair model queries so the retrieval surface cannot drift. */
 export function enforceContractQueries(input: unknown, contract: ProspectContract): SearchQueryPlanItem[] {
   const rawItems = Array.isArray(input) ? input : [];
@@ -1150,6 +1251,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     let query = clean(candidate.query);
     if (!isSignalLane) {
       query = sanitizeQueryText(query);
+      query = deconcatenateContractQuery(query, contract);
     } else {
       query = query.replace(/\s+/g, ' ').trim();
     }
@@ -1190,6 +1292,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
           query = `${query} ${agencyDisambig}`.trim();
         }
       }
+      query = deconcatenateContractQuery(query, contract);
     }
     const key = lower(query);
     if (!query || seen.has(key)) continue;

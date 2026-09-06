@@ -39,7 +39,7 @@ export function sanitizeQueryText(query: string) {
     .replace(/site:linkedin\.com\/in\//gi, ' ')
     .replace(/site:[^\s]+/gi, ' ')
     .replace(/\blinkedin\b/gi, ' ')
-    .replace(/\b(AND|OR|NOT)\b/g, ' ')
+    .replace(/\bAND\b/g, ' ')
     .replace(/[()]/g, ' ');
 
   // Handle unclosed quotes: if odd number of quotes, strip all quotes
@@ -82,15 +82,26 @@ export function sanitizeQueryText(query: string) {
     tokens.pop();
   }
 
-  // Deduplicate repeated words (case-insensitive) while preserving original sequence and quotes/hyphens
+  // Deduplicate repeated words (case-insensitive) while preserving original sequence, OR disjunctions, and quotes/hyphens
   const seenLower = new Set<string>();
   const dedupedWords: string[] = [];
   for (const token of tokens) {
     const lower = token.toLowerCase();
-    if (!seenLower.has(lower)) {
+    if (lower === 'or') {
+      if (dedupedWords.length > 0 && dedupedWords[dedupedWords.length - 1].toLowerCase() !== 'or') {
+        dedupedWords.push('OR');
+      }
+    } else if (!seenLower.has(lower)) {
       seenLower.add(lower);
       dedupedWords.push(token);
     }
+  }
+
+  while (dedupedWords.length > 0 && isStopWord(dedupedWords[dedupedWords.length - 1])) {
+    dedupedWords.pop();
+  }
+  while (dedupedWords.length > 0 && isStopWord(dedupedWords[0])) {
+    dedupedWords.shift();
   }
 
   return dedupedWords.join(' ').trim();

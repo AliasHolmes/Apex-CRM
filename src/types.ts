@@ -345,6 +345,7 @@ export interface MiningTraceSummary {
   targetEffort?: TargetEffortStats;
   finalistJudge?: FinalistJudgeStats;
   schemaVersion?: number;
+  existingCrmLeadsSkipped?: number;
 }
 export interface SearchLog {
   id: string;
@@ -370,6 +371,15 @@ export interface SearchLog {
 export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
 export type MiningPersistenceStatus = 'complete' | 'partial' | 'failed';
 
+export interface MiningSessionStats {
+  rawResultsCount?: number;
+  leadsFound?: number;
+  duplicateCount?: number;
+  existingCrmLeadsSkipped?: number;
+  rounds?: number;
+  [key: string]: unknown;
+}
+
 export interface MiningSession {
   id: string;
   status: MiningSessionStatus;
@@ -380,7 +390,7 @@ export interface MiningSession {
   completedAt?: string;
   cancellationRequestedAt?: string;
   errorMessage?: string;
-  stats?: Record<string, unknown>;
+  stats?: MiningSessionStats | Record<string, unknown>;
   traceSummary?: MiningTraceSummary;
   updatedAt: string;
 }

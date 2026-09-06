@@ -373,11 +373,13 @@ export class LLMProviderError extends Error {
     this.name = "LLMProviderError";
     this.provider = provider;
     this.status = status;
+    const is429OrRateLimit = status === 429 || /429|rate[-_ ]?limit/i.test(message);
     this.isTokenLimit =
-      status === 413 ||
-      /413|tokens|rate_limit_exceeded|payload too large|too many tokens/i.test(
-        message,
-      );
+      !is429OrRateLimit &&
+      (status === 413 ||
+        /413|context[-_ ]?window[-_ ]?(?:exceeded|overflow)|maximum context length|payload too large/i.test(
+          message,
+        ));
   }
 }
 
@@ -395,8 +397,10 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
   const isTokenLimit =
     error instanceof LLMProviderError ? error.isTokenLimit : false;
-  // 429 rate limits are transient per-call events handled via backoff/fallback;
-  // only hard availability / infrastructure failures trip the session circuit breaker.
+  // HTTP 429 rate limits are transient and must NEVER trip the permanent session circuit breaker
+  if (status === 429 || /429|rate[-_ ]?limit/i.test(error.message)) {
+    return false;
+  }
   if (
     status === 408 ||
     status === 413 ||
@@ -419,6 +423,12 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   );
 }
 
+export const providerCooldowns = new Map<string, number>();
+
+export function clearProviderCooldowns(): void {
+  providerCooldowns.clear();
+}
+
 async function withProviderFallback<T>(
   operation: (provider: LLMProvider) => Promise<T>,
   executionOptions: LLMExecutionOptions = {},
@@ -437,6 +447,7 @@ async function withProviderFallback<T>(
   }
 
   const failures: Error[] = [];
+  const now = Date.now();
   for (const provider of providers) {
     if (executionOptions.signal?.aborted) {
       const cancelError = new Error("LLM request was aborted by caller.");
@@ -454,6 +465,17 @@ async function withProviderFallback<T>(
         error: "Session circuit breaker open",
       });
       continue;
+    }
+
+    const cooldownUntil = providerCooldowns.get(provider.id);
+    if (cooldownUntil) {
+      if (Date.now() < cooldownUntil) {
+        // In 30s cooldown; cascade immediately to next provider
+        continue;
+      } else {
+        // Cooldown expired; reinstate provider
+        providerCooldowns.delete(provider.id);
+      }
     }
 
     const startedAt = Date.now();
@@ -503,15 +525,22 @@ async function withProviderFallback<T>(
           );
         }
       }
-      if (normalized instanceof LLMProviderError && normalized.status === 429) {
-        const cascadeBackoffMs = Math.min(
-          Math.pow(2, failures.length - 1) * 1500 + Math.random() * 500,
-          10_000,
-        );
-        console.warn(
-          `[llm] ${provider.name} rate limited (429). Backing off for ${Math.round(cascadeBackoffMs)}ms before trying next provider...`,
-        );
-        await sleepWithSignal(cascadeBackoffMs, executionOptions.signal);
+      const is429 =
+        (normalized instanceof LLMProviderError && normalized.status === 429) ||
+        /429|rate[-_ ]?limit/i.test(normalized.message);
+      if (is429) {
+        const cooldownMs =
+          process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
+            ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
+            : process.env.LLM_MAX_RETRIES === "0"
+              ? 0
+              : 30_000;
+        if (cooldownMs > 0) {
+          providerCooldowns.set(provider.id, Date.now() + cooldownMs);
+          console.warn(
+            `[llm] ${provider.name} rate limited (429). Placed on ${Math.round(cooldownMs / 1000)}s temporary cooldown, cascading immediately to next provider...`,
+          );
+        }
       }
       console.warn(
         `[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`,
@@ -536,7 +565,7 @@ async function sendChatCompletion(
   let res: Response;
   const effectiveMaxTokens =
     provider.id === "groq"
-      ? Math.min(options?.maxTokens ?? 1000, Number(process.env.GROQ_MAX_TOKENS || 1000))
+      ? Math.min(options?.maxTokens || 400, 450)
       : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
   try {
     res = await fetchWithRetry(

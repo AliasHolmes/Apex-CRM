@@ -185,3 +185,50 @@ test('TraceTerminal exports duration metrics card and live session telemetry', (
   assert.match(terminalSource, /<span>Duration<\/span>/);
   assert.match(terminalSource, /Running:\s*\$\{formatDuration/);
 });
+
+test('App.tsx wraps all tabs with TabErrorBoundary', () => {
+  const appSource = readFileSync(path.resolve('src/App.tsx'), 'utf8');
+  assert.match(appSource, /import TabErrorBoundary from '\.\/components\/TabErrorBoundary'/);
+  assert.match(appSource, /<TabErrorBoundary tabName="Discover prospects">/);
+  assert.match(appSource, /<TabErrorBoundary tabName="CRM overview">/);
+  assert.match(appSource, /<TabErrorBoundary tabName="Pipeline">/);
+  assert.match(appSource, /<TabErrorBoundary tabName="Prospect inventory">/);
+  assert.match(appSource, /<TabErrorBoundary tabName="Outreach">/);
+  assert.match(appSource, /<TabErrorBoundary tabName="Apex Copilot">/);
+});
+
+test('ScrapeWorkspace.tsx does not cancel backend mining sessions on unmount', () => {
+  const scrapeSource = readFileSync(path.resolve('src/components/ScrapeWorkspace.tsx'), 'utf8');
+  // Unmount effect must NOT contain fetch(/cancel) or controller aborts
+  const unmountEffectMatch = scrapeSource.match(/useEffect\(\(\) => \(\) => \{([\s\S]*?)\}, \[\]\);/);
+  assert.ok(unmountEffectMatch, 'Unmount effect must exist');
+  assert.doesNotMatch(unmountEffectMatch[1], /\/cancel/);
+  assert.doesNotMatch(unmountEffectMatch[1], /activeDiscovery.*abort\(\)/);
+  assert.match(unmountEffectMatch[1], /miningTraceStore\.disconnect/);
+});
+
+test('CrmPipeline defensively guards invalid lead stages with SCRAPED fallback', () => {
+  const pipelineSource = readFileSync(path.resolve('src/components/CrmPipeline.tsx'), 'utf8');
+  assert.match(pipelineSource, /grouped\[lead\.stage\]\s*\?\?\s*grouped\['SCRAPED'\]/);
+});
+
+test('CrmPipeline preserves search query substring matching', () => {
+  const pipelineSource = readFileSync(path.resolve('src/components/CrmPipeline.tsx'), 'utf8');
+  assert.match(
+    pipelineSource,
+    /\.some\(\(value\)\s*=>\s*value\?\.toLocaleLowerCase\(\)\.includes\(query\)\)/,
+  );
+});
+
+test('TabErrorBoundary provides resetKey remount and retry button', () => {
+  const boundarySource = readFileSync(path.resolve('src/components/TabErrorBoundary.tsx'), 'utf8');
+  assert.match(boundarySource, /resetKey/);
+  assert.match(boundarySource, /Retry Tab/);
+});
+
+test('traceStore exposes frozen DEFAULT_MINING_STATE', () => {
+  const traceStoreSource = readFileSync(path.resolve('src/lib/traceStore.ts'), 'utf8');
+  assert.match(traceStoreSource, /DEFAULT_MINING_STATE:\s*MiningSessionLiveState\s*=\s*Object\.freeze/);
+});
+
+

@@ -206,10 +206,11 @@ export function buildFinalistJudgePrompt(
       // Keep the first item (primary profile evidence), then any item containing
       // a contract acceptable term, then fill remaining slots in order. This
       // prevents truncation from dropping the evidence a verdict hinges on.
-      const selected: typeof candidate.evidence = [];
-      for (const item of candidate.evidence) {
+      const candEvidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+      const selected: typeof candEvidence = [];
+      for (const item of candEvidence) {
         if (selected.length >= MAX_EVIDENCE_ITEMS) break;
-        if (item === candidate.evidence[0]) {
+        if (item === candEvidence[0]) {
           selected.push(item);
           continue;
         }
@@ -217,7 +218,7 @@ export function buildFinalistJudgePrompt(
         if (allTerms.some((term) => term && text.includes(term)))
           selected.push(item);
       }
-      for (const item of candidate.evidence) {
+      for (const item of candEvidence) {
         if (selected.length >= MAX_EVIDENCE_ITEMS) break;
         if (!selected.includes(item)) selected.push(item);
       }

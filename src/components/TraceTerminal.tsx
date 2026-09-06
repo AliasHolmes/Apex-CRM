@@ -228,6 +228,17 @@ export const TraceSummaryViewer = ({
         </div>
       </div>
 
+      {typeof traceSummary?.existingCrmLeadsSkipped === 'number' && traceSummary.existingCrmLeadsSkipped > 0 && (
+        <div className="flex items-center gap-2 pt-0.5">
+          <Badge
+            variant="outline"
+            className="border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono text-xs py-1 px-2.5 flex items-center gap-1.5"
+          >
+            <span>CRM Duplicates Filtered: {traceSummary.existingCrmLeadsSkipped}</span>
+          </Badge>
+        </div>
+      )}
+
       {providers.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
           {providers.map(([provider, item]) => (
@@ -378,6 +389,19 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {Boolean(
+              (sessionMeta?.stats as any)?.existingCrmLeadsSkipped ||
+                sessionMeta?.traceSummary?.existingCrmLeadsSkipped,
+            ) && (
+              <Badge
+                variant="outline"
+                className="border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono text-xs py-0.5 px-2.5"
+              >
+                CRM Duplicates Filtered:{" "}
+                {(sessionMeta?.stats as any)?.existingCrmLeadsSkipped ||
+                  sessionMeta?.traceSummary?.existingCrmLeadsSkipped}
+              </Badge>
+            )}
             <Badge
               variant="outline"
               className={`font-mono text-xs py-0.5 px-2.5 flex items-center gap-1.5 ${

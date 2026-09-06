@@ -1531,6 +1531,7 @@ export type BrightDataSearchOptions = {
   allowBingFallback?: boolean;
   onEngineAttempt?: (engine: "google" | "bing" | "yandex") => void;
   onBingFallback?: (event: { query: string; resultsCount: number }) => void;
+  start?: number;
 };
 
 const LINKEDIN_PROFILE_URL_PATTERN =
@@ -1713,6 +1714,7 @@ export function buildBrightDataSearchArguments(
     engine,
     ...(options.cursor ? { cursor: options.cursor } : {}),
     ...(geoLocation ? { geo_location: geoLocation } : {}),
+    ...(typeof options.start === "number" ? { start: options.start } : {}),
   };
 }
 

@@ -208,7 +208,10 @@ export default function CrmPipeline({
         [profile?.fullName, profile?.currentTitle, profile?.currentCompany]
           .filter(Boolean)
           .some((value) => value?.toLocaleLowerCase().includes(query));
-      if (matchesIndustry && matchesSearch) grouped[lead.stage].push(lead);
+      if (matchesIndustry && matchesSearch) {
+        const stageGroup = grouped[lead.stage] ?? grouped['SCRAPED'];
+        stageGroup?.push(lead);
+      }
     }
 
     return grouped;

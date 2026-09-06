@@ -1,4 +1,4 @@
-import { readQueryPerformance } from "../../db.js";
+import { readQueryPerformance, readStoredCompanyNames } from "../../db.js";
 import {
   openAIStructured,
   searchQueriesSchema,
@@ -119,9 +119,13 @@ export async function executePlanStage(
       `Round ${round}: executing recovery query planning (attempt ${currentAttempt}/2) for missing criteria: [${missingHardReqs.join(", ")}].`,
     );
   } else {
-    const discoveredCompanies = ctx.state.signalStore
+    const signalCompanies = ctx.state.signalStore
       ? ctx.state.signalStore.getUniqueCompanyNames()
       : [];
+    const crmCompanies = readStoredCompanyNames(100);
+    const knownCompanyEntities = Array.from(
+      new Set([...crmCompanies, ...signalCompanies]),
+    );
 
     strategistPrompt = buildScoutStrategistPrompt({
       query: config.promptQuery,
@@ -136,7 +140,8 @@ export async function executePlanStage(
       contract: config.contract,
       missingRequirementIds: (state.previousRoundSummary as any)
         ?.missingHardRequirementIds,
-      discoveredCompanies,
+      discoveredCompanies: signalCompanies,
+      knownCompanyEntities,
       logEvent,
     });
   }

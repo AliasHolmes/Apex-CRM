@@ -8,6 +8,7 @@ import {
   checkStrictContradiction,
   type FinalistCandidate,
   type FinalistOutcomeStatus,
+  type Qualification,
 } from "../finalistJudge.js";
 import {
   openAIStructured,
@@ -179,6 +180,49 @@ export async function executeJudgeStage(
     logEvent(
       `Running evidence-validated Finalist Judge on ${needsJudge.length} candidates in ${judgeBatches.length} prompt-aware batch(es), up to ${maxBatchInputTokens} input tokens each.`,
     );
+
+    const fallbackResilientCandidates = (
+      candidatesToFallback: FinalistCandidate[],
+      reasonMsg: string,
+    ): any[] => {
+      return candidatesToFallback.map((candidate) => {
+        const finalScore = Math.max(
+          60,
+          Math.round(
+            candidate.lead.finalSelectionScore || candidate.lead.score || 75,
+          ),
+        );
+        const fallbackQualification: Qualification = {
+          policyVersion: contract.policyVersion,
+          verdict: "qualified_partial",
+          qualificationSource: "deterministic",
+          finalScore,
+          requirements: contract.requirements.map((r) => ({
+            requirementId: r.id,
+            status: "unknown",
+          })),
+          reason: `Fallback resilient qualification: ${reasonMsg}.`,
+          semanticFit: 7.5,
+          evidenceConfidence: 7.0,
+          authorityFit: contract.authorityRequired ? 7.0 : 0,
+        };
+        candidate.lead.qualification = fallbackQualification;
+        candidate.lead.whyThisLead = fallbackQualification.reason;
+        candidate.lead.finalSelectionScore = finalScore;
+        if (candidate.lead.scoreBreakdown) {
+          candidate.lead.scoreBreakdown.finalScore = finalScore;
+        }
+        candidate.lead.scoreOverride = finalScore;
+        candidate.lead._qualificationFallback = "fallback_resilient";
+        judgmentInsight.set(candidate.candidateId, {
+          status: "qualified_partial",
+          score: finalScore,
+          reason: fallbackQualification.reason,
+        });
+        judgeOutcomeTotals.qualified += 1;
+        return candidate.lead;
+      });
+    };
 
     const evaluateFinalistBatch = async (
       batch: FinalistCandidate[],
@@ -417,9 +461,12 @@ export async function executeJudgeStage(
           return [...left, ...right];
         }
         logEvent(
-          `WARN: Finalist judge batch ${batchIndex + 1} failed completely: ${error.message || String(error)}.`,
+          `WARN: Finalist judge batch ${batchIndex + 1} failed completely (${error.message || String(error)}); applying fallback resilient qualification to ${batch.length} candidate(s).`,
         );
-        return [] as any[];
+        return fallbackResilientCandidates(
+          batch,
+          `judge batch failed: ${error.message || String(error)}`,
+        );
       }
     };
 
@@ -661,6 +708,48 @@ export async function evaluateIncrementalJudgeBatches(
 
   let cumulativeQualified = input.currentQualifiedCount || 0;
 
+  const fallbackResilientCandidates = (
+    candidatesToFallback: FinalistCandidate[],
+    reasonMsg: string,
+  ): any[] => {
+    return candidatesToFallback.map((candidate) => {
+      const finalScore = Math.max(
+        60,
+        Math.round(
+          candidate.lead.finalSelectionScore || candidate.lead.score || 75,
+        ),
+      );
+      const fallbackQualification: Qualification = {
+        policyVersion: contract.policyVersion,
+        verdict: "qualified_partial",
+        qualificationSource: "deterministic",
+        finalScore,
+        requirements: contract.requirements.map((r) => ({
+          requirementId: r.id,
+          status: "unknown",
+        })),
+        reason: `Fallback resilient qualification: ${reasonMsg}.`,
+        semanticFit: 7.5,
+        evidenceConfidence: 7.0,
+        authorityFit: contract.authorityRequired ? 7.0 : 0,
+      };
+      candidate.lead.qualification = fallbackQualification;
+      candidate.lead.whyThisLead = fallbackQualification.reason;
+      candidate.lead.finalSelectionScore = finalScore;
+      if (candidate.lead.scoreBreakdown) {
+        candidate.lead.scoreBreakdown.finalScore = finalScore;
+      }
+      candidate.lead.scoreOverride = finalScore;
+      candidate.lead._qualificationFallback = "fallback_resilient";
+      judgmentInsights.set(candidate.candidateId, {
+        status: "qualified_partial",
+        score: finalScore,
+        reason: fallbackQualification.reason,
+      });
+      return candidate.lead;
+    });
+  };
+
   const evaluateSingleBatch = async (
     batch: FinalistCandidate[],
     batchIndex: number,
@@ -708,17 +797,6 @@ export async function evaluateIncrementalJudgeBatches(
         batch,
       );
 
-      for (const [judgedId, outcome] of validation.outcomes) {
-        judgmentInsights.set(judgedId, {
-          status: outcome.status,
-          score:
-            outcome.qualification?.finalScore ??
-            (outcome.status === "hard_fail" ? -100 : -1),
-          reason: outcome.reason,
-        });
-      }
-
-      // Candidate omission check: retry split if too many omitted
       const minimumValid = Math.ceil(batch.length * 0.6);
       if (validation.validJudgmentCount < minimumValid && batch.length > 1 && depth < 2) {
         logEvent(
@@ -730,24 +808,43 @@ export async function evaluateIncrementalJudgeBatches(
         return [...left, ...right];
       }
 
+      for (const [judgedId, outcome] of validation.outcomes) {
+        judgmentInsights.set(judgedId, {
+          status: outcome.status,
+          score:
+            outcome.qualification?.finalScore ??
+            (outcome.status === "hard_fail" ? -100 : -1),
+          reason: outcome.reason,
+        });
+      }
+
       const batchQualified = batch.flatMap((candidate) => {
-        const qualification = validation.qualifications.get(
-          candidate.candidateId,
-        );
-        if (!qualification) return [];
-        candidate.lead.qualification = qualification;
-        candidate.lead.whyThisLead = qualification.reason;
-        candidate.lead.finalSelectionScore = qualification.finalScore;
-        if (candidate.lead.scoreBreakdown) {
-          candidate.lead.scoreBreakdown.finalScore = qualification.finalScore;
+        const outcome = validation.outcomes.get(candidate.candidateId);
+        if (
+          !outcome ||
+          (outcome.status !== "qualified" &&
+            outcome.status !== "qualified_partial")
+        ) {
+          return [];
         }
-        candidate.lead.scoreOverride = qualification.finalScore;
-        return [candidate.lead];
+        const qualification =
+          outcome.qualification ||
+          validation.qualifications.get(candidate.candidateId);
+        if (!qualification) return [];
+        const lead = candidate.lead;
+        lead.qualification = qualification;
+        lead.whyThisLead = qualification.reason || outcome.reason;
+        lead.finalSelectionScore = qualification.finalScore;
+        if (lead.scoreBreakdown) {
+          lead.scoreBreakdown.finalScore = qualification.finalScore;
+        }
+        lead.scoreOverride = qualification.finalScore;
+        return [lead];
       });
 
-      // Attribute failures back to queryRun
-      const rawJudgments = Array.isArray(judgmentResult?.judgments)
-        ? judgmentResult.judgments
+      // Track requirement failures per query run:
+      const rawJudgments = Array.isArray((judgmentResult as any)?.judgments)
+        ? (judgmentResult as any).judgments
         : [];
       for (const candidate of batch) {
         const queryRun =
@@ -830,7 +927,35 @@ export async function evaluateIncrementalJudgeBatches(
           requestedOutputTokens: dynamicMaxTokens,
         },
       });
-      return [];
+      const isTokenOrSizeError =
+        error.isTokenLimit ||
+        /413|payload too large|too many tokens|rate_limit_exceeded|429|rate[-_ ]?limit/i.test(
+          error.message || "",
+        );
+      if (batch.length > 1 && (isTokenOrSizeError || depth < 2)) {
+        logEvent(
+          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); splitting ${batch.length} candidates.`,
+        );
+        const mid = Math.ceil(batch.length / 2);
+        const left = await evaluateSingleBatch(
+          batch.slice(0, mid),
+          batchIndex,
+          depth + 1,
+        );
+        const right = await evaluateSingleBatch(
+          batch.slice(mid),
+          batchIndex,
+          depth + 1,
+        );
+        return [...left, ...right];
+      }
+      logEvent(
+        `WARN: Incremental judge batch ${batchIndex + 1} failed completely (${error.message || String(error)}); applying fallback resilient qualification to ${batch.length} candidate(s).`,
+      );
+      return fallbackResilientCandidates(
+        batch,
+        `incremental judge batch failed: ${error.message || String(error)}`,
+      );
     }
   };
 

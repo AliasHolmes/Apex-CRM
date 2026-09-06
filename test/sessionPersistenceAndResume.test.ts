@@ -355,5 +355,93 @@ test('discoveryEngine.resume rejects with SessionAlreadyActiveError when session
   }
 });
 
+test('discoveryEngine.getActiveSessionId returns active session ID or null', () => {
+  assert.equal(discoveryEngine.getActiveSessionId(), null);
 
+  const sessionId = `test-active-id-${Date.now()}`;
+  discoveryEngine['activeSessions'].set(sessionId, ['log-1']);
+  try {
+    assert.equal(discoveryEngine.getActiveSessionId(), sessionId);
+  } finally {
+    discoveryEngine['activeSessions'].delete(sessionId);
+  }
+
+  assert.equal(discoveryEngine.getActiveSessionId(), null);
+});
+
+test('readResumableMiningSessions includes cancelled sessions with checkpoints', () => {
+  const sCancelled = `test-cancelled-${Date.now()}`;
+  const cp = {
+    sessionId: sCancelled,
+    round: 1,
+    stage: 'plan' as const,
+    promptQuery: 'cancelled test prompt',
+    targetLimit: 5,
+  };
+
+  upsertMiningSession({
+    id: sCancelled,
+    status: 'cancelled',
+    prompt: 'cancelled prompt',
+    checkpoint: cp as any,
+  });
+
+  const resumable = readResumableMiningSessions();
+  assert.ok(resumable.some((s) => s.id === sCancelled));
+
+  const count = clearResumableMiningSessions();
+  assert.ok(count >= 1);
+
+  const after = readResumableMiningSessions();
+  assert.ok(!after.some((s) => s.id === sCancelled));
+});
+
+test('GET /api/mining-sessions/active returns false when no session active, and active session details when active', async () => {
+  const express = (await import('express')).default;
+  const apiRouter = (await import('../server/routes/api.ts')).default;
+  const app = express();
+  app.use(express.json());
+  app.use('/api', apiRouter);
+
+  let server: import('node:http').Server;
+  let baseUrl = '';
+  await new Promise<void>((resolve) => {
+    server = app.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      if (typeof addr === 'object' && addr !== null) {
+        baseUrl = `http://127.0.0.1:${addr.port}`;
+      }
+      resolve();
+    });
+  });
+
+  try {
+    const res1 = await fetch(`${baseUrl}/api/mining-sessions/active`);
+    assert.equal(res1.status, 200);
+    const data1 = await res1.json();
+    assert.equal(data1.active, false);
+
+    const testId = `test-active-route-${Date.now()}`;
+    upsertMiningSession({
+      id: testId,
+      status: 'running',
+      prompt: 'Test active route prompt',
+      requestedLimit: 5,
+    });
+    discoveryEngine['activeSessions'].set(testId, []);
+
+    try {
+      const res2 = await fetch(`${baseUrl}/api/mining-sessions/active`);
+      assert.equal(res2.status, 200);
+      const data2 = await res2.json();
+      assert.equal(data2.active, true);
+      assert.equal(data2.sessionId, testId);
+      assert.equal(data2.session?.prompt, 'Test active route prompt');
+    } finally {
+      discoveryEngine['activeSessions'].delete(testId);
+    }
+  } finally {
+    server!.close();
+  }
+});
 

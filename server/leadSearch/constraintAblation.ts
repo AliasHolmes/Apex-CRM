@@ -3,7 +3,8 @@ import type { ProspectContract, ProspectRequirement } from './prospectContract.j
 export type AblationTier = 1 | 2 | 3 | 4;
 
 export const ABLATION_TIERS = {
-  TIER_1_IDENTITY_HARD: 1, // NEVER ablated (person_role, identity_hard)
+  TIER_1_IMMUTABLE_CORE: 1, // NEVER ablated (person_role, identity_hard, explicit immutable core)
+  TIER_1_IDENTITY_HARD: 1, // Alias for backward compatibility
   TIER_2_LOCATION_ANCHOR: 2, // person_location, company_location
   TIER_3_DOMAIN_QUALIFIER: 3, // company_industry, company_type, company_size
   TIER_4_VOLATILE_CONTEXT: 4, // tech stack, tooling, funding, context_hard
@@ -20,21 +21,10 @@ const VOLATILE_CONTEXT_REGEX = /\b(stack|tool|tech|framework|cloud|database|snow
 
 /**
  * Classifies a contract requirement into its ablation tier.
- * Tier 1 (identity_hard / role) is immutable and can never be ablated.
+ * Tier 1 (immutable core: role, company_type, company_industry) is immutable and can never be ablated.
  * Tier 4 (volatile context / stack / tooling) is ablated first.
  */
 export function classifyAblationTier(requirement: ProspectRequirement): AblationTier {
-  if (
-    requirement.requirementClass === 'identity_hard' ||
-    requirement.scope === 'person_role'
-  ) {
-    return ABLATION_TIERS.TIER_1_IDENTITY_HARD;
-  }
-
-  if (requirement.scope === 'person_location') {
-    return ABLATION_TIERS.TIER_2_LOCATION_ANCHOR;
-  }
-
   // Check if requirement represents specific volatile context (tools, tech stack, funding, signals)
   const fullText = `${requirement.description} ${requirement.sourcePhrase} ${(requirement.acceptableTerms || []).join(' ')}`;
   if (
@@ -45,10 +35,20 @@ export function classifyAblationTier(requirement: ProspectRequirement): Ablation
   }
 
   if (
-    requirement.scope === 'company_industry' ||
+    requirement.requirementClass === 'identity_hard' ||
+    requirement.scope === 'person_role' ||
     requirement.scope === 'company_type' ||
-    requirement.scope === 'company_size'
+    requirement.scope === 'company_industry' ||
+    (requirement as any).isImmutableCore
   ) {
+    return ABLATION_TIERS.TIER_1_IMMUTABLE_CORE;
+  }
+
+  if (requirement.scope === 'person_location') {
+    return ABLATION_TIERS.TIER_2_LOCATION_ANCHOR;
+  }
+
+  if (requirement.scope === 'company_size') {
     return ABLATION_TIERS.TIER_3_DOMAIN_QUALIFIER;
   }
 
@@ -88,7 +88,7 @@ export function ablateQueryTask(
     }
     const tier = classifyAblationTier(req);
     // Tier 1 is never ablated
-    return tier > ABLATION_TIERS.TIER_1_IDENTITY_HARD;
+    return tier > ABLATION_TIERS.TIER_1_IMMUTABLE_CORE;
   });
 
   // Fall back to all non-identity hard contract requirements if filtered set is empty
@@ -96,7 +96,7 @@ export function ablateQueryTask(
     candidateRequirements = contract.requirements.filter((req) => {
       if (req.importance !== 'hard') return false;
       const tier = classifyAblationTier(req);
-      return tier > ABLATION_TIERS.TIER_1_IDENTITY_HARD;
+      return tier > ABLATION_TIERS.TIER_1_IMMUTABLE_CORE;
     });
   }
 
@@ -141,6 +141,17 @@ export function ablateQueryTask(
     return b.term.length - a.term.length;
   });
 
+  // Ensure explicit immutable core terms (role and core vertical firmographics) can NEVER be ablated
+  const immutableCoreReqs = contract.requirements.filter(
+    (r) => classifyAblationTier(r) === ABLATION_TIERS.TIER_1_IMMUTABLE_CORE
+  );
+  const immutableCoreTerms = immutableCoreReqs
+    .flatMap((r) => [...(r.acceptableTerms || []), r.sourcePhrase])
+    .concat(contract.identitySpec?.companyTypes || [])
+    .concat(contract.identitySpec?.industries || [])
+    .map((t) => (t || '').trim().toLowerCase())
+    .filter((t): t is string => Boolean(t && t.length >= 2 && !VOLATILE_CONTEXT_REGEX.test(t)));
+
   for (const match of matches) {
     const escaped = escapeRegex(match.term);
     const removeRegex = new RegExp(`(?:["']${escaped}["']|\\b${escaped}\\b)`, 'gi');
@@ -149,6 +160,21 @@ export function ablateQueryTask(
       .replace(/\s+/g, ' ')
       .trim();
     const relaxedQuery = cleanQueryQuotes(rawRelaxed);
+
+    // If relaxing this match removes an immutable core term or core vertical, skip this match
+    if (immutableCoreTerms.length > 0) {
+      const queryLower = query.toLowerCase();
+      const matchedCoreTerms = immutableCoreTerms.filter((term) => queryLower.includes(term));
+      if (matchedCoreTerms.length > 0) {
+        const relaxedLower = relaxedQuery.toLowerCase();
+        const stillHasCoreTerms = matchedCoreTerms.every((term) =>
+          relaxedLower.includes(term)
+        );
+        if (!stillHasCoreTerms) {
+          continue;
+        }
+      }
+    }
 
     // Verify the relaxed query is valid and actually changed
     if (relaxedQuery.length >= 4 && relaxedQuery !== query.trim()) {

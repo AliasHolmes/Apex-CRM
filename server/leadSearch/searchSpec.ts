@@ -425,6 +425,7 @@ export const buildStrategistPrompt = (params: {
   contract?: ProspectContract;
   missingRequirementIds?: string[];
   discoveredCompanies?: string[];
+  knownCompanyEntities?: string[];
   logEvent?: (msg: string) => void;
 }) => {
   // Token diet: by late rounds the full query history dominates the prompt.
@@ -459,6 +460,11 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
       ? `\nDISCOVERED COMPANIES WITH ACTIVE SIGNALS (generate person queries targeting decision makers at these companies): ${params.discoveredCompanies.slice(0, 5).join(", ")}`
       : "";
 
+  const knownCompaniesNote =
+    params.knownCompanyEntities && params.knownCompanyEntities.length > 0
+      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these): ${params.knownCompanyEntities.slice(0, 25).join(", ")}`
+      : "";
+
   if (
     params.logEvent &&
     params.missingRequirementIds &&
@@ -475,6 +481,15 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   ) {
     params.logEvent(
       `[Strategist] Injected reverse flywheel target companies into prompt: [${params.discoveredCompanies.slice(0, 5).join(", ")}]`,
+    );
+  }
+  if (
+    params.logEvent &&
+    params.knownCompanyEntities &&
+    params.knownCompanyEntities.length > 0
+  ) {
+    params.logEvent(
+      `[Strategist] Injected ${params.knownCompanyEntities.length} known CRM/explored companies into prompt`,
     );
   }
 
@@ -572,6 +587,7 @@ Discovery mode: ${discoveryMode}
 ${requirementDigest}
 ${missingNote}
 ${flywheelNote}
+${knownCompaniesNote}
 ${failNote}
 
 Generate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.

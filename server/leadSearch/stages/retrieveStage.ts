@@ -11,6 +11,7 @@ import {
   executeBrightDataSearchWithRetry,
   getBrightDataStatus,
   type BrightDataSearchResult,
+  type BrightDataSearchOptions,
 } from "../../services/brightdata.js";
 import { hasTavilyKey } from "../../services/llm.js";
 import { incrementCounter } from "../sessionHelpers.js";
@@ -79,6 +80,25 @@ export async function executeRetrieveStage(
   let usingBrightDataSearch = false;
   const ablationTracker = createAblationTracker(2);
 
+  const duplicateCollisionRate =
+    (stats.rawCandidates || 0) > 0
+      ? ((stats.rejectionReasons?.duplicate_existing_lead || 0) +
+          (stats.rejectionReasons?.duplicate_person || 0) +
+          (stats.existingCrmLeadsSkipped || 0)) /
+        stats.rawCandidates
+      : 0;
+  const isHighDuplication =
+    duplicateCollisionRate >= 0.2 ||
+    (stats.rejectionReasons?.duplicate_existing_lead || 0) >= 3 ||
+    (stats.existingCrmLeadsSkipped || 0) >= 3;
+  const dynamicTavilyMaxResults =
+    round > 1 || isHighDuplication
+      ? 20
+      : Math.min(
+          Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1),
+          20,
+        );
+
   const executeTavilyLane = async (
     plans: { plan: (typeof roundPlans)[0]; index: number }[],
   ) => {
@@ -93,20 +113,17 @@ export async function executeRetrieveStage(
       counts: { queries: plans.length, plannedQueries: roundPlans.length },
       tavily: {
         searchDepth: "task-specific",
-        maxResults: Math.min(
-          Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1),
-          20,
-        ),
+        maxResults: dynamicTavilyMaxResults,
         includeDomains: Array.from(
           new Set(
             plans.flatMap(({ plan }) => plan.item.tavily.includeDomains || []),
           ),
         ),
       },
-      metadata: { discoveryProviderMode },
+      metadata: { discoveryProviderMode, dynamicMaxResults: dynamicTavilyMaxResults, isHighDuplication },
     });
     logEvent(
-      `Round ${round}: executing ${plans.length}/${roundPlans.length} Tavily queries (mode=${discoveryProviderMode}).`,
+      `Round ${round}: executing ${plans.length}/${roundPlans.length} Tavily queries (mode=${discoveryProviderMode}, maxResults=${dynamicTavilyMaxResults}).`,
     );
 
     await runProviderQueue(
@@ -155,6 +172,7 @@ export async function executeRetrieveStage(
             queryRuns[index].providerUnits += estimatedCredits;
             const res = await ports.tavilySearch(plan.executableQuery, {
               ...tavilyOptions,
+              maxResults: dynamicTavilyMaxResults,
               signal: signal || state.abortController.signal,
             });
             let resultsCount = res.items?.length || 0;
@@ -403,10 +421,14 @@ export async function executeRetrieveStage(
                 physicalAttempts++;
                 queryRuns[index].providerUnits += 1;
                 const linkedInQuery = toLinkedInSearchQuery(plan.item);
+                const shouldFetchPage2 = duplicateCollisionRate > 0.3;
+                const bdSearchOptions: BrightDataSearchOptions = shouldFetchPage2
+                  ? { start: 10 }
+                  : {};
                 try {
                   const attemptResults = await ports.brightDataSearch(
                     linkedInQuery || plan.executableQuery,
-                    {},
+                    bdSearchOptions,
                     `round_${round}`,
                   );
                   if (attempt > 1) recovered = true;

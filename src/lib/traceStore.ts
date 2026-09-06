@@ -202,16 +202,16 @@ class MiningTraceStore {
 
 export const miningTraceStore = new MiningTraceStore();
 
-export function useMiningTraceStream(sessionId: string | null | undefined, onPersistenceEvent?: () => void): MiningSessionLiveState {
-  const defaultState: MiningSessionLiveState = {
-    sessionId: sessionId || '',
-    logs: [],
-    traceEvents: [],
-    status: 'idle'
-  };
+const DEFAULT_MINING_STATE: MiningSessionLiveState = Object.freeze({
+  sessionId: '',
+  logs: Object.freeze([]) as unknown as string[],
+  traceEvents: Object.freeze([]) as unknown as MiningTraceEvent[],
+  status: 'idle',
+});
 
+export function useMiningTraceStream(sessionId: string | null | undefined, onPersistenceEvent?: () => void): MiningSessionLiveState {
   const getSnapshot = () => {
-    if (!sessionId) return defaultState;
+    if (!sessionId) return DEFAULT_MINING_STATE;
     return miningTraceStore.getState(sessionId);
   };
 

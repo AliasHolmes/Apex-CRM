@@ -62,10 +62,11 @@ describe('Query Sanitization & Multi-Metro Geographic Expansion', () => {
     assert.ok(personTask.tavily.maxResults >= 12);
   });
 
-  it('sanitizeQueryText and enforceContractQueries strip boolean syntax and site: tokens while preserving balanced quotes and hyphenated negations', () => {
+  it('sanitizeQueryText preserves OR and negation while enforceContractQueries de-concatenates roles and locations', () => {
     const rawQuery = 'owner OR founder OR CEO AND USA AND "AI agency" -software -saas site:linkedin.com/in/';
     const sanitized = sanitizeQueryText(rawQuery);
-    assert.ok(!/\b(AND|OR|NOT)\b/.test(sanitized));
+    assert.ok(sanitized.includes(' OR '), 'sanitizeQueryText must preserve OR disjunction');
+    assert.ok(!/\bAND\b/.test(sanitized), 'sanitizeQueryText must strip boolean AND');
     assert.ok(!sanitized.includes('site:'));
     assert.ok(!sanitized.includes('linkedin'));
     assert.ok(sanitized.includes('"AI agency"'), 'Must preserve balanced phrase quotes');
@@ -81,7 +82,10 @@ describe('Query Sanitization & Multi-Metro Geographic Expansion', () => {
     const contract = buildDeterministicProspectContract('AI agency owner from USA', buildFallbackSearchSpec('AI agency owner from USA'));
     const enforced = enforceContractQueries([{ query: 'founder OR CEO AND "AI studio" -software' }], contract);
     assert.ok(enforced.length > 0);
-    assert.ok(!/\b(AND|OR|NOT)\b/.test(enforced[0].query));
+    // De-concatenation retains only primary role (founder) and strips redundant synonym (CEO) and conjunction
+    assert.ok(!/\b(AND|OR)\b/.test(enforced[0].query));
+    assert.ok(enforced[0].query.includes('founder'));
+    assert.ok(!enforced[0].query.includes('CEO'));
     assert.ok(enforced[0].query.includes('"AI studio"'), 'enforceContractQueries must preserve balanced quotes');
     assert.ok(enforced[0].query.includes('-software'), 'enforceContractQueries must preserve hyphenated negative operators');
   });

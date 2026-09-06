@@ -3203,6 +3203,7 @@ export type MiningSessionCheckpoint = {
   rejectionCounts: Record<string, number>;
   failureCounts: Record<string, number>;
   brightDataStats: any;
+  existingCrmLeadsSkipped?: number;
   previousRoundSummary?: any;
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
@@ -3285,7 +3286,7 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
     .prepare(
       `
       SELECT * FROM mining_sessions
-      WHERE status IN ('interrupted', 'error') AND checkpoint_json IS NOT NULL
+      WHERE status IN ('interrupted', 'error', 'cancelled') AND checkpoint_json IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 20
     `,
@@ -3556,7 +3557,7 @@ export function clearResumableMiningSessions(): number {
   const db = getLeadsDb();
   const info = db
     .prepare(
-      "DELETE FROM mining_sessions WHERE status IN ('interrupted', 'error') AND checkpoint_json IS NOT NULL",
+      "DELETE FROM mining_sessions WHERE status IN ('interrupted', 'error', 'cancelled') AND checkpoint_json IS NOT NULL",
     )
     .run();
   return Number(info.changes);
@@ -3812,3 +3813,22 @@ export function readDiscoveredCompanyNames(limit = 20): string[] {
     return [];
   }
 }
+
+export function readStoredCompanyNames(limit = 100): string[] {
+  try {
+    const db = getLeadsDb();
+    const cappedLimit = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
+    const rows = db.prepare(`
+      SELECT company
+      FROM leads
+      WHERE company IS NOT NULL AND trim(company) != ''
+      GROUP BY company
+      ORDER BY MAX(updated_at) DESC
+      LIMIT ?
+    `).all(cappedLimit) as { company?: string }[];
+    return rows.map(r => r.company?.trim()).filter((n): n is string => Boolean(n));
+  } catch {
+    return [];
+  }
+}
+

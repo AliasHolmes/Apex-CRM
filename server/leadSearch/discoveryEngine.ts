@@ -752,7 +752,7 @@ export async function executeDiscoverySession(
       const cacheKey = query.trim().toLowerCase();
       const cached = getProspectContractCache(cacheKey, PROSPECT_CONTRACT_POLICY_VERSION);
       if (cached) {
-        contract = cached;
+        contract = normalizeProspectContract(cached, query, fallbackContract);
         logEvent(
           `Hydrated prospect quality contract v${contract.policyVersion} from contract cache.`,
         );

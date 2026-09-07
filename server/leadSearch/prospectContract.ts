@@ -283,6 +283,46 @@ export const COUNTRY_TO_METROS: Record<string, string[]> = {
   nz: ["Auckland", "Wellington", "Christchurch"],
 };
 
+export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
+  usa: 'USA',
+  'united states': 'USA',
+  us: 'USA',
+  'u.s.': 'USA',
+  'u.s.a.': 'USA',
+  america: 'USA',
+  'united states of america': 'USA',
+  uk: 'UK',
+  'united kingdom': 'UK',
+  britain: 'UK',
+  'great britain': 'UK',
+  england: 'UK',
+  canada: 'Canada',
+  canadian: 'Canada',
+  australia: 'Australia',
+  australian: 'Australia',
+  au: 'Australia',
+  'new zealand': 'New Zealand',
+  newzealand: 'New Zealand',
+  nz: 'New Zealand',
+  germany: 'Germany',
+  german: 'Germany',
+  france: 'France',
+  french: 'France',
+  netherlands: 'Netherlands',
+  dutch: 'Netherlands',
+  singapore: 'Singapore',
+  ireland: 'Ireland',
+  irish: 'Ireland',
+  spain: 'Spain',
+  spanish: 'Spain',
+  italy: 'Italy',
+  italian: 'Italy',
+  switzerland: 'Switzerland',
+  swiss: 'Switzerland',
+  sweden: 'Sweden',
+  swedish: 'Sweden',
+};
+
 const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
   const expanded = [...terms];
   const hasTerm = (list: string[], matches: string[]) =>
@@ -773,11 +813,47 @@ export function buildContractFallbackQueries(
   const defaultRoles = ['founder', 'owner', 'CEO', 'managing director'];
   const roles = extractedRoles.length > 0 ? extractedRoles : defaultRoles;
 
-  // Extract single locations / geos / metros (e.g. Australia, UK, Canada, USA)
+  // Extract single locations / geos / metros (e.g. USA, UK, Canada, Australia)
   const locReqs = requirements.filter(r => r.scope === 'person_location');
   const extractedLocations = unique(locReqs.flatMap(r => r.acceptableTerms || []));
-  const defaultLocations = ['Australia', 'UK', 'Canada', 'USA'];
-  const locations = extractedLocations.length > 0 ? extractedLocations : defaultLocations;
+  const defaultLocations = ['USA', 'UK', 'Canada', 'Australia'];
+
+  // Detect distinct geopolitical countries mentioned in requirements or brief
+  const detectedCountries: string[] = [];
+  const seenCountryKeys = new Set<string>();
+
+  for (const loc of extractedLocations) {
+    const cleanLoc = loc.trim().toLowerCase();
+    const canonical = COUNTRY_CANONICAL_MAP[cleanLoc];
+    if (canonical && !seenCountryKeys.has(canonical.toLowerCase())) {
+      seenCountryKeys.add(canonical.toLowerCase());
+      detectedCountries.push(canonical);
+    }
+  }
+
+  const briefLower = (brief || '').toLowerCase();
+  for (const [key, canonical] of Object.entries(COUNTRY_CANONICAL_MAP)) {
+    if (!seenCountryKeys.has(canonical.toLowerCase()) && briefLower.includes(key)) {
+      seenCountryKeys.add(canonical.toLowerCase());
+      detectedCountries.push(canonical);
+    }
+  }
+
+  // Deduplicate synonym terms (e.g. don't keep United States if USA is present)
+  const deduplicatedLocations: string[] = [];
+  const seenDedupe = new Set<string>();
+  for (const loc of extractedLocations) {
+    const cleanLoc = loc.trim().toLowerCase();
+    const canonical = COUNTRY_CANONICAL_MAP[cleanLoc] || cleanLoc;
+    if (!seenDedupe.has(canonical.toLowerCase())) {
+      seenDedupe.add(canonical.toLowerCase());
+      deduplicatedLocations.push(loc);
+    }
+  }
+
+  const locations = detectedCountries.length >= 2
+    ? detectedCountries
+    : (deduplicatedLocations.length > 0 ? deduplicatedLocations : defaultLocations);
 
   // Extract core vertical / company type term (e.g. "AI agency")
   const compReq = requirements.find(r => r.scope === 'company_type' || r.scope === 'company_industry');
@@ -799,6 +875,8 @@ export function buildContractFallbackQueries(
         baseQuery = `${baseQuery} ${agencyDisambiguation}`;
       }
     }
+    // Clean up any stray Big Tech negatives (these belong strictly in deterministic qualification)
+    baseQuery = baseQuery.replace(/-(?:microsoft|google|meta|apple|amazon|openai|deepmind)\b/gi, ' ').replace(/\s+/g, ' ').trim();
     gridQueries.push(baseQuery);
   }
 
@@ -906,6 +984,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
 - acceptableTerms are short alternatives for the same stated requirement, never broader personas.
 - Strict single-role and single-geo query constraint: Each query in initialQueries must target EXACTLY ONE role (e.g. founder OR CEO OR owner) and at most ONE location/metro (e.g. Australia OR London). NEVER concatenate multiple synonym roles in a single query (e.g. FORBIDDEN: 'owner founder CEO managing director'). Distribute different roles and locations across distinct queries instead.
+- Queries in initialQueries must NEVER contain negative exclusion operators (e.g. -Microsoft, -Google, -software, -SaaS). Exclusions belong strictly in the contract exclusions list, not in search queries.
 - Do not use Google dorks, site:, or the word LinkedIn in initialQueries.
 - coveredRequirementIds may reference only the returned requirement ids.
 Return only the requested JSON.`;
@@ -1054,6 +1133,11 @@ export function normalizeProspectContract(
         hard.push(fbReq);
       }
     }
+    const locReq = hard.find(h => h.scope === 'person_location');
+    const fbLocReq = fallbackHard.find(h => h.scope === 'person_location');
+    if (locReq && fbLocReq) {
+      locReq.acceptableTerms = unique([...locReq.acceptableTerms, ...fbLocReq.acceptableTerms]);
+    }
   }
 
   // Step 4: Soft requirements (LLM primary, fallback supplement)
@@ -1065,12 +1149,12 @@ export function normalizeProspectContract(
     }
   }
 
-  // Deduplicate requirements so person_role is strictly unified into at most 1 any_of requirement
+  // Deduplicate requirements so person_role and person_location are strictly unified
   const dedupedNormalized: ProspectRequirement[] = [];
   for (const req of [...hard.slice(0, 4), ...soft.slice(0, 5)]) {
     const existing = dedupedNormalized.find(
       item => item.scope === req.scope &&
-        (req.scope === 'person_role' || lower(item.sourcePhrase) === lower(req.sourcePhrase))
+        (req.scope === 'person_role' || req.scope === 'person_location' || lower(item.sourcePhrase) === lower(req.sourcePhrase))
     );
     if (existing) {
       existing.acceptableTerms = unique([...existing.acceptableTerms, ...req.acceptableTerms]);
@@ -1267,6 +1351,8 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     const candidate = typeof raw === 'string' ? { query: raw } : raw && typeof raw === 'object' ? raw as Record<string, any> : {};
     const isSignalLane = candidate.lane === 'signal' || candidate.family === 'pain_signal' || candidate.family === 'growth_signal' || candidate.family === 'tooling_signal';
     let query = clean(candidate.query);
+    // Strip Big Tech negative exclusion operators from search queries (belongs strictly in deterministic judge)
+    query = query.replace(/-(?:microsoft|google|meta|apple|amazon|openai|deepmind|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm)\b/gi, ' ').replace(/\s+/g, ' ').trim();
     if (!isSignalLane) {
       query = sanitizeQueryText(query);
       query = deconcatenateContractQuery(query, contract);

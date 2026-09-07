@@ -1117,12 +1117,15 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   res.flushHeaders();
 
   // Guard against unhandled socket/stream errors (e.g. EPIPE, ECONNRESET)
-  res.on("error", (err) => {
+  const suppressDisconnectError = () => {
     // Ignore expected client disconnect errors
-  });
+  };
+  res.on("error", suppressDisconnectError);
+  req.on("error", suppressDisconnectError);
+  req.socket?.on("error", suppressDisconnectError);
 
   const safeWrite = (chunk: string): boolean => {
-    if (res.writableEnded || res.closed) return false;
+    if (res.writableEnded || res.closed || res.destroyed || !res.socket?.writable) return false;
     try {
       return res.write(chunk);
     } catch {
@@ -1170,6 +1173,7 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   });
 
   req.on("close", doUnsubscribe);
+  res.on("close", doUnsubscribe);
 });
 
 router.get("/mining-sessions", (req, res): any => {

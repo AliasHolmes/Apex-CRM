@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -35,7 +35,7 @@ if (gatewayMode === 'litellm') {
 
   console.log('[dev-entry] Starting LiteLLM proxy...');
   litellmProcess = spawn(litellmPath, ['--config', 'litellm.config.yaml', '--host', '127.0.0.1', '--port', '4000'], {
-    stdio: 'inherit',
+    stdio: ['ignore', 'inherit', 'inherit'],
     shell: false,
     windowsHide: true,
     env: process.env,
@@ -53,7 +53,7 @@ const crmArgs = isWindows
   ? ['/d', '/s', '/c', 'npm.cmd run dev:server']
   : ['run', 'dev:server'];
 const crmProcess = spawn(crmCommand, crmArgs, {
-  stdio: 'inherit',
+  stdio: ['ignore', 'inherit', 'inherit'],
   shell: false,
   windowsHide: true,
   env: process.env,
@@ -68,7 +68,7 @@ function cleanup() {
   if (litellmProcess && !litellmProcess.killed) {
     console.log('[dev-entry] Stopping LiteLLM proxy...');
     if (isWindows && litellmProcess.pid) {
-      spawn('taskkill', ['/pid', String(litellmProcess.pid), '/f', '/t'], { stdio: 'ignore' });
+      spawnSync('taskkill', ['/pid', String(litellmProcess.pid), '/f', '/t'], { stdio: 'ignore' });
     } else {
       litellmProcess.kill('SIGINT');
     }
@@ -76,7 +76,7 @@ function cleanup() {
 
   if (crmProcess && !crmProcess.killed) {
     if (isWindows && crmProcess.pid) {
-      spawn('taskkill', ['/pid', String(crmProcess.pid), '/f', '/t'], { stdio: 'ignore' });
+      spawnSync('taskkill', ['/pid', String(crmProcess.pid), '/f', '/t'], { stdio: 'ignore' });
     } else {
       crmProcess.kill('SIGINT');
     }
@@ -99,17 +99,12 @@ process.on('exit', () => {
 
 if (litellmProcess) {
   litellmProcess.on('error', (error) => {
-    if (!isCleaningUp) {
-      console.error('[dev-entry] LiteLLM proxy failed to start:', error);
-      cleanup();
-      process.exit(1);
-    }
+    console.warn('[dev-entry] LiteLLM proxy encountered an error or failed to start:', error.message);
+    console.warn('[dev-entry] Apex CRM will continue running via direct LLM provider fallback.');
   });
   litellmProcess.on('exit', (code) => {
     if (!isCleaningUp) {
-      console.log(`[dev-entry] LiteLLM proxy exited with code ${code}`);
-      cleanup();
-      process.exit(code ?? 0);
+      console.warn(`[dev-entry] LiteLLM proxy exited (code ${code}). Apex CRM continuing via direct LLM provider fallback.`);
     }
   });
 }

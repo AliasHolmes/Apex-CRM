@@ -562,7 +562,7 @@ Evidence:
         model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
         prompt,
         systemInstruction: EXTRACTION_SYSTEM_PROMPT,
-        response: extractedLeads,
+        response: JSON.parse(JSON.stringify(extractedLeads)),
       });
       logEvent(
         `Round ${round}, chunk ${chunkIndex}/${chunks.length}: extracted ${extractedLeads.length} profiles.`,

@@ -139,7 +139,9 @@ export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {
 export function toLinkedInSearchQuery(item: SearchQueryPlanItem) {
   const query = sanitizeQueryText(item.query);
   if (!query) return '';
-  return item.lane === 'signal' ? query : `site:linkedin.com/in/ ${query}`;
+  if (item.lane === 'signal' || item.lane === 'account') return query;
+  if (/^site:linkedin\.com/i.test(query)) return query;
+  return `site:linkedin.com/in/ ${query}`;
 }
 
 export { buildFallbackQueryPlan, buildStrategistPrompt } from './searchSpec.js';

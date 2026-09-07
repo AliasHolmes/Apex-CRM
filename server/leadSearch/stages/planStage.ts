@@ -8,6 +8,7 @@ import {
 } from "../../services/llm.js";
 import {
   normalizeQueryPlanItems,
+  toLinkedInSearchQuery,
   type QueryRunStats,
   type SearchQueryPlanItem,
 } from "../strategist.js";
@@ -329,7 +330,14 @@ export async function executePlanStage(
   // Filter against seenQueryTexts without directly mutating caller state here
   const proposedQueries: string[] = [];
   const roundPlans = adaptiveSchedule.tasks
-    .map((item) => ({ item: { ...item, domainCluster: item.domainCluster || domainCluster }, executableQuery: item.query }))
+    .map((item) => {
+      const isPerson = item.lane === "person" || !item.lane;
+      const executableQuery = isPerson ? toLinkedInSearchQuery(item) : item.query;
+      return {
+        item: { ...item, domainCluster: item.domainCluster || domainCluster },
+        executableQuery,
+      };
+    })
     .filter((plan) => {
       const key = plan.executableQuery.toLowerCase();
       if (seenQueryTexts.has(key)) return false;
@@ -382,7 +390,7 @@ export async function executePlanStage(
             domainCluster,
             tavily: { searchDepth: 'basic', topic: 'general' }
           } as any,
-          executableQuery: candidateQuery
+          executableQuery: toLinkedInSearchQuery({ query: candidateQuery, lane: 'person' })
         });
         if (roundPlans.length >= 3) break;
       }

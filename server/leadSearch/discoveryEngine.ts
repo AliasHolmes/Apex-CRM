@@ -1143,6 +1143,7 @@ export async function executeDiscoverySession(
           stats.queryRuns.push(run);
           if (run.query) seenQueryTexts.add(run.query);
         }
+        checkpointedQueryRunCount = stats.queryRuns.length;
       }
       // Replace (not merge) counters so a re-saved checkpoint at the same
       // boundary cannot double rejection/failure tallies.
@@ -1304,15 +1305,9 @@ export async function executeDiscoverySession(
           break;
         }
 
-        // Commit scheduler state and debug logs from the accepted plan
+        // Commit scheduler state from the accepted plan
         if (planResult.adaptiveSchedulerState) {
           stats.scout.adaptiveScheduler = planResult.adaptiveSchedulerState;
-        }
-        if (
-          Array.isArray(planResult.debugLogs) &&
-          planResult.debugLogs.length > 0
-        ) {
-          debugLogs.push(...planResult.debugLogs);
         }
 
         // Commit queries from the accepted plan to seenQueryTexts and generatedQueries
@@ -1425,6 +1420,15 @@ export async function executeDiscoverySession(
           const verticalTerm = verticalBase.includes(" ") ? `"${verticalBase}"` : verticalBase;
 
           const saturatedGeos = new Set<string>();
+          for (const loc of candidateLocations) {
+            const locLower = loc.toLowerCase();
+            if (generatedQueries.some(q => q.toLowerCase().includes(locLower))) {
+              saturatedGeos.add(locLower);
+            }
+          }
+          if (saturatedGeos.size >= candidateLocations.length) {
+            saturatedGeos.clear();
+          }
           const maxReplenishPasses = 4;
           for (let pass = 1; pass <= maxReplenishPasses && candidateItems.length < desiredBatchThreshold; pass++) {
             let replenishQuery = "";
@@ -1456,9 +1460,14 @@ export async function executeDiscoverySession(
             const replenishStart = Date.now();
             try {
               recordProviderUsage("tavily", 1);
-              const replenishRes = await tavilySearch(replenishQuery, {
+              const execReplenishQuery = toLinkedInSearchQuery({
+                query: replenishQuery,
+                lane: "person",
+              });
+              const replenishRes = await tavilySearch(execReplenishQuery, {
                 searchDepth: "basic",
                 maxResults: 15,
+                includeDomains: ["linkedin.com"],
                 signal: sessionAbortController.signal,
               });
 

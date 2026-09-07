@@ -4,6 +4,7 @@
  */
 
 import "dotenv/config";
+import http from "http";
 import express from "express";
 import compression from "compression";
 import path from "path";
@@ -18,6 +19,25 @@ import { validateEngineConfig } from "./server/configValidation.js";
 import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
 
 const app = express();
+
+// Guard against unhandled client disconnect errors (e.g. ECONNRESET/EPIPE when closing browser tab)
+app.use((req, res, next) => {
+  const suppressSocketError = (err: any) => {
+    if (
+      err?.code === "ECONNRESET" ||
+      err?.code === "EPIPE" ||
+      err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+      err?.message?.includes("ECONNRESET") ||
+      err?.message?.includes("EPIPE")
+    ) {
+      return;
+    }
+  };
+  req.on("error", suppressSocketError);
+  res.on("error", suppressSocketError);
+  req.socket?.on("error", suppressSocketError);
+  next();
+});
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = "127.0.0.1";
 const isProduction =
@@ -161,9 +181,56 @@ async function startServer() {
     return;
   }
 
+  const server = http.createServer(app);
+
+  // Safely close and destroy abruptly aborted client sockets (e.g. closing browser tab)
+  server.on("clientError", (err: any, socket) => {
+    if (
+      err?.code === "ECONNRESET" ||
+      err?.code === "EPIPE" ||
+      err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+      !socket.writable
+    ) {
+      socket.destroy();
+      return;
+    }
+    socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+  });
+
+  // Global guards to prevent client socket resets from terminating the Node process
+  process.on("uncaughtException", (error: any) => {
+    if (
+      error?.code === "ECONNRESET" ||
+      error?.code === "EPIPE" ||
+      error?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+      error?.message?.includes("ECONNRESET") ||
+      error?.message?.includes("EPIPE")
+    ) {
+      return;
+    }
+    console.error("[Server] Uncaught Exception:", error);
+  });
+
+  process.on("unhandledRejection", (reason: any) => {
+    const message = reason?.message || String(reason);
+    if (
+      reason?.code === "ECONNRESET" ||
+      reason?.code === "EPIPE" ||
+      message.includes("ECONNRESET") ||
+      message.includes("EPIPE")
+    ) {
+      return;
+    }
+    console.error("[Server] Unhandled Promise Rejection:", reason);
+  });
+
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server },
+        hmr: { server },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -191,7 +258,7 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, HOST, () => {
+  server.listen(PORT, HOST, () => {
     console.log(
       `Server launched at http://${HOST}:${PORT} in ${isProduction ? "production" : "development"} mode.`,
     );

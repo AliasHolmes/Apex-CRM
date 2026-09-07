@@ -458,10 +458,33 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
       ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(", ")}`
       : "";
 
+  // Extract all metros from METRO_HUBS_BY_COUNTRY that appeared in previousQueries
+  const allKnownMetros = Object.values(METRO_HUBS_BY_COUNTRY).flat();
+  const lowerQueries = params.previousQueries.map((q) => q.toLowerCase());
+  const exploredMetros = allKnownMetros.filter((metro) =>
+    lowerQueries.some((q) => q.includes(metro.toLowerCase())),
+  );
+
+  // Determine target countries from brief or contract
+  const briefLower = (params.contract?.brief || params.query || "").toLowerCase();
+  const relevantCountries = Object.keys(METRO_HUBS_BY_COUNTRY).filter((c) => {
+    if (briefLower.includes(c)) return true;
+    if (c === "usa" && (briefLower.includes("united states") || briefLower.includes("us") || briefLower.includes("america"))) return true;
+    if (c === "uk" && (briefLower.includes("united kingdom") || briefLower.includes("britain") || briefLower.includes("england"))) return true;
+    return false;
+  });
+  const countryPool = relevantCountries.length > 0 ? relevantCountries : Object.keys(METRO_HUBS_BY_COUNTRY);
+  const eligibleMetros = countryPool.flatMap((c) => METRO_HUBS_BY_COUNTRY[c] || []);
+  const unvisitedMetros = eligibleMetros.filter((m) => !exploredMetros.some((em) => em.toLowerCase() === m.toLowerCase()));
+
+  const metroDirectives = exploredMetros.length > 0
+    ? `\nALREADY EXPLORED METROS IN THIS SESSION (DO NOT query these again): [${exploredMetros.join(", ")}]\nRECOMMENDED UNVISITED METROS TO TARGET NEXT: [${unvisitedMetros.slice(0, 12).join(", ")}]`
+    : (unvisitedMetros.length > 0 ? `\nRECOMMENDED METROS TO TARGET: [${unvisitedMetros.slice(0, 12).join(", ")}]` : "");
+
   const recoveryDirective = params.isRecovery
     ? `\nRECOVERY DIRECTIVE (Attempt ${params.recoveryAttempt || 1}/2):
 Prior rounds had low yield or missed specific criteria.
-- Pivot to fresh, unvisited metropolitan hubs and tech clusters (e.g. Austin, London, Toronto, Sydney, Denver, Manchester).
+- Pivot to fresh, unvisited metropolitan hubs and tech clusters (e.g. ${unvisitedMetros.slice(0, 6).join(", ") || "Austin, Denver, Manchester, Melbourne, Vancouver"}).
 - Rotate leadership title synonyms (e.g. "managing director", "principal", "managing partner", "executive director", "co-founder").
 - Explore adjacent client-service vertical phrasing (e.g. "AI consulting", "AI solutions", "machine learning agency").
 - Maintain single-concept clarity: NEVER concatenate multiple roles or locations into a single bloated query.
@@ -506,6 +529,11 @@ Prior rounds had low yield or missed specific criteria.
   ) {
     params.logEvent(
       `[Strategist] Injected ${params.knownCompanyEntities.length} known CRM/explored companies into prompt`,
+    );
+  }
+  if (params.logEvent && exploredMetros.length > 0) {
+    params.logEvent(
+      `[Strategist] Injected ${exploredMetros.length} already explored metros to exclude: [${exploredMetros.join(", ")}]`,
     );
   }
 
@@ -605,6 +633,7 @@ ${missingNote}
 ${recoveryDirective}
 ${flywheelNote}
 ${knownCompaniesNote}
+${metroDirectives}
 ${failNote}
 
 Generate exactly four concise retrieval tasks. This is round ${params.round}/${params.maxRounds}; ${params.remaining} qualified prospects remain.

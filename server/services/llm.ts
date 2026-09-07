@@ -237,15 +237,42 @@ export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Pr
 }
 
 /**
+ * Cloudflare cuts HTTP proxy connections between 100s and 120s (HTTP 524).
+ * All outbound LLM requests must be bounded strictly within this window (115s)
+ * to prevent gateway timeouts, connection drops, and orphan TCP sockets.
+ */
+export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
+
+/**
+ * Strict sequential execution queue for all LLM calls.
+ * Guarantees that at most one outbound API call is active against the LLM model at any millisecond,
+ * eliminating upstream thread contention, concurrent rate limits, and Cloudflare queue timeouts.
+ */
+let globalLLMQueue: Promise<any> = Promise.resolve();
+
+export function withSequentialLLMExecution<T>(task: () => Promise<T>): Promise<T> {
+  const run = async () => {
+    return await task();
+  };
+  const resultPromise = globalLLMQueue.then(run, run);
+  globalLLMQueue = resultPromise.catch(() => {});
+  return resultPromise;
+}
+
+/**
  * Executes an HTTP fetch with automatic retry on 5xx/429.
  * When a request fails, backoff sleep listens to callerSignal and throws AbortError immediately.
  */
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
-  timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 240000),
+  timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
   maxRetries = Number(process.env.LLM_MAX_RETRIES || 1),
 ): Promise<Response> {
+  const effectiveTimeoutMs = Math.min(
+    Number(timeoutMs || CLOUDFLARE_MAX_TIMEOUT_MS),
+    CLOUDFLARE_MAX_TIMEOUT_MS,
+  );
   const retry429 =
     process.env.LLM_RETRY_429 === "true" ||
     (process.env.LLM_RETRY_429 !== "false" && maxRetries > 0);
@@ -267,7 +294,7 @@ async function fetchWithRetry(
   for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
     const callerSignal = requestOptions.signal;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
     let compositeSignal = controller.signal;
     if (callerSignal) {
       if (callerSignal.aborted) {
@@ -340,7 +367,9 @@ async function fetchWithRetry(
       }
       lastError =
         err?.name === "AbortError"
-          ? new Error(`LLM request timed out after ${timeoutMs / 1000}s`)
+          ? new Error(
+              `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s (bounded within Cloudflare 120s limit)`,
+            )
           : err instanceof Error
             ? err
             : new Error(String(err));
@@ -397,8 +426,13 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
   const isTokenLimit =
     error instanceof LLMProviderError ? error.isTokenLimit : false;
-  // HTTP 429 rate limits are transient and must NEVER trip the permanent session circuit breaker
-  if (status === 429 || /429|rate[-_ ]?limit/i.test(error.message)) {
+  // HTTP 429 rate limits and Cloudflare 524 timeouts are transient
+  // and must NEVER trip the permanent session circuit breaker
+  if (
+    status === 429 ||
+    status === 524 ||
+    /429|rate[-_ ]?limit|524|timeout occurred/i.test(error.message)
+  ) {
     return false;
   }
   if (
@@ -407,7 +441,7 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     status === 502 ||
     status === 503 ||
     status === 504 ||
-    (status !== undefined && status >= 520 && status <= 526) ||
+    (status !== undefined && status >= 520 && status <= 526 && status !== 524) ||
     isTokenLimit
   )
     return true;
@@ -418,7 +452,7 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     )
   )
     return true;
-  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|524|origin took too long|origin web server|connection error|econnrefused|fetch failed/i.test(
+  return /timed out|timeout|connection timed out|no deployments available|cooldown|413|origin took too long|origin web server|connection error|econnrefused|fetch failed/i.test(
     error.message,
   );
 }
@@ -525,10 +559,13 @@ async function withProviderFallback<T>(
           );
         }
       }
-      const is429 =
-        (normalized instanceof LLMProviderError && normalized.status === 429) ||
-        /429|rate[-_ ]?limit/i.test(normalized.message);
-      if (is429) {
+      const isTransientTimeoutOrRateLimit =
+        (normalized instanceof LLMProviderError &&
+          (normalized.status === 429 || normalized.status === 524)) ||
+        /429|rate[-_ ]?limit|524|timeout occurred/i.test(
+          normalized.message,
+        );
+      if (isTransientTimeoutOrRateLimit) {
         const cooldownMs =
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
             ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
@@ -538,7 +575,7 @@ async function withProviderFallback<T>(
         if (cooldownMs > 0) {
           providerCooldowns.set(provider.id, Date.now() + cooldownMs);
           console.warn(
-            `[llm] ${provider.name} rate limited (429). Placed on ${Math.round(cooldownMs / 1000)}s temporary cooldown, cascading immediately to next provider...`,
+            `[llm] ${provider.name} rate/gateway limited (${normalized.message}). Placed on ${Math.round(cooldownMs / 1000)}s temporary cooldown, cascading immediately to next provider...`,
           );
         }
       }
@@ -562,79 +599,86 @@ async function sendChatCompletion(
     responseFormat?: { type: "json_object" };
   } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "maxRetries" | "signal">,
 ): Promise<string> {
-  let res: Response;
-  const effectiveMaxTokens =
-    provider.id === "groq"
-      ? Math.min(options?.maxTokens || 400, 450)
-      : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
-  try {
-    res = await fetchWithRetry(
-      `${provider.baseUrl}/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          ...(provider.headers || {}),
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: provider.model,
-          messages,
-          // Some third-party OpenAI-compatible gateways default to SSE when the
-          // flag is omitted. Apex expects one JSON response for structured calls.
-          stream: false,
-          temperature:
-            options?.temperature !== undefined ? options.temperature : 0.1,
-          max_tokens: effectiveMaxTokens,
-          ...(options?.responseFormat
-            ? { response_format: options.responseFormat }
-            : {}),
-        }),
-        signal: options?.signal,
-      },
-      options?.timeoutMs,
-      options?.maxRetries,
-    );
-  } catch (error: any) {
-    if (error?.name === "AbortError" || options?.signal?.aborted) {
-      throw error;
+  return withSequentialLLMExecution(async () => {
+    if (options?.signal?.aborted) {
+      const cancelError = new Error("LLM request was aborted by caller.");
+      cancelError.name = "AbortError";
+      throw cancelError;
     }
-    throw new LLMProviderError(
-      provider,
-      undefined,
-      error instanceof Error ? error.message : String(error),
-    );
-  }
+    let res: Response;
+    const effectiveMaxTokens =
+      provider.id === "groq"
+        ? Math.min(options?.maxTokens || 400, 1500)
+        : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+    try {
+      res = await fetchWithRetry(
+        `${provider.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            ...(provider.headers || {}),
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${provider.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: provider.model,
+            messages,
+            // Some third-party OpenAI-compatible gateways default to SSE when the
+            // flag is omitted. Apex expects one JSON response for structured calls.
+            stream: false,
+            temperature:
+              options?.temperature !== undefined ? options.temperature : 0.1,
+            max_tokens: effectiveMaxTokens,
+            ...(options?.responseFormat
+              ? { response_format: options.responseFormat }
+              : {}),
+          }),
+          signal: options?.signal,
+        },
+        options?.timeoutMs,
+        options?.maxRetries,
+      );
+    } catch (error: any) {
+      if (error?.name === "AbortError" || options?.signal?.aborted) {
+        throw error;
+      }
+      throw new LLMProviderError(
+        provider,
+        undefined,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
-  if (!res.ok) {
-    const err = truncateProviderError(await res.text());
-    throw new LLMProviderError(
-      provider,
-      res.status,
-      `chat completion error ${res.status}: ${err}`,
-    );
-  }
+    if (!res.ok) {
+      const err = truncateProviderError(await res.text());
+      throw new LLMProviderError(
+        provider,
+        res.status,
+        `chat completion error ${res.status}: ${err}`,
+      );
+    }
 
-  const data = await res.json();
-  const usage = data?.usage;
-  if (usage && typeof options?.onUsage === "function") {
-    const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
-    const outputTokens = Number(
-      usage.completion_tokens ?? usage.output_tokens ?? 0,
-    );
-    const suppliedTotal = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
-    options.onUsage({
-      inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
-      outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
-      totalTokens:
-        Number.isFinite(suppliedTotal) && suppliedTotal > 0
-          ? suppliedTotal
-          : Math.max(0, inputTokens) + Math.max(0, outputTokens),
-      provider: provider.name,
-      model: provider.model,
-    });
-  }
-  return data.choices?.[0]?.message?.content || "";
+    const data = await res.json();
+    const usage = data?.usage;
+    if (usage && typeof options?.onUsage === "function") {
+      const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+      const outputTokens = Number(
+        usage.completion_tokens ?? usage.output_tokens ?? 0,
+      );
+      const suppliedTotal = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
+      options.onUsage({
+        inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
+        outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
+        totalTokens:
+          Number.isFinite(suppliedTotal) && suppliedTotal > 0
+            ? suppliedTotal
+            : Math.max(0, inputTokens) + Math.max(0, outputTokens),
+        provider: provider.name,
+        model: provider.model,
+      });
+    }
+    return data.choices?.[0]?.message?.content || "";
+  });
 }
 
 /** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
@@ -1605,7 +1649,7 @@ export const searchSpecSchema = {
 // -----------------------------------------------------------------------------
 
 /** Minimal prompt for Step 1 - query generation only. */
-export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce concise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Always use clean natural language keyword phrases (3 to 6 words) without boolean operators (AND/OR/NOT), site: operators, or quotes. Output only valid JSON.`;
+export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce concise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Always use clean natural language keyword phrases (3 to 6 words) without raw boolean operator words (AND/OR/NOT) or site: operators. Balanced double quotes around multi-word roles or niches (e.g. "AI agency") and hyphenated negative exclusions (e.g. -platform) are permitted. Output only valid JSON.`;
 
 /** Focused prompt for Step 3 - initial scouting only. Deep enrichment and email
  * discovery deliberately happen after manual selection. */
@@ -1622,58 +1666,49 @@ Rules: Never invent data. Use empty strings for missing fields. Do not score or 
 export const bulkSingleProfileSchema = {
   type: Type.OBJECT,
   properties: {
-    fullName: { type: Type.STRING, description: "Person's full name" },
+    fullName: { type: Type.STRING, description: "Full name" },
     headline: { type: Type.STRING, description: "Professional headline" },
-    currentCompany: { type: Type.STRING, description: "Current employer" },
+    currentCompany: { type: Type.STRING, description: "Current company" },
     currentTitle: { type: Type.STRING, description: "Current role/title" },
     seniorityLevel: {
       type: Type.STRING,
       description:
-        "Buying authority classification: C-Suite / Founder-Owner / VP / Head / Director / Manager / IC / Assistant / Student / Unknown. Do not classify Assistant to CEO as C-Suite, student club founder as Founder-Owner, or Product Owner as Owner.",
+        "C-Suite, Founder-Owner, VP, Director, Manager, or IC",
     },
     companySizeEst: {
       type: Type.STRING,
-      description:
-        "Company size only when the source explicitly provides it; otherwise UNKNOWN",
+      description: "Company size if stated, else UNKNOWN",
     },
-    location: { type: Type.STRING, description: "City, State or Country" },
+    location: { type: Type.STRING, description: "City, State, or Country" },
     industry: {
       type: Type.STRING,
-      description: "Industry category (e.g. Software, Finance, Healthcare)",
-    },
-    summary: {
-      type: Type.STRING,
-      description: "2-sentence professional summary",
+      description: "Industry category",
     },
     contactDetails: {
       type: Type.OBJECT,
       properties: {
         linkedinUrl: {
           type: Type.STRING,
-          description:
-            "Full public professional profile URL when supplied by source LINK",
+          description: "LinkedIn URL from source LINK",
         },
         website: {
           type: Type.STRING,
-          description: "Company or personal website",
+          description: "Company website",
         },
       },
     },
     sourceProvider: {
       type: Type.STRING,
-      description:
-        "tavily or brightdata, copied from SOURCE_PROVIDER when present",
+      description: "tavily or brightdata",
     },
     evidenceReasons: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
-      description:
-        "1-3 short evidence-backed reasons this prospect matches the user query",
+      description: "1 short evidence reason",
     },
     extractionConfidence: {
       type: Type.NUMBER,
-      description:
-        "How certain the LLM is that the extraction is accurate based directly on source evidence (1-10).",
+      description: "Confidence 1-10",
     },
   },
   required: ["fullName", "extractionConfidence"],

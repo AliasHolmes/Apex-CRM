@@ -326,6 +326,7 @@ export const buildRetrievalTasks = (
 };
 
 import type { ProspectContract } from "./prospectContract.js";
+import { looksLikeCompanyHint } from "./observations.js";
 
 export const buildFallbackQueryPlan = (
   query: string,
@@ -426,6 +427,8 @@ export const buildStrategistPrompt = (params: {
   missingRequirementIds?: string[];
   discoveredCompanies?: string[];
   knownCompanyEntities?: string[];
+  isRecovery?: boolean;
+  recoveryAttempt?: number;
   logEvent?: (msg: string) => void;
 }) => {
   // Token diet: by late rounds the full query history dominates the prompt.
@@ -455,9 +458,23 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
       ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(", ")}`
       : "";
 
+  const recoveryDirective = params.isRecovery
+    ? `\nRECOVERY DIRECTIVE (Attempt ${params.recoveryAttempt || 1}/2):
+Prior rounds had low yield or missed specific criteria.
+- Pivot to fresh, unvisited metropolitan hubs and tech clusters (e.g. Austin, London, Toronto, Sydney, Denver, Manchester).
+- Rotate leadership title synonyms (e.g. "managing director", "principal", "managing partner", "executive director", "co-founder").
+- Explore adjacent client-service vertical phrasing (e.g. "AI consulting", "AI solutions", "machine learning agency").
+- Maintain single-concept clarity: NEVER concatenate multiple roles or locations into a single bloated query.
+- NEVER append generic terms like "profile", "public profile", or "professional profile".`
+    : "";
+
+  const validDiscoveredCompanies = (params.discoveredCompanies || []).filter((c) =>
+    looksLikeCompanyHint(c),
+  );
+
   const flywheelNote =
-    params.discoveredCompanies && params.discoveredCompanies.length > 0
-      ? `\nDISCOVERED COMPANIES WITH ACTIVE SIGNALS (generate person queries targeting decision makers at these companies): ${params.discoveredCompanies.slice(0, 5).join(", ")}`
+    validDiscoveredCompanies.length > 0
+      ? `\nDISCOVERED COMPANIES WITH ACTIVE SIGNALS (generate person queries targeting decision makers at these companies): ${validDiscoveredCompanies.slice(0, 5).join(", ")}`
       : "";
 
   const knownCompaniesNote =
@@ -476,11 +493,10 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   }
   if (
     params.logEvent &&
-    params.discoveredCompanies &&
-    params.discoveredCompanies.length > 0
+    validDiscoveredCompanies.length > 0
   ) {
     params.logEvent(
-      `[Strategist] Injected reverse flywheel target companies into prompt: [${params.discoveredCompanies.slice(0, 5).join(", ")}]`,
+      `[Strategist] Injected reverse flywheel target companies into prompt: [${validDiscoveredCompanies.slice(0, 5).join(", ")}]`,
     );
   }
   if (
@@ -586,6 +602,7 @@ Structured targeting spec: ${specStr}
 Discovery mode: ${discoveryMode}
 ${requirementDigest}
 ${missingNote}
+${recoveryDirective}
 ${flywheelNote}
 ${knownCompaniesNote}
 ${failNote}

@@ -12,6 +12,7 @@ import {
   enforceContractQueries,
   buildSignalLaneQueries
 } from '../server/leadSearch/prospectContract.js';
+import { looksLikeCompanyHint } from '../server/leadSearch/observations.js';
 
 describe('Query Sanitization & Multi-Metro Geographic Expansion', () => {
   it('keeps country and state prompts strictly in person_first mode (no local_business hijacking)', () => {
@@ -99,5 +100,40 @@ describe('Query Sanitization & Multi-Metro Geographic Expansion', () => {
     for (const sq of signalQueries) {
       assert.ok(!sq.query.includes(' OR '), `Signal query "${sq.query}" must not contain " OR "`);
     }
+  });
+
+  it('enforceContractQueries does not clobber queries that already target recognized metros', () => {
+    const contract = buildDeterministicProspectContract(
+      'AI agency owner from Australia',
+      buildFallbackSearchSpec('AI agency owner from Australia')
+    );
+    // Query targeting Sydney should be recognized as satisfying Australia, without forcing "Australia" or "USA" onto it
+    const sydneyPlan = enforceContractQueries([{ query: '"AI agency" founder Sydney' }], contract);
+    assert.ok(sydneyPlan.length > 0);
+    assert.equal(sydneyPlan[0].query, '"AI agency" founder Sydney');
+
+    // Query targeting London for UK contract
+    const ukContract = buildDeterministicProspectContract(
+      'AI agency founder from UK',
+      buildFallbackSearchSpec('AI agency founder from UK')
+    );
+    const londonPlan = enforceContractQueries([{ query: '"AI consultancy" CEO London' }], ukContract);
+    assert.ok(londonPlan.length > 0);
+    assert.equal(londonPlan[0].query, '"AI consultancy" CEO London');
+
+    // Does not append -software if the query already has client-service vertical words
+    assert.ok(!sydneyPlan[0].query.includes('-software'));
+    assert.ok(!londonPlan[0].query.includes('-software'));
+  });
+
+  it('looksLikeCompanyHint rejects publishing, media, and video platforms', () => {
+    assert.equal(looksLikeCompanyHint('youtube'), false);
+    assert.equal(looksLikeCompanyHint('itbrew'), false);
+    assert.equal(looksLikeCompanyHint('medium'), false);
+    assert.equal(looksLikeCompanyHint('substack'), false);
+    assert.equal(looksLikeCompanyHint('reddit'), false);
+    assert.equal(looksLikeCompanyHint('seekout blog'), false);
+    assert.equal(looksLikeCompanyHint('TechFlow AI'), true);
+    assert.equal(looksLikeCompanyHint('Acme Consulting'), true);
   });
 });

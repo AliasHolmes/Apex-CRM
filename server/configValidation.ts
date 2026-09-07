@@ -30,8 +30,8 @@ export function validateEngineConfig(): string[] {
     ["TAVILY_SEARCH_CONCURRENCY", 8],
     ["BRIGHTDATA_SEARCH_CONCURRENCY", 8],
     ["BRIGHTDATA_PROFILE_CONCURRENCY", 8],
-    ["LEAD_EXTRACTION_CONCURRENCY", 4],
-    ["FINALIST_JUDGE_CONCURRENCY", 8],
+    ["LEAD_EXTRACTION_CONCURRENCY", 2],
+    ["FINALIST_JUDGE_CONCURRENCY", 2],
     ["LINKEDIN_POST_INTENT_CONCURRENCY", 8],
   ] as const) {
     const value = num(name);

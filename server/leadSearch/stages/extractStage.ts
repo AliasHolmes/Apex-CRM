@@ -418,15 +418,15 @@ export async function executeExtractStage(
 
   // 4. Token budget calculation and chunking
   const extractionChunkChars = Math.min(
-    Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 16000), 1800),
+    Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000), 1800),
     32000,
   );
   const configuredExtractionMaxTokens = Math.min(
-    Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3000), 800),
+    Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 2000), 800),
     6000,
   );
   const providerTokenBudget = Math.min(
-    Math.max(Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 16000), 4000),
+    Math.max(Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 24000), 4000),
     120_000,
   );
   const tokenSafetyMargin = Math.min(
@@ -442,7 +442,7 @@ Rules:
 - If LINK is not a linkedin.com/in/ URL or is missing, leave contactDetails.linkedinUrl empty.
 - Preserve SOURCE_PROVIDER as sourceProvider.
 - Score conservatively from 1-10 using only visible evidence.
-- Add evidenceReasons as 1-3 short factual summaries of the person's role/company from the snippet.
+- Add evidenceReasons as 1 short factual summary of the person's role/company from the snippet.
 - Do not filter out individuals or evaluate subjective criteria; extract all visible professional entities faithfully.
 
 Evidence:
@@ -453,7 +453,7 @@ Evidence:
     estimateTokenCount(JSON.stringify(bulkLeadsArraySchema)) +
     500;
   const evidenceTokenBudget = Math.max(
-    1000,
+    1500,
     Math.min(
       Math.floor(extractionChunkChars / 4),
       providerTokenBudget -
@@ -517,6 +517,7 @@ Evidence:
               temperature: 0.0,
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
+              timeoutMs: 115_000,
               onProviderAttempt: (attempt) =>
                 extractionProviderAttempts.push(attempt),
             },
@@ -640,7 +641,17 @@ Evidence:
     }
   });
 
-  const extractionConcurrency = config.extractionConcurrency || 1;
+  const extractionConcurrency = Math.min(
+    Math.max(
+      Number(
+        config.extractionConcurrency ||
+          process.env.LEAD_EXTRACTION_CONCURRENCY ||
+          1,
+      ),
+      1,
+    ),
+    1,
+  );
   const extractionResults = await runProviderQueue(
     extractionTasks.map((run, index) => ({
       id: `${config.sessionId}:extraction:r${round}:chunk${index + 1}`,

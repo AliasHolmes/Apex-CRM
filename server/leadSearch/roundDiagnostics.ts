@@ -90,6 +90,7 @@ export function buildRoundDiagnostics(params: {
   contract: ProspectContract;
   targetLimit: number;
   alreadyQualified?: number;
+  maxRounds?: number;
 }): RoundDiagnostics {
   const requirements = params.contract.requirements.map(requirement => {
     let pass = 0;
@@ -161,7 +162,8 @@ export function buildRoundDiagnostics(params: {
 
   const banked = params.alreadyQualified ?? 0;
   const totalViable = banked + viableCandidates;
-  const targetThreshold = Math.ceil(params.targetLimit * 0.5);
+  const targetThreshold = Math.ceil(params.targetLimit * 0.35);
+  const shouldRecover = totalViable < targetThreshold || missingHardRequirementIds.length > 0;
   const rejectedCompaniesList = Array.from(rejectedCompanies).slice(0, 8);
   return {
     round: params.round,
@@ -170,7 +172,7 @@ export function buildRoundDiagnostics(params: {
     viableCandidates,
     requirements,
     missingHardRequirementIds,
-    shouldRecover: totalViable < targetThreshold || missingHardRequirementIds.length > 0,
+    shouldRecover,
     classSummary,
     observedNonMatchingAttributes: {
       locations: Array.from(nonMatchingLocations).slice(0, 8),

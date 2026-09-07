@@ -129,7 +129,7 @@ export async function executeJudgeStage(
 
   const maxBatchSize = Math.max(
     1,
-    Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 8)),
+    Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 3)),
   );
   const providerTokenBudget = Math.max(
     4_000,
@@ -234,8 +234,8 @@ export async function executeJudgeStage(
       let judgeUsage: LLMUsage | undefined;
       const judgePrompt = buildFinalistJudgePrompt(contract, batch);
       const dynamicMaxTokens = Math.min(
-        5_000,
-        Math.max(900, batch.length * 500),
+        1_200,
+        Math.max(350, batch.length * 200),
       );
       const estimatedInputTokens = estimateTokenCount(judgePrompt);
       try {
@@ -247,12 +247,12 @@ export async function executeJudgeStage(
             maxTokens: dynamicMaxTokens,
             temperature: 0,
             retryOnParseFailure: false,
-            timeoutMs: Math.max(
-              180_000,
+            timeoutMs: Math.min(
+              115_000,
               Number(
                 process.env.LLM_FINALIST_TIMEOUT_MS ||
                   process.env.LLM_TIMEOUT_MS ||
-                  180_000,
+                  115_000,
               ),
             ),
             circuitBreaker: llmCircuitBreaker,
@@ -477,7 +477,7 @@ export async function executeJudgeStage(
         run: async () => evaluateFinalistBatch(batch, batchIndex),
       })),
       {
-        concurrency: config.judgeConcurrency || 2,
+        concurrency: Math.min(config.judgeConcurrency || 1, 1),
         signal: state.abortController.signal,
       },
     );
@@ -685,14 +685,14 @@ export async function evaluateIncrementalJudgeBatches(
     return { qualifiedCandidates, judgmentInsights };
   }
 
-  // Micro-batch size: 3-4 candidates per batch for optimal token amortization and zero omission
+  // Micro-batch size: 2 candidates per batch for optimal latency on reasoning models
   const microBatchSize = Math.max(
-    2,
-    Math.min(4, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 3)),
+    1,
+    Math.min(4, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 2)),
   );
   const judgeConcurrency = Math.max(
     1,
-    Math.min(3, config.judgeConcurrency || 2),
+    Math.min(1, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
   );
 
   const microBatches: FinalistCandidate[][] = [];
@@ -760,8 +760,8 @@ export async function evaluateIncrementalJudgeBatches(
     let judgeUsage: LLMUsage | undefined;
     const judgePrompt = buildFinalistJudgePrompt(contract, batch);
     const dynamicMaxTokens = Math.min(
-      2_500,
-      Math.max(600, batch.length * 450),
+      1_200,
+      Math.max(350, batch.length * 200),
     );
     const estimatedInputTokens = estimateTokenCount(judgePrompt);
 
@@ -774,12 +774,12 @@ export async function evaluateIncrementalJudgeBatches(
           maxTokens: dynamicMaxTokens,
           temperature: 0,
           retryOnParseFailure: false,
-          timeoutMs: Math.max(
-            180_000,
+          timeoutMs: Math.min(
+            115_000,
             Number(
               process.env.LLM_FINALIST_TIMEOUT_MS ||
                 process.env.LLM_TIMEOUT_MS ||
-                180_000,
+                115_000,
             ),
           ),
           circuitBreaker: llmCircuitBreaker,
@@ -961,11 +961,14 @@ export async function evaluateIncrementalJudgeBatches(
 
   for (let w = 0; w < waves.length; w++) {
     const waveBatches = waves[w];
-    const waveResults = await Promise.all(
-      waveBatches.map((batch, idx) =>
-        evaluateSingleBatch(batch, w * judgeConcurrency + idx),
-      ),
-    );
+    const waveResults: any[][] = [];
+    for (let idx = 0; idx < waveBatches.length; idx++) {
+      const batchResult = await evaluateSingleBatch(
+        waveBatches[idx],
+        w * judgeConcurrency + idx,
+      );
+      waveResults.push(batchResult);
+    }
     const newlyQualified = waveResults.flat();
     qualifiedCandidates.push(...newlyQualified);
     cumulativeQualified += newlyQualified.length;

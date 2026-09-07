@@ -1,6 +1,7 @@
 import {
   fuseObservations,
   extractCompanyHintDeterministic,
+  looksLikeCompanyHint,
   isSignalObservation,
   type ScoutObservation,
 } from "../observations.js";
@@ -182,7 +183,7 @@ export async function executeFuseStage(
     // STREAM 3: Account Lane -> Register company evidence decisively
     if (isAccount) {
       const companyHint = extractCompanyHintDeterministic(observation) || (username ? username : "");
-      if (companyHint && ctx.state.signalStore) {
+      if (companyHint && looksLikeCompanyHint(companyHint) && ctx.state.signalStore) {
         ctx.state.signalStore.registerDiscoveredCompany(
           companyHint,
           `${observation.title} - ${observation.content}`.trim(),

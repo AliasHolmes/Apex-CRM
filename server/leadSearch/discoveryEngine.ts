@@ -188,7 +188,7 @@ import {
 import {
   buildDeterministicProspectContract,
   buildProspectContractPrompt,
-  buildRecoveryQueryPrompt,
+  COUNTRY_TO_METROS,
   enforceContractQueries,
   normalizeProspectContract,
   prospectContractSchema,
@@ -346,6 +346,7 @@ export function isExcludedCandidate(
 export { mapCandidateToPersistedLead } from "./leadMapping.js";
 
 import { mapCandidateToPersistedLead } from "./leadMapping.js";
+
 
 export type ExecuteDiscoveryOptions = {
   sessionId: string;
@@ -769,8 +770,8 @@ export async function executeDiscoverySession(
               temperature: 0,
               signal: sessionAbortController.signal,
               timeoutMs: Math.min(
-                Number(process.env.LLM_CONTRACT_TIMEOUT_MS || 15000),
-                25000,
+                Number(process.env.LLM_CONTRACT_TIMEOUT_MS || 90000),
+                115000,
               ),
               maxRetries: 0,
               retryOnParseFailure: false,
@@ -1060,12 +1061,12 @@ export async function executeDiscoverySession(
       profileConcurrency,
       profileMaxPerSearch,
       extractionConcurrency: Math.min(
-        Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 2), 1),
-        4,
+        Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1),
+        1,
       ),
       judgeConcurrency: Math.min(
-        Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 3), 1),
-        6,
+        Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 1), 1),
+        1,
       ),
     };
 
@@ -1268,15 +1269,19 @@ export async function executeDiscoverySession(
           0.15,
           Math.min(1.0, Number(previousRoundSummary?.judgePassRateEstimate) || defaultJudgePassRate),
         );
+        const rationalizedPoolCeiling = Math.min(
+          collectionCapacity.candidateCeiling,
+          Math.max(28, Math.ceil(targetLimit * 1.6)),
+        );
         const roundStagePoolTarget = isFlagEnabled.progressiveQualification()
           ? (effectiveQualifiedCount >= qualifiedTargetWithCushion
               ? rerankPoolTarget
               : Math.min(
-                  collectionCapacity.candidateCeiling,
+                  rationalizedPoolCeiling,
                   Math.max(
                     rerankPoolTarget,
                     acceptedLeads.length + collectionCapacity.candidateBatchSize,
-                    Math.ceil((qualifiedTargetWithCushion * 1.33) / passRateForTarget),
+                    Math.ceil((qualifiedTargetWithCushion * 1.25) / passRateForTarget),
                   ),
                 ))
           : rerankPoolTarget;
@@ -1391,14 +1396,25 @@ export async function executeDiscoverySession(
             .filter((r: any) => r.scope === "person_location")
             .flatMap((r: any) => r.acceptableTerms || [])
             .filter(Boolean);
-          const topMetros = [
+
+          // Resolve country terms into their primary tech metros to avoid top-SERP saturation
+          const mappedMetros: string[] = [];
+          for (const term of locTerms) {
+            const cleanTerm = String(term || "").trim().toLowerCase();
+            if (COUNTRY_TO_METROS[cleanTerm]) {
+              mappedMetros.push(...COUNTRY_TO_METROS[cleanTerm]);
+            } else if (cleanTerm.length > 2 && !/^(any|all|global|worldwide|remote)$/i.test(cleanTerm)) {
+              mappedMetros.push(term);
+            }
+          }
+
+          const fallbackMetros = [
             "London", "New York", "San Francisco", "Austin", "Toronto",
-            "Sydney", "Chicago", "Boston", "Los Angeles", "Seattle", "Melbourne", "Berlin"
+            "Sydney", "Melbourne", "Chicago", "Boston", "Los Angeles", "Seattle", "Berlin"
           ];
-          const candidateLocations =
-            locTerms.length > 0
-              ? Array.from(new Set([...locTerms, ...topMetros]))
-              : topMetros;
+          const candidateLocations = Array.from(
+            new Set(mappedMetros.length > 0 ? mappedMetros : fallbackMetros)
+          );
 
           const companyTypeReq = (contract?.requirements || []).find(
             (r: any) => r.scope === "company_type" || r.scope === "company_industry",
@@ -1408,14 +1424,21 @@ export async function executeDiscoverySession(
             .trim();
           const verticalTerm = verticalBase.includes(" ") ? `"${verticalBase}"` : verticalBase;
 
-          for (let pass = 1; pass <= 2 && candidateItems.length < desiredBatchThreshold; pass++) {
+          const saturatedGeos = new Set<string>();
+          const maxReplenishPasses = 4;
+          for (let pass = 1; pass <= maxReplenishPasses && candidateItems.length < desiredBatchThreshold; pass++) {
             let replenishQuery = "";
-            for (const loc of candidateLocations) {
-              for (const role of baseRoles) {
+            let chosenLoc = "";
+            for (let lIdx = 0; lIdx < candidateLocations.length; lIdx++) {
+              const loc = candidateLocations[(pass - 1 + lIdx) % candidateLocations.length];
+              if (saturatedGeos.has(loc.toLowerCase())) continue;
+              for (let rIdx = 0; rIdx < baseRoles.length; rIdx++) {
+                const role = baseRoles[(pass - 1 + rIdx) % baseRoles.length];
                 const q = `${verticalTerm} ${role} ${loc}`.replace(/\s+/g, " ").trim();
                 const key = q.toLowerCase();
                 if (!seenQueryTexts.has(key)) {
                   replenishQuery = q;
+                  chosenLoc = loc;
                   seenQueryTexts.add(key);
                   generatedQueries.push(q);
                   break;
@@ -1427,7 +1450,7 @@ export async function executeDiscoverySession(
             if (!replenishQuery) break;
 
             logEvent(
-              `[Dynamic Replenishment] Round ${round}: CRM duplicates starved batch (${candidateItems.length}/${desiredBatchThreshold}). Running replenishment pass ${pass}/2 for "${replenishQuery}".`,
+              `[Dynamic Replenishment] Round ${round}: CRM duplicates starved batch (${candidateItems.length}/${desiredBatchThreshold}). Running replenishment pass ${pass}/${maxReplenishPasses} for "${replenishQuery}".`,
             );
 
             const replenishStart = Date.now();
@@ -1486,8 +1509,12 @@ export async function executeDiscoverySession(
                 if (candidateItems.length >= desiredBatchThreshold) break;
               }
 
+              if (addedCount === 0 && rawReplenishItems.length > 0 && chosenLoc) {
+                saturatedGeos.add(chosenLoc.toLowerCase());
+              }
+
               logEvent(
-                `[Dynamic Replenishment] Pass ${pass}/2 added ${addedCount} candidate(s); batch now at ${candidateItems.length}/${desiredBatchThreshold}.`,
+                `[Dynamic Replenishment] Pass ${pass}/${maxReplenishPasses} added ${addedCount} candidate(s); batch now at ${candidateItems.length}/${desiredBatchThreshold}.`,
               );
               stats.queryRuns.push({
                 round,
@@ -1688,6 +1715,7 @@ export async function executeDiscoverySession(
           contract,
           targetLimit,
           alreadyQualified: accumulatedViableCount,
+          maxRounds: maxRounds || 6,
         });
 
         accumulatedViableCount += roundDiagnosticsObj.viableCandidates;

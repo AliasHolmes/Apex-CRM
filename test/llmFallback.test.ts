@@ -467,5 +467,80 @@ describe('LLM gateway and provider fallback', () => {
     const newCalls = calls.slice(callsBefore3);
     assert.equal(newCalls.some(u => u.includes('127.0.0.1:4000')), false);
   });
+
+  it('exports CLOUDFLARE_MAX_TIMEOUT_MS clamped to 115s', async () => {
+    const llm = await importLLM('cf-timeout');
+    assert.equal(llm.CLOUDFLARE_MAX_TIMEOUT_MS, 115_000);
+  });
+
+  it('guarantees strict sequential execution through withSequentialLLMExecution', async () => {
+    const llm = await importLLM('sequential');
+    const events: string[] = [];
+
+    const task1 = () =>
+      llm.withSequentialLLMExecution(async () => {
+        events.push('start:1');
+        await new Promise((r) => setTimeout(r, 40));
+        events.push('end:1');
+        return 1;
+      });
+
+    const task2 = () =>
+      llm.withSequentialLLMExecution(async () => {
+        events.push('start:2');
+        await new Promise((r) => setTimeout(r, 20));
+        events.push('end:2');
+        return 2;
+      });
+
+    const task3 = () =>
+      llm.withSequentialLLMExecution(async () => {
+        events.push('start:3');
+        await new Promise((r) => setTimeout(r, 10));
+        events.push('end:3');
+        return 3;
+      });
+
+    // Launch all three concurrently:
+    const results = await Promise.all([task1(), task2(), task3()]);
+    assert.deepEqual(results, [1, 2, 3]);
+    // Must be completely sequential: 1 ends before 2 starts, 2 ends before 3 starts
+    assert.deepEqual(events, [
+      'start:1',
+      'end:1',
+      'start:2',
+      'end:2',
+      'start:3',
+      'end:3',
+    ]);
+  });
+
+  it('does NOT trip permanent circuit breaker on Cloudflare 524 gateway timeout', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('cf-524');
+    const circuitBreaker = llm.createLLMSessionCircuitBreaker(2);
+
+    globalThis.fetch = async (url: any) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('byesu.com')) {
+        return new Response('<html><title>524: A timeout occurred</title></html>', {
+          status: 524,
+          headers: { 'Content-Type': 'text/html' },
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter recovered' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test prompt', undefined, { circuitBreaker });
+    assert.equal(res.text, 'openrouter recovered');
+    // Primary provider was placed on cooldown, NOT permanently disabled by circuit breaker
+    assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
+  });
 });
+
 

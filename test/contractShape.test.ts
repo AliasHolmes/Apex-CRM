@@ -199,6 +199,18 @@ describe('Phase 1: Requirement Taxonomy', () => {
         assert.equal(req.queryHardness, 'distributed_across_queries');
       }
     });
+
+    it('extracts all countries when buying intent and slashes are present in brief', () => {
+      const brief = 'AI agency owner from USA/UK/Canada/Australia with hiring intent';
+      const contract = buildDeterministicProspectContract(brief, minimalSpec);
+      const locReq = contract.requirements.find(r => r.scope === 'person_location');
+      assert.ok(locReq, 'Should have person_location requirement');
+      const terms = locReq.acceptableTerms.map(t => t.toLowerCase());
+      assert.ok(terms.some(t => t.includes('usa') || t.includes('united states')), 'Should include USA');
+      assert.ok(terms.some(t => t.includes('uk') || t.includes('united kingdom')), 'Should include UK');
+      assert.ok(terms.some(t => t.includes('canada') || t.includes('canadian')), 'Should include Canada');
+      assert.ok(terms.some(t => t.includes('australia') || t.includes('australian')), 'Should include Australia');
+    });
   });
 
   describe('normalizeProspectContract()', () => {

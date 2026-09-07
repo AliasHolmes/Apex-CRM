@@ -21,7 +21,6 @@ import {
 } from "../searchSpec.js";
 import {
   enforceContractQueries,
-  buildRecoveryQueryPrompt,
 } from "../prospectContract.js";
 import { scheduleAdaptiveRetrievalTasks, deriveDomainCluster } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
@@ -101,176 +100,160 @@ export async function executePlanStage(
   );
 
   const localDebugLogs: any[] = [];
-  let strategistPrompt = "";
+  const currentRecoveryAttempt = isRecoveryMode ? ((state.recoveryAttempts || 0) + 1) : 0;
   if (isRecoveryMode) {
-    const currentAttempt = (state.recoveryAttempts || 0) + 1;
     const missingHardReqs =
       Array.isArray((state.previousRoundSummary as any)?.missingHardRequirementIds)
         ? (state.previousRoundSummary as any).missingHardRequirementIds
         : [];
-    const viableCount = Number(
-      (state.previousRoundSummary as any)?.viableCandidates || 0,
-    );
-    strategistPrompt = buildRecoveryQueryPrompt(config.contract, {
-      missingHardRequirementIds: missingHardReqs,
-      viableCandidates: viableCount,
-    });
     logEvent(
-      `Round ${round}: executing recovery query planning (attempt ${currentAttempt}/2) for missing criteria: [${missingHardReqs.join(", ")}].`,
+      `Round ${round}: executing recovery query planning (attempt ${currentRecoveryAttempt}/2) with Scout Strategist for missing criteria: [${missingHardReqs.join(", ")}].`,
     );
-  } else {
-    const signalCompanies = ctx.state.signalStore
-      ? ctx.state.signalStore.getUniqueCompanyNames()
-      : [];
-    const crmCompanies = readStoredCompanyNames(100);
-    const knownCompanyEntities = Array.from(
-      new Set([...crmCompanies, ...signalCompanies]),
-    );
-
-    strategistPrompt = buildScoutStrategistPrompt({
-      query: config.promptQuery,
-      spec: searchSpec,
-      round,
-      maxRounds: config.maxRounds,
-      remaining,
-      previousQueries: generatedQueries,
-      previousRoundSummary: state.previousRoundSummary as any,
-      queryPerformance: historicalYield,
-      discoveryMode: discoveryProviderMode,
-      contract: config.contract,
-      missingRequirementIds: (state.previousRoundSummary as any)
-        ?.missingHardRequirementIds,
-      discoveredCompanies: signalCompanies,
-      knownCompanyEntities,
-      logEvent,
-    });
   }
+
+  const signalCompanies = ctx.state.signalStore
+    ? ctx.state.signalStore.getUniqueCompanyNames()
+    : [];
+  const crmCompanies = readStoredCompanyNames(100);
+  const knownCompanyEntities = Array.from(
+    new Set([...crmCompanies, ...signalCompanies]),
+  );
+
+  const strategistPrompt = buildScoutStrategistPrompt({
+    query: config.promptQuery,
+    spec: searchSpec,
+    round,
+    maxRounds: config.maxRounds,
+    remaining,
+    previousQueries: generatedQueries,
+    previousRoundSummary: state.previousRoundSummary as any,
+    queryPerformance: historicalYield,
+    discoveryMode: discoveryProviderMode,
+    contract: config.contract,
+    missingRequirementIds: (state.previousRoundSummary as any)
+      ?.missingHardRequirementIds,
+    discoveredCompanies: signalCompanies,
+    knownCompanyEntities,
+    isRecovery: isRecoveryMode,
+    recoveryAttempt: currentRecoveryAttempt,
+    logEvent,
+  });
 
   let planItems: SearchQueryPlanItem[] = [];
   const strategyStarted = Date.now();
   const strategyProviderAttempts: LLMProviderAttempt[] = [];
   const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
 
-  if (
-    round === 1 &&
-    !isRecoveryMode &&
-    Array.isArray(config.contract?.initialQueries) &&
-    config.contract.initialQueries.length > 0
-  ) {
-    planItems = config.contract.initialQueries;
-    logEvent(
-      `Round 1: using ${planItems.length} initial contract queries without additional strategist call.`,
-    );
+  try {
     recordTrace({
       phase: "strategy",
-      operation: "contract_initial_queries",
-      status: "success",
-      provider: "system",
-      round: 1,
-      latencyMs: 0,
-      counts: { generatedQueries: planItems.length },
+      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+      status: "started",
+      provider: "llm",
+      round,
+      metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
     });
-  } else {
-    try {
-      recordTrace({
-        phase: "strategy",
-        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-        status: "started",
-        provider: "llm",
-        round,
-        metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
-      });
-      const queryResult = await openAIStructured<any>(
+    const queryResult = await openAIStructured<any>(
+      strategistPrompt,
+      searchQueriesSchema,
+      STRATEGIST_SYSTEM_PROMPT,
+      {
+        maxTokens: 800,
+        temperature: 0.1,
+        circuitBreaker: state.llmCircuitBreaker,
+        signal: effectiveSignal,
+        onProviderAttempt: (attempt) =>
+          strategyProviderAttempts.push(attempt),
+      },
+    );
+    const reqLog = {
+      timestamp: new Date().toISOString(),
+      type: "llm_request",
+      label,
+      model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
+      prompt: strategistPrompt,
+      systemInstruction: STRATEGIST_SYSTEM_PROMPT,
+      response: queryResult,
+    };
+    localDebugLogs.push(reqLog);
+    if (!input.isSpeculative) {
+      state.debugLogs.push(reqLog);
+    }
+    planItems = normalizeQueryPlanItems(queryResult);
+    if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
+      state.recoveryAttempts = (state.recoveryAttempts || 0) + 1;
+    }
+    recordTrace({
+      phase: "strategy",
+      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+      status: "success",
+      provider: "llm",
+      round,
+      latencyMs: Date.now() - strategyStarted,
+      counts: { generatedQueries: planItems.length },
+      llm: summarizeLLM(
+        "strategy",
         strategistPrompt,
-        searchQueriesSchema,
-        STRATEGIST_SYSTEM_PROMPT,
-        {
-          maxTokens: 800,
-          temperature: 0.1,
-          circuitBreaker: state.llmCircuitBreaker,
-          signal: effectiveSignal,
-          onProviderAttempt: (attempt) =>
-            strategyProviderAttempts.push(attempt),
-        },
-      );
-      const reqLog = {
-        timestamp: new Date().toISOString(),
-        type: "llm_request",
-        label,
-        model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
-        prompt: strategistPrompt,
-        systemInstruction: STRATEGIST_SYSTEM_PROMPT,
-        response: queryResult,
-      };
-      localDebugLogs.push(reqLog);
-      if (!input.isSpeculative) {
-        state.debugLogs.push(reqLog);
-      }
-      planItems = normalizeQueryPlanItems(queryResult);
-      if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
-        state.recoveryAttempts = (state.recoveryAttempts || 0) + 1;
-      }
-      recordTrace({
-        phase: "strategy",
-        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-        status: "success",
-        provider: "llm",
-        round,
-        latencyMs: Date.now() - strategyStarted,
-        counts: { generatedQueries: planItems.length },
-        llm: summarizeLLM(
-          "strategy",
-          strategistPrompt,
-          queryResult,
-          Date.now() - strategyStarted,
-          0,
-          strategyProviderAttempts,
-        ),
-      });
-    } catch (e: any) {
-      if (effectiveSignal?.aborted) {
-        logEvent(`Round ${round}: planning was aborted by generation guard.`);
-        return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
-      }
-      recordTrace({
-        phase: "strategy",
-        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-        status: "error",
-        provider: "llm",
-        round,
-        latencyMs: Date.now() - strategyStarted,
-        error: { message: e.message || String(e) },
-        llm: summarizeLLM(
-          "strategy",
-          strategistPrompt,
-          "",
-          Date.now() - strategyStarted,
-          0,
-          strategyProviderAttempts,
-        ),
-      });
-      logEvent(
-        `WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
-      );
-      const errLog = {
-        timestamp: new Date().toISOString(),
-        type: "llm_error",
-        label,
-        prompt: strategistPrompt,
-        error: e.message,
-      };
-      localDebugLogs.push(errLog);
-      if (!input.isSpeculative) {
-        state.debugLogs.push(errLog);
-      }
+        queryResult,
+        Date.now() - strategyStarted,
+        0,
+        strategyProviderAttempts,
+      ),
+    });
+  } catch (e: any) {
+    if (effectiveSignal?.aborted) {
+      logEvent(`Round ${round}: planning was aborted by generation guard.`);
+      return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
+    }
+    recordTrace({
+      phase: "strategy",
+      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+      status: "error",
+      provider: "llm",
+      round,
+      latencyMs: Date.now() - strategyStarted,
+      error: { message: e.message || String(e) },
+      llm: summarizeLLM(
+        "strategy",
+        strategistPrompt,
+        "",
+        Date.now() - strategyStarted,
+        0,
+        strategyProviderAttempts,
+      ),
+    });
+    logEvent(
+      `WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
+    );
+    const errLog = {
+      timestamp: new Date().toISOString(),
+      type: "llm_error",
+      label,
+      prompt: strategistPrompt,
+      error: e.message,
+    };
+    localDebugLogs.push(errLog);
+    if (!input.isSpeculative) {
+      state.debugLogs.push(errLog);
     }
   }
 
   if (planItems.length === 0) {
-    planItems = buildScoutFallbackQueryPlan(config.promptQuery, searchSpec);
-    logEvent(
-      `Round ${round}: using ${planItems.length} deterministic fallback queries.`,
-    );
+    if (
+      round === 1 &&
+      Array.isArray(config.contract?.initialQueries) &&
+      config.contract.initialQueries.length > 0
+    ) {
+      planItems = config.contract.initialQueries;
+      logEvent(
+        `Round 1: using ${planItems.length} initial contract fallback queries.`,
+      );
+    } else {
+      planItems = buildScoutFallbackQueryPlan(config.promptQuery, searchSpec);
+      logEvent(
+        `Round ${round}: using ${planItems.length} deterministic fallback queries.`,
+      );
+    }
   }
 
   planItems = enforceContractQueries(planItems, config.contract);

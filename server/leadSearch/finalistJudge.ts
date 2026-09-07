@@ -157,7 +157,8 @@ CORE RULES:
    - "fail" is used when evidence explicitly contradicts a hard requirement.
 6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
 7. SIGNAL REQUIREMENTS: If a requirement represents a dynamic buying signal (e.g. hiring triggers, funding events, tooling/tech stack signals), assign status "unknown" -- never "fail" -- when the candidate's evidence packet lacks job postings or open-web signal snippets. Only assign "fail" if the evidence explicitly contradicts the requirement (e.g. business is defunct). Never reject a verified decision-maker solely because an open-web signal could not be corroborated from their profile bio.
-8. SCORING SCALE: For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).`;
+8. SCORING SCALE: For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).
+9. CONCISE OUTPUT FORMAT: Keep any internal reasoning concise (under 60 words total) and immediately emit the JSON judgment block. Do not write lengthy essays or chain-of-thought disclaimers.`;
 
 const clampEnvInt = (
   name: string,
@@ -991,24 +992,73 @@ export function triPartitionCandidatesByEvidence(
     }
 
     // 2. Check Strict Positive Matches (Auto-Pass Gate)
-    if (
-      hasOpenWebSignalHardReqs ||
-      !hardRequirements.length ||
-      Boolean(lead._ablatedRequirementId) ||
-      !hardRequirements.every((requirement) =>
+    const matchesAllStructured =
+      hardRequirements.length > 0 &&
+      !Boolean(lead._ablatedRequirementId) &&
+      hardRequirements.every((requirement) =>
         hasStrictStructuredMatch(lead, requirement),
-      )
-    ) {
+      );
+
+    if (!matchesAllStructured) {
       needsJudge.push(candidate);
       continue;
     }
 
+    // Candidate strictly satisfies every structured hard requirement (role, company, location).
+    // Now evaluate open-web signal requirements if any exist:
+    let hasSignalCorroboration = false;
+    if (hasOpenWebSignalHardReqs) {
+      const signalTexts = [
+        lead.evidence?.evidenceBlock || "",
+        ...(Array.isArray(lead.evidence?.snippets)
+          ? lead.evidence.snippets.map((s: any) =>
+              typeof s === "string" ? s : s?.text || "",
+            )
+          : []),
+        lead.companyIntentEvidence?.snippets?.join(" ") || "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      const signalReqs = contract.requirements.filter(
+        (r) =>
+          r.importance === "hard" &&
+          (r.evidenceModality ||
+            (r.scope === "signal" ? "open_web_signal" : "structured_profile")) ===
+            "open_web_signal",
+      );
+      hasSignalCorroboration = signalReqs.every((sReq) =>
+        (sReq.acceptableTerms || []).some((term) =>
+          signalTexts.includes(String(term).toLowerCase()),
+        ),
+      );
+    }
+
+    const verdict: "qualified" | "qualified_partial" =
+      hasOpenWebSignalHardReqs && !hasSignalCorroboration
+        ? "qualified_partial"
+        : "qualified";
+
     const requirements: RequirementAssessment[] = contract.requirements.map(
-      (requirement) => ({
-        requirementId: requirement.id,
-        status: requirement.importance === "hard" ? "pass" : "unknown",
-        evidenceId: requirement.importance === "hard" ? "e0" : undefined,
-      }),
+      (requirement) => {
+        const isSignal =
+          (requirement.evidenceModality ||
+            (requirement.scope === "signal"
+              ? "open_web_signal"
+              : "structured_profile")) === "open_web_signal";
+        const status =
+          requirement.importance !== "hard"
+            ? "unknown"
+            : isSignal
+              ? hasSignalCorroboration
+                ? "pass"
+                : "unknown"
+              : "pass";
+        return {
+          requirementId: requirement.id,
+          status,
+          evidenceId: status === "pass" ? "e0" : undefined,
+        };
+      },
     );
     const authorityFit = contract.authorityRequired
       ? bounded(
@@ -1026,13 +1076,15 @@ export function triPartitionCandidatesByEvidence(
       candidate,
       qualification: {
         policyVersion: contract.policyVersion,
-        verdict: "qualified",
+        verdict,
         qualificationSource: "deterministic",
         finalScore: rankLeadForFinalSelection(lead),
         requirements,
         reason:
-          "Direct structured profile fields satisfy every hard requirement; no semantic inference was needed.",
-        semanticFit: 10,
+          verdict === "qualified"
+            ? "Direct structured profile fields satisfy every hard requirement; no semantic inference was needed."
+            : "Direct structured profile fields satisfy core identity requirements; open-web buying signal is uncorroborated in initial profile snippet.",
+        semanticFit: verdict === "qualified" ? 10 : 8,
         evidenceConfidence,
         authorityFit,
       },

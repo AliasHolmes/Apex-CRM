@@ -89,16 +89,20 @@ const COMPANY_HINT_BLOCKLIST = new Set([
   'short notice', 'home', 'large', 'will', 'present', 'remote', 'available',
   'your service', 'your company', 'clients', 'request', 'application',
   'stealth', 'freelance', 'self employed', 'confidential', 'various',
-  'we', 'we are', 'our team', 'i am', 'who', 'who is', 'someone'
+  'we', 'we are', 'our team', 'i am', 'who', 'who is', 'someone',
+  'youtube', 'vimeo', 'medium', 'substack', 'reddit', 'quora', 'wikipedia',
+  'itbrew', 'morningbrew', 'seekout', 'seekout blog', 'github', 'gitlab',
+  'stackoverflow', 'techcrunch', 'forbes', 'bloomberg', 'g2', 'capterra',
+  'trustpilot', 'clutch', 'crunchbase', 'google', 'microsoft', 'apple'
 ]);
 
-const looksLikeCompanyHint = (value: string) => {
+export const looksLikeCompanyHint = (value: string) => {
   const candidate = cleanCompanyHint(value);
   if (candidate.length < 3 || candidate.length > 80) return false;
   if (!/[a-z0-9]/i.test(candidate)) return false;
   const lower = candidate.toLowerCase();
   if (COMPANY_HINT_BLOCKLIST.has(lower)) return false;
-  if (/\b(hiring|job|jobs|careers|work|apply|vacancy|position|role)\b/i.test(candidate)) return false;
+  if (/\b(hiring|job|jobs|careers|work|apply|vacancy|position|role|blog|news|article)\b/i.test(candidate)) return false;
   if (/\b(connections?|followers?|people also viewed|about|experience|education)\b/i.test(candidate)) return false;
   if (/\b(available at|open to|looking for|seeking|working at)\b/i.test(lower)) return false;
   if (/^[\d\s,.-]+$/.test(candidate)) return false;
@@ -120,8 +124,16 @@ const companyFromHostedJobUrl = (url: URL) => {
 const companyFromDomain = (url: URL) => {
   const host = url.hostname.toLowerCase().replace(/^www\./, '');
   const blockedDomains = [
-    'linkedin.com', 'indeed.com', 'glassdoor.com', 'angellist.com',
-    'wellfound.com', 'lever.co', 'greenhouse.io', 'ashbyhq.com', 'workable.com'
+    // Social & Professional Networks
+    'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'threads.net',
+    // Job boards & ATS
+    'indeed.com', 'glassdoor.com', 'angellist.com', 'wellfound.com', 'lever.co', 'greenhouse.io', 'ashbyhq.com', 'workable.com', 'ziprecruiter.com', 'monster.com', 'simplyhired.com',
+    // Video, Media, News, Newsletters & Community Platforms
+    'youtube.com', 'youtu.be', 'vimeo.com', 'medium.com', 'substack.com', 'reddit.com', 'quora.com', 'wikipedia.org',
+    'techcrunch.com', 'forbes.com', 'bloomberg.com', 'businessinsider.com', 'wsj.com', 'nytimes.com', 'reuters.com',
+    'itbrew.com', 'morningbrew.com', 'seekout.com',
+    // Developer, Review & Directory Sites
+    'github.com', 'gitlab.com', 'stackoverflow.com', 'g2.com', 'capterra.com', 'trustpilot.com', 'clutch.co', 'crunchbase.com'
   ];
   if (blockedDomains.some(domain => host === domain || host.endsWith(`.${domain}`))) return '';
 

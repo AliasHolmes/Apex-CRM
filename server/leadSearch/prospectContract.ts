@@ -267,6 +267,22 @@ export function resolveBusinessArchetype(briefOrQuery: string): BusinessArchetyp
   return undefined;
 }
 
+export const COUNTRY_TO_METROS: Record<string, string[]> = {
+  australia: ["Sydney", "Melbourne", "Brisbane", "Perth"],
+  au: ["Sydney", "Melbourne", "Brisbane", "Perth"],
+  uk: ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
+  "united kingdom": ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
+  britain: ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
+  england: ["London", "Manchester", "Bristol", "Birmingham"],
+  canada: ["Toronto", "Vancouver", "Montreal", "Ottawa", "Calgary"],
+  usa: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston", "Denver", "Los Angeles", "Miami"],
+  "united states": ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston", "Denver", "Los Angeles", "Miami"],
+  us: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
+  america: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
+  "new zealand": ["Auckland", "Wellington", "Christchurch"],
+  nz: ["Auckland", "Wellington", "Christchurch"],
+};
+
 const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
   const expanded = [...terms];
   const hasTerm = (list: string[], matches: string[]) =>
@@ -275,18 +291,23 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   if (scope === 'person_location') {
     if (hasTerm(terms, ['usa', 'united states', 'us', 'america'])) {
       expanded.push('USA', 'United States', 'US', 'U.S.', 'America');
+      expanded.push('Austin', 'San Francisco', 'New York', 'Seattle', 'Chicago', 'Boston', 'Denver', 'Los Angeles', 'Miami');
     }
     if (hasTerm(terms, ['uk', 'united kingdom', 'britain', 'england'])) {
       expanded.push('UK', 'United Kingdom', 'Britain', 'England');
+      expanded.push('London', 'Manchester', 'Bristol', 'Edinburgh', 'Birmingham');
     }
     if (hasTerm(terms, ['canada', 'canadian'])) {
       expanded.push('Canada', 'Canadian');
+      expanded.push('Toronto', 'Vancouver', 'Montreal', 'Ottawa', 'Calgary');
     }
     if (hasTerm(terms, ['australia', 'australian', 'au'])) {
       expanded.push('Australia', 'Australian');
+      expanded.push('Sydney', 'Melbourne', 'Brisbane', 'Perth');
     }
     if (hasTerm(terms, ['new zealand', 'newzealand', 'nz'])) {
       expanded.push('New Zealand', 'NZ');
+      expanded.push('Auckland', 'Wellington', 'Christchurch');
     }
   }
 
@@ -469,8 +490,8 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     return true;
   };
 
-  const rawLocMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120})/i)?.[1] || '';
-  const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\//).map(s => s.trim()).filter(isCleanRequirementTerm) : [];
+  const rawLocMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120}?)(?=\s+\b(?:with|seeking|having|who|where|that|using|for)\b|[.,;]|$)/i)?.[1] || '';
+  const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\bor\b|\//).map(s => s.trim().replace(CONJUNCTION_STOP_PATTERN, '').trim()).filter(isCleanRequirementTerm) : [];
 
   // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
   // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
@@ -744,8 +765,7 @@ export function buildContractFallbackQueries(
 ): SearchQueryPlanItem[] {
   const isAgencyBrief = isAgencyContract(brief) ||
     requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && isAgencyContract(`${r.description} ${r.acceptableTerms.join(' ')}`));
-  const fullAgencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS -Microsoft -Google -Meta -Apple -Amazon -OpenAI' : '';
-  const shortAgencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
+  const agencyDisambiguation = isAgencyBrief ? '-software -platform -SaaS' : '';
 
   // Extract single roles (e.g. founder, owner, CEO, managing director)
   const roleReqs = requirements.filter(r => r.scope === 'person_role');
@@ -774,11 +794,9 @@ export function buildContractFallbackQueries(
     const loc = locations[i % locations.length];
     const parts = [vertical, role, loc].filter(Boolean);
     let baseQuery = parts.join(' ');
-    if (isAgencyBrief) {
-      if ((baseQuery + ' ' + fullAgencyDisambiguation).length <= 240) {
-        baseQuery = `${baseQuery} ${fullAgencyDisambiguation}`;
-      } else if ((baseQuery + ' ' + shortAgencyDisambiguation).length <= 240) {
-        baseQuery = `${baseQuery} ${shortAgencyDisambiguation}`;
+    if (isAgencyBrief && agencyDisambiguation) {
+      if ((baseQuery + ' ' + agencyDisambiguation).length <= 240) {
+        baseQuery = `${baseQuery} ${agencyDisambiguation}`;
       }
     }
     gridQueries.push(baseQuery);
@@ -1273,7 +1291,17 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
 
       // 2. Context terms: distributed round-robin across candidate queries
       if (contextReqs.length > 0) {
-        const alreadyHasContext = contextReqs.some(cr => includesAny(query, cr.acceptableTerms));
+        const alreadyHasContext = contextReqs.some(cr => {
+          if (includesAny(query, cr.acceptableTerms)) return true;
+          if (cr.scope === 'person_location') {
+            for (const term of cr.acceptableTerms) {
+              const cleanTerm = term.toLowerCase().trim();
+              const metros = COUNTRY_TO_METROS[cleanTerm];
+              if (metros && includesAny(query, metros)) return true;
+            }
+          }
+          return false;
+        });
         if (!alreadyHasContext) {
           const ctxReq = contextReqs[normalized.length % contextReqs.length];
           if (!intentTerms.has(lower(ctxReq.sourcePhrase))) {
@@ -1285,8 +1313,9 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
         }
       }
 
-      // 3. Agency disambiguation
-      if (isAgency && !lower(query).includes('-software')) {
+      // 3. Agency disambiguation: do not clobber queries that already have agency vertical words
+      const hasAgencyVertical = /\b(agency|agencies|consultan\w*|studio|integrat\w*|advisory)\b/i.test(query);
+      if (isAgency && !hasAgencyVertical && !lower(query).includes('-software') && !lower(query).includes('-saas')) {
         const agencyDisambig = '-software -platform -SaaS';
         if ((query + ' ' + agencyDisambig).length <= 240) {
           query = `${query} ${agencyDisambig}`.trim();

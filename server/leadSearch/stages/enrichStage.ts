@@ -916,13 +916,23 @@ export async function executeEnrichStage(
   }
 
   // 3. Optional company intent enrichment via canonical runIntentEnrichment module
-  const leadsNeedingIntent = acceptedLeads.filter(
-    (l) => !l.companyIntentEvidence && !l._autoFailed && l.judgmentInsight?.status !== "hard_fail",
+  const leadsNeedingIntent = acceptedLeads.filter((l) => {
+    if (l.companyIntentEvidence || l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
+    const company = String(l.currentCompany || l.company || "").trim();
+    if (!company || company.length < 2) return false;
+    const title = String(l.currentTitle || l.headline || "").trim();
+    if (!title || title.length < 2) return false;
+    return true;
+  });
+  const effectiveIntentCap = Math.min(companyIntentMaxPerSearch || 6, 6);
+  const effectiveIntentConcurrency = Math.min(
+    Math.max(Number(companyIntentConcurrency || process.env.COMPANY_INTENT_CONCURRENCY || 3), 1),
+    4,
   );
   if (
     companyIntentEnabled &&
     leadsNeedingIntent.length > 0 &&
-    companyIntentMaxPerSearch > 0
+    effectiveIntentCap > 0
   ) {
     const qualifiedMap = new Map<string, any>(
       leadsNeedingIntent.map((l, idx) => [l.id || `lead-${idx}`, l]),
@@ -930,8 +940,8 @@ export async function executeEnrichStage(
     await runIntentEnrichment({
       qualifiedLeads: qualifiedMap,
       contract,
-      companyIntentMaxPerSearch,
-      companyIntentConcurrency,
+      companyIntentMaxPerSearch: effectiveIntentCap,
+      companyIntentConcurrency: effectiveIntentConcurrency,
       ttlDays,
       brightDataSearch: (q) =>
         trackableBrightDataSearch(q, {}, "phase_4_company_website"),

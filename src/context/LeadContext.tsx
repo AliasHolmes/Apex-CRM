@@ -140,6 +140,7 @@ function sanitizeLeads(loadedLeads: unknown[]): Lead[] {
     const raw = rawLead || {};
     const rawProfile = (raw.profile || {}) as Partial<LinkedInProfile>;
     const sanitizedProfile: LinkedInProfile = {
+      ...rawProfile,
       id: rawProfile.id || raw.id || crypto.randomUUID(),
       fullName: rawProfile.fullName || raw.fullName || 'Unknown',
       currentTitle: rawProfile.currentTitle || raw.currentTitle || raw.title || '',
@@ -157,7 +158,6 @@ function sanitizeLeads(loadedLeads: unknown[]): Lead[] {
       skills: Array.isArray(rawProfile.skills) ? rawProfile.skills : [],
       experiences: Array.isArray(rawProfile.experiences) ? rawProfile.experiences : [],
       education: Array.isArray(rawProfile.education) ? rawProfile.education : [],
-      ...rawProfile,
     };
 
     return {
@@ -985,7 +985,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       if (!response.ok) {
         throw new Error(`Failed to delete lead: ${response.status}`);
       }
-      deleteResolve!(false);
+      deleteResolve!(true);
       void refreshStats();
     } catch (e) {
       deleteResolve!(false);
@@ -1035,7 +1035,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       if (!response.ok) {
         throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
       }
-      deleteResolve!(false);
+      deleteResolve!(true);
       void refreshStats();
     } catch (e) {
       deleteResolve!(false);

@@ -148,7 +148,7 @@ export async function executeFuseStage(
             query: observation.query,
             lane: 'signal',
             confidence: 0.95,
-            provider: observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
+            provider: Array.isArray(observation.sourceProviders) && observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
             category: 'hiring_signal'
           });
 
@@ -165,7 +165,7 @@ export async function executeFuseStage(
             query: observation.query,
             lane: 'signal',
             confidence: observation.corroborated ? 0.9 : 0.75,
-            provider: observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
+            provider: Array.isArray(observation.sourceProviders) && observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
             category: inferSignalCategory(observation)
           });
         }
@@ -237,7 +237,8 @@ export async function executeFuseStage(
     item.url = url;
     item.title = observation.title;
     item.content = observation.content;
-    item.sourceProvider = observation.sourceProviders.includes("brightdata")
+    item.sourceProvider = Array.isArray(observation.sourceProviders) &&
+      observation.sourceProviders.includes("brightdata")
       ? "brightdata_search"
       : "tavily";
     item._normalizedUrl = normalizedUrl;

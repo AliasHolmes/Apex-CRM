@@ -136,7 +136,7 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               }
               if (isCorroborated) {
                 lead.corroborated = true;
-                if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
+                if (!Array.isArray(lead.tags)) lead.tags = [];
                 if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
               }
               sampleScore = newScore;
@@ -147,10 +147,10 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               stats.noSignal++;
             }
             logEvent(`[Phase 4 Cache Hit] ${group.companyName}: quality=${intentData.evidenceQuality}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)}, age=${cacheAgeDays.toFixed(1)}d -> updated score=${sampleScore.toFixed(2)}`);
+            return;
           } catch {
             // cache parse error, fallback to live search
           }
-          return;
         }
 
         // B. Search website domain if missing
@@ -198,7 +198,7 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               }
               if (isCorroborated) {
                 lead.corroborated = true;
-                if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
+                if (!Array.isArray(lead.tags)) lead.tags = [];
                 if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
               }
               sampleScore = newScore;
@@ -249,7 +249,7 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             }
             if (isCorroborated) {
               lead.corroborated = true;
-              if (!Array.isArray(lead.tags)) lead.tags = ['LinkedIn Indexed'];
+              if (!Array.isArray(lead.tags)) lead.tags = [];
               if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
             }
             sampleScore = newScore;

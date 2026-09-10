@@ -477,7 +477,17 @@ export async function executeJudgeStage(
         run: async () => evaluateFinalistBatch(batch, batchIndex),
       })),
       {
-        concurrency: Math.min(config.judgeConcurrency || 1, 1),
+        concurrency: Math.max(
+          1,
+          Math.min(
+            4,
+            Number(
+              process.env.FINALIST_JUDGE_CONCURRENCY ||
+                config.judgeConcurrency ||
+                1,
+            ),
+          ),
+        ),
         signal: state.abortController.signal,
       },
     );
@@ -692,7 +702,7 @@ export async function evaluateIncrementalJudgeBatches(
   );
   const judgeConcurrency = Math.max(
     1,
-    Math.min(1, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
+    Math.min(4, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
   );
 
   const microBatches: FinalistCandidate[][] = [];

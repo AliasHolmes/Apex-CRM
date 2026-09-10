@@ -595,11 +595,13 @@ export async function executeDiscoverySession(
     });
 
     brightDataStats.searchSucceeded++;
-    const isBing = results.some((r) => r.sourceEngine === "bing");
-    if (isBing) {
-      brightDataStats.searchBingSucceeded++;
-    } else {
-      brightDataStats.searchGoogleSucceeded++;
+    if (results.length > 0) {
+      const isBing = results.some((r) => r.sourceEngine === "bing");
+      if (isBing) {
+        brightDataStats.searchBingSucceeded++;
+      } else {
+        brightDataStats.searchGoogleSucceeded++;
+      }
     }
 
     return results;

@@ -427,7 +427,7 @@ export async function executePlanStage(
       rejectionReasons: {},
       lane: plan.item.lane,
       providerPreference: plan.item.providerPreference,
-      tavilySearchDepth: plan.item.tavily.searchDepth,
+      tavilySearchDepth: plan.item.tavily?.searchDepth ?? "basic",
       corroboratedCandidates: 0,
       searchLatencyMs: 0,
       providerUnits: 0,

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
@@ -684,7 +685,6 @@ export async function executeEnrichStage(
               },
               brightData: { ...getTraceBrightDataStatus(), target: target.url },
             });
-            if (!target.enriched) break;
           } catch (error) {
             const classified = classifyAndRecordBrightDataFailure(
               error,

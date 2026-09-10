@@ -293,7 +293,7 @@ router.get("/leads", (req, res): any => {
       const initialized = hasLeadStoreBeenInitialized();
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       return res.send(
-        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${stats.total},"stats":${JSON.stringify(stats)},"initialized":${initialized}}`,
+        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${total},"stats":${JSON.stringify(stats)},"initialized":${initialized}}`,
       );
     }
 
@@ -1093,7 +1093,10 @@ router.get("/search-logs/:id", (req, res): any => {
   }
 });
 
-router.get("/search-logs/:id/live", (req, res) => {
+router.get("/search-logs/:id/live", (req, res): any => {
+  if (!isSafeSessionId(req.params.id)) {
+    return res.status(400).json({ error: "Invalid sessionId." });
+  }
   const logs = discoveryEngine.getLiveLogs(req.params.id) || [];
   const traceEvents = discoveryEngine.getLiveTrace(req.params.id) || [];
   res.json({

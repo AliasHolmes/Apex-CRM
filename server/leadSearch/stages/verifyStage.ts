@@ -272,11 +272,11 @@ export async function executeVerifyStage(
     }
 
     const leadScore = effectiveScore(lead);
-    const isBorderline = leadScore >= minScore - 3 && leadScore < minScore - 1;
+    const isBorderline = leadScore >= minScore - 3 && leadScore < minScore;
     if (isBorderline && borderlineAdmittedThisRound < maxBorderlinePerRound) {
       lead._borderlineEvidence = true;
       borderlineAdmittedThisRound++;
-    } else if (leadScore < minScore - 1) {
+    } else if (leadScore < minScore) {
       noteRejection("score_below_minimum", queryRun);
       continue;
     }

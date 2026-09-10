@@ -650,7 +650,7 @@ Evidence:
       ),
       1,
     ),
-    1,
+    4,
   );
   const extractionResults = await runProviderQueue(
     extractionTasks.map((run, index) => ({

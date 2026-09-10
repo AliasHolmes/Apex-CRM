@@ -181,7 +181,12 @@ export function extractPromotedLeadColumns(storedLead: Record<string, any>) {
   };
 }
 
+const SAFE_SQL_IDENTIFIER = /^[a-zA-Z0-9_]+$/;
+
 function getTableColumns(db: DatabaseSync, tableName: string) {
+  if (!SAFE_SQL_IDENTIFIER.test(tableName)) {
+    throw new Error(`Invalid table name for schema inspection: ${tableName}`);
+  }
   return new Set(
     (
       db.prepare(`PRAGMA table_info(${tableName})`).all() as { name: string }[]
@@ -202,6 +207,12 @@ function addColumnIfMissing(
   columnName: string,
   definition: string,
 ) {
+  if (!SAFE_SQL_IDENTIFIER.test(tableName)) {
+    throw new Error(`Invalid table name for column addition: ${tableName}`);
+  }
+  if (!SAFE_SQL_IDENTIFIER.test(columnName)) {
+    throw new Error(`Invalid column name for column addition: ${columnName}`);
+  }
   if (
     tableExists(db, tableName) &&
     !getTableColumns(db, tableName).has(columnName)
@@ -2241,27 +2252,31 @@ export function getIntentCacheEntriesBatch(
 
   if (!validKeys.length) return result;
 
-  const urls = Array.from(new Set(validKeys.map((k) => k.url)));
-  const fps = Array.from(new Set(validKeys.map((k) => k.fp)));
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < validKeys.length; i += CHUNK_SIZE) {
+    const chunk = validKeys.slice(i, i + CHUNK_SIZE);
+    const urls = Array.from(new Set(chunk.map((k) => k.url)));
+    const fps = Array.from(new Set(chunk.map((k) => k.fp)));
 
-  const rows = getLeadsDb()
-    .prepare(
-      `
-    SELECT * FROM enrichment_cache
-    WHERE expires_at > ?
-      AND normalized_url IN (${urls.map(() => "?").join(",")})
-      AND intent_fingerprint IN (${fps.map(() => "?").join(",")})
-    ORDER BY created_at DESC
-  `,
-    )
-    .all(now.toISOString(), ...urls, ...fps) as any[];
+    const rows = getLeadsDb()
+      .prepare(
+        `
+      SELECT * FROM enrichment_cache
+      WHERE expires_at > ?
+        AND normalized_url IN (${urls.map(() => "?").join(",")})
+        AND intent_fingerprint IN (${fps.map(() => "?").join(",")})
+      ORDER BY created_at DESC
+    `,
+      )
+      .all(now.toISOString(), ...urls, ...fps) as any[];
 
-  for (const row of rows) {
-    const entry = toCacheRow(row);
-    if (!entry || !entry.normalizedUrl || !row.intent_fingerprint) continue;
-    const compoundKey = `${entry.normalizedUrl}::${row.intent_fingerprint}`;
-    if (!result.has(compoundKey)) {
-      result.set(compoundKey, entry);
+    for (const row of rows) {
+      const entry = toCacheRow(row);
+      if (!entry || !entry.normalizedUrl || !row.intent_fingerprint) continue;
+      const compoundKey = `${entry.normalizedUrl}::${row.intent_fingerprint}`;
+      if (!result.has(compoundKey)) {
+        result.set(compoundKey, entry);
+      }
     }
   }
   return result;
@@ -2280,54 +2295,58 @@ export function getEnrichmentCacheEntriesBatch(
   const result = new Map<string, EnrichmentCacheEntry>();
   if (!lookups.length) return result;
 
-  const urls = Array.from(
-    new Set(
-      lookups.map((l) => normalizeCacheValue(l.normalizedUrl)).filter(Boolean),
-    ),
-  );
-  const usernames = Array.from(
-    new Set(
-      lookups
-        .map((l) => normalizeCacheValue(l.linkedinUsername))
-        .filter(Boolean),
-    ),
-  );
-  if (!urls.length && !usernames.length) return result;
-
-  const clauses: string[] = [];
-  const params: any[] = [now.toISOString()];
-  if (urls.length) {
-    clauses.push(`normalized_url IN (${urls.map(() => "?").join(",")})`);
-    params.push(...urls);
-  }
-  if (usernames.length) {
-    clauses.push(
-      `linkedin_username IN (${usernames.map(() => "?").join(",")})`,
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < lookups.length; i += CHUNK_SIZE) {
+    const chunk = lookups.slice(i, i + CHUNK_SIZE);
+    const urls = Array.from(
+      new Set(
+        chunk.map((l) => normalizeCacheValue(l.normalizedUrl)).filter(Boolean),
+      ),
     );
-    params.push(...usernames);
-  }
+    const usernames = Array.from(
+      new Set(
+        chunk
+          .map((l) => normalizeCacheValue(l.linkedinUsername))
+          .filter(Boolean),
+      ),
+    );
+    if (!urls.length && !usernames.length) continue;
 
-  const rows = getLeadsDb()
-    .prepare(
-      `
-      SELECT * FROM enrichment_cache
-      WHERE expires_at > ?
-        AND scrape_quality IN ('good', 'partial')
-        AND (${clauses.join(" OR ")})
-      ORDER BY created_at DESC
-    `,
-    )
-    .all(...params) as any[];
-
-  for (const row of rows) {
-    const entry = toCacheRow(row);
-    if (!entry) continue;
-    // Rows are newest-first; first write per key wins.
-    if (entry.normalizedUrl && !result.has(entry.normalizedUrl)) {
-      result.set(entry.normalizedUrl, entry);
+    const clauses: string[] = [];
+    const params: any[] = [now.toISOString()];
+    if (urls.length) {
+      clauses.push(`normalized_url IN (${urls.map(() => "?").join(",")})`);
+      params.push(...urls);
     }
-    if (entry.linkedinUsername && !result.has(entry.linkedinUsername)) {
-      result.set(entry.linkedinUsername, entry);
+    if (usernames.length) {
+      clauses.push(
+        `linkedin_username IN (${usernames.map(() => "?").join(",")})`,
+      );
+      params.push(...usernames);
+    }
+
+    const rows = getLeadsDb()
+      .prepare(
+        `
+        SELECT * FROM enrichment_cache
+        WHERE expires_at > ?
+          AND scrape_quality IN ('good', 'partial')
+          AND (${clauses.join(" OR ")})
+        ORDER BY created_at DESC
+      `,
+      )
+      .all(...params) as any[];
+
+    for (const row of rows) {
+      const entry = toCacheRow(row);
+      if (!entry) continue;
+      // Rows are newest-first; first write per key wins.
+      if (entry.normalizedUrl && !result.has(entry.normalizedUrl)) {
+        result.set(entry.normalizedUrl, entry);
+      }
+      if (entry.linkedinUsername && !result.has(entry.linkedinUsername)) {
+        result.set(entry.linkedinUsername, entry);
+      }
     }
   }
   return result;
@@ -2345,54 +2364,58 @@ export function getNegativeEnrichmentCacheEntriesBatch(
   const result = new Map<string, EnrichmentCacheEntry>();
   if (!lookups.length) return result;
 
-  const urls = Array.from(
-    new Set(
-      lookups.map((l) => normalizeCacheValue(l.normalizedUrl)).filter(Boolean),
-    ),
-  );
-  const usernames = Array.from(
-    new Set(
-      lookups
-        .map((l) => normalizeCacheValue(l.linkedinUsername))
-        .filter(Boolean),
-    ),
-  );
-  if (!urls.length && !usernames.length) return result;
-
-  const clauses: string[] = [];
-  const params: any[] = [now.toISOString(), sourceProvider];
-  if (urls.length) {
-    clauses.push(`normalized_url IN (${urls.map(() => "?").join(",")})`);
-    params.push(...urls);
-  }
-  if (usernames.length) {
-    clauses.push(
-      `linkedin_username IN (${usernames.map(() => "?").join(",")})`,
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < lookups.length; i += CHUNK_SIZE) {
+    const chunk = lookups.slice(i, i + CHUNK_SIZE);
+    const urls = Array.from(
+      new Set(
+        chunk.map((l) => normalizeCacheValue(l.normalizedUrl)).filter(Boolean),
+      ),
     );
-    params.push(...usernames);
-  }
+    const usernames = Array.from(
+      new Set(
+        chunk
+          .map((l) => normalizeCacheValue(l.linkedinUsername))
+          .filter(Boolean),
+      ),
+    );
+    if (!urls.length && !usernames.length) continue;
 
-  const rows = getLeadsDb()
-    .prepare(
-      `
-      SELECT * FROM enrichment_cache
-      WHERE expires_at > ?
-        AND scrape_quality = 'bad'
-        AND source_provider = ?
-        AND (${clauses.join(" OR ")})
-      ORDER BY created_at DESC
-    `,
-    )
-    .all(...params) as any[];
-
-  for (const row of rows) {
-    const entry = toCacheRow(row);
-    if (!entry) continue;
-    if (entry.normalizedUrl && !result.has(entry.normalizedUrl)) {
-      result.set(entry.normalizedUrl, entry);
+    const clauses: string[] = [];
+    const params: any[] = [now.toISOString(), sourceProvider];
+    if (urls.length) {
+      clauses.push(`normalized_url IN (${urls.map(() => "?").join(",")})`);
+      params.push(...urls);
     }
-    if (entry.linkedinUsername && !result.has(entry.linkedinUsername)) {
-      result.set(entry.linkedinUsername, entry);
+    if (usernames.length) {
+      clauses.push(
+        `linkedin_username IN (${usernames.map(() => "?").join(",")})`,
+      );
+      params.push(...usernames);
+    }
+
+    const rows = getLeadsDb()
+      .prepare(
+        `
+        SELECT * FROM enrichment_cache
+        WHERE expires_at > ?
+          AND scrape_quality = 'bad'
+          AND source_provider = ?
+          AND (${clauses.join(" OR ")})
+        ORDER BY created_at DESC
+      `,
+      )
+      .all(...params) as any[];
+
+    for (const row of rows) {
+      const entry = toCacheRow(row);
+      if (!entry) continue;
+      if (entry.normalizedUrl && !result.has(entry.normalizedUrl)) {
+        result.set(entry.normalizedUrl, entry);
+      }
+      if (entry.linkedinUsername && !result.has(entry.linkedinUsername)) {
+        result.set(entry.linkedinUsername, entry);
+      }
     }
   }
   return result;

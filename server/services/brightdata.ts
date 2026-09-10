@@ -1833,7 +1833,14 @@ export async function brightDataSearch(
   const result = await executeBrightDataSearchWithEmptyBodyRecovery(
     async () => {
       try {
-        return await runSearch(engine);
+        const searchResults = await runSearch(engine);
+        if (engine === "google" && searchResults && searchResults.length > 0) {
+          if (googleSerpChallengeCount > 0 || stickyBingActive) {
+            googleSerpChallengeCount = 0;
+            stickyBingActive = false;
+          }
+        }
+        return searchResults;
       } catch (error) {
         const classified = classifyBrightDataError(error);
         const isBotChallenge =

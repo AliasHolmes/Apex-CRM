@@ -200,7 +200,7 @@ export function computeTfIdfSignalWeight(
 
 export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDays = 0): number {
   const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? rankLeadForFinalSelection(lead));
-  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase;
+  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase > 10 ? rawBase / 10 : rawBase;
   const intent = lead.companyIntentEvidence;
   if (!intent) return base;
 
@@ -211,7 +211,7 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
   // fuse the current enriched score with the earlier observation rather than discarding it.
   // processNoise=1.0, observationNoise=2.0 -> Kalman gain ~= 0.33 (conservatively trusts prior)
   const rawPrior = Number(lead._priorScore);
-  const priorObservedScore = rawPrior <= 1.0 && rawPrior > 0 ? rawPrior * 10 : rawPrior;
+  const priorObservedScore = rawPrior <= 1.0 && rawPrior > 0 ? rawPrior * 10 : rawPrior > 10 ? rawPrior / 10 : rawPrior;
   const finalScore = Number.isFinite(priorObservedScore) && priorObservedScore > 0
     ? computeKalmanFusedScore(priorObservedScore, rawEnriched, 1.0, 2.0)
     : rawEnriched;
@@ -221,7 +221,7 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
 
 export function applyPostIntentDelta(lead: Record<string, any>): number {
   const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? lead.scoreOverride ?? 5);
-  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase;
+  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase > 10 ? rawBase / 10 : rawBase;
   const postIntent = lead.postIntentEvidence;
   if (!postIntent || postIntent.quality === 'none') return base;
 

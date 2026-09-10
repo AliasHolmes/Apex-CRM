@@ -7,6 +7,8 @@ import { EventEmitter } from "node:events";
 test("Socket error guard middleware suppresses ECONNRESET, EPIPE, and premature close errors", async () => {
   const app = express();
 
+  const guardedSockets = new WeakSet<object>();
+
   // Replicate the server socket error guard middleware
   app.use((req, res, next) => {
     const suppressSocketError = (err: any) => {
@@ -22,7 +24,10 @@ test("Socket error guard middleware suppresses ECONNRESET, EPIPE, and premature 
     };
     req.on("error", suppressSocketError);
     res.on("error", suppressSocketError);
-    req.socket?.on("error", suppressSocketError);
+    if (req.socket && !guardedSockets.has(req.socket)) {
+      guardedSockets.add(req.socket);
+      req.socket.on("error", suppressSocketError);
+    }
     next();
   });
 
@@ -122,4 +127,31 @@ test("Global unhandledRejection / uncaughtException handlers ignore client conne
 
   const genericError: any = new Error("Unexpected crash");
   assert.equal(isBenignDisconnect(genericError), false);
+});
+
+test("Socket error guard does not add duplicate listeners on keep-alive sockets", () => {
+  const guardedSockets = new WeakSet<object>();
+  const mockSocket = new EventEmitter();
+
+  const middleware = (req: any, res: any, next: () => void) => {
+    const suppressSocketError = () => {};
+    req.on("error", suppressSocketError);
+    res.on("error", suppressSocketError);
+    if (req.socket && !guardedSockets.has(req.socket)) {
+      guardedSockets.add(req.socket);
+      req.socket.on("error", suppressSocketError);
+    }
+    next();
+  };
+
+  // Simulate 20 sequential HTTP requests arriving over the same TCP socket
+  for (let i = 0; i < 20; i++) {
+    const mockReq = new EventEmitter() as any;
+    mockReq.socket = mockSocket;
+    const mockRes = new EventEmitter() as any;
+    middleware(mockReq, mockRes, () => {});
+  }
+
+  // Socket must have only 1 error listener, NOT 20
+  assert.equal(mockSocket.listenerCount("error"), 1, "Must not accumulate error listeners on reused sockets");
 });

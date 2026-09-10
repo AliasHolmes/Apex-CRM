@@ -20,6 +20,8 @@ import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
 
 const app = express();
 
+const guardedSockets = new WeakSet<object>();
+
 // Guard against unhandled client disconnect errors (e.g. ECONNRESET/EPIPE when closing browser tab)
 app.use((req, res, next) => {
   const suppressSocketError = (err: any) => {
@@ -35,7 +37,10 @@ app.use((req, res, next) => {
   };
   req.on("error", suppressSocketError);
   res.on("error", suppressSocketError);
-  req.socket?.on("error", suppressSocketError);
+  if (req.socket && !guardedSockets.has(req.socket)) {
+    guardedSockets.add(req.socket);
+    req.socket.on("error", suppressSocketError);
+  }
   next();
 });
 const PORT = Number(process.env.PORT) || 3000;

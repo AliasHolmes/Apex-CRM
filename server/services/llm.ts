@@ -24,7 +24,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: "litellm" | "primary" | "openrouter" | "groq";
+  id: "litellm" | "primary" | "openrouter" | "groq" | "tokenharbor";
   name: string;
   baseUrl: string;
   model: string;
@@ -122,6 +122,39 @@ const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_LITELLM_BASE = "http://127.0.0.1:4000/v1";
 const DEFAULT_LITELLM_MODEL = "apex-primary";
 
+const DEFAULT_TOKEN_HARBOR_BASE = "https://tokenharbor.ai/v1";
+const DEFAULT_TOKEN_HARBOR_MODEL = "deepseek-v4.1-flash:free";
+const DEFAULT_TOKEN_HARBOR_KEY =
+  "thk_live_Lm6R54UoSCBrwjhT25X3vPD5CWob4lY_W9M0fZPwCp5wSPabiu65f35u3AnLeGQc";
+// Auto-reverts after exactly 7 days from configuration (Sep 19, 2026 00:00:00 +06:00)
+const DEFAULT_TOKEN_HARBOR_EXPIRATION_MS = new Date(
+  "2026-09-19T00:00:00+06:00",
+).getTime();
+
+let tokenHarborRetiredEarly = false;
+
+export function isTokenHarborActive(now = Date.now()): boolean {
+  if (tokenHarborRetiredEarly) return false;
+  if (process.env.TOKEN_HARBOR_ENABLED === "false") return false;
+  const expiryRaw =
+    process.env.TOKEN_HARBOR_EXPIRATION_MS ||
+    process.env.TOKEN_HARBOR_EXPIRATION;
+  const expiry = expiryRaw
+    ? (Number.isFinite(Number(expiryRaw))
+        ? Number(expiryRaw)
+        : new Date(expiryRaw).getTime())
+    : DEFAULT_TOKEN_HARBOR_EXPIRATION_MS;
+  return now < expiry;
+}
+
+export function retireTokenHarborEarly(): void {
+  tokenHarborRetiredEarly = true;
+}
+
+export function resetTokenHarborRetirement(): void {
+  tokenHarborRetiredEarly = false;
+}
+
 const tavilyKeyPool = new ApiKeyPool("Tavily", () =>
   parseApiKeys(process.env.TAVILY_API_KEYS, [process.env.TAVILY_API_KEY]),
 );
@@ -167,7 +200,23 @@ function getLiteLLMProvider(): LLMProvider {
 }
 
 function getDirectLLMProviderCandidates(): LLMProvider[] {
-  return [
+  const direct: LLMProvider[] = [];
+
+  const tokenHarborKey = process.env.TOKEN_HARBOR_API_KEY || "";
+
+  if (isTokenHarborActive() && tokenHarborKey) {
+    direct.push({
+      id: "tokenharbor",
+      name: "Token Harbor (DeepSeek V4.1 Flash)",
+      baseUrl: cleanBaseUrl(
+        process.env.TOKEN_HARBOR_BASE || DEFAULT_TOKEN_HARBOR_BASE,
+      ),
+      model: process.env.TOKEN_HARBOR_MODEL || DEFAULT_TOKEN_HARBOR_MODEL,
+      apiKey: tokenHarborKey,
+    });
+  }
+
+  direct.push(
     {
       id: "primary",
       name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
@@ -192,7 +241,9 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       apiKey: process.env.OPENROUTER_API_KEY || "",
       headers: getOpenRouterHeaders(),
     },
-  ];
+  );
+
+  return direct;
 }
 
 function getLLMProviderCandidates(): LLMProvider[] {
@@ -206,10 +257,13 @@ function getConfiguredLLMProviders(): LLMProvider[] {
     (provider) => !!provider.apiKey,
   );
   if (getGatewayMode() === "litellm") {
+    const tokenHarbor = directProviders.find((p) => p.id === "tokenharbor");
     const directFallbacks = directProviders.filter(
-      (provider) => provider.id !== "primary",
+      (provider) => provider.id !== "primary" && provider.id !== "tokenharbor",
     );
-    return [getLiteLLMProvider(), ...directFallbacks];
+    return tokenHarbor
+      ? [tokenHarbor, getLiteLLMProvider(), ...directFallbacks]
+      : [getLiteLLMProvider(), ...directFallbacks];
   }
   return directProviders;
 }
@@ -604,6 +658,26 @@ async function withProviderFallback<T>(
       });
 
       const breaker = executionOptions.circuitBreaker;
+
+      if (provider.id === "tokenharbor") {
+        const statusCode =
+          normalized instanceof LLMProviderError ? normalized.status : undefined;
+        const msg = normalized.message || "";
+        const isAuthOrQuotaExhausted =
+          statusCode === 401 ||
+          statusCode === 402 ||
+          /balance_zero|unauthorized|invalid[_-]?api[_-]?key|payment required|confidence_level_required/i.test(msg);
+        if (isAuthOrQuotaExhausted) {
+          retireTokenHarborEarly();
+          if (breaker) {
+            breaker.disabledProviderIds.add("tokenharbor");
+          }
+          console.warn(
+            `[llm] Token Harbor trial ended or quota exhausted (${truncateProviderError(msg)}). Auto-retiring Token Harbor; cascading permanently to Byesu.`,
+          );
+        }
+      }
+
       const isExhaustedQuota =
         (normalized instanceof LLMProviderError &&
           isExhaustedQuotaError(

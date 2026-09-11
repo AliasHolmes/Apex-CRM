@@ -34,6 +34,10 @@ import type { QueryRunStats } from "../strategist.js";
 const normalizeDedupeValue = (value?: string) =>
   (value || "").trim().toLowerCase();
 
+export function computeJudgeDynamicMaxTokens(batchLength: number): number {
+  return Math.min(950, Math.max(500, batchLength * 350));
+}
+
 export type JudgeStageInput = {
   contract: ProspectContract;
   evidenceByUrl: Map<string, EvidenceMeta>;
@@ -233,10 +237,7 @@ export async function executeJudgeStage(
       const judgeAttempts: LLMProviderAttempt[] = [];
       let judgeUsage: LLMUsage | undefined;
       const judgePrompt = buildFinalistJudgePrompt(contract, batch);
-      const dynamicMaxTokens = Math.min(
-        1_200,
-        Math.max(350, batch.length * 200),
-      );
+      const dynamicMaxTokens = computeJudgeDynamicMaxTokens(batch.length);
       const estimatedInputTokens = estimateTokenCount(judgePrompt);
       try {
         const judgmentResult = await openAIStructured<any>(
@@ -769,10 +770,7 @@ export async function evaluateIncrementalJudgeBatches(
     const judgeAttempts: LLMProviderAttempt[] = [];
     let judgeUsage: LLMUsage | undefined;
     const judgePrompt = buildFinalistJudgePrompt(contract, batch);
-    const dynamicMaxTokens = Math.min(
-      1_200,
-      Math.max(350, batch.length * 200),
-    );
+    const dynamicMaxTokens = computeJudgeDynamicMaxTokens(batch.length);
     const estimatedInputTokens = estimateTokenCount(judgePrompt);
 
     try {

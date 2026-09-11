@@ -44,6 +44,16 @@ export async function executeSelectStage(
   const { qualifiedLeads } = state;
   const { targetLimit, maxRounds, linkedinPostIntentEnabled } = config;
 
+  const isShortfall = qualifiedLeads.length <= targetLimit;
+  const forceShortfallEnrichment = process.env.ENRICH_SHORTFALL_LEADS === "true";
+  const shouldRunIntent = !isShortfall || forceShortfallEnrichment;
+
+  if (isShortfall && !forceShortfallEnrichment) {
+    logEvent(
+      `Shortfall detected (${qualifiedLeads.length} <= ${targetLimit}): all candidates guaranteed selection; bypassing external post-intent scraping.`,
+    );
+  }
+
   // 1. Targeted Phase 4: Company Intent Probing on qualified leads
   const leadsNeedingIntent = qualifiedLeads.filter((l) => {
     if (l.companyIntentEvidence || l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
@@ -57,6 +67,7 @@ export async function executeSelectStage(
   const effectiveIntentConcurrency = 1; // strictly sequential LLM execution
   if (
     companyIntentEnabled &&
+    shouldRunIntent &&
     leadsNeedingIntent.length > 0 &&
     effectiveIntentCap > 0
   ) {
@@ -90,7 +101,7 @@ export async function executeSelectStage(
   }
 
   // 2. Targeted Phase 5: LinkedIn Post Intent Enrichment on qualified leads (revives Cutline Bubble logic)
-  if (linkedinPostIntentEnabled && qualifiedLeads.length > 0) {
+  if (linkedinPostIntentEnabled && shouldRunIntent && qualifiedLeads.length > 0) {
     logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${qualifiedLeads.length} qualified candidates.`);
     const qualifiedMap = new Map<string, any>(qualifiedLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
     const postIntentStats = await runLinkedInPostIntentEnrichment({

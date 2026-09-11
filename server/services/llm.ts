@@ -70,13 +70,47 @@ export type LLMExecutionOptions = {
 };
 
 export function createLLMSessionCircuitBreaker(
-  failureThreshold = 2,
+  failureThreshold?: number,
 ): LLMSessionCircuitBreaker {
+  const envRaw = process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD;
+  const envThreshold =
+    envRaw !== undefined && envRaw.trim() !== "" ? Number(envRaw) : undefined;
+  const candidate =
+    failureThreshold !== undefined && Number.isFinite(failureThreshold)
+      ? failureThreshold
+      : Number.isFinite(envThreshold) && (envThreshold as number) > 0
+        ? (envThreshold as number)
+        : 4;
+  const resolved = Number.isFinite(candidate) && candidate > 0 ? candidate : 4;
   return {
-    failureThreshold: Math.max(1, Math.floor(failureThreshold)),
+    failureThreshold: Math.max(1, Math.floor(resolved)),
     failureCounts: {},
     disabledProviderIds: new Set<LLMProvider["id"]>(),
   };
+}
+
+export function isExhaustedQuotaError(
+  status?: number,
+  bodyOrMessage?: string,
+  parsedCode?: string | number,
+): boolean {
+  if (status !== 429) return false;
+  if (parsedCode !== undefined && String(parsedCode).trim() === "1300") {
+    return true;
+  }
+  if (!bodyOrMessage) return false;
+  try {
+    const parsed = JSON.parse(bodyOrMessage);
+    const code = parsed?.error?.code ?? parsed?.code;
+    if (code !== undefined && String(code).trim() === "1300") {
+      return true;
+    }
+  } catch {
+    // Non-JSON or prefixed string
+  }
+  return /(?:"code"\s*:\s*"?1300"?\b|\bcode["':\s]+1300\b|\berror[_\s-]?code["':\s]+1300\b)/i.test(
+    bodyOrMessage,
+  );
 }
 
 const DEFAULT_PRIMARY_BASE = "https://byesu.com/v1";
@@ -322,8 +356,20 @@ async function fetchWithRetry(
       // 413 is a deterministic payload-budget failure and must never be
       // retried unchanged. 429 rate limit responses use exponential backoff.
       const is429 = res.status === 429;
+      let isExhaustedQuota = false;
+      if (is429) {
+        try {
+          const bodyPeek = await res.clone().text();
+          if (isExhaustedQuotaError(429, bodyPeek)) {
+            isExhaustedQuota = true;
+          }
+        } catch {
+          // ignore clone/read error
+        }
+      }
       const isRetryableStatus =
         res.status !== 413 &&
+        !isExhaustedQuota &&
         ((res.status >= 500 && res.status <= 599) || (is429 && retry429));
 
       const statusMaxRetries = is429 ? Math.max(maxRetries, 2) : maxRetries;
@@ -357,22 +403,29 @@ async function fetchWithRetry(
     } catch (err: any) {
       clearTimeout(timer);
       lastResponse = undefined;
-      if (
-        callerSignal?.aborted ||
-        (err?.name === "AbortError" && callerSignal?.aborted)
-      ) {
+      const isCallerAbort = Boolean(callerSignal?.aborted);
+      const isFetchTimeout =
+        !isCallerAbort &&
+        (controller.signal.aborted ||
+          err?.name === "AbortError" ||
+          err?.name === "TimeoutError" ||
+          /timed out/i.test(err?.message || ""));
+
+      if (isCallerAbort) {
         const abortErr = new Error("LLM request was aborted by caller.");
         abortErr.name = "AbortError";
         throw abortErr;
       }
+      if (isFetchTimeout) {
+        lastError = new Error(
+          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s (bounded within Cloudflare 120s limit)`,
+        );
+        break;
+      }
       lastError =
-        err?.name === "AbortError"
-          ? new Error(
-              `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s (bounded within Cloudflare 120s limit)`,
-            )
-          : err instanceof Error
-            ? err
-            : new Error(String(err));
+        err instanceof Error
+          ? err
+          : new Error(String(err));
       if (attempt < maxRetries) {
         const waitMs = Math.pow(2, attempt) * 2000;
         console.warn(
@@ -392,16 +445,19 @@ export class LLMProviderError extends Error {
   provider: LLMProvider;
   status?: number;
   isTokenLimit: boolean;
+  errorCode?: string | number;
 
   constructor(
     provider: LLMProvider,
     status: number | undefined,
     message: string,
+    errorCode?: string | number,
   ) {
     super(`[${provider.name}] ${message}`);
     this.name = "LLMProviderError";
     this.provider = provider;
     this.status = status;
+    this.errorCode = errorCode;
     const is429OrRateLimit = status === 429 || /429|rate[-_ ]?limit/i.test(message);
     this.isTokenLimit =
       !is429OrRateLimit &&
@@ -548,7 +604,27 @@ async function withProviderFallback<T>(
       });
 
       const breaker = executionOptions.circuitBreaker;
-      if (breaker && isCircuitBreakingProviderFailure(normalized)) {
+      const isExhaustedQuota =
+        (normalized instanceof LLMProviderError &&
+          isExhaustedQuotaError(
+            normalized.status,
+            normalized.message,
+            normalized.errorCode,
+          )) ||
+        isExhaustedQuotaError(
+          normalized instanceof LLMProviderError ? normalized.status : 429,
+          normalized.message,
+        );
+
+      if (isExhaustedQuota) {
+        if (breaker) {
+          breaker.disabledProviderIds.add(provider.id);
+        }
+        providerCooldowns.set(provider.id, Date.now() + 24 * 3600 * 1000);
+        console.warn(
+          `[llm] ${provider.name} disabled for the rest of this mining session due to exhausted quota (HTTP 429 code 1300).`,
+        );
+      } else if (breaker && isCircuitBreakingProviderFailure(normalized)) {
         const failuresForProvider =
           Number(breaker.failureCounts[provider.id] || 0) + 1;
         breaker.failureCounts[provider.id] = failuresForProvider;
@@ -560,11 +636,12 @@ async function withProviderFallback<T>(
         }
       }
       const isTransientTimeoutOrRateLimit =
-        (normalized instanceof LLMProviderError &&
+        !isExhaustedQuota &&
+        ((normalized instanceof LLMProviderError &&
           (normalized.status === 429 || normalized.status === 524)) ||
         /429|rate[-_ ]?limit|524|timeout occurred/i.test(
           normalized.message,
-        );
+        ));
       if (isTransientTimeoutOrRateLimit) {
         const cooldownMs =
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
@@ -608,7 +685,7 @@ async function sendChatCompletion(
     let res: Response;
     const effectiveMaxTokens =
       provider.id === "groq"
-        ? Math.min(options?.maxTokens || 400, 1500)
+        ? Math.min(options?.maxTokens || 400, 950)
         : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
     try {
       res = await fetchWithRetry(
@@ -650,11 +727,18 @@ async function sendChatCompletion(
     }
 
     if (!res.ok) {
-      const err = truncateProviderError(await res.text());
+      const rawText = await res.text();
+      let errorCode: string | number | undefined;
+      try {
+        const parsed = JSON.parse(rawText);
+        errorCode = parsed?.error?.code ?? parsed?.code;
+      } catch {}
+      const err = truncateProviderError(rawText);
       throw new LLMProviderError(
         provider,
         res.status,
         `chat completion error ${res.status}: ${err}`,
+        errorCode,
       );
     }
 
@@ -680,6 +764,8 @@ async function sendChatCompletion(
     return data.choices?.[0]?.message?.content || "";
   });
 }
+
+export const callLLMProvider = sendChatCompletion;
 
 /** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
 function normalizeSchema(schema: any): any {

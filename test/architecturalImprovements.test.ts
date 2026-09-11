@@ -197,3 +197,168 @@ test("Component 6: Early shortlist termination logic calculates unique company d
   assert.ok(uniqueCompanies >= minCompanyDiversity); // 9 >= 8 -> triggers early stop!
 });
 
+test("Component 3: selectStage bypasses Phase 4 and Phase 5 on candidate shortfall (qualifiedLeads <= targetLimit)", async () => {
+  const { executeSelectStage } = await import("../server/leadSearch/stages/selectStage.js");
+  const { buildFallbackSearchSpec } = await import("../server/leadSearch/searchSpec.js");
+  const { buildDeterministicProspectContract } = await import("../server/leadSearch/prospectContract.js");
+
+  const qualifiedLeads = [
+    { id: "lead-1", fullName: "Alice Smith", currentCompany: "Alpha Tech", currentTitle: "CEO", score: 85, qualification: { verdict: "qualified", finalScore: 85 } },
+    { id: "lead-2", fullName: "Bob Jones", profile: { currentCompany: "Beta AI", currentTitle: "Founder" }, score: 80, qualification: { verdict: "qualified", finalScore: 80 } },
+  ];
+
+  const searchSpec = buildFallbackSearchSpec("CEO AI");
+  const contract = buildDeterministicProspectContract("CEO AI in USA");
+
+  const logs: string[] = [];
+  const mockCtx: any = {
+    config: {
+      targetLimit: 5, // 2 <= 5 -> shortfall!
+      maxRounds: 3,
+      linkedinPostIntentEnabled: true,
+    },
+    state: {
+      qualifiedLeads: [...qualifiedLeads],
+      abortController: new AbortController(),
+    },
+    ports: {
+      brightDataSearch: async () => [],
+      tavilySearch: async () => ({ items: [] }),
+    },
+    logEvent: (msg: string) => logs.push(msg),
+    recordTrace: () => {},
+  };
+
+  const savedEnv = process.env.ENRICH_SHORTFALL_LEADS;
+  try {
+    delete process.env.ENRICH_SHORTFALL_LEADS;
+    const statsObj: any = { queryRuns: [] };
+    const output = await executeSelectStage(mockCtx, {
+      contract,
+      searchSpec,
+      ttlDays: 7,
+      stats: statsObj,
+      leadQueryRuns: new Map(),
+      trackableBrightDataSearch: async () => [],
+      companyIntentEnabled: true,
+      companyIntentMaxPerSearch: 3,
+      companyIntentConcurrency: 1,
+    });
+
+    assert.equal(output.leadsFound, 2);
+    assert.equal(output.finalLeads.length, 2);
+    // Phase 4 companyIntent stats should not be populated due to shortfall bypass
+    assert.equal(statsObj.companyIntent, undefined);
+    assert.equal(statsObj.linkedinPostIntent, undefined);
+    assert.ok(logs.some(l => l.includes("Shortfall detected (2 <= 5)")));
+
+    // When forced via ENRICH_SHORTFALL_LEADS=true, it should run
+    process.env.ENRICH_SHORTFALL_LEADS = "true";
+    const forcedStatsObj: any = { queryRuns: [] };
+    await executeSelectStage(mockCtx, {
+      contract,
+      searchSpec,
+      ttlDays: 7,
+      stats: forcedStatsObj,
+      leadQueryRuns: new Map(),
+      trackableBrightDataSearch: async () => [],
+      companyIntentEnabled: true,
+      companyIntentMaxPerSearch: 3,
+      companyIntentConcurrency: 1,
+    });
+    assert.ok(forcedStatsObj.companyIntent, "Expected stats.companyIntent when ENRICH_SHORTFALL_LEADS is true");
+
+    // When qualifiedLeads.length > targetLimit (no shortfall), it should run without bypass
+    delete process.env.ENRICH_SHORTFALL_LEADS;
+    const surplusLeads = [
+      ...qualifiedLeads,
+      {
+        id: "lead-3",
+        fullName: "User Three",
+        currentCompany: "Company C",
+        currentTitle: "VP Sales",
+        qualification: { verdict: "accepted", score: 8, confidence: 0.9 },
+      },
+      {
+        id: "lead-4",
+        fullName: "User Four",
+        currentCompany: "Company D",
+        currentTitle: "Sales Director",
+        qualification: { verdict: "accepted", score: 8, confidence: 0.9 },
+      },
+      {
+        id: "lead-5",
+        fullName: "User Five",
+        currentCompany: "Company E",
+        currentTitle: "Head of Growth",
+        qualification: { verdict: "accepted", score: 8, confidence: 0.9 },
+      },
+      {
+        id: "lead-6",
+        fullName: "User Six",
+        currentCompany: "Company F",
+        currentTitle: "Account Executive",
+        qualification: { verdict: "accepted", score: 8, confidence: 0.9 },
+      },
+    ];
+    const surplusCtx = {
+      ...mockCtx,
+      state: { ...mockCtx.state, qualifiedLeads: surplusLeads },
+    };
+    const surplusStatsObj: any = { queryRuns: [] };
+    await executeSelectStage(surplusCtx, {
+      contract,
+      searchSpec,
+      ttlDays: 7,
+      stats: surplusStatsObj,
+      leadQueryRuns: new Map(),
+      trackableBrightDataSearch: async () => [],
+      companyIntentEnabled: true,
+      companyIntentMaxPerSearch: 3,
+      companyIntentConcurrency: 1,
+    });
+    assert.ok(surplusStatsObj.companyIntent, "Expected stats.companyIntent when qualifiedLeads > targetLimit");
+  } finally {
+    if (savedEnv !== undefined) {
+      process.env.ENRICH_SHORTFALL_LEADS = savedEnv;
+    } else {
+      delete process.env.ENRICH_SHORTFALL_LEADS;
+    }
+  }
+});
+
+test("Component 4: scheduleAdaptiveSearchTasks activates when tasks.length >= maxTasks", async () => {
+  const { scheduleAdaptiveSearchTasks } = await import("../server/leadSearch/adaptiveScheduler.js");
+  const baseTasks: any = [
+    { id: "1", query: "q1", family: "f1", lane: "person", providerPreference: "tavily", priority: 1 },
+    { id: "2", query: "q2", family: "f2", lane: "person", providerPreference: "tavily", priority: 2 },
+    { id: "3", query: "q3", family: "f3", lane: "person", providerPreference: "tavily", priority: 3 },
+    { id: "4", query: "q4", family: "f4", lane: "person", providerPreference: "tavily", priority: 4 },
+  ];
+  const rows: any = [
+    { family: "f1", lane: "person", provider: "tavily", outcome_runs: 10, qualified_candidates: 8, returned_candidates: 5 },
+    { family: "f2", lane: "person", provider: "tavily", outcome_runs: 10, qualified_candidates: 2, returned_candidates: 1 },
+    { family: "f3", lane: "person", provider: "tavily", outcome_runs: 10, qualified_candidates: 1, returned_candidates: 0 },
+    { family: "f4", lane: "person", provider: "tavily", outcome_runs: 10, qualified_candidates: 0, returned_candidates: 0 },
+  ];
+
+  // tasks.length === maxTasks (4 === 4) and outcome_runs >= minOutcomeRuns -> should be active!
+  const result = scheduleAdaptiveSearchTasks(baseTasks, rows, { maxTasks: 4, minOutcomeRuns: 8 });
+  assert.equal(result.active, true);
+  assert.equal(result.tasks.length, 4);
+
+  // If tasks.length < maxTasks (3 < 4), should be inactive
+  const resultFew = scheduleAdaptiveSearchTasks(baseTasks.slice(0, 3), rows, { maxTasks: 4, minOutcomeRuns: 8 });
+  assert.equal(resultFew.active, false);
+});
+
+test("Component 2: judgeStage dynamicMaxTokens evaluates properly for micro-batches", async () => {
+  const { computeJudgeDynamicMaxTokens } = await import("../server/leadSearch/stages/judgeStage.js");
+
+  assert.equal(computeJudgeDynamicMaxTokens(1), 500); // 1-candidate batch receives 500 tokens
+  assert.equal(computeJudgeDynamicMaxTokens(2), 700); // 2-candidate batch receives 700 tokens (eliminating JSON syntax truncation)
+  assert.equal(computeJudgeDynamicMaxTokens(3), 950); // 3-candidate batch capped at 950 (preventing Groq 429)
+  assert.equal(computeJudgeDynamicMaxTokens(4), 950);
+});
+
+

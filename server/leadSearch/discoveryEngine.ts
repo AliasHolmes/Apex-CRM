@@ -1005,9 +1005,7 @@ export async function executeDiscoverySession(
     let brightDataTransportRetryAfter = 0;
     const urlRetryQueue = new Set<string>();
     let previousRoundSummary: Record<string, any> = {};
-    const llmCircuitBreaker = createLLMSessionCircuitBreaker(
-      Number(process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD || 2),
-    );
+    const llmCircuitBreaker = createLLMSessionCircuitBreaker();
     const failedExtractionRoundsBeforeStop = Math.min(
       Math.max(
         Number(process.env.LEAD_EXTRACTION_FAILURE_ROUNDS_BEFORE_STOP || 2),

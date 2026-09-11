@@ -204,6 +204,7 @@ export function scoreAdaptiveArm(
 }
 
 export const scoreQueryPerformanceRow = scoreAdaptiveArm;
+export const scheduleAdaptiveSearchTasks = scheduleAdaptiveRetrievalTasks;
 
 export function scheduleAdaptiveRetrievalTasks(
   tasks: RetrievalTask[],
@@ -216,7 +217,7 @@ export function scheduleAdaptiveRetrievalTasks(
   const explorationStrength = Math.max(Number(options.explorationStrength ?? 1.25), 0);
   const rowsByScope = new Map(rows.map(row => [rowScopeKey(row), row]));
   const totalOutcomeRuns = rows.reduce((sum, row) => sum + finiteCount(row.outcome_runs), 0);
-  const active = enabled && tasks.length > maxTasks && totalOutcomeRuns >= minOutcomeRuns;
+  const active = enabled && tasks.length >= maxTasks && totalOutcomeRuns >= minOutcomeRuns;
 
   if (!active) {
     return {

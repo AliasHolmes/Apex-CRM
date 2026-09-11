@@ -541,6 +541,158 @@ describe('LLM gateway and provider fallback', () => {
     // Primary provider was placed on cooldown, NOT permanently disabled by circuit breaker
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
   });
+
+  it('createLLMSessionCircuitBreaker defaults to 4 and respects LLM_SESSION_PROVIDER_FAILURE_THRESHOLD', async () => {
+    delete process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD;
+    const llm = await importLLM('cb-default');
+    const defaultBreaker = llm.createLLMSessionCircuitBreaker();
+    assert.equal(defaultBreaker.failureThreshold, 4);
+
+    process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD = '5';
+    const envBreaker = llm.createLLMSessionCircuitBreaker();
+    assert.equal(envBreaker.failureThreshold, 5);
+
+    const explicitBreaker = llm.createLLMSessionCircuitBreaker(2);
+    assert.equal(explicitBreaker.failureThreshold, 2);
+  });
+
+  it('clamps Groq maximum output tokens to Math.min(maxTokens || 400, 950)', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    const llm = await importLLM('groq-clamp');
+
+    let capturedBody: any;
+    globalThis.fetch = async (url: any, opts: any) => {
+      capturedBody = JSON.parse(opts.body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'groq ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    // When maxTokens is 2000, groq should clamp to 950
+    await llm.openAIText('test prompt', undefined, { maxTokens: 2000 });
+    assert.equal(capturedBody.max_tokens, 950);
+
+    // When maxTokens is 500, groq should use 500
+    await llm.openAIText('test prompt', undefined, { maxTokens: 500 });
+    assert.equal(capturedBody.max_tokens, 500);
+
+    // When maxTokens is undefined, groq should default to 400
+    await llm.openAIText('test prompt');
+    assert.equal(capturedBody.max_tokens, 400);
+  });
+
+  it('breaks and throws immediately on fetch timeout without repeating retries', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '2';
+
+    const llm = await importLLM('timeout-abort');
+    let primaryAttempts = 0;
+
+    globalThis.fetch = async (url: any) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('byesu.com')) {
+        primaryAttempts++;
+        const abortErr = new Error('The operation was aborted');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter ok' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test prompt');
+    assert.equal(res.text, 'openrouter ok');
+    // Primary had LLM_MAX_RETRIES=2, but timeout broke immediately on attempt 1 without repeating
+    assert.equal(primaryAttempts, 1);
+  });
+
+  it('disables provider permanently for session on HTTP 429 code 1300 (quota exhausted) without 429 retries', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_RETRY_429 = 'true';
+    process.env.LLM_MAX_RETRIES = '2';
+
+    const llm = await importLLM('quota-1300');
+    const circuitBreaker = llm.createLLMSessionCircuitBreaker(4);
+    let primaryAttempts = 0;
+
+    globalThis.fetch = async (url: any) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('byesu.com')) {
+        primaryAttempts++;
+        return new Response(JSON.stringify({
+          error: { message: 'Usage limit exceeded', code: '1300' }
+        }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter recovered' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res1 = await llm.openAIText('test prompt 1', undefined, { circuitBreaker });
+    assert.equal(res1.text, 'openrouter recovered');
+    // Did not retry 429 multiple times because code 1300 was detected
+    assert.equal(primaryAttempts, 1);
+    // Added to disabledProviderIds immediately
+    assert.equal(circuitBreaker.disabledProviderIds.has('primary'), true);
+
+    // Subsequent call should skip primary immediately without attempting fetch
+    const res2 = await llm.openAIText('test prompt 2', undefined, { circuitBreaker });
+    assert.equal(res2.text, 'openrouter recovered');
+    assert.equal(primaryAttempts, 1);
+  });
+
+  it('does NOT permanently disable provider on transient 429 mentioning 1300 ms or 13000 tokens', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_RETRY_429 = 'false';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('rate-limit-1300ms');
+    const circuitBreaker = llm.createLLMSessionCircuitBreaker(4);
+
+    globalThis.fetch = async (url: any) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('byesu.com')) {
+        return new Response(JSON.stringify({
+          error: { message: 'Rate limit reached. Retry in 1300 ms. Limit: 13000 tokens/min' }
+        }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter recovered' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test prompt', undefined, { circuitBreaker });
+    assert.equal(res.text, 'openrouter recovered');
+    // Should NOT be permanently disabled by circuit breaker because it was not error code 1300
+    assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
+  });
+
+  it('createLLMSessionCircuitBreaker handles invalid or non-numeric thresholds gracefully', async () => {
+    const llm = await importLLM('cb-invalid-inputs');
+
+    // NaN should fall back to 4
+    const nanBreaker = llm.createLLMSessionCircuitBreaker(Number.NaN);
+    assert.equal(nanBreaker.failureThreshold, 4);
+
+    // Negative should fall back to 4
+    const negBreaker = llm.createLLMSessionCircuitBreaker(-5);
+    assert.equal(negBreaker.failureThreshold, 4);
+
+    // Invalid env string should fall back to 4
+    process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD = 'invalid_threshold';
+    const envInvalidBreaker = llm.createLLMSessionCircuitBreaker();
+    assert.equal(envInvalidBreaker.failureThreshold, 4);
+
+    // Zero in env should fall back to 4
+    process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD = '0';
+    const envZeroBreaker = llm.createLLMSessionCircuitBreaker();
+    assert.equal(envZeroBreaker.failureThreshold, 4);
+    delete process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD;
+  });
 });
 
 

@@ -28,6 +28,7 @@ import {
 } from "../llmBudget.js";
 import { summarizeLLM } from "../telemetry.js";
 import { incrementRejection, type RejectionReason } from "../rejections.js";
+import { unwrapRedirectUrl } from "../../../src/utils/leadDedupe.js";
 import { runWithTransientRetry } from "../sessionHelpers.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceQuality, LeadSourceProvider } from "../scoring.js";
@@ -56,6 +57,7 @@ export type ExtractStageInput = {
   round: number;
   candidateItems: any[];
   rerankPoolTarget: number;
+  candidateCeiling?: number;
   brightDataReady: boolean;
   brightDataProviderDisabled: boolean;
   tavilyCapabilities: any;
@@ -357,7 +359,6 @@ export async function executeExtractStage(
   let evidenceBlocks: string[] = [];
 
   for (const item of candidateItems) {
-    if (state.acceptedLeads.length >= rerankPoolTarget) break;
     const url = item.url || "";
     const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
     const username = item._linkedinUsername || extractLinkedInUsername(url);
@@ -396,18 +397,22 @@ export async function executeExtractStage(
     }
     if (queryRun) queryRun.evidenceBlocks++;
     evidenceBlocks.push(
-      `--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${url}\n${evidenceBlock}\n\n`,
+      `--- PROFILE CANDIDATE ---\nSOURCE_PROVIDER: ${sourceProvider}\nLINK: ${normalizedUrl ? `https://${normalizedUrl}` : url}\n${evidenceBlock}\n\n`,
     );
   }
 
   // 3. Adaptive extraction evidence slicing
+  const targetCeiling = Math.max(
+    input.candidateCeiling || rerankPoolTarget,
+    rerankPoolTarget,
+  );
   const neededPoolRemaining = Math.max(
-    1,
-    rerankPoolTarget - state.acceptedLeads.length,
+    15,
+    targetCeiling - state.acceptedLeads.length,
   );
   const neededEvidenceBlocks = Math.max(
-    12,
-    Math.ceil(neededPoolRemaining * 1.5),
+    16,
+    Math.ceil(neededPoolRemaining * 1.8),
   );
   if (evidenceBlocks.length > neededEvidenceBlocks) {
     logEvent(
@@ -438,8 +443,8 @@ export async function executeExtractStage(
 Rules:
 - Extract every person who has a full name and an associated role, title, company, or headline.
 - Do not invent data. Use empty strings for missing fields.
-- Set contactDetails.linkedinUrl ONLY to the exact LINK value from the same source block. Never copy external website URLs found in text snippets.
-- If LINK is not a linkedin.com/in/ URL or is missing, leave contactDetails.linkedinUrl empty.
+- Set contactDetails.linkedinUrl to the candidate's canonical LinkedIn profile URL from LINK or the snippet (e.g. https://linkedin.com/in/username). If LINK is a LinkedIn post or redirect, extract the person's profile URL.
+- If LINK is not a LinkedIn URL or is missing, leave contactDetails.linkedinUrl empty.
 - Preserve SOURCE_PROVIDER as sourceProvider.
 - Score conservatively from 1-10 using only visible evidence.
 - Add evidenceReasons as 1 short factual summary of the person's role/company from the snippet.
@@ -696,7 +701,16 @@ Evidence:
     };
   }
 
-  const extractedProfiles = extractionResults.flat();
+  const extractedProfiles = extractionResults.flat().map((lead: any) => {
+    if (lead?.contactDetails?.linkedinUrl) {
+      const unwrapped = unwrapRedirectUrl(lead.contactDetails.linkedinUrl);
+      const normalized = normalizeLinkedInUrl(unwrapped);
+      if (normalized) {
+        lead.contactDetails.linkedinUrl = `https://${normalized}`;
+      }
+    }
+    return lead;
+  });
   return {
     extractedProfiles,
     evidenceByUrl,

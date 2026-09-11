@@ -10,6 +10,8 @@ import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
 } from "../../services/linkedinEvidence.js";
+import { unwrapRedirectUrl } from "../../../src/utils/leadDedupe.js";
+import { extractLinkedInProfileUrlFromResult } from "../../services/brightdata.js";
 import { incrementRejection, type RejectionReason } from "../rejections.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { ExecutableQueryPlan } from "./planStage.js";
@@ -116,9 +118,21 @@ export async function executeFuseStage(
     const plan = planByQuery.get(observation.query);
     const queryRun = queryRunByQuery.get(observation.query);
     const item = { ...observation.raw };
-    const url = observation.url;
-    const username = extractLinkedInUsername(url);
-    const normalizedUrl = normalizeLinkedInUrl(url);
+    const rawUrl = observation.url;
+    let url = unwrapRedirectUrl(rawUrl) || rawUrl;
+    let username = extractLinkedInUsername(url);
+    let normalizedUrl = normalizeLinkedInUrl(url);
+
+    // If direct URL is not a person profile URL (e.g. redirect wrapper, /pulse/ article, search wrapper),
+    // attempt to recover a LinkedIn person profile URL from the raw item or observation content
+    if (!username || !normalizedUrl) {
+      const recoveredProfileUrl = extractLinkedInProfileUrlFromResult(observation.raw || observation);
+      if (recoveredProfileUrl) {
+        url = recoveredProfileUrl;
+        username = extractLinkedInUsername(url);
+        normalizedUrl = normalizeLinkedInUrl(url);
+      }
+    }
 
     const isSignal = isSignalObservation(observation) || observation.lane === 'signal';
     const isAccount = observation.lane === 'account' || (Array.isArray(observation.lanes) && observation.lanes.includes('account'));
@@ -204,6 +218,20 @@ export async function executeFuseStage(
 
     // STREAM 1: Person Lane -> Must have a valid LinkedIn profile URL
     if (!username || !normalizedUrl) {
+      const companyHint = extractCompanyHintDeterministic(observation) || "";
+      if (companyHint && looksLikeCompanyHint(companyHint) && ctx.state.signalStore && observation.content) {
+        ctx.state.signalStore.add({
+          companyName: companyHint,
+          url: observation.url,
+          text: `${observation.title} - ${observation.content}`.trim(),
+          round,
+          query: observation.query,
+          lane: 'signal',
+          confidence: 0.7,
+          provider: Array.isArray(observation.sourceProviders) && observation.sourceProviders.includes("brightdata") ? "brightdata" : "tavily",
+          category: inferSignalCategory(observation)
+        });
+      }
       noteRejection("missing_linkedin_profile", queryRun);
       continue;
     }
@@ -322,7 +350,7 @@ export async function executeFuseStage(
 
   const candidateBudget = Math.min(
     uniqueRoundItems.length,
-    Math.max(Number(config.targetLimit || 1) * 4, 4),
+    Math.max(Number(config.targetLimit || 1) * 8, 48),
   );
   const candidateItems = uniqueRoundItems.slice(0, candidateBudget);
   logEvent(

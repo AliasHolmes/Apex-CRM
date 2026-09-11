@@ -98,6 +98,7 @@ import {
   classifyBrightDataError,
   executeBrightDataSearchWithRetry,
   isBrightDataRetryableError,
+  extractLinkedInProfileUrlFromResult,
 } from "../services/brightdata.js";
 import {
   buildTavilyEvidence,
@@ -188,6 +189,7 @@ import {
 import {
   buildDeterministicProspectContract,
   buildProspectContractPrompt,
+  COUNTRY_CANONICAL_MAP,
   COUNTRY_TO_METROS,
   enforceContractQueries,
   normalizeProspectContract,
@@ -1211,9 +1213,7 @@ export async function executeDiscoverySession(
         `Resuming session directly at Finalist Judging stage with ${acceptedLeads.length} checkpointed candidate leads and restored evidence map.`,
       );
     } else {
-      const maxCandidatePoolLimit = isFlagEnabled.progressiveQualification()
-        ? collectionCapacity.candidateCeiling
-        : rerankPoolTarget;
+      const maxCandidatePoolLimit = collectionCapacity.candidateCeiling;
 
       for (
         let round = initialRound;
@@ -1261,18 +1261,21 @@ export async function executeDiscoverySession(
           return acc;
         }, 0);
         const remainingQualifiedNeeded = Math.max(0, qualifiedTargetWithCushion - effectiveQualifiedCount);
-        const remaining = Math.min(
-          collectionCapacity.candidateCeiling,
-          Math.max(Math.ceil(remainingQualifiedNeeded * 1.8), remainingQualifiedNeeded > 0 ? 4 : 0),
-        );
-
         const passRateForTarget = Math.max(
-          0.15,
+          0.10,
           Math.min(1.0, Number(previousRoundSummary?.judgePassRateEstimate) || defaultJudgePassRate),
         );
-        const rationalizedPoolCeiling = Math.min(
+        const remaining = Math.min(
           collectionCapacity.candidateCeiling,
-          Math.max(28, Math.ceil(targetLimit * 1.6)),
+          Math.max(
+            Math.ceil(remainingQualifiedNeeded / passRateForTarget),
+            remainingQualifiedNeeded > 0 ? collectionCapacity.candidateBatchSize : 0,
+          ),
+        );
+
+        const rationalizedPoolCeiling = collectionCapacity.candidateCeiling;
+        const dynamicCandidatesNeeded = Math.ceil(
+          (remainingQualifiedNeeded * 1.25) / passRateForTarget,
         );
         const roundStagePoolTarget = isFlagEnabled.progressiveQualification()
           ? (effectiveQualifiedCount >= qualifiedTargetWithCushion
@@ -1282,7 +1285,7 @@ export async function executeDiscoverySession(
                   Math.max(
                     rerankPoolTarget,
                     acceptedLeads.length + collectionCapacity.candidateBatchSize,
-                    Math.ceil((qualifiedTargetWithCushion * 1.25) / passRateForTarget),
+                    acceptedLeads.length + dynamicCandidatesNeeded,
                   ),
                 ))
           : rerankPoolTarget;
@@ -1375,7 +1378,6 @@ export async function executeDiscoverySession(
 
         if (
           candidateItems.length < desiredBatchThreshold &&
-          crmDuplicatesEncountered &&
           hasTavilyKey()
         ) {
           const roleTerms = (contract?.requirements || [])
@@ -1392,14 +1394,83 @@ export async function executeDiscoverySession(
             .flatMap((r: any) => r.acceptableTerms || [])
             .filter(Boolean);
 
+          let targetCountry = "";
+          for (const term of locTerms) {
+            const cleanTerm = String(term || "").trim().toLowerCase();
+            if (COUNTRY_CANONICAL_MAP[cleanTerm]) {
+              targetCountry = COUNTRY_CANONICAL_MAP[cleanTerm];
+              break;
+            }
+          }
+          if (!targetCountry) {
+            for (const term of locTerms) {
+              const cleanTerm = String(term || "").trim().toLowerCase();
+              for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
+                if (cKey.length > 2 && cleanTerm.includes(cKey)) {
+                  targetCountry = cName;
+                  break;
+                }
+              }
+              if (targetCountry) break;
+            }
+          }
+          if (!targetCountry) {
+            const briefLower = String(contract?.brief || promptQuery || "").toLowerCase();
+            for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
+              const regex = new RegExp(`\\b${cKey}\\b`, "i");
+              if (regex.test(briefLower)) {
+                targetCountry = cName;
+                break;
+              }
+            }
+          }
+
+          const COUNTRY_TO_TAVILY_CODE: Record<string, string> = {
+            UK: "gb",
+            USA: "us",
+            Canada: "ca",
+            Australia: "au",
+            "New Zealand": "nz",
+            Germany: "de",
+            France: "fr",
+            Netherlands: "nl",
+            Ireland: "ie",
+            Spain: "es",
+            Italy: "it",
+            Switzerland: "ch",
+            Sweden: "se",
+            Singapore: "sg",
+            Japan: "jp",
+          };
+          const tavilyCountry = targetCountry ? COUNTRY_TO_TAVILY_CODE[targetCountry] : undefined;
+
           // Resolve country terms into their primary tech metros to avoid top-SERP saturation
           const mappedMetros: string[] = [];
           for (const term of locTerms) {
             const cleanTerm = String(term || "").trim().toLowerCase();
             if (COUNTRY_TO_METROS[cleanTerm]) {
-              mappedMetros.push(...COUNTRY_TO_METROS[cleanTerm]);
+              const metros = COUNTRY_TO_METROS[cleanTerm];
+              const countrySuffix = targetCountry || COUNTRY_CANONICAL_MAP[cleanTerm] || "";
+              for (const m of metros) {
+                if (countrySuffix && !m.toLowerCase().includes(countrySuffix.toLowerCase())) {
+                  mappedMetros.push(`${m} ${countrySuffix}`);
+                } else {
+                  mappedMetros.push(m);
+                }
+              }
             } else if (cleanTerm.length > 2 && !/^(any|all|global|worldwide|remote)$/i.test(cleanTerm)) {
-              mappedMetros.push(term);
+              const countrySuffix = targetCountry;
+              if (countrySuffix && !term.toLowerCase().includes(countrySuffix.toLowerCase())) {
+                mappedMetros.push(`${term} ${countrySuffix}`);
+              } else {
+                mappedMetros.push(term);
+              }
+            }
+          }
+
+          if (mappedMetros.length === 0 && targetCountry && COUNTRY_TO_METROS[targetCountry.toLowerCase()]) {
+            for (const m of COUNTRY_TO_METROS[targetCountry.toLowerCase()]) {
+              mappedMetros.push(`${m} ${targetCountry}`);
             }
           }
 
@@ -1414,10 +1485,39 @@ export async function executeDiscoverySession(
           const companyTypeReq = (contract?.requirements || []).find(
             (r: any) => r.scope === "company_type" || r.scope === "company_industry",
           );
-          const verticalBase = (companyTypeReq?.acceptableTerms?.[0] || companyTypeReq?.sourcePhrase || contract?.brief || "")
-            .replace(/[^\w\s-]/g, "")
-            .trim();
-          const verticalTerm = verticalBase.includes(" ") ? `"${verticalBase}"` : verticalBase;
+          let rawVertical =
+            contract?.identitySpec?.companyTypes?.[0] ||
+            companyTypeReq?.acceptableTerms?.[0] ||
+            searchSpec?.company?.keywords?.[0] ||
+            "";
+
+          if (!rawVertical) {
+            const basePrompt = contract?.brief || promptQuery || "";
+            rawVertical = basePrompt
+              .replace(/\b(from|in|based in|located in|near)\b.*$/i, "")
+              .replace(/\b(owner|founder|ceo|co-founder|director|managing partner|president|proprietor|executive|vp|head of)\b/gi, "")
+              .replace(/[/\\|]/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+          }
+
+          let verticalBase = rawVertical.trim();
+          if (verticalBase.includes(",")) {
+            verticalBase = verticalBase.split(",")[0].trim();
+          }
+          if (verticalBase.toLowerCase().includes(" and ")) {
+            verticalBase = verticalBase.split(/\s+and\s+/i)[0].trim();
+          }
+          verticalBase = verticalBase.replace(/[^\w\s-]/g, "").replace(/\s+/g, " ").trim();
+          const verticalWords = verticalBase.split(/\s+/).filter(Boolean);
+          if (verticalWords.length > 3) {
+            verticalBase = verticalWords.slice(0, 2).join(" ");
+          }
+          const finalWords = verticalBase.split(/\s+/).filter(Boolean);
+          const verticalTerm =
+            finalWords.length > 0 && finalWords.length <= 2
+              ? (verticalBase.includes(" ") ? `"${verticalBase}"` : verticalBase)
+              : verticalBase;
 
           const saturatedGeos = new Set<string>();
           for (const loc of candidateLocations) {
@@ -1453,8 +1553,11 @@ export async function executeDiscoverySession(
 
             if (!replenishQuery) break;
 
+            const reasonNote = crmDuplicatesEncountered
+              ? "CRM duplicates starved batch"
+              : "Low provider yield starved batch";
             logEvent(
-              `[Dynamic Replenishment] Round ${round}: CRM duplicates starved batch (${candidateItems.length}/${desiredBatchThreshold}). Running replenishment pass ${pass}/${maxReplenishPasses} for "${replenishQuery}".`,
+              `[Dynamic Replenishment] Round ${round}: ${reasonNote} (${candidateItems.length}/${desiredBatchThreshold}). Running replenishment pass ${pass}/${maxReplenishPasses} for "${replenishQuery}".`,
             );
 
             const replenishStart = Date.now();
@@ -1469,15 +1572,24 @@ export async function executeDiscoverySession(
                 maxResults: 15,
                 includeDomains: ["linkedin.com"],
                 signal: sessionAbortController.signal,
+                ...(tavilyCountry ? { country: tavilyCountry } : {}),
               });
 
               const rawReplenishItems = replenishRes.items || [];
               let addedCount = 0;
 
               for (const item of rawReplenishItems) {
-                const url = item.url;
-                const username = extractLinkedInUsername(url);
-                const normalizedUrl = normalizeLinkedInUrl(url);
+                let url = item.url;
+                let username = extractLinkedInUsername(url);
+                let normalizedUrl = normalizeLinkedInUrl(url);
+                if (!username || !normalizedUrl) {
+                  const recoveredUrl = extractLinkedInProfileUrlFromResult(item);
+                  if (recoveredUrl) {
+                    url = recoveredUrl;
+                    username = extractLinkedInUsername(url);
+                    normalizedUrl = normalizeLinkedInUrl(url);
+                  }
+                }
                 if (!username || !normalizedUrl) continue;
 
                 const candidateKeys = [
@@ -1557,6 +1669,7 @@ export async function executeDiscoverySession(
           round,
           candidateItems,
           rerankPoolTarget: roundStagePoolTarget,
+          candidateCeiling: collectionCapacity.candidateCeiling,
           brightDataReady,
           brightDataProviderDisabled,
           tavilyCapabilities,
@@ -1644,6 +1757,7 @@ export async function executeDiscoverySession(
           round,
           postFilterLeads: candidateLeadsForEnrichment,
           rerankPoolTarget: roundStagePoolTarget,
+          candidateCeiling: collectionCapacity.candidateCeiling,
           profileEnrichmentStage,
           profileMaxPerSearch,
           enrichmentCap,
@@ -1839,13 +1953,12 @@ export async function executeDiscoverySession(
           break;
         } else if (!isFlagEnabled.progressiveQualification()) {
           if (
-            acceptedLeads.length >= rerankPoolTarget ||
+            acceptedLeads.length >= collectionCapacity.candidateCeiling ||
             (acceptedLeads.length >= targetLimit &&
-              (acceptedLeads.length >= earlyStopTargetThreshold ||
-                accumulatedViableCount >= Math.ceil(targetLimit * 0.6)))
+              acceptedLeads.length >= earlyStopTargetThreshold)
           ) {
             logEvent(
-              `Round ${round}: Sufficient candidates (accepted=${acceptedLeads.length}, viable=${accumulatedViableCount}, target=${targetLimit}) collected. Stopping discovery loop early.`,
+              `Round ${round}: Sufficient candidates (accepted=${acceptedLeads.length}, threshold=${earlyStopTargetThreshold}, target=${targetLimit}) collected. Stopping discovery loop early.`,
             );
             stats.stopReason = "target_fulfilled_early";
             break;
@@ -1930,6 +2043,20 @@ export async function executeDiscoverySession(
         } else {
           consecutiveStalledRounds = 0;
           providerImpairedStallRounds = 0;
+          if (
+            isFlagEnabled.progressiveQualification() &&
+            round >= maxRounds &&
+            maxRounds < 10 &&
+            acceptedLeads.length < collectionCapacity.candidateCeiling
+          ) {
+            if (roundEndEffectiveQualified < qualifiedTargetWithCushion) {
+              const previousMax = maxRounds;
+              maxRounds = Math.min(maxRounds + 2, 10);
+              logEvent(
+                `Round ${round}: Dynamic round budget extension (${previousMax} -> ${maxRounds}). Effective qualified (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion}) below target but collection is active (+${newAcceptedInRound} leads this round).`,
+              );
+            }
+          }
         }
       }
     }
@@ -1973,7 +2100,8 @@ export async function executeDiscoverySession(
     // Checkpoint migration safety: If resuming an older session where qualifiedLeads was empty
     // but acceptedLeads exist, perform an initial micro-batch evaluation pass
     if (qualifiedLeads.length === 0 && acceptedLeads.length > 0) {
-      const needsJudgeCandidates: FinalistCandidate[] = acceptedLeads.slice(0, targetLimit * 2).map((lead, idx) => {
+      const maxCandidateCeiling = collectionCapacity.candidateCeiling;
+      const needsJudgeCandidates: FinalistCandidate[] = acceptedLeads.slice(0, maxCandidateCeiling).map((lead, idx) => {
         const evidence = findEvidenceForLead(lead, evidenceByUrl) || buildFallbackEvidence(lead, promptQuery, stats.rounds || 1);
         const dedupeKey = normalizeDedupeValue(lead.contactDetails?.linkedinUrl || lead.sourceUrl || "");
         const stableId = dedupeKey ? `c${dedupeKey}` : (lead.id ? `c_${lead.id}` : `c_mig_${idx}`);

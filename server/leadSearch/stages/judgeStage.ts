@@ -122,10 +122,14 @@ export async function executeJudgeStage(
     finalistCandidates,
     contract,
   );
-  const effectivePoolCap = rerankPoolTarget || Math.ceil(targetLimit * 1.35);
+  const effectivePoolCap = Math.max(
+    rerankPoolTarget || 0,
+    Math.ceil(targetLimit * 1.35),
+    finalistCandidates.length,
+  );
   const candidatePoolCap = Math.max(
     targetLimit,
-    Math.min(60, Math.max(effectivePoolCap, 24)),
+    Math.min(240, Math.max(effectivePoolCap, 24)),
   );
   const prioritizedNeedsJudge = needsJudge.length > candidatePoolCap
     ? [...needsJudge].sort((a, b) => (effectiveScore(b.lead) || 0) - (effectiveScore(a.lead) || 0)).slice(0, candidatePoolCap)

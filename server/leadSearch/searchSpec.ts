@@ -263,6 +263,22 @@ export const buildRetrievalTasks = (
 ): RetrievalTask[] => {
   const maxResults = boundedNumber(process.env.TAVILY_MAX_RESULTS, 12, 1, 20);
   const configuredCountry = clean(process.env.TAVILY_COUNTRY);
+  let derivedCountry = configuredCountry ? configuredCountry.toLowerCase() : "";
+  if (!derivedCountry) {
+    const candidateLocs = [
+      ...(spec.person?.locations || []),
+      ...(spec.company?.locations || []),
+      ...(spec.company?.keywords || []),
+    ];
+    for (const loc of candidateLocs) {
+      const cleanLoc = clean(loc).toLowerCase();
+      if (COUNTRY_CANONICAL_MAP[cleanLoc]) {
+        const canonical = COUNTRY_CANONICAL_MAP[cleanLoc];
+        derivedCountry = COUNTRY_TO_TAVILY_CODE[canonical] || canonical.toLowerCase();
+        break;
+      }
+    }
+  }
   const seen = new Set<string>();
   return items
     .slice()
@@ -286,11 +302,8 @@ export const buildRetrievalTasks = (
         (lane === "account" || isSignal ? "corroborate" : "tavily");
       // Tavily's country parameter is a strict lowercase enum. Do not let an
       // LLM substitute a metro area or differently-cased country name here;
-      // the documented, operator-controlled value from .env is the only
-      // country boost that reaches the API.
-      const country = configuredCountry
-        ? configuredCountry.toLowerCase()
-        : undefined;
+      // use the operator-configured value from .env or the brief/spec country.
+      const country = derivedCountry || undefined;
       // Person/account lanes collect LinkedIn identity anchors. Signal lanes
       // search the open web and are retained only as company evidence.
       const includeDomains = isSignal ? undefined : ["linkedin.com"];
@@ -306,7 +319,7 @@ export const buildRetrievalTasks = (
         priority: item.priority || index + 1,
         tavily: {
           includeDomains,
-          excludeDomains: spec.exclusions.domains,
+          excludeDomains: spec?.exclusions?.domains || [],
           searchDepth: requestedDepth,
           topic: isSignal ? item.topic || "general" : "general",
           timeRange: isSignal ? item.timeRange : undefined,
@@ -325,8 +338,26 @@ export const buildRetrievalTasks = (
     });
 };
 
-import type { ProspectContract } from "./prospectContract.js";
+import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, type ProspectContract } from "./prospectContract.js";
 import { looksLikeCompanyHint } from "./observations.js";
+
+export const COUNTRY_TO_TAVILY_CODE: Record<string, string> = {
+  UK: "gb",
+  USA: "us",
+  Canada: "ca",
+  Australia: "au",
+  "New Zealand": "nz",
+  Germany: "de",
+  France: "fr",
+  Netherlands: "nl",
+  Ireland: "ie",
+  Spain: "es",
+  Italy: "it",
+  Switzerland: "ch",
+  Sweden: "se",
+  Singapore: "sg",
+  Japan: "jp",
+};
 
 export const buildFallbackQueryPlan = (
   query: string,
@@ -343,18 +374,33 @@ export const buildFallbackQueryPlan = (
   // Detect geography and retrieve relevant metro hubs
   let metros: string[] = ["New York", "San Francisco", "Austin", "Los Angeles"];
   let countryAnchor = "USA";
-  if (lower.includes("uk") || lower.includes("united kingdom") || lower.includes("london")) {
-    metros = METRO_HUBS_BY_COUNTRY.uk;
-    countryAnchor = "UK";
-  } else if (lower.includes("canada") || lower.includes("toronto")) {
-    metros = METRO_HUBS_BY_COUNTRY.canada;
-    countryAnchor = "Canada";
-  } else if (lower.includes("australia") || lower.includes("sydney")) {
-    metros = METRO_HUBS_BY_COUNTRY.australia;
-    countryAnchor = "Australia";
-  } else if (METRO_HUBS_BY_COUNTRY.usa) {
-    metros = METRO_HUBS_BY_COUNTRY.usa;
-    countryAnchor = "USA";
+
+  for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
+    const regex = new RegExp(`\\b${cKey}\\b`, "i");
+    if (regex.test(lower)) {
+      countryAnchor = cName;
+      const cMetros = COUNTRY_TO_METROS[cKey] || COUNTRY_TO_METROS[cName.toLowerCase()];
+      if (cMetros && cMetros.length > 0) {
+        metros = cMetros;
+      }
+      break;
+    }
+  }
+
+  if (countryAnchor === "USA") {
+    if (lower.includes("uk") || lower.includes("united kingdom") || lower.includes("london")) {
+      metros = METRO_HUBS_BY_COUNTRY.uk;
+      countryAnchor = "UK";
+    } else if (lower.includes("canada") || lower.includes("toronto")) {
+      metros = METRO_HUBS_BY_COUNTRY.canada;
+      countryAnchor = "Canada";
+    } else if (lower.includes("australia") || lower.includes("sydney")) {
+      metros = METRO_HUBS_BY_COUNTRY.australia;
+      countryAnchor = "Australia";
+    } else if (METRO_HUBS_BY_COUNTRY.usa) {
+      metros = METRO_HUBS_BY_COUNTRY.usa;
+      countryAnchor = "USA";
+    }
   }
 
   // Extract core company topic/vertical from query
@@ -364,6 +410,13 @@ export const buildFallbackQueryPlan = (
     .replace(/[/\\|]/g, " ")
     .replace(/\s+/g, " ")
     .trim() || base.trim() || "B2B company";
+
+  const metro0 = countryAnchor && countryAnchor !== "USA" && !metros[0]?.toLowerCase().includes(countryAnchor.toLowerCase())
+    ? `${metros[0]} ${countryAnchor}`
+    : (metros[0] || "New York");
+  const metro1 = countryAnchor && countryAnchor !== "USA" && !metros[1]?.toLowerCase().includes(countryAnchor.toLowerCase())
+    ? `${metros[1]} ${countryAnchor}`
+    : (metros[1] || "San Francisco");
 
   const plans: SearchQueryPlanItem[] = [
     {
@@ -377,7 +430,7 @@ export const buildFallbackQueryPlan = (
       searchDepth: "basic",
     },
     {
-      query: `${cleanTopic} ${titles[1] || "owner"} ${metros[0] || "New York"}`.trim(),
+      query: `${cleanTopic} ${titles[1] || "owner"} ${metro0}`.trim(),
       family: "persona_title",
       intent: "find_decision_makers",
       expectedSignal: "Decision-maker profiles in top metro",
@@ -387,7 +440,7 @@ export const buildFallbackQueryPlan = (
       searchDepth: "basic",
     },
     {
-      query: `${cleanTopic} ${titles[2] || "CEO"} ${metros[1] || "San Francisco"}`.trim(),
+      query: `${cleanTopic} ${titles[2] || "CEO"} ${metro1}`.trim(),
       family: "company_type",
       intent: "expand_surface_area",
       expectedSignal: "Leadership evidence in tech metro",
@@ -474,7 +527,11 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
     return false;
   });
   const countryPool = relevantCountries.length > 0 ? relevantCountries : Object.keys(METRO_HUBS_BY_COUNTRY);
-  const eligibleMetros = countryPool.flatMap((c) => METRO_HUBS_BY_COUNTRY[c] || []);
+  const eligibleMetros = countryPool.flatMap((c) => {
+    const hubList = METRO_HUBS_BY_COUNTRY[c] || [];
+    const countryLabel = c === "uk" ? "UK" : c === "canada" ? "Canada" : c === "australia" ? "Australia" : "";
+    return hubList.map((m) => countryLabel && !m.toLowerCase().includes(countryLabel.toLowerCase()) ? `${m} ${countryLabel}` : m);
+  });
   const unvisitedMetros = eligibleMetros.filter((m) => !exploredMetros.some((em) => em.toLowerCase() === m.toLowerCase()));
 
   const metroDirectives = exploredMetros.length > 0
@@ -484,10 +541,11 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   const recoveryDirective = params.isRecovery
     ? `\nRECOVERY DIRECTIVE (Attempt ${params.recoveryAttempt || 1}/2):
 Prior rounds had low yield or missed specific criteria.
-- Pivot to fresh, unvisited metropolitan hubs and tech clusters (e.g. ${unvisitedMetros.slice(0, 6).join(", ") || "Austin, Denver, Manchester, Melbourne, Vancouver"}).
+- Pivot to fresh, unvisited metropolitan hubs and tech clusters (e.g. ${unvisitedMetros.slice(0, 6).join(", ") || "Austin, Denver, Manchester UK, Melbourne, Vancouver"}).
 - Rotate leadership title synonyms (e.g. "managing director", "principal", "managing partner", "executive director", "co-founder").
 - Explore adjacent client-service vertical phrasing (e.g. "AI consulting", "AI solutions", "machine learning agency").
 - Maintain single-concept clarity: NEVER concatenate multiple roles or locations into a single bloated query.
+- When targeting non-US locations, ALWAYS include the country name in queries (e.g. "Birmingham UK", "London UK") to prevent US location ambiguity.
 - NEVER append generic terms like "profile", "public profile", or "professional profile".`
     : "";
 

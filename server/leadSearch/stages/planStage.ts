@@ -22,6 +22,7 @@ import {
 } from "../searchSpec.js";
 import {
   enforceContractQueries,
+  COUNTRY_CANONICAL_MAP,
 } from "../prospectContract.js";
 import { scheduleAdaptiveRetrievalTasks, deriveDomainCluster } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
@@ -356,7 +357,7 @@ export async function executePlanStage(
 
   if (roundPlans.length === 0 && config.contract) {
     const roles = config.contract.identitySpec?.roles || ['founder', 'owner', 'CEO', 'managing partner', 'director'];
-    const locations = (config.contract.identitySpec?.locations || []).length > 0
+    const rawLocations = (config.contract.identitySpec?.locations || []).length > 0
       ? config.contract.identitySpec!.locations!
       : ['United States', 'United Kingdom', 'Canada', 'Australia'];
     const companyTypes = (config.contract.identitySpec?.companyTypes || []).length > 0
@@ -365,6 +366,35 @@ export async function executePlanStage(
     const tooling = config.contract.intentSpec?.toolingKeywords || [];
     const painSignals = config.contract.intentSpec?.painSignals || [];
     const suffixes = ['executive profile', 'leadership', 'founder profile', 'portfolio', 'team leadership'];
+
+    let contractCountry = "";
+    const locTerms = (config.contract?.requirements || [])
+      .filter((r: any) => r.scope === "person_location")
+      .flatMap((r: any) => r.acceptableTerms || [])
+      .filter(Boolean);
+    for (const term of [...locTerms, ...rawLocations]) {
+      const cleanTerm = String(term || "").trim().toLowerCase();
+      if (COUNTRY_CANONICAL_MAP[cleanTerm]) {
+        contractCountry = COUNTRY_CANONICAL_MAP[cleanTerm];
+        break;
+      }
+    }
+    if (!contractCountry) {
+      const briefLower = String(config.contract?.brief || config.promptQuery || "").toLowerCase();
+      for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
+        if (new RegExp(`\\b${cKey}\\b`, "i").test(briefLower)) {
+          contractCountry = cName;
+          break;
+        }
+      }
+    }
+
+    const locations = rawLocations.map((loc) => {
+      if (contractCountry && !loc.toLowerCase().includes(contractCountry.toLowerCase()) && !/^(any|all|global|worldwide|remote)$/i.test(loc)) {
+        return `${loc} ${contractCountry}`;
+      }
+      return loc;
+    });
 
     const candidateVariants: string[] = [];
     for (const role of roles) {
@@ -384,6 +414,7 @@ export async function executePlanStage(
       }
     }
 
+    const maxFallbackPlans = Math.max(4, maxTasks);
     for (const candidateQuery of candidateVariants) {
       const lowerQ = candidateQuery.toLowerCase();
       if (!seenQueryTexts.has(lowerQ) && !proposedQueries.includes(candidateQuery)) {
@@ -401,7 +432,7 @@ export async function executePlanStage(
           } as any,
           executableQuery: toLinkedInSearchQuery({ query: candidateQuery, lane: 'person' })
         });
-        if (roundPlans.length >= 3) break;
+        if (roundPlans.length >= maxFallbackPlans) break;
       }
     }
     if (roundPlans.length > 0) {

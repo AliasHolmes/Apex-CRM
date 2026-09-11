@@ -63,6 +63,7 @@ export type EnrichStageInput = {
   round: number;
   postFilterLeads: PostFilterLead[];
   rerankPoolTarget: number;
+  candidateCeiling?: number;
   profileEnrichmentStage: string;
   profileMaxPerSearch: number;
   enrichmentCap: number;
@@ -851,8 +852,9 @@ export async function executeEnrichStage(
   }
 
   // 2. Final Acceptance for candidates in this round
+  const maxAcceptedCeiling = Math.max(input.candidateCeiling || 240, rerankPoolTarget);
   for (const { lead, queryRun } of postFilterLeads) {
-    if (acceptedLeads.length >= rerankPoolTarget) break;
+    if (acceptedLeads.length >= maxAcceptedCeiling) break;
     const finalDecisionMaker =
       lead.decisionMakerVerification ||
       verifyDecisionMakerFromEvidence({

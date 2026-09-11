@@ -10,6 +10,7 @@ import {
 } from "./keyRotator.js";
 import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
 import { normalizeLinkedInUrl } from "./linkedinEvidence.js";
+import { unwrapRedirectUrl } from "../../src/utils/leadDedupe.js";
 import { hasTavilyKey, tavilyExtract } from "./llm.js";
 
 type BrightDataTransport = "hosted" | "local";
@@ -1545,6 +1546,10 @@ export function extractLinkedInProfileUrlFromResult(result: unknown): string {
     if (depth > 2 || value === null || value === undefined) return;
     if (typeof value === "string") {
       values.push(value);
+      if (value.includes("/goto") || value.includes("%2F") || value.includes("url=") || value.includes("q=")) {
+        const unwrapped = unwrapRedirectUrl(value);
+        if (unwrapped && unwrapped !== value) values.push(unwrapped);
+      }
       return;
     }
     if (Array.isArray(value)) {
@@ -1571,7 +1576,8 @@ export function extractLinkedInProfileUrlFromResult(result: unknown): string {
 }
 
 function normalizeBrightDataSearchResult(item: any): BrightDataSearchResult {
-  const directUrl = item?.link || item?.url || item?.source_url || "";
+  const rawDirect = item?.link || item?.url || item?.source_url || "";
+  const directUrl = unwrapRedirectUrl(rawDirect) || rawDirect;
   const profileUrl = extractLinkedInProfileUrlFromResult(item);
   return {
     title: item?.title || "",
@@ -1652,7 +1658,8 @@ export function parseBingMarkdownResults(
     if (linkMatch) {
       flush();
       const candidateTitle = linkMatch[1].trim();
-      const candidateUrl = linkMatch[2].trim();
+      const rawUrl = linkMatch[2].trim();
+      const candidateUrl = unwrapRedirectUrl(rawUrl) || rawUrl;
       try {
         const parsed = new URL(candidateUrl);
         if (!ignoredHosts.test(parsed.hostname) && candidateTitle.length > 1) {
@@ -1666,7 +1673,8 @@ export function parseBingMarkdownResults(
     const inlineMatch = line.match(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/);
     if (inlineMatch && !currentUrl) {
       const candidateTitle = inlineMatch[1].trim();
-      const candidateUrl = inlineMatch[2].trim();
+      const rawUrl = inlineMatch[2].trim();
+      const candidateUrl = unwrapRedirectUrl(rawUrl) || rawUrl;
       try {
         const parsed = new URL(candidateUrl);
         if (!ignoredHosts.test(parsed.hostname) && candidateTitle.length > 1) {

@@ -11,6 +11,7 @@ import {
   buildProfileDedupeKeys,
   hasDuplicateProfile,
   normalizeDedupeValue,
+  unwrapRedirectUrl,
 } from "../../../src/utils/leadDedupe.js";
 import {
   effectiveScore as sharedEffectiveScore,
@@ -126,11 +127,17 @@ export async function executeVerifyStage(
   let borderlineAdmittedThisRound = 0;
   for (const lead of provisionalLeads) {
     const rawUrl = lead.contactDetails?.linkedinUrl;
-    if (rawUrl && !extractLinkedInUsername(rawUrl)) {
-      // Preserve the original value for diagnostics; downstream consumers read
-      // the cleared contactDetails field.
-      lead._originalLinkedinUrl = rawUrl;
-      if (lead.contactDetails) lead.contactDetails.linkedinUrl = "";
+    if (rawUrl) {
+      const unwrapped = unwrapRedirectUrl(rawUrl);
+      const normalized = normalizeLinkedInUrl(unwrapped);
+      if (normalized) {
+        lead.contactDetails.linkedinUrl = `https://${normalized}`;
+      } else if (!extractLinkedInUsername(unwrapped)) {
+        // Preserve the original value for diagnostics; downstream consumers read
+        // the cleared contactDetails field.
+        lead._originalLinkedinUrl = rawUrl;
+        if (lead.contactDetails) lead.contactDetails.linkedinUrl = "";
+      }
     }
     const evidenceMeta = getEvidenceForLead(lead);
     const queryRun = evidenceMeta.queryRun;

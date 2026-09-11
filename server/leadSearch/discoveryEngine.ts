@@ -1649,9 +1649,6 @@ export async function executeDiscoverySession(
           profileEnrichmentStage,
           profileMaxPerSearch,
           enrichmentCap,
-          companyIntentEnabled,
-          companyIntentMaxPerSearch,
-          companyIntentConcurrency,
           profileConcurrency,
           ttlDays,
           contract,
@@ -1813,7 +1810,30 @@ export async function executeDiscoverySession(
           return acc;
         }, 0);
 
-        if (roundEndEffectiveQualified >= qualifiedTargetWithCushion) {
+        const uniqueCompanies = new Set(
+          qualifiedLeads
+            .filter(
+              (l) =>
+                l.qualification?.verdict === "qualified" ||
+                l.qualification?.verdict === "qualified_partial",
+            )
+            .map((l) =>
+              String(l.currentCompany || l.company || l.profile?.currentCompany || l.companyName || "").trim().toLowerCase(),
+            )
+            .filter(Boolean),
+        ).size;
+        const minCompanyDiversity = Math.ceil(targetLimit * 0.8);
+
+        if (
+          roundEndEffectiveQualified >= targetLimit &&
+          uniqueCompanies >= minCompanyDiversity
+        ) {
+          logEvent(
+            `Round ${round}: Target fulfilled early with high diversity (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit} effective qualified, ${uniqueCompanies} unique companies >= ${minCompanyDiversity}). Stopping discovery loop early.`,
+          );
+          stats.stopReason = "target_fulfilled_early";
+          break;
+        } else if (roundEndEffectiveQualified >= qualifiedTargetWithCushion) {
           logEvent(
             `Round ${round}: Verified judge target reached (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion} effective qualified leads with ${cushionMultiplier}x cushion). Stopping discovery loop early.`,
           );
@@ -2067,6 +2087,9 @@ export async function executeDiscoverySession(
       stats,
       leadQueryRuns,
       trackableBrightDataSearch,
+      companyIntentEnabled,
+      companyIntentMaxPerSearch,
+      companyIntentConcurrency: 1,
     });
 
     const { finalLeads } = selectResult;

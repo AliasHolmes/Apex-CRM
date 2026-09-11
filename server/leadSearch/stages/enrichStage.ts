@@ -29,14 +29,8 @@ import {
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
 import { createLeadEvidence } from "../evidence.js";
 import { computeScoreBreakdown } from "../scoring.js";
-import {
-  incrementRejection,
-  mapBrightDataRejection,
-  type RejectionReason,
-} from "../rejections.js";
-import { runIntentEnrichment } from "../intentEnrichment.js";
+import { incrementRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
 import { runProviderQueue, type ProviderQueueTask } from "../providerQueue.js";
-import { hasTavilyKey } from "../../services/llm.js";
 import { buildProfileDedupeKeys } from "../../../src/utils/leadDedupe.js";
 import {
   effectiveScore as sharedEffectiveScore,
@@ -72,8 +66,8 @@ export type EnrichStageInput = {
   profileEnrichmentStage: string;
   profileMaxPerSearch: number;
   enrichmentCap: number;
-  companyIntentEnabled: boolean;
-  companyIntentMaxPerSearch: number;
+  companyIntentEnabled?: boolean;
+  companyIntentMaxPerSearch?: number;
   companyIntentConcurrency?: number;
   profileConcurrency: number;
   ttlDays: number;
@@ -108,8 +102,6 @@ export async function executeEnrichStage(
     profileEnrichmentStage,
     profileMaxPerSearch,
     enrichmentCap,
-    companyIntentEnabled,
-    companyIntentMaxPerSearch,
     profileConcurrency,
     ttlDays,
     contract,
@@ -118,7 +110,6 @@ export async function executeEnrichStage(
     leadQueryRuns,
     trackableBrightDataSearch,
   } = input;
-  const companyIntentConcurrency = input.companyIntentConcurrency ?? profileConcurrency;
 
   let brightDataProviderDisabled = input.brightDataProviderDisabled;
   let brightDataTransportRetryAfter = input.brightDataTransportRetryAfter;
@@ -913,50 +904,6 @@ export async function executeEnrichStage(
     }
     addProfileKeys(lead, existingKeys);
     acceptedLeads.push(lead);
-  }
-
-  // 3. Optional company intent enrichment via canonical runIntentEnrichment module
-  const leadsNeedingIntent = acceptedLeads.filter((l) => {
-    if (l.companyIntentEvidence || l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
-    const company = String(l.currentCompany || l.company || "").trim();
-    if (!company || company.length < 2) return false;
-    const title = String(l.currentTitle || l.headline || "").trim();
-    if (!title || title.length < 2) return false;
-    return true;
-  });
-  const effectiveIntentCap = Math.min(companyIntentMaxPerSearch || 6, 6);
-  const effectiveIntentConcurrency = Math.min(
-    Math.max(Number(companyIntentConcurrency || process.env.COMPANY_INTENT_CONCURRENCY || 3), 1),
-    4,
-  );
-  if (
-    companyIntentEnabled &&
-    leadsNeedingIntent.length > 0 &&
-    effectiveIntentCap > 0
-  ) {
-    const qualifiedMap = new Map<string, any>(
-      leadsNeedingIntent.map((l, idx) => [l.id || `lead-${idx}`, l]),
-    );
-    await runIntentEnrichment({
-      qualifiedLeads: qualifiedMap,
-      contract,
-      companyIntentMaxPerSearch: effectiveIntentCap,
-      companyIntentConcurrency: effectiveIntentConcurrency,
-      ttlDays,
-      brightDataSearch: (q) =>
-        trackableBrightDataSearch(q, {}, "phase_4_company_website"),
-      tavilySearchFallback: hasTavilyKey()
-        ? async (q) =>
-            (
-              await ports.tavilySearch(q, {
-                signal: state.abortController.signal,
-              })
-            ).items
-        : undefined,
-      sessionAbortSignal: state.abortController.signal,
-      logEvent,
-      recordTrace,
-    });
   }
 
   return {

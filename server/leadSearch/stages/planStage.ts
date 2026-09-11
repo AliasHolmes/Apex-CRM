@@ -40,6 +40,15 @@ export type PlanStageInput = {
   signal?: AbortSignal;
   isRecovery?: boolean;
   isSpeculative?: boolean;
+  maxRounds?: number;
+  domainCluster?: string;
+  brightDataSearchMode?: any;
+  brightDataReady?: boolean;
+  brightDataProviderDisabled?: boolean;
+  brightDataTransportRetryAfter?: number;
+  tavilyCapabilities?: any;
+  brightDataCapabilities?: any;
+  [key: string]: any;
 };
 
 export type ExecutableQueryPlan = {

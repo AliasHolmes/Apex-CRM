@@ -517,7 +517,10 @@ Evidence:
               temperature: 0.0,
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
-              timeoutMs: 115_000,
+              timeoutMs: Math.min(
+                30_000,
+                Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 30_000),
+              ),
               onProviderAttempt: (attempt) =>
                 extractionProviderAttempts.push(attempt),
             },
@@ -650,7 +653,7 @@ Evidence:
       ),
       1,
     ),
-    4,
+    1,
   );
   const extractionResults = await runProviderQueue(
     extractionTasks.map((run, index) => ({

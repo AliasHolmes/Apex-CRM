@@ -149,20 +149,21 @@ export function scoreAdaptiveArm(
     };
   }
 
-  const qualified = finiteCount(row?.qualified_candidates);
-  const returned = finiteCount(row?.returned_candidates);
-  const rescued = finiteCount(row?.rescued_candidates);
-  const unique = finiteCount(row?.unique_candidates);
-  const duplicates = finiteCount(row?.duplicate_candidates);
-  const providerUnits = finiteCount(row?.provider_units);
-  const latencySeconds = finiteCount(row?.search_latency_ms) / 1_000;
+  const safeOutcomeRuns = Math.max(1, outcomeRuns);
+  const qualified = finiteCount(row?.qualified_candidates) / safeOutcomeRuns;
+  const returned = finiteCount(row?.returned_candidates) / safeOutcomeRuns;
+  const rescued = finiteCount(row?.rescued_candidates) / safeOutcomeRuns;
+  const unique = finiteCount(row?.unique_candidates) / safeOutcomeRuns;
+  const duplicates = finiteCount(row?.duplicate_candidates) / safeOutcomeRuns;
+  const providerUnits = finiteCount(row?.provider_units) / safeOutcomeRuns;
+  const latencySeconds = (finiteCount(row?.search_latency_ms) / 1_000) / safeOutcomeRuns;
 
   let classBonus = 0;
   if (isFlagEnabled.classAwareScheduler()) {
     const idPasses = finiteCount(row?.identity_pass_count);
     const ctxPasses = finiteCount(row?.context_pass_count);
     const sigPasses = finiteCount(row?.signal_pass_count);
-    classBonus = (idPasses * 1.5 + ctxPasses * 1.0 + sigPasses * 1.2) / outcomeRuns;
+    classBonus = (idPasses * 1.5 + ctxPasses * 1.0 + sigPasses * 1.2) / safeOutcomeRuns;
   }
 
   // Beta-Bernoulli conjugate posteriors:
@@ -184,8 +185,8 @@ export function scoreAdaptiveArm(
     providerUnits * 0.12 -
     latencySeconds * 0.002 +
     classBonus
-  ) / outcomeRuns;
-  const ucbExplorationBonus = explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 1) / outcomeRuns);
+  );
+  const ucbExplorationBonus = explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 1) / safeOutcomeRuns);
 
   // Fuse UCB1 with Thompson Sample:
   const fusedScore = useThompsonSampling
@@ -201,6 +202,8 @@ export function scoreAdaptiveArm(
     reason: 'quality_history' as const
   };
 }
+
+export const scoreQueryPerformanceRow = scoreAdaptiveArm;
 
 export function scheduleAdaptiveRetrievalTasks(
   tasks: RetrievalTask[],

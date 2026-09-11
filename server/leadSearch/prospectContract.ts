@@ -281,6 +281,35 @@ export const COUNTRY_TO_METROS: Record<string, string[]> = {
   america: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
   "new zealand": ["Auckland", "Wellington", "Christchurch"],
   nz: ["Auckland", "Wellington", "Christchurch"],
+  germany: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
+  german: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
+  de: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
+  france: ["Paris", "Lyon", "Marseille", "Toulouse", "Bordeaux"],
+  french: ["Paris", "Lyon", "Marseille", "Toulouse", "Bordeaux"],
+  fr: ["Paris", "Lyon", "Marseille", "Toulouse", "Bordeaux"],
+  netherlands: ["Amsterdam", "Rotterdam", "Utrecht", "Eindhoven"],
+  dutch: ["Amsterdam", "Rotterdam", "Utrecht", "Eindhoven"],
+  nl: ["Amsterdam", "Rotterdam", "Utrecht", "Eindhoven"],
+  ireland: ["Dublin", "Cork", "Galway"],
+  irish: ["Dublin", "Cork", "Galway"],
+  ie: ["Dublin", "Cork", "Galway"],
+  spain: ["Madrid", "Barcelona", "Valencia", "Seville"],
+  spanish: ["Madrid", "Barcelona", "Valencia", "Seville"],
+  es: ["Madrid", "Barcelona", "Valencia", "Seville"],
+  italy: ["Milan", "Rome", "Turin", "Bologna"],
+  italian: ["Milan", "Rome", "Turin", "Bologna"],
+  it: ["Milan", "Rome", "Turin", "Bologna"],
+  switzerland: ["Zurich", "Geneva", "Basel", "Lausanne"],
+  swiss: ["Zurich", "Geneva", "Basel", "Lausanne"],
+  ch: ["Zurich", "Geneva", "Basel", "Lausanne"],
+  sweden: ["Stockholm", "Gothenburg", "Malmo"],
+  swedish: ["Stockholm", "Gothenburg", "Malmo"],
+  se: ["Stockholm", "Gothenburg", "Malmo"],
+  singapore: ["Singapore"],
+  sg: ["Singapore"],
+  japan: ["Tokyo", "Osaka", "Yokohama"],
+  japanese: ["Tokyo", "Osaka", "Yokohama"],
+  jp: ["Tokyo", "Osaka", "Yokohama"],
 };
 
 export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
@@ -321,6 +350,8 @@ export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
   swiss: 'Switzerland',
   sweden: 'Sweden',
   swedish: 'Sweden',
+  japan: 'Japan',
+  japanese: 'Japan',
 };
 
 const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
@@ -348,6 +379,45 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
     if (hasTerm(terms, ['new zealand', 'newzealand', 'nz'])) {
       expanded.push('New Zealand', 'NZ');
       expanded.push('Auckland', 'Wellington', 'Christchurch');
+    }
+    if (hasTerm(terms, ['germany', 'german', 'de'])) {
+      expanded.push('Germany', 'German');
+      expanded.push('Berlin', 'Munich', 'Frankfurt', 'Hamburg', 'Cologne', 'Stuttgart');
+    }
+    if (hasTerm(terms, ['france', 'french', 'fr'])) {
+      expanded.push('France', 'French');
+      expanded.push('Paris', 'Lyon', 'Marseille', 'Toulouse', 'Bordeaux');
+    }
+    if (hasTerm(terms, ['netherlands', 'dutch', 'nl'])) {
+      expanded.push('Netherlands', 'Dutch');
+      expanded.push('Amsterdam', 'Rotterdam', 'Utrecht', 'Eindhoven');
+    }
+    if (hasTerm(terms, ['ireland', 'irish', 'ie'])) {
+      expanded.push('Ireland', 'Irish');
+      expanded.push('Dublin', 'Cork', 'Galway');
+    }
+    if (hasTerm(terms, ['spain', 'spanish', 'es'])) {
+      expanded.push('Spain', 'Spanish');
+      expanded.push('Madrid', 'Barcelona', 'Valencia', 'Seville');
+    }
+    if (hasTerm(terms, ['italy', 'italian', 'it'])) {
+      expanded.push('Italy', 'Italian');
+      expanded.push('Milan', 'Rome', 'Turin', 'Bologna');
+    }
+    if (hasTerm(terms, ['switzerland', 'swiss', 'ch'])) {
+      expanded.push('Switzerland', 'Swiss');
+      expanded.push('Zurich', 'Geneva', 'Basel', 'Lausanne');
+    }
+    if (hasTerm(terms, ['sweden', 'swedish', 'se'])) {
+      expanded.push('Sweden', 'Swedish');
+      expanded.push('Stockholm', 'Gothenburg', 'Malmo');
+    }
+    if (hasTerm(terms, ['singapore', 'sg'])) {
+      expanded.push('Singapore');
+    }
+    if (hasTerm(terms, ['japan', 'japanese', 'jp'])) {
+      expanded.push('Japan', 'Japanese');
+      expanded.push('Tokyo', 'Osaka', 'Yokohama');
     }
   }
 

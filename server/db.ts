@@ -1436,10 +1436,14 @@ export type LeadsStats = {
 let cachedLeadsStats: LeadsStats | null = null;
 let cachedLeadsStatsExpiresAt = 0;
 let dbMutationCounter = 0;
+let cachedExistingIdentityKeys: Set<string> | null = null;
+let cachedIdentityKeysMutationCounter = -1;
 
 export function invalidateLeadsStatsCache() {
   cachedLeadsStats = null;
   cachedLeadsStatsExpiresAt = 0;
+  cachedExistingIdentityKeys = null;
+  cachedIdentityKeysMutationCounter = -1;
   dbMutationCounter++;
 }
 
@@ -1522,6 +1526,13 @@ export function readLeadsStats(): LeadsStats {
 }
 
 export function readExistingIdentityKeys(): Set<string> {
+  if (
+    cachedExistingIdentityKeys &&
+    cachedIdentityKeysMutationCounter === dbMutationCounter
+  ) {
+    return new Set(cachedExistingIdentityKeys);
+  }
+
   const db = getLeadsDb();
   const keys = new Set<string>();
 
@@ -1553,7 +1564,9 @@ export function readExistingIdentityKeys(): Set<string> {
     }
   }
 
-  return keys;
+  cachedExistingIdentityKeys = keys;
+  cachedIdentityKeysMutationCounter = dbMutationCounter;
+  return new Set(cachedExistingIdentityKeys);
 }
 
 export function readLeadsStageSummary(): {

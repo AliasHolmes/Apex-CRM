@@ -1,4 +1,5 @@
 import { runLinkedInPostIntentEnrichment } from '../linkedinPostIntent.js';
+import { runIntentEnrichment } from '../intentEnrichment.js';
 import { selectDiversifiedLeads } from '../scoutScoring.js';
 import { recordQueryPerformance } from '../../db.js';
 import { hasTavilyKey } from '../../services/llm.js';
@@ -15,6 +16,9 @@ export type SelectStageInput = {
   stats: any;
   leadQueryRuns: LeadQueryRunTracker | WeakMap<Record<string, any>, QueryRunStats>;
   trackableBrightDataSearch: (query: string, options?: any, lane?: string) => Promise<any[]>;
+  companyIntentEnabled?: boolean;
+  companyIntentMaxPerSearch?: number;
+  companyIntentConcurrency?: number;
 };
 
 export type SelectStageOutput = {
@@ -26,26 +30,77 @@ export async function executeSelectStage(
   ctx: SessionContext,
   input: SelectStageInput
 ): Promise<SelectStageOutput> {
-  const { contract, searchSpec, ttlDays, stats, leadQueryRuns, trackableBrightDataSearch } = input;
+  const {
+    contract,
+    searchSpec,
+    ttlDays,
+    stats,
+    leadQueryRuns,
+    trackableBrightDataSearch,
+    companyIntentEnabled,
+    companyIntentMaxPerSearch,
+  } = input;
   const { config, state, ports, logEvent, recordTrace } = ctx;
   const { qualifiedLeads } = state;
   const { targetLimit, maxRounds, linkedinPostIntentEnabled } = config;
 
-  // 1. Initial Final Selection and Diversification
-  const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
+  // 1. Targeted Phase 4: Company Intent Probing on qualified leads
+  const leadsNeedingIntent = qualifiedLeads.filter((l) => {
+    if (l.companyIntentEvidence || l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
+    const company = String(l.currentCompany || l.company || l.profile?.currentCompany || l.companyName || "").trim();
+    if (!company || company.length < 2) return false;
+    const title = String(l.currentTitle || l.headline || l.jobTitle || l.profile?.currentTitle || l.profile?.headline || "").trim();
+    if (!title || title.length < 2) return false;
+    return true;
+  });
+  const effectiveIntentCap = Math.min(companyIntentMaxPerSearch || 6, 6);
+  const effectiveIntentConcurrency = 1; // strictly sequential LLM execution
+  if (
+    companyIntentEnabled &&
+    leadsNeedingIntent.length > 0 &&
+    effectiveIntentCap > 0
+  ) {
+    logEvent(`Phase 4: Targeted company intent probing starting. Pool: ${leadsNeedingIntent.length} qualified leads.`);
+    const qualifiedMap = new Map<string, any>(
+      leadsNeedingIntent.map((l, idx) => [l.id || `lead-${idx}`, l]),
+    );
+    const companyIntentStats = await runIntentEnrichment({
+      qualifiedLeads: qualifiedMap,
+      contract,
+      companyIntentMaxPerSearch: effectiveIntentCap,
+      companyIntentConcurrency: effectiveIntentConcurrency,
+      ttlDays,
+      brightDataSearch: (q) =>
+        trackableBrightDataSearch(q, {}, "phase_4_company_website"),
+      tavilySearchFallback: hasTavilyKey()
+        ? async (q) =>
+            (
+              await ports.tavilySearch(q, {
+                signal: state.abortController.signal,
+              })
+            ).items
+        : undefined,
+      sessionAbortSignal: state.abortController.signal,
+      logEvent,
+      recordTrace,
+    });
+    if (stats) {
+      (stats as any).companyIntent = companyIntentStats;
+    }
+  }
 
-  // 2. Targeted Phase 5: LinkedIn Post Intent Enrichment ONLY on the final returned prospects
-  if (linkedinPostIntentEnabled && finalLeads.length > 0) {
-    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${finalLeads.length} selected finalists.`);
-    const finalistsMap = new Map<string, any>(finalLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
+  // 2. Targeted Phase 5: LinkedIn Post Intent Enrichment on qualified leads (revives Cutline Bubble logic)
+  if (linkedinPostIntentEnabled && qualifiedLeads.length > 0) {
+    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${qualifiedLeads.length} qualified candidates.`);
+    const qualifiedMap = new Map<string, any>(qualifiedLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
     const postIntentStats = await runLinkedInPostIntentEnrichment({
-      qualifiedLeads: finalistsMap,
+      qualifiedLeads: qualifiedMap,
       contract,
       brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
-      maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), finalLeads.length),
-      concurrency: Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 4),
+      maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), qualifiedLeads.length),
+      concurrency: 1, // strictly sequential LLM execution
       ttlDays,
       sessionAbortSignal: state.abortController.signal,
       logEvent,
@@ -54,6 +109,9 @@ export async function executeSelectStage(
     (stats as any).linkedinPostIntent = postIntentStats;
     logEvent(`Phase 5 complete: ${postIntentStats.succeeded} enriched, ${postIntentStats.cacheHits} cache hits, ${postIntentStats.noResults} no-results, ${postIntentStats.llmSkipped} skipped, ${postIntentStats.failed} failed.`);
   }
+
+  // 3. Final Selection and Diversification (Pareto selection after Phase 4 & Phase 5 enrichment)
+  const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
 
   for (const lead of qualifiedLeads) {
     const queryRun = leadQueryRuns.get(lead);

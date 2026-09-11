@@ -253,11 +253,11 @@ export async function executeJudgeStage(
             temperature: 0,
             retryOnParseFailure: false,
             timeoutMs: Math.min(
-              35_000,
+              120_000,
               Number(
                 process.env.LLM_FINALIST_TIMEOUT_MS ||
                   process.env.LLM_TIMEOUT_MS ||
-                  35_000,
+                  90_000,
               ),
             ),
             circuitBreaker: llmCircuitBreaker,
@@ -787,11 +787,11 @@ export async function evaluateIncrementalJudgeBatches(
           temperature: 0,
           retryOnParseFailure: false,
           timeoutMs: Math.min(
-            35_000,
+            120_000,
             Number(
               process.env.LLM_FINALIST_TIMEOUT_MS ||
                 process.env.LLM_TIMEOUT_MS ||
-                35_000,
+                90_000,
             ),
           ),
           circuitBreaker: llmCircuitBreaker,

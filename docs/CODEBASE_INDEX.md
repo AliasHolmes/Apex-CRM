@@ -1,6 +1,9 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-08-23 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/` (excludes `node_modules/`, `dist/`, `.venv-litellm/`)
+Generated: 2026-09-12 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/` (excludes `node_modules/`, `dist/`, `.venv-litellm/`, `.apex-data/`)
+
+> Companion graph index: this repo is also indexed in `codebase-memory-mcp` as project `D-work-AI-Apex-crm`
+> (1,827 nodes / 4,187 edges, status `ready`). See §12 for the sync protocol.
 
 ---
 
@@ -14,19 +17,21 @@ Primary reference docs:
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary (Discovery Session, Prospect Contract, Identity/Intent Plane, Finalist Judge, Pareto Skyline, Reverse Flywheel)
 - [`docs/adr/0001-discovery-session-engine.md`](adr/0001-discovery-session-engine.md) — ADR: extraction of the discovery loop into in-process `DiscoverySessionEngine`
 - [`docs/adr/0002-stage-boundary-session-persistence-and-resumption.md`](adr/0002-stage-boundary-session-persistence-and-resumption.md) — ADR: durable stage-boundary checkpoints & session resumption
-- [`docs/adr/0003-symbiotic-intelligence-hardening.md`](adr/0003-symbiotic-intelligence-hardening.md) — ADR: domain-clustered MAB, dynamic query strategy, DCR leadership scoring, site probe commercial signals, and entity resolution
-- [`docs/adr/0004-lean-adaptive-collection-and-targeted-enrichment.md`](adr/0004-lean-adaptive-collection-and-targeted-enrichment.md) — ADR: lean adaptive collection capacity, decoupled early stopping, and targeted post-selection enrichment
+- [`docs/adr/0003-symbiotic-intelligence-hardening.md`](adr/0003-symbiotic-intelligence-hardening.md) — ADR: domain-clustered MAB, dynamic query strategy, DCR leadership scoring, site probe commercial signals, entity resolution
+- [`docs/adr/0004-lean-adaptive-collection-and-targeted-enrichment.md`](adr/0004-lean-adaptive-collection-and-targeted-enrichment.md) — ADR: lean adaptive collection capacity, decoupled early stopping, targeted post-selection enrichment
+- [`.agents/rules/codebase_memory.md`](../.agents/rules/codebase_memory.md) — graph-index sync protocol (§12)
 
 ## 2. Quick stats
 
-| Metric                                                           | Value                                               |
-| ---------------------------------------------------------------- | --------------------------------------------------- |
-| Frontend (`src/`)                                                | ~9,983 lines across 33 files                        |
-| Backend engine (`server/leadSearch/`)                            | ~11,600 lines across 40 modules (incl. 9 `stages/`) |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~6,800 lines                                        |
-| REST routes                                                      | 38 (all under `/api`)                               |
-| SQLite tables                                                    | 15 tables + leads_fts virtual table (schema v19, WAL mode)   |
-| Test suite                                                       | 35 files, 277 tests                                |
+| Metric                                                           | Value                                            |
+| ---------------------------------------------------------------- | ------------------------------------------------ |
+| Frontend (`src/`)                                                | ~11,088 lines across 35 files                    |
+| Backend engine (`server/leadSearch/`)                            | ~17,654 lines across 42 modules (incl. 9 `stages/`) |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~10,931 lines                                    |
+| REST routes                                                      | 40 (all under `/api`, also mounted at `/api/v1`) |
+| SQLite tables                                                    | 17 tables + `leads_fts` virtual table (schema v20, WAL mode) |
+| Test suite                                                       | 86 files, 597 test declarations, ~16,470 lines   |
+| Graph index (codebase-memory-mcp)                                | 1,827 nodes · 4,187 edges · `ready`              |
 
 ## 3. Tech stack
 
@@ -38,16 +43,19 @@ Primary reference docs:
 ## 4. Repository layout
 
 ```text
-├─ server.ts                 Express bootstrap (197 lines)
+├─ server.ts                 Express bootstrap, host/origin guard, /api + /api/v1 mount (325 lines)
 ├─ src/                      React client (entry, components, context, lib, utils)
 ├─ server/
-│  ├─ db.ts                  SQLite v15 schema, migrations w/ auto-backup, CRUD, identity dedupe
-│  ├─ routes/api.ts          Thin HTTP adapter → 38 REST routes
-│  ├─ services/              llm.ts, brightdata.ts, keyRotator.ts, linkedinEvidence.ts
-│  └─ leadSearch/            Discovery Session Engine (31 modules + 9 stages/)
+│  ├─ db.ts                  SQLite v20 schema, migrations w/ auto-backup, CRUD, identity dedupe
+│  ├─ hostValidation.ts      Host/Origin header validation (DNS-rebinding guard)
+│  ├─ configValidation.ts    Boot-time env sanity warnings
+│  ├─ routes/api.ts          Thin HTTP adapter → 40 REST routes
+│  ├─ services/              llm.ts, brightdata.ts, keyRotator.ts, linkedinEvidence.ts, sessionStreamHub.ts
+│  └─ leadSearch/            Discovery Session Engine (33 modules + 9 stages/)
 ├─ scripts/dev.ts            Dev orchestrator (Vite + Express concurrently)
-├─ test/                     30 node:test suites (~6,283 lines)
+├─ test/                     86 node:test suites (~16,470 lines)
 ├─ docs/                     CODEBASE_INDEX.md (this file), adr/
+├─ .agents/rules/            Agent-facing conventions (graph-index sync protocol)
 ├─ .apex-data/               SQLite DB + WAL-safe backups (runtime artifact)
 ├─ litellm.config.yaml       LiteLLM proxy config
 ├─ vite.config.ts            Vite config (port 3000, proxy → API)
@@ -58,42 +66,44 @@ Primary reference docs:
 
 ### Entry & shell
 
-| File        | Lines | Role                                                                                                                                                                  |
-| ----------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.tsx`  | 10    | React root mount                                                                                                                                                      |
-| `App.tsx`   | 665   | App shell: dashboard tabs, health polling, provider status                                                                                                            |
-| `types.ts`  | 383   | Shared types: `LinkedInProfile`, `LeadEvidence`, `PostIntentEvidence`, `ScoreBreakdown`; stage/review/action enums (`LEAD_STAGES`, `REVIEW_STATUSES`, `NEXT_ACTIONS`) |
-| `index.css` | —     | Tailwind theme tokens                                                                                                                                                 |
+| File             | Lines | Role                                                                                                                                                                  |
+| ---------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main.tsx`       | 10    | React root mount                                                                                                                                                      |
+| `App.tsx`        | 690   | App shell: dashboard tabs, health polling, provider status                                                                                                            |
+| `types.ts`       | 396   | Shared types: `LinkedInProfile`, `LeadEvidence`, `PostIntentEvidence`, `ScoreBreakdown`; stage/review/action enums (`LEAD_STAGES`, `REVIEW_STATUSES`, `NEXT_ACTIONS`) |
+| `index.css`      | 121   | Tailwind theme tokens                                                                                                                                                 |
+| `vite-env.d.ts`  | 3     | Vite ambient types                                                                                                                                                    |
 
 ### Feature components (`src/components/`)
 
-| File                          | Lines      | Role                                                                                                          |
-| ----------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
-| `LeadTable.tsx`               | 1532       | Prospect inventory: filtering, review statuses, evidence drawer, manual add                                   |
-| `ScrapeWorkspace.tsx`         | 1483       | Discovery launcher: brief input, preview contract, live mining trace/logs                                     |
-| `CrmPipeline.tsx`             | 1330       | Kanban-style stage pipeline with drag between stages                                                          |
-| `OutreachStudio.tsx`          | 1184       | Outreach draft generation & management per lead                                                               |
-| `CrmCopilot.tsx`              | 347        | `/chat` conversational assistant panel                                                                        |
-| `ResumableSessionsBanner.tsx` | 331        | 1-click recovery banner for interrupted mining sessions (checkpoint resume)                                   |
-| `CrmOverview.tsx`             | 227        | Dashboard KPIs and summaries                                                                                  |
-| `ConflictDialog.tsx`          | 159        | Side-by-side diff modal resolving lead revision conflicts (HTTP 409): overwrite / accept server / smart merge |
-| `TraceTerminal.tsx`           | 84         | Decoupled streaming telemetry terminal (outside React render tree)                                            |
-| `ui/*`                        | ~500 total | shadcn/Radix primitives: badge, button, card, dialog, input, label, table, tabs, textarea                     |
+| File                          | Lines | Role                                                                                                          |
+| ----------------------------- | ----- | ------------------------------------------------------------------------------------------------------------- |
+| `LeadTable.tsx`               | 1645  | Prospect inventory: filtering, review statuses, evidence drawer, manual add                                   |
+| `ScrapeWorkspace.tsx`         | 1432  | Discovery launcher: brief input, preview contract, live mining trace/logs                                     |
+| `CrmPipeline.tsx`             | 1373  | Kanban-style stage pipeline with drag between stages                                                          |
+| `OutreachStudio.tsx`          | 1197  | Outreach draft generation & management per lead                                                               |
+| `TraceTerminal.tsx`           | 460   | Decoupled streaming telemetry terminal (outside React render tree)                                            |
+| `CrmCopilot.tsx`              | 347   | `/chat` conversational assistant panel                                                                        |
+| `ResumableSessionsBanner.tsx` | 331   | 1-click recovery banner for interrupted mining sessions (checkpoint resume)                                   |
+| `CrmOverview.tsx`             | 232   | Dashboard KPIs and summaries                                                                                  |
+| `ConflictDialog.tsx`          | 159   | Side-by-side diff modal resolving lead revision conflicts (HTTP 409): overwrite / accept server / smart merge |
+| `TabErrorBoundary.tsx`        | 83    | Per-tab React error boundary — isolates a crashing dashboard tab from the shell                               |
+| `ui/*`                        | 535 total | shadcn/Radix primitives: badge, button, card, dialog, input, label, table, tabs, textarea                  |
 
 ### State (`src/context/`)
 
 | File               | Lines | Exports                                  | Role                                                                                                                            |
 | ------------------ | ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `LeadContext.tsx`  | 1046  | `LeadProvider`, `useLeads`               | Central client store: fetch/bulk/PATCH leads, dedupe on insert, enrichment, outreach drafts, health, revision-conflict handling |
-| `ToastContext.tsx` | 130   | `ToastProvider`, `useToast`, `ToastType` | Toast notifications                                                                                                             |
+| `LeadContext.tsx`  | 1261  | `LeadProvider`, `useLeads`               | Central client store: fetch/bulk/PATCH leads, dedupe on insert, enrichment, outreach drafts, health, revision-conflict handling |
+| `ToastContext.tsx` | 137   | `ToastProvider`, `useToast`, `ToastType` | Toast notifications                                                                                                             |
 
 ### Lib & utils (`src/lib/`, `src/utils/`)
 
 | File                      | Lines | Key exports                                                                  | Role                                                |
 | ------------------------- | ----- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
-| `lib/traceStore.ts`       | 173   | `miningTraceStore`                                                           | `useSyncExternalStore` reactive SSE trace/log store |
+| `lib/traceStore.ts`       | 223   | `miningTraceStore`                                                           | `useSyncExternalStore` reactive SSE trace/log store |
+| `utils/leadDedupe.ts`     | 165   | `canonicalLinkedInIdentity`, `buildProfileDedupeKeys`, `hasDuplicateProfile` | LinkedIn canonical-identity dedupe keys             |
 | `lib/pipeline.ts`         | 111   | `PIPELINE_STAGES`, `getPipelineStageMeta`                                    | Stage metadata & ordering                           |
-| `utils/leadDedupe.ts`     | 73    | `canonicalLinkedInIdentity`, `buildProfileDedupeKeys`, `hasDuplicateProfile` | LinkedIn canonical-identity dedupe keys             |
 | `lib/leadMutations.ts`    | 48    | `rebaseLeadChanges`, `preferNewerCanonical`                                  | Optimistic-concurrency rebasing of lead edits       |
 | `lib/prospectWorkflow.ts` | 42    | `REVIEW_STATUS_OPTIONS`, `getLeadProvenance`                                 | Review-status/next-action option maps               |
 | `utils/leadScore.ts`      | 30    | `scoreLeadDeterministically`, `predictiveScoreFromComposite`                 | Client-side deterministic scoring                   |
@@ -101,24 +111,29 @@ Primary reference docs:
 | `lib/navigation.ts`       | 25    | `DASHBOARD_NAV_ITEMS`, `getTabFromHash`                                      | Hash-based tab routing                              |
 | `lib/utils.ts`            | 6     | `cn`                                                                         | Tailwind class merge                                |
 
+> No `src/hooks/` directory exists — the README's project-structure block still lists one.
+
 ## 6. Backend index (`server/`)
 
 ### Core
 
-| File            | Lines | Role                                                                                                                                                                                                                                                                                               |
-| --------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.ts`     | 197   | Express app bootstrap, static serving, `/api` mount                                                                                                                                                                                                                                                |
-| `db.ts`         | 2956  | SQLite v15: migrations w/ auto-backup + batched SAVEPOINT backfills, 15 tables, optimistic revision locks, `lead_identities` canonical dedupe, `checkpoint_json` persistence + resumable-session queries, CRUD helpers (`upsertLeadWithIdentity`, `readLeadsSummary`, `LeadRevisionConflictError`) |
-| `routes/api.ts` | 1187  | Thin HTTP adapter over services/engine (38 routes, §7) incl. async job mode (`?mode=job` / `Prefer: respond-async`) and SSE streams                                                                                                                                                                |
+| File                    | Lines | Role                                                                                                                                                                                                                                                                                               |
+| ----------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.ts`             | 325   | Express app bootstrap, host/origin guard, static serving, `/api` + `/api/v1` mount                                                                                                                                                                                                                 |
+| `db.ts`                 | 3870  | SQLite v20: migrations w/ auto-backup + batched SAVEPOINT backfills, 17 tables, optimistic revision locks, `lead_identities` canonical dedupe, `checkpoint_json` persistence + resumable-session queries, CRUD helpers (`upsertLeadWithIdentity`, `readLeadsSummary`, `LeadRevisionConflictError`) |
+| `routes/api.ts`         | 2149  | Thin HTTP adapter over services/engine (40 routes, §7) incl. async job mode (`?mode=job` / `Prefer: respond-async`) and SSE streams                                                                                                                                                                |
+| `hostValidation.ts`     | 97    | `parseHostHeader`, `isLoopbackHost`, `isAllowedHost`, `isAllowedOrigin` — DNS-rebinding / CSRF-style request-origin guard                                                                                                                   |
+| `configValidation.ts`   | 79    | `validateEngineConfig()` — boot-time env sanity warnings (non-fatal)                                                                                                                                                                                                                        |
 
 ### Services (`server/services/`)
 
 | File                  | Lines | Key exports                                                                                                                                                                         | Role                                                                            |
 | --------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `llm.ts`              | 1130  | `openAIText`, `openAIStructured`, `createLLMSessionCircuitBreaker`, `tavilySearch`, `tavilyExtract`, JSON schemas (`leadsArraySchema`, `searchSpecSchema`, …), `APEX_SYSTEM_PROMPT` | LLM gateway + provider fallback chain; also hosts direct Tavily calls           |
-| `brightdata.ts`       | 1143  | `getBrightDataClient`, `scrapeAsMarkdown`, `executeBrightDataSearchWithRetry`, error classification/capability/status helpers                                                       | Bright Data MCP client: search + scrape-as-markdown, bounded retries, cooldowns |
-| `keyRotator.ts`       | 344   | `ApiKeyPool`, `parseApiKeys`, `classifyKeyRotationError`, `executeWithKeyRotation`                                                                                                  | Multi-key rotation, 429 backoff, exhaustion quarantine                          |
-| `linkedinEvidence.ts` | 286   | `parseLinkedInEvidence`, `normalizeLinkedInUrl`, `extractPublicEmail`, `buildTavilyEvidence`                                                                                        | Markdown → structured profile evidence parsing                                  |
+| `llm.ts`              | 1880  | `openAIText`, `openAIStructured`, `createLLMSessionCircuitBreaker`, `tavilySearch`, `tavilyExtract`, JSON schemas (`leadsArraySchema`, `searchSpecSchema`, …), `APEX_SYSTEM_PROMPT` | LLM gateway + provider fallback chain; also hosts direct Tavily calls           |
+| `brightdata.ts`       | 1895  | `getBrightDataClient`, `scrapeAsMarkdown`, `executeBrightDataSearchWithRetry`, error classification/capability/status helpers                                                       | Bright Data MCP client: search + scrape-as-markdown, bounded retries, cooldowns |
+| `keyRotator.ts`       | 434   | `ApiKeyPool`, `parseApiKeys`, `classifyKeyRotationError`, `executeWithKeyRotation`                                                                                                  | Multi-key rotation, 429 backoff, exhaustion quarantine                          |
+| `linkedinEvidence.ts` | 330   | `parseLinkedInEvidence`, `normalizeLinkedInUrl`, `extractPublicEmail`, `buildTavilyEvidence`                                                                                        | Markdown → structured profile evidence parsing                                  |
+| `sessionStreamHub.ts` | 197   | `sessionStreamHub`                                                                                                                                                                  | Per-session SSE broadcaster: one poll interval + one DB read fanned out to N subscribers |
 
 ### Discovery pipeline (`server/leadSearch/`)
 
@@ -128,97 +143,92 @@ Stage order is defined by `StageName` in `pipelineTypes.ts`: `plan → retrieve 
 
 | File                      | Lines | Key exports                                                                                                                                                               | Role                                                      |
 | ------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `pipelineTypes.ts`        | 149   | `StageName`, `SessionConfig`, `PipelinePorts`, `PipelineSessionState`, `SessionContext`, `MiningSessionCheckpoint`, `LeadQueryRunTracker`, `StageResult`, `PipelineStage` | Shared stage contracts & checkpoint type                  |
-| `stages/planStage.ts`     | 231   | `executePlanStage`                                                                                                                                                        | Adaptive batch/query derivation (pure commit at boundary) |
-| `stages/retrieveStage.ts` | 417   | `executeRetrieveStage`                                                                                                                                                    | Two-wave parallel Tavily/Bright Data lanes                |
-| `stages/fuseStage.ts`     | 143   | `executeFuseStage`                                                                                                                                                        | Corroboration fusion of observations                      |
-| `stages/extractStage.ts`  | 456   | `executeExtractStage`                                                                                                                                                     | Budgeted LLM extraction chunking                          |
-| `stages/verifyStage.ts`   | 206   | `executeVerifyStage`                                                                                                                                                      | Hard-requirement verification                             |
-| `stages/enrichStage.ts`   | 633   | `executeEnrichStage`                                                                                                                                                      | TF-IDF company intent + LinkedIn post intent              |
-| `stages/judgeStage.ts`    | 301   | `executeJudgeStage`                                                                                                                                                       | Multi-tier finalist evaluation                            |
-| `stages/selectStage.ts`   | 97    | `executeSelectStage`                                                                                                                                                      | Pareto/MMR diversified finalist selection                 |
+| `pipelineTypes.ts`        | 201   | `StageName`, `SessionConfig`, `PipelinePorts`, `PipelineSessionState`, `SessionContext`, `MiningSessionCheckpoint`, `LeadQueryRunTracker`, `StageResult`, `PipelineStage` | Shared stage contracts & checkpoint type                  |
+| `stages/planStage.ts`     | 489   | `executePlanStage`                                                                                                                                                        | Adaptive batch/query derivation (pure commit at boundary) |
+| `stages/retrieveStage.ts` | 679   | `executeRetrieveStage`                                                                                                                                                    | Two-wave parallel Tavily/Bright Data lanes                |
+| `stages/fuseStage.ts`     | 365   | `executeFuseStage`                                                                                                                                                        | Corroboration fusion of observations                      |
+| `stages/extractStage.ts`  | 720   | `executeExtractStage`                                                                                                                                                     | Budgeted LLM extraction chunking                          |
+| `stages/verifyStage.ts`   | 308   | `executeVerifyStage`                                                                                                                                                      | Hard-requirement verification                             |
+| `stages/enrichStage.ts`   | 915   | `executeEnrichStage`                                                                                                                                                      | TF-IDF company intent + LinkedIn post intent              |
+| `stages/judgeStage.ts`    | 1002  | `executeJudgeStage`                                                                                                                                                       | Multi-tier finalist evaluation                            |
+| `stages/selectStage.ts`   | 175   | `executeSelectStage`                                                                                                                                                      | Pareto/MMR diversified finalist selection                 |
 | `stages/persistStage.ts`  | 212   | `mapCandidateToPersistedLead`, `executePersistStage`                                                                                                                      | Lead persistence into SQLite inventory                    |
 
 #### Engine orchestration & scheduling
 
 | File                    | Lines | Key exports                                                                                                                                                   |
 | ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `discoveryEngine.ts`    | 1600  | `DiscoverySessionEngine`, `executeDiscoverySession`, `discoveryEngine` singleton — session lifecycle, lanes, flywheel, checkpointing, resumption, persistence |
+| `discoveryEngine.ts`    | 2480  | `DiscoverySessionEngine`, `executeDiscoverySession`, `discoveryEngine` singleton — session lifecycle, lanes, flywheel, checkpointing, resumption, persistence |
+| `adaptiveScheduler.ts`  | 321   | `scheduleAdaptiveRetrievalTasks`, Thompson-sampling arm scoring (`sampleBeta`, `scoreAdaptiveArm`)                                                            |
+| `constraintAblation.ts` | 207   | `ABLATION_TIERS`, `classifyAblationTier`, `ablateQueryTask`, `createAblationTracker` — 4-tier requirement relaxation (Tier 1 immutable core never ablated)      |
+| `roundDiagnostics.ts`   | 185   | `buildRoundDiagnostics` — per-round requirement pass rates, class summaries, bottleneck-class recovery detection                                             |
+| `collectionCapacity.ts` | 145   | `MAX_COLLECTION_ROUNDS`, `buildCollectionCapacity`, stall/refinement logic                                                                                    |
 | `targetFulfillment.ts`  | 26    | `executeTargetFulfillmentSession` — forwarding facade to engine                                                                                               |
-| `collectionCapacity.ts` | 142   | `MAX_COLLECTION_ROUNDS`, `buildCollectionCapacity`, stall/refinement logic                                                                                    |
-| `adaptiveScheduler.ts`  | 241   | `scheduleAdaptiveRetrievalTasks`, Thompson-sampling arm scoring (`sampleBeta`, `scoreAdaptiveArm`)                                                            |
-| `roundDiagnostics.ts`   | 76    | `buildRoundDiagnostics` — per-round pass rates & recovery detection                                                                                           |
+| `featureFlags.ts`       | 101   | `isFlagEnabled.*` — env-overridable, default-ON flags for the Intelligent Hard Term phases, 7 hardening optimizations, and PIQ-BOS                            |
 
 #### Brief compilation & contracts
 
 | File                  | Lines | Key exports                                                                                                                                                |
 | --------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prospectContract.ts` | 646   | `ProspectContract`, `detectDecompositionMode` (single/dual stream), `buildDeterministicProspectContract`, `normalizeProspectContract`, LLM prompt builders |
-| `searchSpec.ts`       | 319   | `SearchSpec`, `RetrievalTask`, `normalizeSearchSpec`, strategist/fallback plan builders                                                                    |
-| `strategist.ts`       | 80    | `normalizeQueryPlanItems`, `toLinkedInSearchQuery`, re-exports strategist prompt                                                                           |
+| `prospectContract.ts` | 1552  | `ProspectContract`, `detectDecompositionMode` (single/dual stream), `buildDeterministicProspectContract`, `normalizeProspectContract`, LLM prompt builders |
+| `searchSpec.ts`       | 726   | `SearchSpec`, `RetrievalTask`, `normalizeSearchSpec`, strategist/fallback plan builders                                                                    |
 | `intentSignals.ts`    | 208   | `compileIntentSignals`, `UNIVERSAL_SIGNALS`, freshness parsing/multiplier, signal fingerprints                                                             |
+| `strategist.ts`       | 148   | `normalizeQueryPlanItems`, `toLinkedInSearchQuery`, re-exports strategist prompt                                                                           |
 
 #### Retrieval routing & budgeting
 
 | File                  | Lines | Key exports                                                                                                                                                         |
 | --------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `siteProbe.ts`        | 403   | `deriveCompanyDomainWithProvenance`, `matchesCompanyIdentity`, `parseSiteSignalsFromEvidenceBlock`, `normalizeDomainUrl` — company-site probing & identity matching |
+| `siteProbe.ts`        | 584   | `deriveCompanyDomainWithProvenance`, `matchesCompanyIdentity`, `parseSiteSignalsFromEvidenceBlock`, `normalizeDomainUrl` — company-site probing & identity matching |
+| `freeTier.ts`         | 149   | `ScoutFreeTierBudget`, per-provider free-tier capabilities                                                                                                          |
 | `discoveryRouting.ts` | 118   | `resolveDiscoveryProviderMode`, `shouldRunTavilyForTask`, `filterTasksForBrightData`                                                                                |
 | `providerQueue.ts`    | 63    | `runProviderQueue` — concurrency-bounded task queue                                                                                                                 |
-| `freeTier.ts`         | 149   | `ScoutFreeTierBudget`, per-provider free-tier capabilities                                                                                                          |
 | `llmBudget.ts`        | 53    | `estimateTokenCount`, `chunkEvidenceBlocksByTokenBudget`, output budgets                                                                                            |
 
 #### Observation fusion
 
 | File              | Lines | Key exports                                                                                    |
 | ----------------- | ----- | ---------------------------------------------------------------------------------------------- |
-| `observations.ts` | 228   | `fuseObservations`, `isSignalObservation`, company-hint extraction (deterministic/profile/LLM) |
-| `signalStore.ts`  | 97    | `SignalStore`, `companiesMatch`, `normalizeCompanyName` — reverse-flywheel brand matching      |
+| `signalStore.ts`  | 395   | `SignalStore`, `companiesMatch`, `normalizeCompanyName` — reverse-flywheel brand matching      |
+| `observations.ts` | 245   | `fuseObservations`, `isSignalObservation`, company-hint extraction (deterministic/profile/LLM) |
 
 #### Evaluation & scoring
 
 | File                   | Lines | Key exports                                                                                                                                        |
 | ---------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `finalistJudge.ts`     | 389   | `FinalistJudgment`, strict-evidence partitioning, judge prompt/schema, `validateFinalistJudgments`                                                 |
-| `evidenceSelection.ts` | 186   | `selectEvidenceForFinalist`, `hasStrictStructuredMatch`                                                                                            |
-| `verification.ts`      | 197   | `verifyDecisionMakerFromEvidence`, career-trajectory DCR                                                                                           |
-| `scoring.ts`           | 590   | TF-IDF/BM25+ weights, Bayesian/Kalman fusion, sigmoid scaling, `computeParetoFrontier`, MMR selection, credible intervals, `computeScoreBreakdown` |
-| `scoutScoring.ts`      | 176   | `buildScoutEvidence`, `selectDiversifiedLeads`                                                                                                     |
+| `finalistJudge.ts`     | 1095  | `FinalistJudgment`, strict-evidence partitioning, judge prompt/schema, `validateFinalistJudgments`                                                 |
+| `scoring.ts`           | 611   | TF-IDF/BM25+ weights, Bayesian/Kalman fusion, sigmoid scaling, `computeParetoFrontier`, MMR selection, credible intervals, `computeScoreBreakdown` |
+| `scoutScoring.ts`      | 252   | `buildScoutEvidence`, `selectDiversifiedLeads`                                                                                                     |
+| `evidenceSelection.ts` | 249   | `selectEvidenceForFinalist`, `hasStrictStructuredMatch`                                                                                            |
+| `verification.ts`      | 203   | `verifyDecisionMakerFromEvidence`, career-trajectory DCR                                                                                           |
 | `evidence.ts`          | 56    | `createLeadEvidence`, quality inference from Tavily results                                                                                        |
-| `rejections.ts`        | 33    | Rejection-reason taxonomy & counters                                                                                                               |
+| `rejections.ts`        | 34    | Rejection-reason taxonomy & counters                                                                                                               |
 
 #### Intent enrichment (Phases 4–5)
 
 | File                    | Lines | Key exports                                                                                                     |
 | ----------------------- | ----- | --------------------------------------------------------------------------------------------------------------- |
-| `linkedinPostIntent.ts` | 475   | Phase 5: `runLinkedInPostIntentEnrichment` — post SERP search + LLM classification, quality tiers               |
+| `linkedinPostIntent.ts` | 510   | Phase 5: `runLinkedInPostIntentEnrichment` — post SERP search + LLM classification, quality tiers               |
 | `intentEnrichment.ts`   | 291   | `runIntentEnrichment` — orchestrates intent phases over finalist pool                                           |
-| `companyIntent.ts`      | 240   | Phase 4: `checkCompanyWebsiteIntent` via website scrape vs. categorized signal dictionaries, `SignalCorpus` IDF |
+| `companyIntent.ts`      | 291   | Phase 4: `checkCompanyWebsiteIntent` via website scrape vs. categorized signal dictionaries, `SignalCorpus` IDF |
 | `profileEnrichment.ts`  | 263   | `enrichLeadProfile` — profile scrape w/ positive+negative cache                                                 |
 
 #### Observability
 
 | File           | Lines | Key exports                                                                                 |
 | -------------- | ----- | ------------------------------------------------------------------------------------------- |
-| `telemetry.ts` | 441   | `MiningTelemetryRecorder`, `recordTrace`, cost estimation, retention limits, live-log hooks |
+| `telemetry.ts` | 614   | `MiningTelemetryRecorder`, `recordTrace`, cost estimation, retention limits, live-log hooks |
 
 #### Shared session infrastructure
 
 | File                | Lines | Key exports                                                                                                                                                                       |
 | ------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sessionHelpers.ts` | ~180  | `effectiveScore`, `buildFallbackEvidence`, `findEvidenceForLead`, `incrementCounter`, `sleepWithAbort`, `runWithTransientRetry`, `isTransientLLMError`, `buildCheckpointEvidence` |
-| `leadMapping.ts`    | 123   | `mapCandidateToPersistedLead` — canonical candidate-to-lead mapping (re-exported from `discoveryEngine` for checkpoint persistence and tests)                                     |
+| `sessionHelpers.ts` | 289   | `effectiveScore`, `buildFallbackEvidence`, `findEvidenceForLead`, `incrementCounter`, `sleepWithAbort`, `runWithTransientRetry`, `isTransientLLMError`, `buildCheckpointEvidence` |
+| `leadMapping.ts`    | 124   | `mapCandidateToPersistedLead` — canonical candidate-to-lead mapping (re-exported from `discoveryEngine` for checkpoint persistence and tests)                                     |
 
-#### Streaming & config
+## 7. REST API surface (40 routes, all under `/api`)
 
-| File                           | Lines | Key exports                                                                                                   |
-| ------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------- |
-| `services/sessionStreamHub.ts` | ~150  | `sessionStreamHub` — per-session SSE broadcaster: one poll interval + one DB read fanned out to N subscribers |
-| `configValidation.ts`          | ~70   | `validateEngineConfig()` — boot-time env sanity warnings (non-fatal)                                          |
-
-## 7. REST API surface (38 routes, all under `/api`)
-
-Verified against `server/routes/api.ts`:
+Verified against `server/routes/api.ts`. The router is mounted twice in `server.ts`: at `/api` and `/api/v1`.
 
 | Method | Route                                | Purpose                                                                            |
 | ------ | ------------------------------------ | ---------------------------------------------------------------------------------- |
@@ -232,6 +242,7 @@ Verified against `server/routes/api.ts`:
 | POST   | `/scrape-url`                        | Scrape public page → markdown                                                      |
 | POST   | `/scrape-pasted`                     | Parse pasted text into leads                                                       |
 | GET    | `/mining-sessions`                   | List mining sessions                                                               |
+| GET    | `/mining-sessions/active`            | Currently running sessions                                                         |
 | GET    | `/mining-sessions/resumable`         | List interrupted sessions available for resume                                     |
 | DELETE | `/mining-sessions/resumable`         | Dismiss resumable sessions                                                         |
 | GET    | `/mining-sessions/:sessionId`        | Session detail                                                                     |
@@ -244,6 +255,7 @@ Verified against `server/routes/api.ts`:
 | GET    | `/search-logs/:id`                   | Single log detail                                                                  |
 | GET    | `/search-logs/:id/live`              | Live log stream                                                                    |
 | GET    | `/leads`                             | Filtered lead listing                                                              |
+| GET    | `/leads/stats`                       | Aggregate lead counts by stage/review status                                       |
 | PUT    | `/leads`                             | Replace stored leads                                                               |
 | POST   | `/leads/bulk`                        | Bulk upsert (dedupe-aware)                                                         |
 | PATCH  | `/leads/:id`                         | Stage/review/notes update (revision lock; 409 on conflict)                         |
@@ -261,52 +273,66 @@ Verified against `server/routes/api.ts`:
 | POST   | `/generate-outbound`                 | Generate contextual outreach message                                               |
 | POST   | `/chat`                              | Conversational CRM assistant                                                       |
 
-## 8. Database schema (SQLite v17, `.apex-data/apex-crm.sqlite`)
+## 8. Database schema (SQLite v20, `.apex-data/apex-crm.sqlite`)
 
-15 tables + 1 virtual table created in `db.ts` (`LATEST_SCHEMA_VERSION = 17`):
+`LATEST_SCHEMA_VERSION = 20` in `server/db.ts`. 17 regular tables + 1 FTS5 virtual table:
 
-`leads` · `leads_fts` (FTS5) · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts`
+`leads` · `leads_fts` (FTS5) · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts` · `discovered_companies` · `icp_hypothesis_cache`
 
 Key columns and features added by recent migrations:
 
 - `mining_sessions.checkpoint_json` (v14) — compact `MiningSessionCheckpoint` Tier-A snapshot written at stage boundaries (ADR-0002); powers boot-sweep reconciliation of `interrupted` sessions into `resumable` status.
 - `query_performance.requirement_fail_digest` (v16) — serialized breakdown of requirement failure frequencies per query family/lane.
-- `saved_searches.exclude_list_json` (v16) — accumulated canonical identities already returned for a saved search to prevent duplicate rediscovery across runs.
-- `leads_fts` (v17) — SQLite FTS5 full-text search virtual table maintained via automatic triggers (`leads_ai`, `leads_ad`, `leads_au`) indexing promoted columns + `json_extract` notes and tags for sub-5ms search across leads.
+- `saved_searches.exclude_list_json` (v16) — accumulated canonical identities already returned for a saved search, preventing duplicate rediscovery across runs.
+- `leads_fts` (v17) — SQLite FTS5 full-text search virtual table maintained via automatic triggers (`leads_ai`, `leads_ad`, `leads_au`) indexing promoted columns plus `json_extract` notes/tags for sub-5ms search.
+- `discovered_companies` — reverse-flywheel account registry: `normalized_name` PK, signal counts, strongest signal, source URLs, confidence, `last_seen_at` (indexed DESC). Written by the signal store.
+- `icp_hypothesis_cache` — `query_hash` PK cache of synthesized ICP hypotheses with `expires_at` TTL (indexed).
 
 WAL mode, foreign keys on, busy timeouts set, auto-backup under `.apex-data/backups/` before migrations. Canonical identity dedupe via `lead_identities` with conflict tracking.
 
-> ⚠️ README drift: the README's schema section still names `mining_traces`, `intent_cache`, and `search_specs`, which do **not** exist in `db.ts`. Trace data lives in `search_logs`/`llm_stage_logs`; contract caching lives in `prospect_contract_cache`. Worth fixing the README.
+> ⚠️ README drift (verified 2026-09-12): the README's schema badge says **v19**, and its architecture diagrams / `Database & Schema` heading say **v15**, while the project-structure block says **v17**. The actual constant is **v20**. The README's table list itself is accurate — the previously-flagged `mining_traces` / `intent_cache` / `search_specs` names are no longer present. The README also references a `server/services/evidenceService.ts` and a `src/hooks/` directory, neither of which exists. Worth a README pass.
 
 ## 9. Test suite map (`test/`, node:test runner)
 
-npm script groups (from `package.json`):
+86 suites / 597 top-level test declarations / ~16,470 lines. `npm test` runs **all** of them (`tsx --test "test/*.test.ts"`); the npm groups below are curated subsets.
 
-| Script                    | Files                                                                                                                                                                                                  |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `test:intent-engine`      | `adaptiveDecomposition`, `intentSignals`, `intentEnrichment`, `linkedinPostIntent`                                                                                                                     |
-| `test:lead-search`        | `leadSearchHelpers`                                                                                                                                                                                    |
-| `test:scout`              | `scoutPipeline`                                                                                                                                                                                        |
-| `test:prospect-quality`   | `prospectQuality`                                                                                                                                                                                      |
-| `test:brightdata-upgrade` | `brightDataUpgrade`                                                                                                                                                                                    |
-| `test:enrichment`         | `enrichmentCache`, `linkedinEvidence`, `linkedinPostIntent`                                                                                                                                            |
-| `test:key-rotation`       | `keyRotator`, `tavilyRotation`                                                                                                                                                                         |
-| `test:llm`                | `llmFallback`, `llmBudget`                                                                                                                                                                             |
-| `test:telemetry`          | `telemetry`                                                                                                                                                                                            |
-| `test:glyphs`             | `encodingHygiene`                                                                                                                                                                                      |
-| `test:ui`                 | `uiContracts`                                                                                                                                                                                          |
-| `test:persistence`        | `leadPersistence`                                                                                                                                                                                      |
-| `test:dedupe`             | `leadDedupe`, `leadIdentityMigration`, `leadPersistence`                                                                                                                                               |
-| `test:lead-engine`        | Everything above plus `adaptiveScheduler`, `signalStore`, `targetFulfillment(+Replay)`, `leadMutationContracts`, `sessionPersistenceAndResume`, `parallelRetrieval`, `rateLimitMigration`, `siteProbe` |
+| Script                    | Files                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test:intent-engine`      | `adaptiveDecomposition`, `intentSignals`, `intentEnrichment`, `linkedinPostIntent`                                                                       |
+| `test:lead-search`        | `leadSearchHelpers`                                                                                                                                      |
+| `test:scout`              | `scoutPipeline`                                                                                                                                          |
+| `test:prospect-quality`   | `prospectQuality`, `contractShape`                                                                                                                       |
+| `test:taxonomy`           | `contractShape`                                                                                                                                          |
+| `test:distributed-query`  | `distributedQueryEnforcement`                                                                                                                            |
+| `test:semantic-grouping`  | `semanticGrouping`                                                                                                                                       |
+| `test:evidence-aware`     | `evidenceAwareHardness`                                                                                                                                  |
+| `test:class-scheduler`    | `classAwareScheduler`                                                                                                                                    |
+| `test:enhanced-diagnostics` | `enhancedDiagnostics`                                                                                                                                  |
+| `test:hard-terms`         | The six Phase 1–6 suites above combined                                                                                                                  |
+| `test:optimizations`      | `fuzzyQuoteGrounding`, `safeSlugProbe`, `companyEntityResolution`, `resilienceAndCacheHygiene`                                                           |
+| `test:critical-fixes`     | `llmStructuredArrayCoercion`, `siteProbeSsrfGuard`, `sessionStreamHubPruning`, `kalmanStability`                                                         |
+| `test:brightdata-upgrade` | `brightDataUpgrade`                                                                                                                                      |
+| `test:enrichment`         | `enrichmentCache`, `linkedinEvidence`, `linkedinPostIntent`                                                                                              |
+| `test:key-rotation`       | `keyRotator`, `tavilyRotation`                                                                                                                           |
+| `test:llm`                | `llmFallback`, `llmBudget`                                                                                                                               |
+| `test:telemetry`          | `telemetry`                                                                                                                                              |
+| `test:glyphs`             | `encodingHygiene`                                                                                                                                        |
+| `test:ui`                 | `uiContracts`                                                                                                                                            |
+| `test:persistence`        | `leadPersistence`                                                                                                                                        |
+| `test:dedupe`             | `leadDedupe`, `leadIdentityMigration`, `leadPersistence`                                                                                                 |
+| `test:piq-bos`            | `progressiveQualification`                                                                                                                               |
+| `test:lead-engine`        | Large aggregate gate — every group above plus `adaptiveScheduler`, `signalStore`, `targetFulfillment(+Replay)`, `leadMutationContracts`, `sessionPersistenceAndResume`, `parallelRetrieval`, `rateLimitMigration`, `siteProbe` |
 
-Not wired into an npm group: `mathEngine.test.ts`.
+43 suites are not referenced by any named npm group (e.g. `architecturalImprovements`, `blueprintBlueprintCoverage`, `engineFixesVerification`, `fts5_search`, `highEfficiencyEngine`, `mathEngine`, `pillar1SearchStrategy`, `pillar2ExtractionJudging`, `semanticQualificationAudit`, `symbioticIntelligence`, `twoFunnelEngine`, `zeroYieldSafetyNet`). They still run under bare `npm test`.
 
 Typecheck gate: `npm run lint` (= `tsc --noEmit`).
 
 ## 10. Configuration surface
 
-- `.env.example` — full template: LLM gateway mode (`direct`/`litellm`), `OPENAI_*`, `TAVILY_API_KEYS` (+ singular), `BRIGHTDATA_API_TOKENS` (+ singular/`API_TOKEN`), `DISCOVERY_PROVIDER_MODE` (`bd_primary`/`hybrid`/`tavily_primary`), `BRIGHTDATA_MCP_TRANSPORT`, timeouts/retries, `SEARCH_LOG_RETENTION_LIMIT`
-- Engine tunables: `LEAD_SEARCH_TIMEOUT_MS` (default 15 min, 0 disables), `LEAD_EXTRACTION_CHUNK_RETRIES`, `LEAD_TELEMETRY_MAX_EVENTS`, `FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` / `FINALIST_JUDGE_EVIDENCE_CHARS` (judge prompt token diet), `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` (1-20, default 10), `APEX_STRUCTURED_LOGS`, `LEAD_ADAPTIVE_EXPLORATION_FLOOR_EVERY`, `LEAD_JUDGE_PASS_RATE_ASSUMPTION`, `LEAD_VERIFY_BORDERLINE_PER_ROUND`
+- `.env.example` — full template. Groups: LLM (`OPENAI_*`, `LLM_GATEWAY_MODE`), Tavily (`TAVILY_API_KEYS`/`TAVILY_API_KEY`, depth, max results, country, concurrency, interval cap/ms, monthly credit budget, scout caps), Bright Data (`BRIGHTDATA_API_TOKENS`/`BRIGHTDATA_API_TOKEN`, plan, request budgets, batch limits, geo, cache TTL, timeouts, retries, MCP transport/stderr debug), and engine tunables
+- `DISCOVERY_PROVIDER_MODE` — `bd_primary` / `hybrid` / `tavily_primary`
+- Engine tunables: `LEAD_SEARCH_MAX_ROUNDS`, `LEAD_SEARCH_MIN_SCORE`, `LEAD_SEARCH_TIMEOUT_MS` (default 900000), `LEAD_EXTRACTION_CHUNK_RETRIES`, `LEAD_TELEMETRY_MAX_EVENTS`, `FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` / `FINALIST_JUDGE_EVIDENCE_CHARS`, `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` (1-20, default 10), `APEX_STRUCTURED_LOGS`, `LEAD_SEARCH_RERANK_POOL_MULTIPLIER` / `_MAX`, `LEAD_ADAPTIVE_SCHEDULER_ENABLED`, `LEAD_ADAPTIVE_TASKS_PER_ROUND`, `LEAD_ADAPTIVE_MIN_OUTCOME_RUNS`, `LEAD_ADAPTIVE_EXPLORATION_STRENGTH`, `LEAD_ADAPTIVE_EXPLORATION_FLOOR_EVERY`, `LEAD_JUDGE_PASS_RATE_ASSUMPTION`, `LEAD_VERIFY_BORDERLINE_PER_ROUND`
+- Feature flags (`featureFlags.ts`, all default ON, disable with `0`/`false`/`no`/`off`): `REQUIREMENT_TAXONOMY_ENABLED`, `DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED`, `SEMANTIC_GROUPING_ENABLED`, `EVIDENCE_AWARE_HARDNESS_ENABLED`, `CLASS_AWARE_SCHEDULER_ENABLED`, `ENHANCED_DIAGNOSTICS_ENABLED`, `FUZZY_QUOTE_GROUNDING_ENABLED`, `SAFE_SLUG_PROBE_ENABLED`, `COMPANY_ENTITY_REGISTRY_ENABLED`, `ANCHORED_FLYWHEEL_QUERIES_ENABLED`, `FULL_JITTER_RETRY_ENABLED`, `TRANSIENT_NEGATIVE_CACHE_ENABLED`, `PROACTIVE_TOKEN_REGULATOR_ENABLED`, `PROGRESSIVE_QUALIFICATION_ENABLED`
 - `APEX_DB_PATH` — overrides default DB location (`db.ts`)
 - `litellm.config.yaml` — LiteLLM proxy model routing
 - Runtime artifacts: `.apex-data/` (DB + backups), log files in repo root (`apex-dev.*.log`, `adaptive_mining_terminal.log`)
@@ -317,10 +343,39 @@ Typecheck gate: `npm run lint` (= `tsc --noEmit`).
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Change a REST endpoint      | `server/routes/api.ts` (adapter) → service/`leadSearch` module                                                                                               |
 | Touch discovery behavior    | `server/leadSearch/discoveryEngine.ts` → stage module in `leadSearch/stages/` (§6)                                                                           |
-| Add/alter persistence       | `server/db.ts` (schema v17 migrations + helpers)                                                                                                             |
+| Add/alter persistence       | `server/db.ts` (schema v20 migrations + helpers)                                                                                                             |
 | Checkpoint/resume logic     | `leadSearch/pipelineTypes.ts` (`MiningSessionCheckpoint`), `discoveryEngine.ts`, `routes/api.ts` (`/resume`, `/resumable`), UI `ResumableSessionsBanner.tsx` |
 | Modify brief→contract logic | `server/leadSearch/prospectContract.ts`, `searchSpec.ts`                                                                                                     |
 | Change scoring/ranking      | `server/leadSearch/scoring.ts`, `finalistJudge.ts`, `stages/selectStage.ts`                                                                                  |
+| Tune query relaxation       | `server/leadSearch/constraintAblation.ts`, `roundDiagnostics.ts`                                                                                             |
+| Toggle/rollback engine behavior | `server/leadSearch/featureFlags.ts` (env-overridable, default ON)                                                                                        |
 | Company-site probing        | `server/leadSearch/siteProbe.ts`, `companyIntent.ts`                                                                                                         |
 | UI screen work              | matching component in `src/components/`, state in `context/LeadContext.tsx`                                                                                  |
 | Provider/key issues         | `services/keyRotator.ts`, `services/brightdata.ts`, `/api/key-rotation-status`                                                                               |
+| Request-origin security     | `server/hostValidation.ts`, guard wiring in `server.ts`                                                                                                       |
+
+## 12. Graph index & incremental sync protocol
+
+This repository is indexed in `codebase-memory-mcp` as project `D-work-AI-Apex-crm`
+(root `D:/work/AI/Apex crm`, data at `~/.cache/codebase-memory-mcp/D-work-AI-Apex-crm.db`).
+
+Current state: **1,827 nodes · 4,187 edges · status `ready`**.
+
+Excluded from the graph index: `.apex-data`, `.git`, `assets`, `dist`, `docs`, `node_modules`, `scripts`, `.venv-litellm/Lib`, `.venv-litellm/Scripts`.
+
+Protocol (see [`.agents/rules/codebase_memory.md`](../.agents/rules/codebase_memory.md)):
+
+1. **On task start** — `detect_changes(project="D-work-AI-Apex-crm")` to inspect recently changed files and impacted symbols.
+2. **If changes detected** — `index_repository(repo_path="D:/work/AI/Apex crm", mode="fast")` to incrementally refresh the graph.
+3. **For code discovery** — prefer graph tools (`search_graph`, `trace_path`, `get_code_snippet`, `query_graph`) over raw grep/file scanning.
+
+CLI equivalent when the MCP server is not attached to the session:
+
+```bash
+codebase-memory-mcp cli detect_changes '{"project":"D-work-AI-Apex-crm"}'
+codebase-memory-mcp cli index_repository '{"repo_path":"D:/work/AI/Apex crm","mode":"fast"}'
+codebase-memory-mcp cli search_graph '{"project":"D-work-AI-Apex-crm","query":"DiscoverySessionEngine","limit":5}'
+```
+
+> Note: `docs/` is excluded from the graph index, so this file is not itself a graph node.
+> No ADR has been stored via `manage_adr` yet (`adr_present: false`) — the four markdown ADRs under `docs/adr/` are the source of truth.

@@ -536,12 +536,11 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
   const isTokenLimit =
     error instanceof LLMProviderError ? error.isTokenLimit : false;
-  // HTTP 429 rate limits and Cloudflare 524 timeouts are transient
-  // and must NEVER trip the permanent session circuit breaker
+  // HTTP 429 rate limits are transient concurrency throttles and do not trip the circuit breaker
+  // (quota-exhausted 429 with code 1300 is handled separately via isExhaustedQuota)
   if (
     status === 429 ||
-    status === 524 ||
-    /429|rate[-_ ]?limit|524|timeout occurred/i.test(error.message)
+    /429|rate[-_ ]?limit/i.test(error.message)
   ) {
     return false;
   }
@@ -551,7 +550,8 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     status === 502 ||
     status === 503 ||
     status === 504 ||
-    (status !== undefined && status >= 520 && status <= 526 && status !== 524) ||
+    status === 524 ||
+    (status !== undefined && status >= 520 && status <= 526) ||
     isTokenLimit
   )
     return true;
@@ -625,6 +625,9 @@ async function withProviderFallback<T>(
     const startedAt = Date.now();
     try {
       const result = await operation(provider);
+      if (executionOptions.circuitBreaker) {
+        executionOptions.circuitBreaker.failureCounts[provider.id] = 0;
+      }
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
@@ -901,6 +904,104 @@ export function normalizeTavilyDomain(value: string) {
   }
 }
 
+/**
+ * Official supported country enum from Tavily's OpenAPI specification.
+ * Tavily strictly enforces lowercase full country names; unlisted strings trigger HTTP 400.
+ */
+export const TAVILY_SUPPORTED_COUNTRIES = new Set<string>([
+  "afghanistan", "albania", "algeria", "andorra", "angola", "argentina", "armenia", "australia", "austria", "azerbaijan",
+  "bahamas", "bahrain", "bangladesh", "barbados", "belarus", "belgium", "belize", "benin", "bhutan", "bolivia",
+  "bosnia and herzegovina", "botswana", "brazil", "brunei", "bulgaria", "burkina faso", "burundi", "cambodia",
+  "cameroon", "canada", "cape verde", "central african republic", "chad", "chile", "china", "colombia", "comoros",
+  "congo", "costa rica", "croatia", "cuba", "cyprus", "czech republic", "denmark", "djibouti", "dominican republic",
+  "ecuador", "egypt", "el salvador", "equatorial guinea", "eritrea", "estonia", "ethiopia", "fiji", "finland",
+  "france", "gabon", "gambia", "georgia", "germany", "ghana", "greece", "guatemala", "guinea", "haiti", "honduras",
+  "hungary", "iceland", "india", "indonesia", "iran", "iraq", "ireland", "israel", "italy", "jamaica", "japan", "jordan",
+  "kazakhstan", "kenya", "kuwait", "kyrgyzstan", "latvia", "lebanon", "lesotho", "liberia", "libya", "liechtenstein",
+  "lithuania", "luxembourg", "madagascar", "malawi", "malaysia", "maldives", "mali", "malta", "mauritania",
+  "mauritius", "mexico", "moldova", "monaco", "mongolia", "montenegro", "morocco", "mozambique", "myanmar",
+  "namibia", "nepal", "netherlands", "new zealand", "nicaragua", "niger", "nigeria", "north korea",
+  "north macedonia", "norway", "oman", "pakistan", "panama", "papua new guinea", "paraguay", "peru",
+  "philippines", "poland", "portugal", "qatar", "romania", "russia", "rwanda", "saudi arabia", "senegal", "serbia",
+  "singapore", "slovakia", "slovenia", "somalia", "south africa", "south korea", "south sudan", "spain",
+  "sri lanka", "sudan", "sweden", "switzerland", "syria", "taiwan", "tajikistan", "tanzania", "thailand", "togo",
+  "trinidad and tobago", "tunisia", "turkey", "turkmenistan", "uganda", "ukraine", "united arab emirates",
+  "united kingdom", "united states", "uruguay", "uzbekistan", "venezuela", "vietnam", "yemen", "zambia", "zimbabwe"
+]);
+
+const COUNTRY_ALIASES: Record<string, string> = {
+  us: "united states",
+  usa: "united states",
+  america: "united states",
+  "united states of america": "united states",
+  uk: "united kingdom",
+  gb: "united kingdom",
+  gbr: "united kingdom",
+  "great britain": "united kingdom",
+  britain: "united kingdom",
+  england: "united kingdom",
+  scotland: "united kingdom",
+  wales: "united kingdom",
+  ca: "canada",
+  can: "canada",
+  au: "australia",
+  aus: "australia",
+  de: "germany",
+  deu: "germany",
+  deutschland: "germany",
+  fr: "france",
+  fra: "france",
+  nl: "netherlands",
+  nld: "netherlands",
+  holland: "netherlands",
+  ie: "ireland",
+  irl: "ireland",
+  es: "spain",
+  esp: "spain",
+  it: "italy",
+  ita: "italy",
+  ch: "switzerland",
+  che: "switzerland",
+  se: "sweden",
+  swe: "sweden",
+  sg: "singapore",
+  sgp: "singapore",
+  jp: "japan",
+  jpn: "japan",
+  in: "india",
+  ind: "india",
+  nz: "new zealand",
+  nzl: "new zealand",
+  ae: "united arab emirates",
+  uae: "united arab emirates",
+  za: "south africa",
+  zaf: "south africa",
+  kr: "south korea",
+  kor: "south korea",
+  br: "brazil",
+  bra: "brazil",
+  mx: "mexico",
+  mex: "mexico",
+  cn: "china",
+  chn: "china",
+};
+
+/**
+ * Normalizes input country strings, codes, and aliases to Tavily's documented lowercase enum.
+ * If the input does not map to a recognized Tavily country enum, returns undefined to safely
+ * omit the parameter and prevent HTTP 400 Bad Request errors.
+ */
+export function normalizeTavilyCountry(input?: string): string | undefined {
+  if (!input || typeof input !== "string") return undefined;
+  const cleaned = input.trim().toLowerCase();
+  if (!cleaned) return undefined;
+  const mapped = COUNTRY_ALIASES[cleaned] || cleaned;
+  if (TAVILY_SUPPORTED_COUNTRIES.has(mapped)) {
+    return mapped;
+  }
+  return undefined;
+}
+
 export async function tavilySearch(
   query: string,
   domainsOrOptions?: string[] | TavilySearchOptions,
@@ -931,7 +1032,9 @@ export async function tavilySearch(
     process.env.TAVILY_INCLUDE_RAW_CONTENT !== "false";
   const topic = options.topic === "news" ? "news" : "general";
   // Tavily documents lowercase country enum values (for example, "united states").
-  const country = options.country?.trim().toLowerCase();
+  // Automatically resolves ISO codes/aliases and safely drops unsupported values to prevent 400s.
+  const rawCountry = options.country || process.env.TAVILY_COUNTRY;
+  const country = normalizeTavilyCountry(rawCountry);
   const chunksPerSource =
     searchDepth === "advanced" || searchDepth === "fast"
       ? Math.min(Math.max(Number(options.chunksPerSource || 2), 1), 3)

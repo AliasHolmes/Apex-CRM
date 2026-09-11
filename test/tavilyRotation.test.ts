@@ -82,8 +82,19 @@ describe('Tavily key rotation', () => {
     };
 
     await llm.tavilySearch('Miami founders', { country: 'United States' });
-
     assert.equal(requestBody.country, 'united states');
+
+    await llm.tavilySearch('London founders', { country: 'UK' });
+    assert.equal(requestBody.country, 'united kingdom');
+
+    await llm.tavilySearch('London founders', { country: 'gb' });
+    assert.equal(requestBody.country, 'united kingdom');
+
+    await llm.tavilySearch('Austin founders', { country: 'US' });
+    assert.equal(requestBody.country, 'united states');
+
+    await llm.tavilySearch('Global founders', { country: 'invalid_unsupported_country_xyz' });
+    assert.equal(requestBody.country, undefined);
   });
 
   it('normalizes full URLs and paths to Tavily domain filters', async () => {

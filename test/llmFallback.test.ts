@@ -538,8 +538,42 @@ describe('LLM gateway and provider fallback', () => {
 
     const res = await llm.openAIText('test prompt', undefined, { circuitBreaker });
     assert.equal(res.text, 'openrouter recovered');
-    // Primary provider was placed on cooldown, NOT permanently disabled by circuit breaker
+    // Primary provider was placed on cooldown, NOT permanently disabled by circuit breaker on single failure
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
+  });
+
+  it('trips permanent circuit breaker after consecutive Cloudflare 524 timeouts reach threshold', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    const llm = await importLLM('cf-524-trip');
+    const circuitBreaker = llm.createLLMSessionCircuitBreaker(2);
+
+    globalThis.fetch = async (url: any) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('byesu.com')) {
+        return new Response('<html><title>524: A timeout occurred</title></html>', {
+          status: 524,
+          headers: { 'Content-Type': 'text/html' },
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'openrouter recovered' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    // First call: failureCount becomes 1, not disabled
+    await llm.openAIText('prompt 1', undefined, { circuitBreaker });
+    assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
+    assert.equal(circuitBreaker.failureCounts['primary'], 1);
+
+    // Clear provider cooldown so we can simulate the second call happening after cooldown expires
+    llm.clearProviderCooldowns();
+
+    // Second call: failureCount becomes 2 >= threshold (2), trips breaker!
+    await llm.openAIText('prompt 2', undefined, { circuitBreaker });
+    assert.equal(circuitBreaker.disabledProviderIds.has('primary'), true);
   });
 
   it('createLLMSessionCircuitBreaker defaults to 4 and respects LLM_SESSION_PROVIDER_FAILURE_THRESHOLD', async () => {

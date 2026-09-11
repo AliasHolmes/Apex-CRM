@@ -223,7 +223,7 @@ describe('Lead Mining Bottlenecks and Artificial Ceilings Fixes', () => {
         const items = [{ query: 'AI agency founder London', lane: 'person' as const }];
         const tasks = buildRetrievalTasks(items, spec);
         assert.equal(tasks.length, 1);
-        assert.equal(tasks[0].tavily.country, 'gb');
+        assert.equal(tasks[0].tavily.country, 'united kingdom');
       } finally {
         if (oldEnv !== undefined) process.env.TAVILY_COUNTRY = oldEnv;
       }

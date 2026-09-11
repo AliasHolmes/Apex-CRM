@@ -263,7 +263,7 @@ export const buildRetrievalTasks = (
 ): RetrievalTask[] => {
   const maxResults = boundedNumber(process.env.TAVILY_MAX_RESULTS, 12, 1, 20);
   const configuredCountry = clean(process.env.TAVILY_COUNTRY);
-  let derivedCountry = configuredCountry ? configuredCountry.toLowerCase() : "";
+  let derivedCountry = configuredCountry ? normalizeTavilyCountry(configuredCountry) || "" : "";
   if (!derivedCountry) {
     const candidateLocs = [
       ...(spec.person?.locations || []),
@@ -274,7 +274,7 @@ export const buildRetrievalTasks = (
       const cleanLoc = clean(loc).toLowerCase();
       if (COUNTRY_CANONICAL_MAP[cleanLoc]) {
         const canonical = COUNTRY_CANONICAL_MAP[cleanLoc];
-        derivedCountry = COUNTRY_TO_TAVILY_CODE[canonical] || canonical.toLowerCase();
+        derivedCountry = COUNTRY_TO_TAVILY_CODE[canonical] || normalizeTavilyCountry(canonical) || "";
         break;
       }
     }
@@ -340,23 +340,24 @@ export const buildRetrievalTasks = (
 
 import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, type ProspectContract } from "./prospectContract.js";
 import { looksLikeCompanyHint } from "./observations.js";
+import { normalizeTavilyCountry } from "../services/llm.js";
 
 export const COUNTRY_TO_TAVILY_CODE: Record<string, string> = {
-  UK: "gb",
-  USA: "us",
-  Canada: "ca",
-  Australia: "au",
-  "New Zealand": "nz",
-  Germany: "de",
-  France: "fr",
-  Netherlands: "nl",
-  Ireland: "ie",
-  Spain: "es",
-  Italy: "it",
-  Switzerland: "ch",
-  Sweden: "se",
-  Singapore: "sg",
-  Japan: "jp",
+  UK: "united kingdom",
+  USA: "united states",
+  Canada: "canada",
+  Australia: "australia",
+  "New Zealand": "new zealand",
+  Germany: "germany",
+  France: "france",
+  Netherlands: "netherlands",
+  Ireland: "ireland",
+  Spain: "spain",
+  Italy: "italy",
+  Switzerland: "switzerland",
+  Sweden: "sweden",
+  Singapore: "singapore",
+  Japan: "japan",
 };
 
 export const buildFallbackQueryPlan = (

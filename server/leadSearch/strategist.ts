@@ -127,7 +127,7 @@ export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {
           searchDepth: ['basic', 'fast', 'ultra-fast', 'advanced'].includes(item.searchDepth) ? item.searchDepth : undefined,
           topic: item.topic === 'news' || item.topic === 'general' ? item.topic : undefined,
           timeRange: ['week', 'month', 'year'].includes(item.timeRange) ? item.timeRange : undefined,
-          country: typeof item.country === 'string' ? item.country.trim().slice(0, 2) : undefined,
+          country: typeof item.country === 'string' ? item.country.trim() : undefined,
         };
       }
       return { query: '' };

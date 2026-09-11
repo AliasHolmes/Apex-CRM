@@ -523,8 +523,8 @@ Evidence:
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
               timeoutMs: Math.min(
-                30_000,
-                Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 30_000),
+                120_000,
+                Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),
               ),
               onProviderAttempt: (attempt) =>
                 extractionProviderAttempts.push(attempt),

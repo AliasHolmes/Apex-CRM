@@ -78,6 +78,7 @@ import {
   getLLMProviderSummaries,
   getTavilyKeyStatus,
   createLLMSessionCircuitBreaker,
+  normalizeTavilyCountry,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../services/llm.js";
@@ -1442,7 +1443,9 @@ export async function executeDiscoverySession(
             Singapore: "singapore",
             Japan: "japan",
           };
-          const tavilyCountry = targetCountry ? COUNTRY_TO_TAVILY_CODE[targetCountry] : undefined;
+          const tavilyCountry = targetCountry
+            ? (COUNTRY_TO_TAVILY_CODE[targetCountry] || normalizeTavilyCountry(targetCountry))
+            : undefined;
 
           // Resolve country terms into their primary tech metros to avoid top-SERP saturation
           const mappedMetros: string[] = [];

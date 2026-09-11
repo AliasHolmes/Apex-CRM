@@ -360,15 +360,17 @@ export async function executeJudgeStage(
         const rawJudgments = Array.isArray(judgmentResult?.judgments)
           ? judgmentResult.judgments
           : [];
+        const judgmentsByCandidateId = new Map<string, any>();
+        for (const j of rawJudgments) {
+          const cid = String(j?.candidateId || "").trim();
+          if (cid) judgmentsByCandidateId.set(cid, j);
+        }
         for (const candidate of batch) {
           const queryRun =
             leadQueryRuns?.get?.(candidate.lead) ||
             leadQueryRuns?.get?.(candidate);
           if (queryRun) {
-            const jm = rawJudgments.find(
-              (j: any) =>
-                String(j?.candidateId || "").trim() === candidate.candidateId,
-            );
+            const jm = judgmentsByCandidateId.get(candidate.candidateId);
             if (Array.isArray(jm?.requirements)) {
               if (!queryRun.requirementFailCounts) {
                 queryRun.requirementFailCounts = {};
@@ -858,15 +860,17 @@ export async function evaluateIncrementalJudgeBatches(
       const rawJudgments = Array.isArray((judgmentResult as any)?.judgments)
         ? (judgmentResult as any).judgments
         : [];
+      const judgmentsByCandidateId = new Map<string, any>();
+      for (const j of rawJudgments) {
+        const cid = String(j?.candidateId || "").trim();
+        if (cid) judgmentsByCandidateId.set(cid, j);
+      }
       for (const candidate of batch) {
         const queryRun =
           leadQueryRuns?.get?.(candidate.lead) ||
           leadQueryRuns?.get?.(candidate);
         if (queryRun) {
-          const jm = rawJudgments.find(
-            (j: any) =>
-              String(j?.candidateId || "").trim() === candidate.candidateId,
-          );
+          const jm = judgmentsByCandidateId.get(candidate.candidateId);
           if (Array.isArray(jm?.requirements)) {
             if (!queryRun.requirementFailCounts) {
               queryRun.requirementFailCounts = {};

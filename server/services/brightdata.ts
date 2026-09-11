@@ -12,6 +12,8 @@ import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
 import { normalizeLinkedInUrl } from "./linkedinEvidence.js";
 import { unwrapRedirectUrl } from "../../src/utils/leadDedupe.js";
 import { hasTavilyKey, tavilyExtract } from "./llm.js";
+import { isPrivateOrInternalHost } from "./privateHosts.js";
+export { isPrivateOrInternalHost };
 
 type BrightDataTransport = "hosted" | "local";
 export type BrightDataReasonCode =
@@ -1106,28 +1108,6 @@ export function isAuthwalledUrl(url: string): boolean {
   return AUTHWALLED_HOST_PATTERN.test(url);
 }
 
-const PRIVATE_IP_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^10\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-  /^169\.254\./,
-  /^0\./,
-  /^::1$/,
-  /^fc00:/i,
-  /^fe80:/i,
-  /\.local$/i,
-  /\.internal$/i,
-  /\.lan$/i,
-  /\.localhost$/i,
-];
-
-function isPrivateOrInternalHost(host: string): boolean {
-  if (!host) return true;
-  const cleanHost = host.trim().toLowerCase().replace(/^www\./i, "");
-  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(cleanHost));
-}
 
 async function nativeHttpScrape(
   scrapeUrl: string,

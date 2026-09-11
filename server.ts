@@ -24,7 +24,7 @@ const guardedSockets = new WeakSet<object>();
 
 // Guard against unhandled client disconnect errors (e.g. ECONNRESET/EPIPE when closing browser tab)
 app.use((req, res, next) => {
-  const suppressSocketError = (err: any) => {
+  const handleSocketError = (err: any) => {
     if (
       err?.code === "ECONNRESET" ||
       err?.code === "EPIPE" ||
@@ -34,12 +34,13 @@ app.use((req, res, next) => {
     ) {
       return;
     }
+    console.warn("[Server] Socket warning:", err?.message || err);
   };
-  req.on("error", suppressSocketError);
-  res.on("error", suppressSocketError);
+  req.on("error", handleSocketError);
+  res.on("error", handleSocketError);
   if (req.socket && !guardedSockets.has(req.socket)) {
     guardedSockets.add(req.socket);
-    req.socket.on("error", suppressSocketError);
+    req.socket.on("error", handleSocketError);
   }
   next();
 });
@@ -99,12 +100,9 @@ app.use(
     },
   }),
 );
-app.use(express.json({ limit: "10mb" }));
 
 // DNS-Rebinding Guard
-// Validates Host and Origin headers on every API request. Even though the server is
-// bound to 127.0.0.1, a malicious page open in the user's browser can still reach
-// localhost via same-machine loopback unless we explicitly reject non-loopback Host values.
+// Validates Host and Origin headers on every API request BEFORE the 10 MB JSON body parser runs.
 app.use(
   "/api",
   (
@@ -131,6 +129,8 @@ app.use(
     next();
   },
 );
+
+app.use(express.json({ limit: "10mb" }));
 
 // Mount the API router. /api/v1 is a versioning seam aliasing /api so future
 // breaking changes can land at /api/v2 without disturbing existing clients.
@@ -213,7 +213,8 @@ async function startServer() {
     ) {
       return;
     }
-    console.error("[Server] Uncaught Exception:", error);
+    console.error("[Server] Fatal Uncaught Exception:", error);
+    process.exit(1);
   });
 
   process.on("unhandledRejection", (reason: any) => {

@@ -314,52 +314,56 @@ export async function executeFuseStage(
     .flatMap((r: any) => (r.acceptableTerms || []).map((t: string) => t.toLowerCase()))
     .filter(Boolean);
 
-  uniqueRoundItems.sort((a, b) => {
-    const scoreItem = (item: any) => {
-      const companyCount = item._companyHint
-        ? acceptedCompanyCounts.get(item._companyHint) || 0
-        : 0;
-      const overCapPenalty = companyCount >= maxPerCompany ? -500 : 0;
-      const text = `${item.title || ""} ${item.content || ""}`.toLowerCase();
-      
-      // Intent density: matched contract terms
-      let termMatches = 0;
-      for (const term of contractTerms) {
-        if (term.length > 2 && text.includes(term)) termMatches++;
-      }
+  const scoreItem = (item: any) => {
+    const companyCount = item._companyHint
+      ? acceptedCompanyCounts.get(item._companyHint) || 0
+      : 0;
+    const overCapPenalty = companyCount >= maxPerCompany ? -500 : 0;
+    const text = `${item.title || ""} ${item.content || ""}`.toLowerCase();
+    
+    // Intent density: matched contract terms
+    let termMatches = 0;
+    for (const term of contractTerms) {
+      if (term.length > 2 && text.includes(term)) termMatches++;
+    }
 
-      // Executive / Decision-maker role authority in title
-      const hasExecutiveRole = /\b(founder|co[-\s]?founder|owner|ceo|coo|cro|cmo|cfo|cto|president|partner|managing director|head of|vp|vice president|director|principal)\b/i.test(item.title || text);
+    // Executive / Decision-maker role authority in title
+    const hasExecutiveRole = /\b(founder|co[-\s]?founder|owner|ceo|coo|cro|cmo|cfo|cto|president|partner|managing director|head of|vp|vice president|director|principal)\b/i.test(item.title || text);
 
-      // Clean length signal (capped so noisy text doesn't dominate)
-      const lengthBonus = Math.min(Math.floor(text.length / 50), 30);
+    // Clean length signal (capped so noisy text doesn't dominate)
+    const lengthBonus = Math.min(Math.floor(text.length / 50), 30);
 
-      return (
-        termMatches * 120 +
-        (hasExecutiveRole ? 250 : 0) +
-        (extractLinkedInUsername(item.url) ? 200 : 0) +
-        Number(item._sourceCount || 1) * 160 +
-        (item._corroborated ? 180 : 0) +
-        (Array.isArray(item._lanes) && item._lanes.includes("signal") ? 40 : 0) +
-        lengthBonus +
-        overCapPenalty
-      );
-    };
-    return scoreItem(b) - scoreItem(a);
-  });
+    return (
+      termMatches * 120 +
+      (hasExecutiveRole ? 250 : 0) +
+      (extractLinkedInUsername(item.url) ? 200 : 0) +
+      Number(item._sourceCount || 1) * 160 +
+      (item._corroborated ? 180 : 0) +
+      (Array.isArray(item._lanes) && item._lanes.includes("signal") ? 40 : 0) +
+      lengthBonus +
+      overCapPenalty
+    );
+  };
+
+  const scoredItems = uniqueRoundItems.map((item) => ({
+    item,
+    score: scoreItem(item),
+  }));
+  scoredItems.sort((a, b) => b.score - a.score);
+  const sortedRoundItems = scoredItems.map((s) => s.item);
 
   const candidateBudget = Math.min(
-    uniqueRoundItems.length,
+    sortedRoundItems.length,
     Math.max(Number(config.targetLimit || 1) * 8, 48),
   );
-  const candidateItems = uniqueRoundItems.slice(0, candidateBudget);
+  const candidateItems = sortedRoundItems.slice(0, candidateBudget);
   logEvent(
-    `Round ${round}: using top ${candidateItems.length}/${uniqueRoundItems.length} candidates for extraction budget.`,
+    `Round ${round}: using top ${candidateItems.length}/${sortedRoundItems.length} candidates for extraction budget.`,
   );
 
   return {
     candidateItems,
     roundCandidateKeys,
-    uniqueRoundItemsCount: uniqueRoundItems.length,
+    uniqueRoundItemsCount: sortedRoundItems.length,
   };
 }

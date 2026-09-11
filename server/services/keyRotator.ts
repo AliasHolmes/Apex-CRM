@@ -382,6 +382,10 @@ export type TrafficLimit = {
   maxRequestsPerMinute?: number;
 };
 
+/**
+ * @deprecated Superseded by global mutex `withSequentialLLMExecution` in `llm.ts`.
+ * Retained for backward compatibility with existing tests.
+ */
 export class ProviderTrafficController {
   private requestTimestamps: number[] = [];
   private tokenUsageRecords: Array<{ timestamp: number; tokens: number }> = [];

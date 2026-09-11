@@ -1245,6 +1245,15 @@ export function getLeadsDb() {
   return leadsDb;
 }
 
+export function closeLeadsDb() {
+  if (leadsDb) {
+    try {
+      leadsDb.close();
+    } catch {}
+    leadsDb = null;
+  }
+}
+
 export function normalizeIncomingLeads(input: unknown) {
   if (!Array.isArray(input)) {
     return null;
@@ -1373,13 +1382,22 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
 
   let query = `SELECT ${selectCols} ${fromClause} ${where} ORDER BY ${orderClause}`;
 
+  const safeLimit =
+    Number.isFinite(limit) && (limit as number) > 0
+      ? Math.min(Math.floor(limit as number), 5000)
+      : undefined;
+  const safeOffset =
+    Number.isFinite(offset) && (offset as number) > 0
+      ? Math.floor(offset as number)
+      : undefined;
+
   const queryParams = [...params];
-  if (typeof limit === "number" && limit > 0) {
+  if (safeLimit !== undefined) {
     query += " LIMIT ?";
-    queryParams.push(limit);
-    if (typeof offset === "number" && offset > 0) {
+    queryParams.push(safeLimit);
+    if (safeOffset !== undefined) {
       query += " OFFSET ?";
-      queryParams.push(offset);
+      queryParams.push(safeOffset);
     }
   }
 
@@ -1458,9 +1476,8 @@ export function getLeadsETag(queryParams?: Record<string, any>): string {
     .get() as { max_updated?: string; count?: number } | undefined;
   const maxUpdated = row?.max_updated || "0";
   const count = Number(row?.count || 0);
-  const mutation = dbMutationCounter;
   const qStr = queryParams ? JSON.stringify(queryParams) : "";
-  const hash = crypto.createHash("md5").update(`${maxUpdated}:${count}:${mutation}:${qStr}`).digest("hex").slice(0, 16);
+  const hash = crypto.createHash("md5").update(`${maxUpdated}:${count}:${qStr}`).digest("hex").slice(0, 16);
   return `W/"${hash}"`;
 }
 
@@ -3659,13 +3676,15 @@ export function readLeadActivities(
   limit = 100,
 ): LeadActivityRecord[] {
   const db = getLeadsDb();
+  const safeLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 500) : 50;
   const rows = db
     .prepare(
       `
     SELECT * FROM lead_activities WHERE lead_id = ? ORDER BY created_at DESC LIMIT ?
   `,
     )
-    .all(leadId, Math.min(limit, 500)) as any[];
+    .all(leadId, safeLimit) as any[];
   return rows.map((row) => ({
     id: row.id,
     leadId: row.lead_id,
@@ -3730,13 +3749,15 @@ export function upsertOutreachDraft(
 
 export function readOutreachDrafts(limit = 50): OutreachDraftRecord[] {
   const db = getLeadsDb();
+  const safeLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 50;
   const rows = db
     .prepare(
       `
     SELECT * FROM outreach_drafts ORDER BY created_at DESC LIMIT ?
   `,
     )
-    .all(Math.min(limit, 200)) as any[];
+    .all(safeLimit) as any[];
   return rows.map((row) => ({
     id: row.id,
     leadId: row.lead_id,

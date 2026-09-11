@@ -42,6 +42,11 @@ export const INITIAL_LEAD_STATS: LeadContextStats = {
   initialized: false,
 };
 
+const TAB_INSTANCE_ID =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+
 function computeStatsFromLeads(leadsList: Lead[]): LeadContextStats {
   const stageCounts = Object.fromEntries(
     LEAD_STAGES.map((s) => [s, 0])
@@ -297,11 +302,22 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     serverLead: Lead,
     onResolve: (resolvedLead: Lead) => void
   ) => {
-    setConflictModal({
-      open: true,
-      localLead,
-      serverLead,
-      onResolve
+    setConflictModal((prev) => {
+      if (prev.open && prev.onResolve && prev.serverLead) {
+        try {
+          // Auto-resolve orphaned conflict promise with server lead
+          // so lead patch queue does not deadlock
+          prev.onResolve(prev.serverLead);
+        } catch (err) {
+          console.warn("[LeadContext] Error settling orphaned conflict promise:", err);
+        }
+      }
+      return {
+        open: true,
+        localLead,
+        serverLead,
+        onResolve
+      };
     });
   }, []);
 
@@ -435,7 +451,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       if (typeof BroadcastChannel !== 'undefined') {
         broadcastChannel = new BroadcastChannel('apex_crm_leads_sync');
         broadcastChannel.onmessage = (event) => {
-          if (event.data?.type === 'LEADS_UPDATED') {
+          if (event.data?.type === 'LEADS_UPDATED' && event.data?.senderId !== TAB_INSTANCE_ID) {
             void rehydrateLeads(true);
           }
         };
@@ -880,7 +896,9 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      void reconcileLeadPatch(updatedLead, rollbackLead);
+      void reconcileLeadPatch(updatedLead, rollbackLead).catch((err) => {
+        console.error('[LeadContext] Failed to persist background enriched profile fields:', err);
+      });
     }
   }, [reconcileLeadPatch, saveLeadsToStorage]);
 
@@ -1253,7 +1271,7 @@ export function notifyLeadsUpdated(): void {
   try {
     if (typeof BroadcastChannel !== 'undefined') {
       const channel = new BroadcastChannel('apex_crm_leads_sync');
-      channel.postMessage({ type: 'LEADS_UPDATED', timestamp: Date.now() });
+      channel.postMessage({ type: 'LEADS_UPDATED', senderId: TAB_INSTANCE_ID, timestamp: Date.now() });
       channel.close();
     }
   } catch {}

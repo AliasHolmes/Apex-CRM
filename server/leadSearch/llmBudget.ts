@@ -12,6 +12,7 @@ export function chunkEvidenceBlocksByTokenBudget(blocks: string[], maxTokens: nu
   const maxChars = normalizedBudget * DEFAULT_CHARS_PER_TOKEN;
   const chunks: string[] = [];
   let current = '';
+  let currentLength = 0;
 
   for (const rawBlock of blocks) {
     // One pathological search result must not blow the budget for every fallback
@@ -20,11 +21,13 @@ export function chunkEvidenceBlocksByTokenBudget(blocks: string[], maxTokens: nu
     const block = String(rawBlock || '').slice(0, maxChars);
     if (!block) continue;
 
-    if (current && estimateTokenCount(current + block) > normalizedBudget) {
+    if (current && currentLength + block.length > maxChars) {
       chunks.push(current);
       current = block;
+      currentLength = block.length;
     } else {
       current += block;
+      currentLength += block.length;
     }
   }
 

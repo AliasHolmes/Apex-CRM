@@ -11,6 +11,8 @@ import {
   upsertNegativeEnrichmentCacheEntry
 } from '../db.js';
 import { isFlagEnabled } from './featureFlags.js';
+import { isPrivateOrInternalHost } from '../services/privateHosts.js';
+export { isPrivateOrInternalHost };
 import type { EnrichmentTarget } from './stages/enrichStage.js';
 
 const GENERIC_SHORT_SLUGS = new Set([
@@ -81,28 +83,7 @@ export type SiteSignals = {
 
 const clean = (val: unknown) => String(val || '').replace(/\s+/g, ' ').trim();
 
-const PRIVATE_IP_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^10\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-  /^169\.254\./,
-  /^0\./,
-  /^::1$/,
-  /^fc00:/i,
-  /^fe80:/i,
-  /\.local$/i,
-  /\.internal$/i,
-  /\.lan$/i,
-  /\.localhost$/i
-];
 
-export function isPrivateOrInternalHost(host: string): boolean {
-  if (!host) return true;
-  const cleanHost = host.trim().toLowerCase().replace(/^www\./i, '');
-  return PRIVATE_IP_PATTERNS.some(pattern => pattern.test(cleanHost));
-}
 
 export function normalizeDomainUrl(rawUrl?: string): string | null {
   if (!rawUrl) return null;

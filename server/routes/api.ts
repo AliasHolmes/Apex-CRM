@@ -242,6 +242,17 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
   );
 };
 
+export function parseOptionalPositiveInt(val: unknown): number | undefined {
+  if (val === undefined || val === null || val === "") return undefined;
+  const n = Number(val);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
+export function parseBoundedLimit(val: unknown, defaultLimit: number, maxLimit: number): number {
+  const parsed = parseOptionalPositiveInt(val);
+  return parsed !== undefined ? Math.min(parsed, maxLimit) : defaultLimit;
+}
+
 router.get("/leads", (req, res): any => {
   try {
     const etag = getLeadsETag(req.query);
@@ -264,10 +275,9 @@ router.get("/leads", (req, res): any => {
     } = req.query as Record<string, string | undefined>;
     const parsedLimit =
       limit !== undefined
-        ? Math.min(Math.max(Number(limit) || 1, 1), 5000)
+        ? parseBoundedLimit(limit, 50, 5000)
         : undefined;
-    const parsedOffset =
-      offset !== undefined ? Math.max(Number(offset) || 0, 0) : undefined;
+    const parsedOffset = parseOptionalPositiveInt(offset);
     const isSummary = summaryOnly === "true";
 
     // Direct JSON assembly fast-path for the default unfiltered lead list
@@ -485,7 +495,7 @@ router.get("/leads/:id/activities", (req, res): any => {
     if (!isSafeLeadId(req.params.id)) {
       return res.status(400).json({ error: "Invalid lead id." });
     }
-    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 500);
+    const limit = parseBoundedLimit(req.query.limit, 50, 500);
     const activities = readLeadActivities(req.params.id, limit);
     res.json({ apiVersion: 1, activities });
   } catch (error: any) {
@@ -1789,7 +1799,7 @@ router.post("/leads/:id/enrich-profile", async (req, res): Promise<any> => {
 
 router.get("/outreach-drafts", (req, res): any => {
   try {
-    const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
+    const limit = parseBoundedLimit(req.query.limit, 50, 200);
     res.json({ apiVersion: 1, drafts: readOutreachDrafts(limit) });
   } catch (error: any) {
     res

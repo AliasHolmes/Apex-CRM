@@ -471,7 +471,7 @@ export async function executeDiscoverySession(
     // serialized payload exceeds ~2MB, persist summary fields only - the
     // summaries (provider/cost/phase) carry the aggregate signal anyway.
     let events = trace.events;
-    if (JSON.stringify(events).length > 2_000_000) {
+    if (events.length > 2000 || (events.length > 1000 && JSON.stringify(events).length > 2_000_000)) {
       console.warn(
         `[find-leads] ${sessionId}: trace_events exceeded 2MB; persisting summary-only.`,
       );
@@ -1044,6 +1044,20 @@ export async function executeDiscoverySession(
     );
 
     const qualifiedLeads: any[] = [];
+    const qualifiedLeadKeys = new Set<string>();
+
+    const tryAddQualifiedLead = (lead: any): boolean => {
+      if (!lead) return false;
+      const idKey = lead.id ? `id:${lead.id}` : "";
+      const liUrl = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
+      const liKey = liUrl ? `url:${liUrl}` : "";
+      if (idKey && qualifiedLeadKeys.has(idKey)) return false;
+      if (liKey && qualifiedLeadKeys.has(liKey)) return false;
+      if (idKey) qualifiedLeadKeys.add(idKey);
+      if (liKey) qualifiedLeadKeys.add(liKey);
+      qualifiedLeads.push(lead);
+      return true;
+    };
 
     const sessionConfig: SessionConfig = {
       sessionId,
@@ -1181,7 +1195,9 @@ export async function executeDiscoverySession(
         }
       }
       if (Array.isArray(cp.qualifiedLeads)) {
-        qualifiedLeads.push(...cp.qualifiedLeads);
+        for (const lead of cp.qualifiedLeads) {
+          tryAddQualifiedLead(lead);
+        }
       }
       if (cp.evidenceByUrl && typeof cp.evidenceByUrl === "object") {
         for (const [url, meta] of Object.entries(cp.evidenceByUrl)) {
@@ -1728,9 +1744,7 @@ export async function executeDiscoverySession(
             candidate.lead.scoreBreakdown.finalScore = qualification.finalScore;
           }
           candidate.lead.scoreOverride = qualification.finalScore;
-          if (!qualifiedLeads.some(ql => (ql.id && ql.id === candidate.lead.id) || (ql.contactDetails?.linkedinUrl && ql.contactDetails.linkedinUrl === candidate.lead.contactDetails?.linkedinUrl))) {
-            qualifiedLeads.push(candidate.lead);
-          }
+          tryAddQualifiedLead(candidate.lead);
         }
         if (triage.autoQualified.length > 0) {
           logEvent(
@@ -1813,9 +1827,7 @@ export async function executeDiscoverySession(
           });
 
           for (const qCand of incrementalResult.qualifiedCandidates) {
-            if (!qualifiedLeads.some(ql => (ql.id && ql.id === qCand.id) || (ql.contactDetails?.linkedinUrl && ql.contactDetails.linkedinUrl === qCand.contactDetails?.linkedinUrl))) {
-              qualifiedLeads.push(qCand);
-            }
+            tryAddQualifiedLead(qCand);
           }
 
           logEvent(
@@ -2120,9 +2132,7 @@ export async function executeDiscoverySession(
         currentQualifiedCount: 0,
       });
       for (const qCand of incrementalResult.qualifiedCandidates) {
-        if (!qualifiedLeads.some(ql => (ql.id && ql.id === qCand.id) || (ql.contactDetails?.linkedinUrl && ql.contactDetails.linkedinUrl === qCand.contactDetails?.linkedinUrl))) {
-          qualifiedLeads.push(qCand);
-        }
+        tryAddQualifiedLead(qCand);
       }
     }
 

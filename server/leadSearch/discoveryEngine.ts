@@ -1426,21 +1426,21 @@ export async function executeDiscoverySession(
           }
 
           const COUNTRY_TO_TAVILY_CODE: Record<string, string> = {
-            UK: "gb",
-            USA: "us",
-            Canada: "ca",
-            Australia: "au",
-            "New Zealand": "nz",
-            Germany: "de",
-            France: "fr",
-            Netherlands: "nl",
-            Ireland: "ie",
-            Spain: "es",
-            Italy: "it",
-            Switzerland: "ch",
-            Sweden: "se",
-            Singapore: "sg",
-            Japan: "jp",
+            UK: "united kingdom",
+            USA: "united states",
+            Canada: "canada",
+            Australia: "australia",
+            "New Zealand": "new zealand",
+            Germany: "germany",
+            France: "france",
+            Netherlands: "netherlands",
+            Ireland: "ireland",
+            Spain: "spain",
+            Italy: "italy",
+            Switzerland: "switzerland",
+            Sweden: "sweden",
+            Singapore: "singapore",
+            Japan: "japan",
           };
           const tavilyCountry = targetCountry ? COUNTRY_TO_TAVILY_CODE[targetCountry] : undefined;
 

@@ -117,16 +117,16 @@ describe('LLM gateway and provider fallback', () => {
       onProviderAttempt: (attempt: any) => attempts.push(attempt),
     });
     assert.equal(res.text, 'direct fallback ok');
-    assert.equal(res.provider, 'Groq');
+    assert.equal(res.provider, 'OpenRouter');
     assert.equal(calls.length, 2);
     assert.equal(calls[0].url, 'http://127.0.0.1:4000/v1/chat/completions');
     assert.equal(calls[0].body.model, 'apex-primary');
-    assert.equal(calls[1].url, 'https://api.groq.com/openai/v1/chat/completions');
-    assert.equal(calls[1].auth, 'Bearer test-groq-key');
-    assert.equal(calls[1].body.model, 'llama-3.3-70b-versatile');
+    assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
+    assert.equal(calls[1].body.model, 'openrouter-test-model');
     assert.deepEqual(attempts.map(attempt => [attempt.providerId, attempt.status]), [
       ['litellm', 'error'],
-      ['groq', 'success'],
+      ['openrouter', 'success'],
     ]);
   });
 
@@ -267,7 +267,7 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls[1].body.model, 'openrouter-test-model');
   });
 
-  it('falls back to OpenRouter after primary and Groq fail', async () => {
+  it('falls back to Groq after primary and OpenRouter fail', async () => {
     process.env.BYESU_API_KEY = 'test-byesu-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
@@ -289,20 +289,20 @@ describe('LLM gateway and provider fallback', () => {
       }
 
       return new Response(JSON.stringify({
-        choices: [{ message: { content: 'openrouter ok' } }]
+        choices: [{ message: { content: 'groq ok' } }]
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
     const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'openrouter ok');
-    assert.equal(res.provider, 'OpenRouter');
+    assert.equal(res.text, 'groq ok');
+    assert.equal(res.provider, 'Groq');
     assert.equal(calls.length, 3);
-    assert.equal(calls[1].url, 'https://api.groq.com/openai/v1/chat/completions');
-    assert.equal(calls[1].auth, 'Bearer test-groq-key');
-    assert.equal(calls[1].body.model, 'llama-3.3-70b-versatile');
-    assert.equal(calls[2].url, 'https://openrouter.ai/api/v1/chat/completions');
-    assert.equal(calls[2].auth, 'Bearer test-openrouter-key');
-    assert.equal(calls[2].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
+    assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
+    assert.equal(calls[1].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
+    assert.equal(calls[2].url, 'https://api.groq.com/openai/v1/chat/completions');
+    assert.equal(calls[2].auth, 'Bearer test-groq-key');
+    assert.equal(calls[2].body.model, 'llama-3.3-70b-versatile');
   });
 
   it('uses default Llama models for OpenRouter and Groq fallbacks when env overrides are omitted', async () => {
@@ -325,16 +325,16 @@ describe('LLM gateway and provider fallback', () => {
       }
 
       return new Response(JSON.stringify({
-        choices: [{ message: { content: 'openrouter ok' } }]
+        choices: [{ message: { content: 'groq ok' } }]
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
     const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'openrouter ok');
-    assert.equal(res.provider, 'OpenRouter');
+    assert.equal(res.text, 'groq ok');
+    assert.equal(res.provider, 'Groq');
     assert.equal(calls.length, 3);
-    assert.equal(calls[1].body.model, 'llama-3.3-70b-versatile');
-    assert.equal(calls[2].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
+    assert.equal(calls[1].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
+    assert.equal(calls[2].body.model, 'llama-3.3-70b-versatile');
   });
 
   it('reports configured and unconfigured providers without exposing keys', async () => {
@@ -348,8 +348,8 @@ describe('LLM gateway and provider fallback', () => {
       summaries.map((provider: any) => ({ id: provider.id, configured: provider.configured })),
       [
         { id: 'primary', configured: true },
-        { id: 'groq', configured: true },
         { id: 'openrouter', configured: false },
+        { id: 'groq', configured: true },
       ]
     );
     assert.equal('apiKey' in summaries[0], false);

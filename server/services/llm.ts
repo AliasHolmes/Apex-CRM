@@ -225,13 +225,6 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
     },
     {
-      id: "groq",
-      name: "Groq",
-      baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
-      model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
-      apiKey: process.env.GROQ_API_KEY || "",
-    },
-    {
       id: "openrouter",
       name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
       baseUrl: cleanBaseUrl(
@@ -240,6 +233,13 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
       apiKey: process.env.OPENROUTER_API_KEY || "",
       headers: getOpenRouterHeaders(),
+    },
+    {
+      id: "groq",
+      name: "Groq",
+      baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
+      model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+      apiKey: process.env.GROQ_API_KEY || "",
     },
   );
 

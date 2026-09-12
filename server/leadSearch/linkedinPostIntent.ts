@@ -163,6 +163,7 @@ export async function classifyLinkedInPostIntent(
   brief: string,
   lead: Record<string, any>,
   logEvent?: (msg: string) => void,
+  recordTrace?: (event: any) => void,
 ): Promise<{ intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }> {
   if (!postContext || postContext.trim().length < 50) {
     return {
@@ -225,6 +226,22 @@ Analyze the snippets and classify the prospect's intent:`;
       `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent: ${name} -> ${category} (${quality})]`,
     );
 
+    recordTrace?.({
+      phase: "select",
+      operation: "post_intent_classify",
+      provider: "llm",
+      query: `post_intent:${name}`,
+      status: "success",
+      latencyMs: latency,
+      model: resolvedModel,
+      llm: {
+        route: successfulAttempt?.provider || "llm",
+        model: resolvedModel,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+      },
+    });
+
     return {
       intentCategory: category,
       confidenceScore: confidence,
@@ -236,6 +253,15 @@ Analyze the snippets and classify the prospect's intent:`;
     logEvent?.(
       `[LLM ERROR] LinkedIn Post Intent classification failed for ${name} (${Date.now() - startedAt}ms): ${err.message || String(err)}`,
     );
+    recordTrace?.({
+      phase: "select",
+      operation: "post_intent_classify",
+      provider: "llm",
+      query: `post_intent:${name}`,
+      status: "error",
+      latencyMs: Date.now() - startedAt,
+      error: { message: err.message || String(err) },
+    });
     return {
       intentCategory: 'none',
       confidenceScore: 0,
@@ -321,26 +347,18 @@ export async function runLinkedInPostIntentEnrichment(
     const cutlineIndex = targetLimit - 1;
     const cutlineScore = rankLeadForFinalSelection(sortedLeads[cutlineIndex]);
 
-    // 1. Identify "Bubble" candidates whose rank could realistically flip across the cutline
+    // Only process "Bubble" candidates whose rank could realistically flip across the cutline
     const bubbleLeads = sortedLeads.filter(lead => {
       const score = rankLeadForFinalSelection(lead);
       return score >= (cutlineScore - MAX_INTENT_SWING) &&
              score <= (cutlineScore + MAX_INTENT_SWING);
     });
 
-    // 2. Fill remaining budget with top-down winners (for verification and annotation)
-    const bubbleSet = new Set(bubbleLeads);
-    const remainingBudget = Math.max(0, maxLeads - bubbleLeads.length);
-    const topDownLeads = sortedLeads
-      .filter(l => !bubbleSet.has(l))
-      .slice(0, remainingBudget);
-
-    // 3. Process Bubble candidates first (selection impact), then Top-Down (annotation)
-    leadsToProcess = [...bubbleLeads, ...topDownLeads].slice(0, maxLeads);
-    logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects (bubble=${bubbleLeads.length}, topDown=${topDownLeads.length}, cutlineScore=${cutlineScore.toFixed(2)}, total=${allLeads.length}).`);
+    leadsToProcess = bubbleLeads.slice(0, maxLeads);
+    logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} bubble candidate(s) near cutline (cutlineScore=${cutlineScore.toFixed(2)}, totalQualified=${allLeads.length}).`);
   } else {
-    leadsToProcess = sortedLeads.slice(0, maxLeads);
-    logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} prospects (sorted by rank from ${allLeads.length} candidates).`);
+    leadsToProcess = sortedLeads.slice(0, Math.min(maxLeads, 3));
+    logEvent(`Phase 5: evaluating LinkedIn post intent for top ${leadsToProcess.length} prospects (from ${allLeads.length} candidates).`);
   }
 
   const tasks: ProviderQueueTask<void>[] = leadsToProcess.map((lead, index) => {
@@ -475,7 +493,7 @@ export async function runLinkedInPostIntentEnrichment(
           }
 
           // 3. Classify intent with LLM
-          const classification = await classifyLinkedInPostIntent(postContext, contract.brief, lead, logEvent);
+          const classification = await classifyLinkedInPostIntent(postContext, contract.brief, lead, logEvent, recordTrace);
           const postEvidence: PostIntentEvidence = {
             queriedAt: new Date().toISOString(),
             postSnippets: snippets,

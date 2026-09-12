@@ -494,12 +494,13 @@ export const buildStrategistPrompt = (params: {
     const family = q.split(" ").slice(0, 3).join(" ").toLowerCase();
     familyCounts[family] = (familyCounts[family] || 0) + 1;
   }
+  const topFamilies = Object.entries(familyCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([family, count]) => `${family} x${count}`)
+    .join("; ");
   const previousNote = params.previousQueries.length
-    ? `Avoid repeats. Already explored ${params.previousQueries.length} queries; most recent: ${recentQueries.join(" | ")}. Covered query prefixes: ${Object.entries(
-        familyCounts,
-      )
-        .map(([family, count]) => `${family} x${count}`)
-        .join("; ")}.`
+    ? `Avoid repeats. Explored ${params.previousQueries.length} queries; recent: ${recentQueries.join(" | ")}. Top prefixes: ${topFamilies || "none"}.`
     : "No previous queries.";
   const discoveryMode = params.discoveryMode || "hybrid";
 
@@ -584,7 +585,7 @@ Prior rounds had low yield or missed specific criteria.
 
   const knownCompaniesNote =
     params.knownCompanyEntities && params.knownCompanyEntities.length > 0
-      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these; optionally use negative operators e.g. -"TopAgency"): ${params.knownCompanyEntities.slice(0, 25).join(", ")}`
+      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these; optionally use negative operators e.g. -"TopAgency"): ${params.knownCompanyEntities.slice(0, 10).join(", ")}`
       : "";
 
   if (
@@ -703,12 +704,18 @@ Prior rounds had low yield or missed specific criteria.
     ? `\nFREQUENT JUDGE REQUIREMENT FAILS (avoid query patterns that trigger these):\n${requirementFails.slice(0, 4).map((f) => `  - ${f}`).join("\n")}`
     : "";
 
-  const specStr = params.spec ? JSON.stringify(params.spec) : "{}";
+  const specSummaryParts: string[] = [];
+  if (params.spec?.person?.includeTitles?.length) specSummaryParts.push(`titles: [${params.spec.person.includeTitles.slice(0, 6).join(", ")}]`);
+  const locations = params.spec?.person?.locations?.length ? params.spec.person.locations : params.spec?.company?.locations;
+  if (locations?.length) specSummaryParts.push(`locations: [${locations.slice(0, 6).join(", ")}]`);
+  if (params.spec?.company?.industries?.length) specSummaryParts.push(`industries: [${params.spec.company.industries.slice(0, 4).join(", ")}]`);
+  if (params.spec?.exclusions?.companies?.length) specSummaryParts.push(`excludeCompanies: [${params.spec.exclusions.companies.slice(0, 8).join(", ")}]`);
+  const specStr = specSummaryParts.length ? specSummaryParts.join("; ") : "general targeting";
 
   return `You are a dual-provider B2B prospecting strategist for Apex CRM.
 
 User brief: ${params.query}
-Structured targeting spec: ${specStr}
+Targeting parameters: ${specStr}
 Discovery mode: ${discoveryMode}
 ${requirementDigest}
 ${missingNote}
@@ -724,27 +731,12 @@ Prior round summary: ${roundSummaryStr}
 Historical family/provider yield: ${performanceStr}
 
 Rules:
-- NEVER use boolean operator words (AND, OR, NOT, site:, or parentheses).
-- Balanced double quotes are permitted ONLY around multi-word roles or company types (e.g. "AI agency", "managing partner").
-- Hyphenated negative keywords are permitted for exclusions (e.g. -software, -saas, -recruiter).
-- Do not write Google dorks, site:, or the word LinkedIn in query text (providers add LinkedIn constraints).
-- Query length must be concise (3 to 6 words).
-- When a country or region is targeted (e.g. USA, UK, Canada, Australia), distribute queries across distinct major metropolitan tech/agency hubs (e.g. New York, San Francisco, Austin, Los Angeles, Chicago, Boston, Seattle, London, Toronto, Sydney) and rotate executive title variants (founder, CEO, owner, managing partner) across the 4 queries.
-- Use at least two lanes: person, account, signal when the brief supports them.
-- person lane finds public professional profiles. Keep person queries focused on Roles + Company Types/Names + Locations. Do NOT append niche hiring or tooling trigger keywords to person queries.
-- account lane finds companies and leadership evidence.
-- signal lane finds public growth, tooling, hiring, or pain evidence on the open web (not LinkedIn).
-- For open_web_signal requirements (e.g. hiring, tech stack, funding), use lane: "signal" and search open web.
-- Prefer searchDepth basic. Do not use advanced unless a single signal task truly needs it.
-- providerPreference guide:
-  - tavily: AI-ranked precision person queries (domain-filtered LinkedIn).
-  - brightdata: volume Google SERP discovery and account/signal recovery (search_engine).
-  - corroborate: both providers when useful.
-- In hybrid/bd_primary modes, assign at least two tasks with providerPreference brightdata or corroborate.
-- Treat qualified and returned finalist counts as the primary historical signal. Accepted counts are provisional only.
-- Prefer families that produce qualified/returned finalists; penalize rescue-heavy, duplicate-heavy, slow, or credit-heavy families.
-- Preserve some exploration of under-tested families instead of permanently locking onto one query pattern.
-- Never assume Pro-only Bright Data tools (no structured LinkedIn datasets, no browser automation).
+- Query syntax: 3 to 6 words. NEVER use boolean words (AND, OR, NOT), site:, or "LinkedIn". Quotes ONLY for multi-word phrases (e.g. "AI agency"). Negative keywords allowed (-saas, -recruiter).
+- Geographies & Titles: When a country/region is targeted, distribute queries across distinct major metro hubs and rotate executive variants (founder, CEO, owner, managing partner).
+- Lanes: Use "person" (Roles + Company Types + Locations), "account" (company leadership), or "signal" (for open_web_signal requirements e.g. hiring/tooling, use lane: "signal" and search open web). Use >=2 lanes when brief allows. Keep person queries clean without trigger keywords.
+- Providers: "tavily" (precision person), "brightdata" (volume Google SERP), "corroborate" (both). In hybrid mode, assign >=2 brightdata or corroborate tasks.
+- Depth: Default to "basic". Never assume Pro-only datasets or browser automation.
+- History: Favor families that produced qualified/returned finalists; avoid duplicate-heavy or slow query patterns.
 
 Return query, family, intent, expectedSignal, priority, lane, providerPreference, searchDepth, topic, timeRange, and country when relevant.`;
 };

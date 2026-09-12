@@ -2,7 +2,14 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import { useMiningTraceStream } from '@/lib/traceStore';
 import { Badge } from '@/components/ui/badge';
-import { Clock } from 'lucide-react';
+import { Clock, ExternalLink, Activity, Zap, Cpu, BarChart2 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
 import type { MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '@/types';
 
 export const formatDuration = (ms?: number) => {
@@ -68,6 +75,7 @@ export function useSessionDuration({
 }
 
 export interface TraceSummaryViewerProps {
+  sessionId?: string;
   traceSummary?: MiningTraceSummary;
   traceEvents?: MiningTraceEvent[];
   status?: string;
@@ -78,6 +86,7 @@ export interface TraceSummaryViewerProps {
 }
 
 export const TraceSummaryViewer = ({
+  sessionId,
   traceSummary,
   traceEvents = [],
   status,
@@ -95,6 +104,31 @@ export const TraceSummaryViewer = ({
     durationMs: durationMs ?? traceSummary?.durationMs,
     isRunning: active
   });
+
+  const [tokenModalOpen, setTokenModalOpen] = useState(false);
+  const [tokenStats, setTokenStats] = useState<any>(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+
+  useEffect(() => {
+    if (!tokenModalOpen || !sessionId) return;
+    let isMounted = true;
+    setLoadingStats(true);
+    fetch(`/api/mining-sessions/${encodeURIComponent(sessionId)}/token-stats`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (isMounted) setTokenStats(data);
+      })
+      .catch((err) => console.error('Failed to load token stats:', err))
+      .finally(() => {
+        if (isMounted) setLoadingStats(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [tokenModalOpen, sessionId]);
 
   const derivedSummary = useMemo(() => {
     if (traceSummary) return null;
@@ -208,10 +242,18 @@ export const TraceSummaryViewer = ({
           <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Events</div>
           <div className="text-sm text-slate-200 font-semibold mt-0.5">{eventCount}</div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Model tokens</div>
-          <div className="text-sm text-indigo-300 font-semibold mt-0.5">
-            {totalTokens.toLocaleString()}
+        <div
+          onClick={() => setTokenModalOpen(true)}
+          className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5 cursor-pointer hover:border-indigo-500/60 hover:bg-slate-900/90 transition-all group"
+          title="Click to open Token Inspector and telemetry breakdown"
+        >
+          <div className="text-xs uppercase text-slate-500 group-hover:text-indigo-400 font-bold tracking-wider flex items-center justify-between">
+            <span>Model tokens</span>
+            <ExternalLink className="w-3 h-3 text-slate-500 group-hover:text-indigo-400 transition-colors" />
+          </div>
+          <div className="text-sm text-indigo-300 font-semibold mt-0.5 flex items-center justify-between font-mono">
+            <span>{totalTokens.toLocaleString()}</span>
+            <span className="text-xs text-indigo-400/80 font-sans group-hover:underline">Inspect</span>
           </div>
         </div>
         <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
@@ -363,6 +405,161 @@ export const TraceSummaryViewer = ({
           ))}
         </div>
       )}
+
+      <Dialog open={tokenModalOpen} onOpenChange={setTokenModalOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto bg-slate-900 border border-slate-800 text-slate-100 p-6 shadow-2xl">
+          <DialogHeader className="space-y-1 pb-3 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-400">
+                <BarChart2 className="w-4 h-4" />
+              </div>
+              <DialogTitle className="text-base font-semibold text-slate-100">
+                Session Token & Telemetry Inspector
+              </DialogTitle>
+            </div>
+            <DialogDescription className="text-xs text-slate-400 font-mono flex items-center gap-2">
+              <span>Session: {sessionId || 'Live Active Session'}</span>
+              {active && (
+                <span className="text-emerald-400 flex items-center gap-1 font-sans font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Active
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {loadingStats ? (
+            <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400">
+              <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-xs font-mono">Loading session token statistics...</span>
+            </div>
+          ) : tokenStats ? (
+            <div className="space-y-5 pt-3">
+              {/* Summary Metrics */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Total Tokens</div>
+                  <div className="text-lg font-bold font-mono text-indigo-300 mt-0.5">
+                    {Number(tokenStats.totalTokens || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Prompt Tokens</div>
+                  <div className="text-lg font-bold font-mono text-cyan-300 mt-0.5">
+                    {Number(tokenStats.totalInputTokens || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Output Tokens</div>
+                  <div className="text-lg font-bold font-mono text-purple-300 mt-0.5">
+                    {Number(tokenStats.totalOutputTokens || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Total LLM Calls</div>
+                  <div className="text-lg font-bold font-mono text-emerald-300 mt-0.5">
+                    {tokenStats.totalCalls || 0}
+                  </div>
+                </div>
+              </div>
+
+              {/* Stage Breakdown */}
+              {tokenStats.stages && Object.keys(tokenStats.stages).length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs uppercase tracking-wider text-slate-400 font-bold flex items-center justify-between">
+                    <span>Stage Token Distribution</span>
+                    <span className="text-xs text-slate-500 font-mono">Calls & Latency</span>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg overflow-hidden divide-y divide-slate-800/60 bg-slate-950/50">
+                    <div className="grid grid-cols-5 bg-slate-900/80 px-3 py-2 text-xs font-semibold text-slate-400">
+                      <div className="col-span-2">Stage</div>
+                      <div className="text-right">Calls</div>
+                      <div className="text-right">Tokens</div>
+                      <div className="text-right">Avg Latency</div>
+                    </div>
+                    {Object.entries(tokenStats.stages).map(([stageName, stage]: [string, any]) => (
+                      <div key={stageName} className="grid grid-cols-5 px-3 py-2 text-xs items-center hover:bg-slate-800/20">
+                        <div className="col-span-2 font-mono font-medium text-slate-200 capitalize">
+                          {stageName.replace(/_/g, ' ')}
+                        </div>
+                        <div className="text-right font-mono text-slate-400">{stage.calls}</div>
+                        <div className="text-right font-mono text-indigo-300 font-medium">
+                          {Number(stage.totalTokens || 0).toLocaleString()}
+                        </div>
+                        <div className="text-right font-mono text-slate-400">
+                          {formatDuration(stage.avgLatencyMs)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Models Breakdown */}
+              {tokenStats.models && Object.keys(tokenStats.models).length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-xs uppercase tracking-wider text-slate-400 font-bold">
+                    Models Used
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(tokenStats.models).map(([model, meta]: [string, any]) => (
+                      <div
+                        key={model}
+                        className="px-2.5 py-1 rounded bg-slate-950/80 border border-slate-800 text-xs font-mono flex items-center gap-2"
+                      >
+                        <span className="text-cyan-300 font-medium">{model}</span>
+                        <span className="text-slate-500">|</span>
+                        <span className="text-slate-300">{meta.calls} calls</span>
+                        <span className="text-indigo-400">({Number(meta.tokens || 0).toLocaleString()} tok)</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Langfuse Observability Integration */}
+              <div className="p-3.5 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                    <span className="text-xs font-semibold text-slate-200">LiteLLM + Langfuse Tracing</span>
+                  </div>
+                  {tokenStats.langfuseDeepLink ? (
+                    <a
+                      href={tokenStats.langfuseDeepLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors"
+                    >
+                      <span>Open in Langfuse</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  ) : null}
+                </div>
+
+                {tokenStats.langfuseConfigured ? (
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Traces for this session are tracked with session tag <code className="text-cyan-300 bg-slate-900 px-1 py-0.5 rounded font-mono">{tokenStats.sessionId}</code>. You can inspect exact LLM inputs, completions, system prompts, latency, and cost in Langfuse.
+                  </p>
+                ) : (
+                  <div className="text-xs text-slate-400 leading-relaxed bg-slate-900/80 p-2.5 rounded border border-slate-800/80 space-y-1">
+                    <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+                      <span>Telemetry Ready (Langfuse Host Optional)</span>
+                    </div>
+                    <div>
+                      LiteLLM callback proxy is configured. To view rich interactive traces in the Langfuse dashboard, set <code className="text-slate-200">LANGFUSE_PUBLIC_KEY</code>, <code className="text-slate-200">LANGFUSE_SECRET_KEY</code>, and <code className="text-slate-200">LANGFUSE_HOST</code> in your environment.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-slate-500">
+              No detailed token telemetry recorded yet for this session.
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -539,6 +736,7 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
         )}
       </div>
       <TraceSummaryViewer
+        sessionId={sessionId || undefined}
         traceSummary={sessionMeta?.traceSummary}
         traceEvents={traceEvents}
         status={status}

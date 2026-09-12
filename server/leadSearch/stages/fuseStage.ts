@@ -352,9 +352,10 @@ export async function executeFuseStage(
   scoredItems.sort((a, b) => b.score - a.score);
   const sortedRoundItems = scoredItems.map((s) => s.item);
 
+  const targetScale = Math.ceil(Number(config.targetLimit || 1) * (config.targetLimit <= 10 ? 4 : 6));
   const candidateBudget = Math.min(
     sortedRoundItems.length,
-    Math.max(Number(config.targetLimit || 1) * 8, 48),
+    Math.max(targetScale, 20),
   );
   const candidateItems = sortedRoundItems.slice(0, candidateBudget);
   logEvent(

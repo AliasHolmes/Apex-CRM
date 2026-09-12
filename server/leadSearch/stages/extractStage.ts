@@ -144,7 +144,7 @@ export async function executeExtractStage(
   };
 
   // 0. Stage 2.5: FAST DETERMINISTIC PRE-FILTER GATE (0ms - No LLM)
-  const existingCrmKeys = readExistingIdentityKeys();
+  const existingCrmKeys = state.existingKeys || readExistingIdentityKeys();
   const requiresPerson =
     config.contract?.requirements.some((r: any) => r.scope === "person_role") ?? true;
 
@@ -561,17 +561,22 @@ export async function executeExtractStage(
     input.candidateCeiling || rerankPoolTarget,
     rerankPoolTarget,
   );
-  const neededPoolRemaining = Math.max(
-    15,
-    targetCeiling - state.acceptedLeads.length,
-  );
-  const neededEvidenceBlocks = Math.max(
-    16,
-    Math.ceil(neededPoolRemaining * 1.8),
-  );
+  const remainingToTarget = Math.max(0, config.targetLimit - state.acceptedLeads.length);
+  const isLateRoundDiet =
+    round >= 2 &&
+    (remainingToTarget <= 5 || state.acceptedLeads.length >= config.targetLimit);
+
+  const neededPoolRemaining = isLateRoundDiet
+    ? Math.max(4, Math.ceil(remainingToTarget * 1.5))
+    : Math.max(15, targetCeiling - state.acceptedLeads.length);
+
+  const neededEvidenceBlocks = isLateRoundDiet
+    ? Math.max(6, Math.ceil(neededPoolRemaining * 1.8))
+    : Math.max(16, Math.ceil(neededPoolRemaining * 1.8));
+
   if (evidenceBlocks.length > neededEvidenceBlocks) {
     logEvent(
-      `Round ${round}: capped extraction evidence to top ${neededEvidenceBlocks}/${evidenceBlocks.length} blocks (pool needed: ${neededPoolRemaining}).`,
+      `Round ${round}: capped extraction evidence to top ${neededEvidenceBlocks}/${evidenceBlocks.length} blocks (${isLateRoundDiet ? `late-round diet: target needed ${remainingToTarget}` : `pool needed: ${neededPoolRemaining}`}).`,
     );
     evidenceBlocks = evidenceBlocks.slice(0, neededEvidenceBlocks);
   }
@@ -678,6 +683,7 @@ Evidence:
               temperature: 0.0,
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
+              reasoningEffort: "low",
               timeoutMs: Math.min(
                 120_000,
                 Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),

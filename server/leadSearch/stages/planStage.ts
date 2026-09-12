@@ -89,7 +89,15 @@ export async function executePlanStage(
   const { config, state, logEvent, recordTrace } = ctx;
 
   const domainCluster = deriveDomainCluster(config.contract?.brief || config.promptQuery || "");
-  const historicalPerformance = readQueryPerformance(100, domainCluster);
+  if (!(state as any)._planStageCache) {
+    (state as any)._planStageCache = {
+      historicalPerformance: readQueryPerformance(100, domainCluster),
+      crmCompanies: readStoredCompanyNames(100),
+      crmDomains: readStoredCompanyDomains(50),
+      metroSaturation: readStoredMetroSaturation(),
+    };
+  }
+  const { historicalPerformance, crmCompanies, crmDomains, metroSaturation } = (state as any)._planStageCache;
   const historicalYield = Object.fromEntries(
     historicalPerformance.slice(0, 30).map((row: any) => [
       [row.family || "general", row.lane || "person", row.provider || "tavily"]
@@ -131,9 +139,7 @@ export async function executePlanStage(
   const signalCompanies = ctx.state.signalStore
     ? ctx.state.signalStore.getUniqueCompanyNames()
     : [];
-  const crmCompanies = readStoredCompanyNames(100);
-  const crmDomains = readStoredCompanyDomains(50);
-  const metroSaturation = readStoredMetroSaturation();
+
 
   if (crmDomains.length > 0) {
     searchSpec.exclusions = searchSpec.exclusions || { companies: [], domains: [] };

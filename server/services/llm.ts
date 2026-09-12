@@ -69,6 +69,8 @@ export type LLMExecutionOptions = {
   maxRetries?: number;
   circuitBreaker?: LLMSessionCircuitBreaker;
   signal?: AbortSignal;
+  reasoningEffort?: "low" | "medium" | "high";
+  metadata?: Record<string, any>;
 };
 
 export function createLLMSessionCircuitBreaker(
@@ -860,7 +862,7 @@ async function sendChatCompletion(
     maxTokens?: number;
     temperature?: number;
     responseFormat?: { type: "json_object" };
-  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "maxRetries" | "signal">,
+  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata">,
 ): Promise<string> {
   return withSequentialLLMExecution(async () => {
     if (options?.signal?.aborted) {
@@ -873,6 +875,15 @@ async function sendChatCompletion(
       provider.id === "groq"
         ? Math.min(options?.maxTokens || 400, 950)
         : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+    const sessionHeaders: Record<string, string> = {};
+    if (options?.metadata?.sessionId) {
+      sessionHeaders["x-litellm-session-id"] = String(options.metadata.sessionId);
+      sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
+      sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
+    }
+    const isReasoningCapable =
+      provider.id === "litellm" ||
+      /\b(gpt-5|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model);
     const callStartedAt = Date.now();
     try {
       res = await fetchWithRetry(
@@ -881,6 +892,7 @@ async function sendChatCompletion(
           method: "POST",
           headers: {
             ...(provider.headers || {}),
+            ...sessionHeaders,
             "Content-Type": "application/json",
             Authorization: `Bearer ${provider.apiKey}`,
           },
@@ -895,6 +907,12 @@ async function sendChatCompletion(
             max_tokens: effectiveMaxTokens,
             ...(options?.responseFormat
               ? { response_format: options.responseFormat }
+              : {}),
+            ...(options?.reasoningEffort && isReasoningCapable
+              ? { reasoning_effort: options.reasoningEffort }
+              : {}),
+            ...(options?.metadata && provider.id === "litellm"
+              ? { metadata: options.metadata }
               : {}),
           }),
           signal: options?.signal,
@@ -2100,7 +2118,7 @@ export const bulkSingleProfileSchema = {
     evidenceReasons: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
-      description: "1 short evidence reason",
+      description: "1 concise evidence reason under 60 chars",
     },
     extractionConfidence: {
       type: Type.NUMBER,

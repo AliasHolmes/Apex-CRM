@@ -154,7 +154,7 @@ describe('Zero-Yield Prevention & Starvation Safety Net', () => {
     const acceptedLeads = [
       {
         fullName: 'Roberto Martinez',
-        currentTitle: 'CEO',
+        currentTitle: 'Director of Partnerships',
         currentCompany: 'Braven Agency',
         location: 'Los Angeles, CA, USA',
         contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/robthemarketer' },
@@ -185,21 +185,37 @@ describe('Zero-Yield Prevention & Starvation Safety Net', () => {
     const originalSafetyNet = process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
     delete process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
     try {
-      globalThis.fetch = async () => ({
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: async () => ({
-          choices: [{
-            message: {
-              content: JSON.stringify({
-                judgments: [{ candidateIndex: 0, verdict: 'hard_fail', confidence: 9, reason: 'Fails strict criteria', evidencePassage: '', overallScore: 2.0 }]
-              })
-            }
-          }]
-        }),
-        text: async () => ''
-      } as any);
+      globalThis.fetch = async (_url: any, opts: any) => {
+        let candidateId = 'clinkedin.com/in/robthemarketer';
+        try {
+          const body = JSON.parse(opts?.body || '{}');
+          const prompt = body?.messages?.[1]?.content || '';
+          const m = prompt.match(/### (c[^\s\n]+)/);
+          if (m) candidateId = m[1];
+        } catch {}
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/json' }),
+          json: async () => ({
+            choices: [{
+              message: {
+                content: JSON.stringify({
+                  judgments: [{
+                    candidateId,
+                    requirements: contract.requirements.map((r: any) => ({ requirementId: r.id, status: 'fail', reason: 'Fails test' })),
+                    semanticFit: 1,
+                    authorityFit: 1,
+                    evidenceConfidence: 1,
+                    reason: 'Fails strict criteria'
+                  }]
+                })
+              }
+            }]
+          }),
+          text: async () => ''
+        } as any;
+      };
 
       await executeJudgeStage(mockCtx, {
         contract,

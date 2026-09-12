@@ -849,7 +849,11 @@ export async function executeDiscoverySession(
         Number(process.env.LEAD_SEARCH_RERANK_POOL_MAX || 240),
         targetLimit,
       ),
-      baseRounds: Number(process.env.LEAD_SEARCH_BASE_ROUNDS || 4),
+      baseRounds:
+        process.env.LEAD_SEARCH_BASE_ROUNDS &&
+        Number.isFinite(Number(process.env.LEAD_SEARCH_BASE_ROUNDS))
+          ? Number(process.env.LEAD_SEARCH_BASE_ROUNDS)
+          : undefined,
       contractHardReqCount: contractHardCount,
       maxRoundsCap:
         Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 0) || undefined,
@@ -1864,9 +1868,9 @@ export async function executeDiscoverySession(
         // Post-enrichment micro-batch judging for candidates needing semantic review
         const acceptedInRound = acceptedLeads
           .slice(acceptedCountBeforeRound)
-          .filter((lead) => !lead.qualification);
+          .filter((lead) => !lead.qualification && !lead._autoFailed);
         if (acceptedInRound.length > 0) {
-          const needsJudgeCandidates: FinalistCandidate[] = acceptedInRound.map((lead, idx) => {
+          const roundFinalists: FinalistCandidate[] = acceptedInRound.map((lead, idx) => {
             const evidence = findEvidenceForLead(lead, evidenceByUrl) || buildFallbackEvidence(lead, promptQuery, round);
             const dedupeKey = normalizeDedupeValue(lead.contactDetails?.linkedinUrl || lead.sourceUrl || "");
             const stableId = dedupeKey ? `c${dedupeKey}` : (lead.id ? `c_${lead.id}` : `c_r${round}_${idx}`);
@@ -1878,29 +1882,56 @@ export async function executeDiscoverySession(
             );
           });
 
-          const currentEqc = qualifiedLeads.reduce((acc, lead) => {
-            if (lead.qualification?.verdict === "qualified") return acc + 1;
-            if (lead.qualification?.verdict === "qualified_partial") return acc + 0.75;
-            return acc;
-          }, 0);
+          // Post-enrichment triage: auto-pass newly complete profiles and auto-fail contradictions
+          const postTriage = triPartitionCandidatesByEvidence(roundFinalists, contract);
 
-          const incrementalResult = await evaluateIncrementalJudgeBatches(sessionCtx, {
-            candidates: needsJudgeCandidates,
-            contract,
-            stats,
-            leadQueryRuns,
-            round,
-            targetCushion: qualifiedTargetWithCushion,
-            currentQualifiedCount: Math.floor(currentEqc),
-          });
-
-          for (const qCand of incrementalResult.qualifiedCandidates) {
-            tryAddQualifiedLead(qCand);
+          for (const { candidate, qualification } of postTriage.autoQualified) {
+            candidate.lead.qualification = qualification;
+            candidate.lead.whyThisLead = qualification.reason;
+            candidate.lead.finalSelectionScore = qualification.finalScore;
+            if (candidate.lead.scoreBreakdown) {
+              candidate.lead.scoreBreakdown.finalScore = qualification.finalScore;
+            }
+            candidate.lead.scoreOverride = qualification.finalScore;
+            tryAddQualifiedLead(candidate.lead);
           }
 
-          logEvent(
-            `Round ${round} Incremental Judge: Qualified ${incrementalResult.qualifiedCandidates.length} candidate(s). Cumulative qualified: ${qualifiedLeads.length}.`,
-          );
+          for (const { candidate } of postTriage.autoFailed) {
+            candidate.lead._autoFailed = true;
+          }
+
+          if (postTriage.autoQualified.length > 0) {
+            logEvent(
+              `Round ${round} Post-Enrich Triage: ${postTriage.autoQualified.length} candidate(s) auto-qualified from enriched evidence (0 LLM tokens).`,
+            );
+          }
+
+          const needsJudgeCandidates = postTriage.needsJudge;
+          if (needsJudgeCandidates.length > 0) {
+            const currentEqc = qualifiedLeads.reduce((acc, lead) => {
+              if (lead.qualification?.verdict === "qualified") return acc + 1;
+              if (lead.qualification?.verdict === "qualified_partial") return acc + 0.75;
+              return acc;
+            }, 0);
+
+            const incrementalResult = await evaluateIncrementalJudgeBatches(sessionCtx, {
+              candidates: needsJudgeCandidates,
+              contract,
+              stats,
+              leadQueryRuns,
+              round,
+              targetCushion: qualifiedTargetWithCushion,
+              currentQualifiedCount: Math.floor(currentEqc),
+            });
+
+            for (const qCand of incrementalResult.qualifiedCandidates) {
+              tryAddQualifiedLead(qCand);
+            }
+
+            logEvent(
+              `Round ${round} Incremental Judge: Qualified ${incrementalResult.qualifiedCandidates.length} candidate(s). Cumulative qualified: ${qualifiedLeads.length}.`,
+            );
+          }
         }
 
         const roundRuns = stats.queryRuns.filter((run) => run.round === round);
@@ -2095,7 +2126,7 @@ export async function executeDiscoverySession(
                   completedRound: round,
                   maxRounds,
                   acceptedLeads: acceptedLeads.length,
-                  rerankPoolTarget: roundStagePoolTarget,
+                  rerankPoolTarget: rerankPoolTarget,
                 })
               ) {
                 logEvent(

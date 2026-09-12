@@ -139,9 +139,14 @@ export async function executeEnrichStage(
 
   // 1. Post-Filter Bright Data Profile Enrichment (Deep Scrape)
   if (profileEnrichmentStage === "post_filter") {
-    let brightDataToolDegraded = false;
-    const candidateRows = postFilterLeads.filter(
-      ({ lead, evidenceMeta }) => {
+    if (state.qualifiedLeads.length >= config.targetLimit) {
+      logEvent(
+        `Round ${round}: qualified leads (${state.qualifiedLeads.length}) already meet target limit (${config.targetLimit}); bypassing deep profile enrichment.`,
+      );
+    } else {
+      let brightDataToolDegraded = false;
+      const candidateRows = postFilterLeads.filter(
+        ({ lead, evidenceMeta }) => {
         const score = effectiveScore(lead);
         const isBorderline = Boolean((lead as any)._borderlineEvidence);
         return (
@@ -742,7 +747,15 @@ export async function executeEnrichStage(
 
     if (siteProbeEnabled && uncachedTargets.length > 0) {
       const probeCandidateTargets = uncachedTargets
-        .filter((t) => !t.enriched)
+        .filter((t) => {
+          if (!t.enriched) return true;
+          if (isAuthwalledUrl(t.url)) {
+            const hasCompany = Boolean(t.lead.currentCompany || t.lead.company);
+            const needsGrounding = !t.lead.siteSignals && !t.lead.evidence?.companyProbeApplied;
+            return hasCompany && needsGrounding;
+          }
+          return false;
+        })
         .sort((a, b) => (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0));
 
       const candidateDomains = probeCandidateTargets
@@ -850,6 +863,7 @@ export async function executeEnrichStage(
       ).length;
     }
   }
+}
 
   // 2. Final Acceptance for candidates in this round
   const maxAcceptedCeiling = Math.max(input.candidateCeiling || 240, rerankPoolTarget);

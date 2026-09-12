@@ -2856,6 +2856,97 @@ function mapLlmStageLogRow(row: any): LlmStageLogEntry {
   };
 }
 
+export type MiningSessionTokenStats = {
+  sessionId: string;
+  totalCalls: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  totalLatencyMs: number;
+  estimatedCostUsd: number;
+  stages: Record<
+    string,
+    {
+      calls: number;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      latencyMs: number;
+      avgLatencyMs: number;
+    }
+  >;
+  models: Record<
+    string,
+    {
+      calls: number;
+      tokens: number;
+    }
+  >;
+  logs: LlmStageLogEntry[];
+};
+
+export function readMiningSessionTokenStats(sessionId: string): MiningSessionTokenStats {
+  const logs = readLlmStageLogs(sessionId);
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalLatency = 0;
+  const stages: MiningSessionTokenStats["stages"] = {};
+  const models: MiningSessionTokenStats["models"] = {};
+
+  for (const log of logs) {
+    const inTok = Number(log.inputTokens || 0);
+    const outTok = Number(log.outputTokens || 0);
+    const lat = Number(log.latencyMs || 0);
+
+    totalInput += inTok;
+    totalOutput += outTok;
+    totalLatency += lat;
+
+    const stageKey = log.stage || "unknown";
+    if (!stages[stageKey]) {
+      stages[stageKey] = {
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        latencyMs: 0,
+        avgLatencyMs: 0,
+      };
+    }
+    stages[stageKey].calls++;
+    stages[stageKey].inputTokens += inTok;
+    stages[stageKey].outputTokens += outTok;
+    stages[stageKey].totalTokens += inTok + outTok;
+    stages[stageKey].latencyMs += lat;
+
+    const modelKey = log.modelName || log.provider || "default";
+    if (!models[modelKey]) {
+      models[modelKey] = { calls: 0, tokens: 0 };
+    }
+    models[modelKey].calls++;
+    models[modelKey].tokens += inTok + outTok;
+  }
+
+  for (const s of Object.values(stages)) {
+    s.avgLatencyMs = s.calls > 0 ? Math.round(s.latencyMs / s.calls) : 0;
+  }
+
+  const estimatedCostUsd = totalInput * 0.000001 + totalOutput * 0.000002;
+
+  return {
+    sessionId,
+    totalCalls: logs.length,
+    totalInputTokens: totalInput,
+    totalOutputTokens: totalOutput,
+    totalTokens: totalInput + totalOutput,
+    totalLatencyMs: totalLatency,
+    estimatedCostUsd: Number(estimatedCostUsd.toFixed(4)),
+    stages,
+    models,
+    logs,
+  };
+}
+
 export function getIcpHypothesisCache(query: string): any | null {
   try {
     const db = getLeadsDb();

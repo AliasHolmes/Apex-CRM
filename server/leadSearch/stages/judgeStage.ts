@@ -195,40 +195,9 @@ export async function executeJudgeStage(
     );
   }
 
-  // 2. Pre-Judge Lightweight Site Grounding for candidates needing semantic review
-  const isAgencyBrief =
-    /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(contract.brief) ||
-    contract.requirements.some(
-      (r) =>
-        (r.scope === "company_type" || r.scope === "company_industry") &&
-        /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(
-          `${r.description} ${r.acceptableTerms.join(" ")}`,
-        ),
-    );
-
-  if (isAgencyBrief && vettedNeedsJudge.length > 0) {
-    for (const candidate of vettedNeedsJudge.slice(0, 15)) {
-      try {
-        const probed = await groundCandidateWithSiteProbe(candidate.lead, {
-          abortSignal: state.abortController.signal,
-          timeoutMs: 2000,
-        });
-        if (probed) {
-          const refreshed = finalistCandidateFromLead(
-            candidate.candidateId,
-            candidate.lead,
-            candidate.lead.evidence?.evidenceBlock || getEvidenceForLead(candidate.lead)?.evidenceBlock,
-            contract,
-          );
-          candidate.evidence = refreshed.evidence;
-        }
-      } catch {}
-    }
-  }
-
   const maxBatchSize = Math.max(
     1,
-    Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 3)),
+    Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 6)),
   );
   const providerTokenBudget = Math.max(
     4_000,
@@ -835,10 +804,10 @@ export async function evaluateIncrementalJudgeBatches(
     return { qualifiedCandidates, judgmentInsights };
   }
 
-  // Micro-batch size: 2 candidates per batch for optimal latency on reasoning models
+  // Micro-batch size: 4 candidates per batch for optimal latency on reasoning models
   const microBatchSize = Math.max(
     1,
-    Math.min(4, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 2)),
+    Math.min(6, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 4)),
   );
   const judgeConcurrency = Math.max(
     1,

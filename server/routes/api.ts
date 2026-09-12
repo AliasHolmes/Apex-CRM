@@ -33,6 +33,7 @@ import {
   readMiningSessionSummaryById,
   readMiningSessions,
   readMiningSessionCheckpoint,
+  readMiningSessionTokenStats,
   readResumableMiningSessions,
   deleteMiningSession,
   deleteMiningSessions,
@@ -1614,6 +1615,34 @@ router.get("/mining-sessions/:sessionId/trace", (req, res): any => {
   } catch (error: any) {
     console.error("Failed to read mining session trace:", error);
     res.status(500).json({ error: "Failed to retrieve mining session trace." });
+  }
+});
+
+router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
+  try {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !isSafeSessionId(sessionId)) {
+      return res.status(400).json({ error: "Invalid sessionId." });
+    }
+    const tokenStats = readMiningSessionTokenStats(sessionId);
+    const langfuseHost =
+      process.env.LANGFUSE_HOST ||
+      process.env.LANGFUSE_BASEURL ||
+      (process.env.LANGFUSE_PUBLIC_KEY ? "https://cloud.langfuse.com" : null);
+
+    const langfuseDeepLink = langfuseHost
+      ? `${langfuseHost.replace(/\/$/, "")}/project/default/traces?search=${encodeURIComponent(sessionId)}`
+      : null;
+
+    res.json({
+      ...tokenStats,
+      langfuseHost,
+      langfuseDeepLink,
+      langfuseConfigured: Boolean(process.env.LANGFUSE_PUBLIC_KEY || process.env.LANGFUSE_HOST),
+    });
+  } catch (error: any) {
+    console.error("Failed to read token stats:", error);
+    res.status(500).json({ error: "Failed to retrieve token statistics." });
   }
 });
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads

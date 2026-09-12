@@ -1627,18 +1627,24 @@ router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
     const tokenStats = readMiningSessionTokenStats(sessionId);
     const langfuseHost =
       process.env.LANGFUSE_HOST ||
+      process.env.LANGFUSE_BASE_URL ||
       process.env.LANGFUSE_BASEURL ||
       (process.env.LANGFUSE_PUBLIC_KEY ? "https://cloud.langfuse.com" : null);
 
+    const projectId = process.env.LANGFUSE_PROJECT_ID || "default";
     const langfuseDeepLink = langfuseHost
-      ? `${langfuseHost.replace(/\/$/, "")}/project/default/traces?search=${encodeURIComponent(sessionId)}`
+      ? `${langfuseHost.replace(/\/$/, "")}/project/${projectId}/traces?search=${encodeURIComponent(sessionId)}`
       : null;
 
     res.json({
       ...tokenStats,
       langfuseHost,
       langfuseDeepLink,
-      langfuseConfigured: Boolean(process.env.LANGFUSE_PUBLIC_KEY || process.env.LANGFUSE_HOST),
+      langfuseConfigured: Boolean(
+        process.env.LANGFUSE_PUBLIC_KEY ||
+        process.env.LANGFUSE_HOST ||
+        process.env.LANGFUSE_BASE_URL,
+      ),
     });
   } catch (error: any) {
     console.error("Failed to read token stats:", error);

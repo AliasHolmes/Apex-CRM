@@ -849,6 +849,56 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0], 'https://byesu.com/v1/chat/completions');
   });
+
+  it('isTokenHarborActive returns false when TOKEN_HARBOR_ENABLED is false or key is empty', async () => {
+    delete process.env.TOKEN_HARBOR_API_KEY;
+    delete process.env.TOKEN_HARBOR_ENABLED;
+
+    const llm = await importLLM('th-empty-key');
+    llm.resetTokenHarborRetirement();
+    assert.equal(llm.isTokenHarborActive(), false);
+
+    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
+    process.env.TOKEN_HARBOR_ENABLED = 'false';
+    const llmDisabled = await importLLM('th-disabled-env');
+    llmDisabled.resetTokenHarborRetirement();
+    assert.equal(llmDisabled.isTokenHarborActive(), false);
+
+    delete process.env.TOKEN_HARBOR_API_KEY;
+    delete process.env.TOKEN_HARBOR_ENABLED;
+  });
+
+  it('guarantees Byesu is primary provider when Token Harbor is disabled', async () => {
+    process.env.TOKEN_HARBOR_ENABLED = 'false';
+    delete process.env.TOKEN_HARBOR_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-byesu-key';
+    process.env.OPENAI_PROVIDER_NAME = 'Byesu';
+    process.env.OPENAI_MODEL = 'gpt-5.5';
+    process.env.LLM_GATEWAY_MODE = 'direct';
+
+    const llm = await importLLM('byesu-primary');
+    assert.equal(llm.getPrimaryLLMProvider(), 'Byesu');
+    assert.equal(llm.getPrimaryLLMModel(), 'gpt-5.5');
+
+    let capturedUrl = '';
+    globalThis.fetch = async (url) => {
+      capturedUrl = url.toString();
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'byesu primary response' } }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const res = await llm.openAIText('test byesu primary');
+    assert.equal(res.provider, 'Byesu');
+    assert.equal(res.model, 'gpt-5.5');
+    assert.equal(capturedUrl, 'https://byesu.com/v1/chat/completions');
+
+    delete process.env.TOKEN_HARBOR_ENABLED;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_PROVIDER_NAME;
+    delete process.env.OPENAI_MODEL;
+    delete process.env.LLM_GATEWAY_MODE;
+  });
 });
 
 

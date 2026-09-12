@@ -138,7 +138,7 @@ let tokenHarborRetiredEarly = false;
 
 export function isTokenHarborActive(now = Date.now()): boolean {
   if (tokenHarborRetiredEarly) return false;
-  if (process.env.TOKEN_HARBOR_ENABLED === "false") return false;
+  if (process.env.TOKEN_HARBOR_ENABLED === "false" || !process.env.TOKEN_HARBOR_API_KEY) return false;
   const expiryRaw =
     process.env.TOKEN_HARBOR_EXPIRATION_MS ||
     process.env.TOKEN_HARBOR_EXPIRATION;

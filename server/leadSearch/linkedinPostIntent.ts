@@ -1,4 +1,10 @@
-import { Type, openAIStructured } from '../services/llm.js';
+import {
+  Type,
+  openAIStructured,
+  DEFAULT_PRIMARY_MODEL,
+  type LLMProviderAttempt,
+  type LLMUsage,
+} from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
 import { getIntentCacheEntry, getIntentCacheEntriesBatch, upsertIntentCacheEntry } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
@@ -155,9 +161,10 @@ export function computePostIntentQuality(
 export async function classifyLinkedInPostIntent(
   postContext: string,
   brief: string,
-  lead: Record<string, any>
+  lead: Record<string, any>,
+  logEvent?: (msg: string) => void,
 ): Promise<{ intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }> {
-  if (!postContext || postContext.length < 50) {
+  if (!postContext || postContext.trim().length < 50) {
     return {
       intentCategory: 'none',
       confidenceScore: 0,
@@ -179,6 +186,9 @@ ${postContext}
 
 Analyze the snippets and classify the prospect's intent:`;
 
+  const startedAt = Date.now();
+  const attempts: LLMProviderAttempt[] = [];
+  let usage: LLMUsage | undefined;
   try {
     const result = await openAIStructured<{
       intentCategory?: string;
@@ -187,7 +197,11 @@ Analyze the snippets and classify the prospect's intent:`;
       reason?: string;
     }>(userPrompt, postIntentSchema, POST_INTENT_SYSTEM_PROMPT, {
       maxTokens: 600,
-      temperature: 0
+      temperature: 0,
+      onProviderAttempt: (attempt) => attempts.push(attempt),
+      onUsage: (u) => {
+        usage = u;
+      },
     });
 
     const validCategories: PostIntentCategory[] = ['hiring', 'evaluating_tools', 'pain_signal', 'growth_signal', 'general', 'none'];
@@ -198,6 +212,19 @@ Analyze the snippets and classify the prospect's intent:`;
     const reason = String(result.reason || 'Analyzed recent post activity.').trim();
     const quality = computePostIntentQuality(category, confidence);
 
+    const successfulAttempt = attempts.find((a) => a.status === "success");
+    const resolvedModel =
+      usage?.model ||
+      successfulAttempt?.actualModel ||
+      successfulAttempt?.model ||
+      process.env.OPENAI_MODEL ||
+      DEFAULT_PRIMARY_MODEL;
+    const latency = Date.now() - startedAt;
+    const tokens = usage?.totalTokens;
+    logEvent?.(
+      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent: ${name} -> ${category} (${quality})]`,
+    );
+
     return {
       intentCategory: category,
       confidenceScore: confidence,
@@ -206,6 +233,9 @@ Analyze the snippets and classify the prospect's intent:`;
       quality
     };
   } catch (err: any) {
+    logEvent?.(
+      `[LLM ERROR] LinkedIn Post Intent classification failed for ${name} (${Date.now() - startedAt}ms): ${err.message || String(err)}`,
+    );
     return {
       intentCategory: 'none',
       confidenceScore: 0,
@@ -445,7 +475,7 @@ export async function runLinkedInPostIntentEnrichment(
           }
 
           // 3. Classify intent with LLM
-          const classification = await classifyLinkedInPostIntent(postContext, contract.brief, lead);
+          const classification = await classifyLinkedInPostIntent(postContext, contract.brief, lead, logEvent);
           const postEvidence: PostIntentEvidence = {
             queriedAt: new Date().toISOString(),
             postSnippets: snippets,

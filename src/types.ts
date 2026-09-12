@@ -242,6 +242,7 @@ export interface MiningTraceEvent {
   operation: string;
   status: MiningEventStatus;
   provider?: MiningProvider;
+  model?: string;
   round?: number;
   query?: string;
   chunk?: { index: number; total: number; inputChars?: number };
@@ -278,6 +279,7 @@ export interface ProviderSummaryItem {
   totalTokens: number;
   estimatedCostUsd: number;
   fallbackUses: number;
+  models?: Record<string, number>;
 }
 
 export type ProviderSummary = Record<string, ProviderSummaryItem>;

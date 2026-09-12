@@ -14,6 +14,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
   type LLMProviderAttempt,
+  type LLMUsage,
 } from "../../services/llm.js";
 import { buildTavilyEvidence } from "../../services/linkedinEvidence.js";
 import { inferTavilyEvidenceQuality } from "../evidence.js";
@@ -153,7 +154,13 @@ export async function executeExtractStage(
           const batchUrls = batchTargets
             .map((item: any) => String(item.url || ""))
             .filter(Boolean);
-          const batchResults = await scrapeBatchAsMarkdown(batchUrls);
+          // Thread cancellation through: without it a cancelled session finishes every
+          // remaining batch scrape and pays for results that are then discarded.
+          const batchResults = await scrapeBatchAsMarkdown(
+            batchUrls,
+            undefined,
+            state.abortController.signal,
+          );
           const contentByUrl = new Map(
             batchResults.map((r) => [normalizeDedupeValue(r.url), r.content]),
           );
@@ -494,6 +501,7 @@ Evidence:
     const extractionStarted = Date.now();
     const prompt = `${extractionPromptPrefix}${chunk}`;
     const extractionProviderAttempts: LLMProviderAttempt[] = [];
+    let extractionUsage: LLMUsage | undefined;
     const estimatedStructuredInputTokens =
       estimateTokenCount(prompt) +
       estimateTokenCount(EXTRACTION_SYSTEM_PROMPT) +
@@ -528,6 +536,9 @@ Evidence:
               ),
               onProviderAttempt: (attempt) =>
                 extractionProviderAttempts.push(attempt),
+              onUsage: (usage) => {
+                extractionUsage = usage;
+              },
             },
           ),
         {
@@ -563,38 +574,52 @@ Evidence:
         if (username) seenCandidateKeys.add(username);
         if (normalized) seenCandidateKeys.add(normalized);
       }
+      const successfulAttempt = extractionProviderAttempts.find(
+        (a) => a.status === "success",
+      );
+      const resolvedModel =
+        extractionUsage?.model ||
+        successfulAttempt?.actualModel ||
+        successfulAttempt?.model ||
+        process.env.OPENAI_MODEL ||
+        DEFAULT_PRIMARY_MODEL;
+      const latency = Date.now() - extractionStarted;
+      const tokens = extractionUsage?.totalTokens;
+      logEvent(
+        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Extraction Chunk ${chunkIndex}/${chunks.length}: ${extractedLeads.length} leads]`,
+      );
+
       state.debugLogs.push({
         timestamp: new Date().toISOString(),
         type: "llm_request",
         label: `extraction_round_${round}_chunk_${chunkIndex}`,
-        model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
+        model: resolvedModel,
         prompt,
         systemInstruction: EXTRACTION_SYSTEM_PROMPT,
         response: JSON.parse(JSON.stringify(extractedLeads)),
       });
-      logEvent(
-        `Round ${round}, chunk ${chunkIndex}/${chunks.length}: extracted ${extractedLeads.length} profiles.`,
-      );
       recordTrace({
         phase: "extraction",
         operation: "llm_extract_chunk",
         status: "success",
         provider: "llm",
+        model: resolvedModel,
         round,
         chunk: {
           index: chunkIndex,
           total: chunks.length,
           inputChars: chunk.length,
         },
-        latencyMs: Date.now() - extractionStarted,
+        latencyMs: latency,
         counts: { extractedProfiles: extractedLeads.length },
         llm: summarizeLLM(
           "extraction",
           prompt,
           extractedLeads,
-          Date.now() - extractionStarted,
+          latency,
           0,
           extractionProviderAttempts,
+          extractionUsage,
         ),
         metadata: {
           estimatedStructuredInputTokens,
@@ -608,11 +633,14 @@ Evidence:
       return extractedLeads;
     } catch (e: any) {
       extractionFailuresThisRound++;
+      const failedAttempt = extractionProviderAttempts[extractionProviderAttempts.length - 1];
+      const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
       recordTrace({
         phase: "extraction",
         operation: "llm_extract_chunk",
         status: "error",
         provider: "llm",
+        model: failedModel,
         round,
         chunk: {
           index: chunkIndex,
@@ -628,6 +656,7 @@ Evidence:
           Date.now() - extractionStarted,
           0,
           extractionProviderAttempts,
+          extractionUsage,
         ),
         metadata: {
           estimatedStructuredInputTokens,
@@ -636,7 +665,7 @@ Evidence:
         },
       });
       logEvent(
-        `WARN: Extraction chunk ${chunkIndex}/${chunks.length} failed: ${e.message}`,
+        `[LLM ERROR] Extraction chunk ${chunkIndex}/${chunks.length} failed: ${e.message}`,
       );
       state.debugLogs.push({
         timestamp: new Date().toISOString(),
@@ -649,6 +678,8 @@ Evidence:
     }
   });
 
+  // The upper clamp was 1, which made LEAD_EXTRACTION_CONCURRENCY inert. 2 is the recommended
+  // maximum in configValidation.ts; default stays 1 unless opted in.
   const extractionConcurrency = Math.min(
     Math.max(
       Number(
@@ -658,7 +689,7 @@ Evidence:
       ),
       1,
     ),
-    1,
+    2,
   );
   const extractionResults = await runProviderQueue(
     extractionTasks.map((run, index) => ({

@@ -457,7 +457,7 @@ export async function probeCompanySites(
     const bdPromises = unextractedDomains.slice(0, 5).map(async (domain) => {
       if (options.abortSignal?.aborted) return;
       try {
-        const md = await scrapeAsMarkdown(domain, 12000);
+        const md = await scrapeAsMarkdown(domain, 12000, options.abortSignal);
         if (md && md.trim().length > 100) {
           extractedByDomain.set(domain, [md]);
         }

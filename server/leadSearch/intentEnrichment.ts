@@ -220,7 +220,8 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
           const intentData = await checkCompanyIntent(websiteUrl, {
             companyName: group.companyName,
             intentSignals: contract.intentSignals,
-            corpus: signalCorpus
+            corpus: signalCorpus,
+            abortSignal: signal || sessionAbortSignal
           });
 
           if (!intentData) {

@@ -21,6 +21,8 @@ export type ProfileEnrichmentResult = {
 export type EnrichLeadProfileOptions = {
   force?: boolean;
   ttlDays?: number;
+  /** Cancels the paid profile scrape. Optional: callers without a session signal omit it. */
+  abortSignal?: AbortSignal;
 };
 
 export async function enrichLeadProfile(
@@ -176,7 +178,7 @@ export async function enrichLeadProfile(
   }
 
   try {
-    const markdown = await scrapeAsMarkdown(rawUrl);
+    const markdown = await scrapeAsMarkdown(rawUrl, undefined, options.abortSignal);
     if (!markdown || markdown.trim().length === 0) {
       return {
         lead,

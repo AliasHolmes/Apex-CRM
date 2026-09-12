@@ -1,4 +1,9 @@
-import type { LLMProviderAttempt, LLMUsage } from "../services/llm.js";
+import {
+  type LLMProviderAttempt,
+  type LLMUsage,
+  getPrimaryLLMModel,
+  getPrimaryLLMProvider,
+} from "../services/llm.js";
 import { estimateTokenCount } from "./llmBudget.js";
 import type { RequirementClass, ProspectContract } from "./prospectContract.js";
 
@@ -47,9 +52,14 @@ export function summarizeLLM(
     : estimateTokenCount(
         typeof output === "string" ? output : JSON.stringify(output || ""),
       );
+  const resolvedModel =
+    usage?.model ||
+    successfulAttempt?.actualModel ||
+    successfulAttempt?.model ||
+    route.model;
   return {
     purpose,
-    model: usage?.model || successfulAttempt?.model || route.model,
+    model: resolvedModel,
     route: usage?.provider || successfulAttempt?.provider || route.route,
     fallbackUsed: providerAttempts.some(
       (attempt) => attempt.status === "error" || attempt.status === "skipped",
@@ -57,7 +67,7 @@ export function summarizeLLM(
     providerAttempts,
     inputTokens,
     outputTokens,
-    totalTokens: inputTokens + outputTokens,
+    totalTokens: usage?.totalTokens ?? (inputTokens + outputTokens),
     estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
     parseRetries,
   };
@@ -94,6 +104,7 @@ export type MiningTraceEvent = {
   operation: string;
   status: MiningEventStatus;
   provider?: MiningProvider;
+  model?: string;
   round?: number;
   query?: string;
   chunk?: {
@@ -164,6 +175,7 @@ export type ProviderSummary = Record<
     totalTokens: number;
     estimatedCostUsd: number;
     fallbackUses: number;
+    models?: Record<string, number>;
   }
 >;
 
@@ -289,11 +301,9 @@ export function estimateLLMCostUsd(inputTokens = 0, outputTokens = 0): number {
 
 export function getLLMRouteLabel() {
   const mode = process.env.LLM_GATEWAY_MODE || "direct";
-  const model =
-    mode === "litellm"
-      ? process.env.LITELLM_MODEL || "apex-primary"
-      : process.env.OPENAI_MODEL || "gpt-5.5";
-  return { mode, model, route: `${mode}:${model}` };
+  const model = getPrimaryLLMModel();
+  const provider = getPrimaryLLMProvider();
+  return { mode, model, provider, route: `${mode}:${model}` };
 }
 
 function blankProviderSummary(): ProviderSummary {
@@ -311,6 +321,7 @@ function blankProviderSummary(): ProviderSummary {
       totalTokens: 0,
       estimatedCostUsd: 0,
       fallbackUses: 0,
+      models: {},
     };
   }
   return summary;
@@ -348,6 +359,12 @@ function accumulateProviderEvent(
   if (event.llm?.fallbackUsed) item.fallbackUses++;
   item.avgLatencyMs =
     item.calls > 0 ? Math.round(item.latencyMs / item.calls) : 0;
+
+  const modelName = event.model || event.llm?.model;
+  if (modelName) {
+    if (!item.models) item.models = {};
+    item.models[modelName] = (item.models[modelName] || 0) + 1;
+  }
 }
 
 function summarizeProviders(events: MiningTraceEvent[]): ProviderSummary {
@@ -471,8 +488,8 @@ export class MiningTelemetryRecorder {
           inputTokens: traceEvent.llm?.inputTokens ?? 0,
           outputTokens: traceEvent.llm?.outputTokens ?? 0,
           latencyMs: traceEvent.latencyMs ?? 0,
-          modelName: traceEvent.llm?.model || undefined,
-          provider: "llm",
+          modelName: traceEvent.model || traceEvent.llm?.model || undefined,
+          provider: traceEvent.llm?.route || "llm",
           createdAt: traceEvent.timestamp,
         });
       } catch (err) {

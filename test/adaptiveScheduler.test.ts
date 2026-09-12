@@ -151,6 +151,43 @@ describe('provider-aware promise queue', () => {
     assert.equal(startedSecond, false);
   });
 
+  it('keeps sibling results when one task fails (does not discard paid work)', async () => {
+    const results = await runProviderQueue([
+      { id: 'ok-1', run: async () => 'a' },
+      {
+        id: 'boom',
+        run: async () => {
+          throw new Error('provider exploded');
+        }
+      },
+      { id: 'ok-2', run: async () => 'c' }
+    ], { concurrency: 3 });
+
+    // Previously Promise.all rejected on the single failure and every sibling result -
+    // already paid for in Tavily/Bright Data terms - was thrown away.
+    assert.deepEqual(results, ['a', 'c']);
+  });
+
+  it('still surfaces the original error when every task fails', async () => {
+    await assert.rejects(
+      runProviderQueue([
+        {
+          id: 'a',
+          run: async () => {
+            throw new Error('first failure');
+          }
+        },
+        {
+          id: 'b',
+          run: async () => {
+            throw new Error('second failure');
+          }
+        }
+      ], { concurrency: 2 }),
+      /first failure|second failure/
+    );
+  });
+
   it('F5: promotes top deferred arm on exploration floor rounds', () => {
     const history = [
       { family: 'persona_title', lane: 'person', provider: 'tavily', outcome_runs: 8, qualified_candidates: 6, returned_candidates: 5 },

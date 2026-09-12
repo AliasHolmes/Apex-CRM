@@ -7,6 +7,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
 import { buildProfileDedupeKeys } from '../utils/leadDedupe';
+import { createCsvFieldReader, CSV_FIELD_ALIASES } from '../utils/csvFieldMapping';
 import Papa from 'papaparse';
 import { 
   FileDown, 
@@ -1061,33 +1062,35 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           const rows = results.data as Record<string, string>[];
           
           const newProfiles = rows.flatMap((row, i): Lead[] => {
-            // Flexible heuristic field mapping
-            const getField = (keys: string[]) => {
-              const matchingKey = Object.keys(row).find(k => keys.some(key => k.toLowerCase().includes(key)));
-              return matchingKey ? row[matchingKey].trim() : '';
-            };
+            // CSV header matching is shared and unit-tested in `src/utils/csvFieldMapping.ts`.
+            // Fields resolve most-specific first, and a resolved field claims its header so a
+            // generic alias can never steal a column another field owns.
+            const getField = createCsvFieldReader(row);
 
-            const fName = getField(['first', 'fn']);
-            const lName = getField(['last', 'ln']);
-            let fullName = getField(['full name', 'name', 'contact']);
+            const fName = getField(CSV_FIELD_ALIASES.firstName);
+            const lName = getField(CSV_FIELD_ALIASES.lastName);
+
+            // Every other field is resolved BEFORE fullName so their headers are claimed;
+            // only then is it safe for fullName to use the substring fallback.
+            const company = getField(CSV_FIELD_ALIASES.company);
+            const title = getField(CSV_FIELD_ALIASES.title);
+            const email = getField(CSV_FIELD_ALIASES.email);
+            const phone = getField(CSV_FIELD_ALIASES.phone);
+            const linkedinUrl = getField(CSV_FIELD_ALIASES.linkedin);
+
+            const industry = getField(CSV_FIELD_ALIASES.industry) || 'Tech';
+            const location = getField(CSV_FIELD_ALIASES.location);
+            const summary = getField(CSV_FIELD_ALIASES.summary);
+            const skillsStr = getField(CSV_FIELD_ALIASES.skills);
+            const skills = skillsStr ? skillsStr.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
+            const importedReviewStatus = getField(CSV_FIELD_ALIASES.reviewStatus).toUpperCase();
+            const importedNextAction = getField(CSV_FIELD_ALIASES.nextAction).toUpperCase().replace(/\s+/g, '_');
+
+            let fullName = getField(CSV_FIELD_ALIASES.fullName);
             if (!fullName && (fName || lName)) {
               fullName = `${fName} ${lName}`.trim();
             }
             if (!fullName) return [];
-
-            const company = getField(['company', 'employer', 'org']);
-            const title = getField(['title', 'role', 'position']);
-            const email = getField(['email']);
-            const phone = getField(['phone', 'mobile']);
-            const linkedinUrl = getField(['linkedin', 'profile url', 'url']);
-
-            const industry = getField(['industry', 'sector']) || 'Tech';
-            const location = getField(['location', 'country', 'city']);
-            const summary = getField(['summary', 'bio', 'notes']);
-            const skillsStr = getField(['skills', 'tags']);
-            const skills = skillsStr ? skillsStr.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
-            const importedReviewStatus = getField(['review status']).toUpperCase();
-            const importedNextAction = getField(['next action']).toUpperCase().replace(/\s+/g, '_');
             const reviewStatus = REVIEW_STATUS_OPTIONS.some(option => option.value === importedReviewStatus)
               ? importedReviewStatus as ReviewStatus
               : 'UNREVIEWED';

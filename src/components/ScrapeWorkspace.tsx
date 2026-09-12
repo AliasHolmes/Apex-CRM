@@ -119,6 +119,8 @@ export default function ScrapeWorkspace() {
     pollController: AbortController | null;
     pollTimer?: ReturnType<typeof setTimeout>;
     sseSource?: EventSource | null;
+    /** Tears down this watcher's interval + SSE. Used by the re-entrancy guard. */
+    cleanup?: () => void;
   } | null>(null);
   const previewRequestRef = useRef<{ controller: AbortController; requestId: number } | null>(null);
   const previewRequestIdRef = useRef(0);
@@ -328,6 +330,19 @@ export default function ScrapeWorkspace() {
   ) => {
     const taskId = options?.taskId;
     const isResume = options?.isResume;
+
+    // Re-entrancy guard: if a watcher is already attached (e.g. one attached by the mount
+    // effect, then a second by a new discovery), tear it down completely before attaching.
+    // Previously the ref was simply overwritten, so the previous 3s poll and SSE connection
+    // stayed alive and the orphan's cleanup later fired setLoading(false) on the NEW,
+    // still-running discovery.
+    const previousWatcher = activeDiscoveryRef.current;
+    if (previousWatcher) {
+      previousWatcher.cleanup?.();
+      previousWatcher.controller.abort();
+    }
+    activeDiscoveryRef.current = null;
+
     const requestController = new AbortController();
 
     const disconnectStream = miningTraceStore.connect(sessionId, () => {
@@ -338,12 +353,27 @@ export default function ScrapeWorkspace() {
     let watchTimer: ReturnType<typeof setInterval> | undefined;
     let pollCount = 0;
 
-    const cleanupDiscoveryUi = () => {
+    // Set once this watcher is finished, so an in-flight poll cannot write state afterwards
+    // (it used to setState after unmount, and after being replaced by a newer watcher).
+    let settled = false;
+    let consecutiveFailures = 0;
+
+    // Resource teardown only - no UI state. This is what the re-entrancy guard uses when
+    // replacing a watcher: it must NOT clear `loading`, because the caller sets
+    // setLoading(true) *before* attaching, so a replacement would otherwise switch the
+    // spinner straight back off while the new discovery is still running.
+    const teardownWatcher = () => {
       if (watchTimer) clearInterval(watchTimer);
       disconnectStream();
       if (activeDiscoveryRef.current?.sessionId === sessionId) {
         activeDiscoveryRef.current = null;
       }
+    };
+
+    // Full completion: teardown plus "we're done" UI state.
+    const cleanupDiscoveryUi = () => {
+      settled = true;
+      teardownWatcher();
       setLoading(false);
     };
 
@@ -353,6 +383,7 @@ export default function ScrapeWorkspace() {
       pollController: requestController,
       pollTimer: undefined,
       sseSource: null,
+      cleanup: teardownWatcher,
     };
 
     watchTimer = setInterval(() => {
@@ -374,8 +405,21 @@ export default function ScrapeWorkspace() {
       void (async () => {
         try {
           const statusRes = await fetch(`/api/mining-sessions/${sessionId}`, { signal: requestController.signal });
-          if (!statusRes.ok) return;
+          if (settled || requestController.signal.aborted) return;
+          if (!statusRes.ok) {
+            // A persistent server fault used to retry silently for the full 800-poll cap
+            // (~40 min). Give up after a bounded number of consecutive failures instead.
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= 10) {
+              cleanupDiscoveryUi();
+              if (taskId) updateTaskStatus(taskId, 'failed');
+              setErrorCode('Lost contact with the mining session. Check Mining history for its outcome.');
+            }
+            return;
+          }
+          consecutiveFailures = 0;
           const payload = await statusRes.json();
+          if (settled || requestController.signal.aborted) return;
           const sessionRow = payload.session;
           const status = String(sessionRow?.status || '');
           if (!status || status === 'running' || status === 'cancellation_requested') return;
@@ -404,6 +448,7 @@ export default function ScrapeWorkspace() {
           setCrmDuplicatesFiltered(crmDuplicatesSkipped);
 
           await rehydrateLeads(true);
+          if (settled || requestController.signal.aborted) return;
           notifyLeadsUpdated();
 
           if (status === 'success') {

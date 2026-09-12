@@ -55,14 +55,18 @@ describe('sessionStreamHub subscriber auto-pruning and lifecycle', () => {
 
     // Manually trigger poll
     (sessionStreamHub as any).poll(sessionId);
-    const initialDbReadAt = broadcast.lastDbReadAt;
-    assert.ok(initialDbReadAt > 0, 'First poll should perform a DB read');
+    assert.ok(broadcast.lastDbReadAt > 0, 'First poll should perform a DB read');
+
+    // Reset lastDbReadAt to Date.now() right before second poll to guard against
+    // test-runner scheduling jitter exceeding 1000ms under heavy parallel test load
+    broadcast.lastDbReadAt = Date.now();
+    const benchmarkReadAt = broadcast.lastDbReadAt;
 
     // Immediate second poll with no log or trace changes
     (sessionStreamHub as any).poll(sessionId);
     assert.equal(
       broadcast.lastDbReadAt,
-      initialDbReadAt,
+      benchmarkReadAt,
       'Second poll within 1000ms and no counter changes should NOT re-query SQLite',
     );
 

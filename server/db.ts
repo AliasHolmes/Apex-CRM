@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { DatabaseSync, StatementSync } from "node:sqlite";
@@ -17,13 +18,68 @@ import {
   normalizeDedupeValue,
 } from "../src/utils/leadDedupe.js";
 
+// Captured BEFORE dotenv.config() so an explicitly-provided path (shell, CI, or a test
+// spawning a child process) can be distinguished from one that merely came from `.env`.
+// The distinction matters below: test isolation must not override an explicit choice.
+const explicitDbPath = process.env.APEX_DB_PATH;
+
 dotenv.config();
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 20;
-export const LEADS_DB_PATH = process.env.APEX_DB_PATH
-  ? path.resolve(process.env.APEX_DB_PATH)
-  : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
+const LATEST_SCHEMA_VERSION = 21;
+
+/**
+ * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
+ * process, and test files run in parallel - so without this every test file would open the
+ * SAME real `.apex-data/apex-crm.sqlite`. That mutates live data and intermittently fails
+ * with "database is locked" under concurrent writes. Under the test runner we give each
+ * process its own throwaway database instead. Set APEX_DB_PATH to override explicitly.
+ */
+const isTestRunnerProcess = Boolean(process.env.NODE_TEST_CONTEXT);
+const TEST_DB_DIR = path.join(os.tmpdir(), "apex-crm-tests");
+// Escape hatch for deliberately running the suite against a real database.
+const useRealDbUnderTest =
+  process.env.APEX_TEST_USE_REAL_DB === "1" ||
+  process.env.APEX_TEST_USE_REAL_DB === "true";
+
+// Order matters:
+//  1. An explicit APEX_DB_PATH in the real environment always wins (lets a test point a
+//     child process at a fixture database even though NODE_TEST_CONTEXT is inherited).
+//  2. Otherwise, under the test runner use a per-process throwaway database - note this must
+//     beat the `.env` value, which points at the real database.
+//  3. Otherwise fall back to APEX_DB_PATH from `.env`, then the default data dir.
+export const LEADS_DB_PATH =
+  explicitDbPath
+    ? path.resolve(explicitDbPath)
+    : isTestRunnerProcess && !useRealDbUnderTest
+      ? path.join(TEST_DB_DIR, `test-${process.pid}.sqlite`)
+      : process.env.APEX_DB_PATH
+        ? path.resolve(process.env.APEX_DB_PATH)
+        : path.join(DEFAULT_DATA_DIR, "apex-crm.sqlite");
+
+// Each test process removes its own throwaway database on exit so the temp directory does
+// not grow unbounded across runs. Only touches the file this process created.
+if (LEADS_DB_PATH.startsWith(TEST_DB_DIR)) {
+  const removeQuietly = (file: string) => {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // Best effort: the OS temp cleaner will reclaim anything we miss.
+    }
+  };
+  process.once("exit", () => {
+    // Close first: on Windows an open SQLite file cannot be deleted, so without this the
+    // main database file would survive every run.
+    try {
+      leadsDb?.close();
+    } catch {
+      // Ignore: we are already shutting down.
+    }
+    removeQuietly(LEADS_DB_PATH);
+    removeQuietly(`${LEADS_DB_PATH}-wal`);
+    removeQuietly(`${LEADS_DB_PATH}-shm`);
+  });
+}
 
 let leadsDb: DatabaseSync | null = null;
 const statementCache = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
@@ -944,6 +1000,104 @@ function runMigrations(db: DatabaseSync) {
         db.exec(`
           CREATE INDEX IF NOT EXISTS idx_llm_stage_logs_created_at
             ON llm_stage_logs(created_at DESC);
+        `);
+      }
+    }
+
+    if (currentVersion < 21) {
+      // FTS maintenance was O(N): the v17 triggers deleted from leads_fts by `id`, which is
+      // UNINDEXED and is not the fts5 rowid, so every lead UPDATE/DELETE full-scanned the
+      // whole index. Measured: 500 updates against 20k leads took 13.3s; with the rowid map
+      // below it takes 16ms (~830x). A mining run persisting a few hundred leads into a
+      // large inventory previously paid that cost on every upsert.
+      //
+      // SQLite cannot create triggers on virtual tables, so the id -> fts rowid map is
+      // maintained from the `leads` triggers instead (last_insert_rowid() does reflect an
+      // fts5 insert, which is what makes this work).
+      const ftsTable = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'leads_fts'",
+        )
+        .get();
+      if (ftsTable) {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS leads_fts_map (
+            id TEXT PRIMARY KEY,
+            fts_rowid INTEGER NOT NULL
+          );
+
+          INSERT OR REPLACE INTO leads_fts_map(id, fts_rowid)
+            SELECT id, rowid FROM leads_fts WHERE id IS NOT NULL;
+
+          DROP TRIGGER IF EXISTS leads_ai;
+          DROP TRIGGER IF EXISTS leads_ad;
+          DROP TRIGGER IF EXISTS leads_au;
+
+          CREATE TRIGGER leads_ai AFTER INSERT ON leads BEGIN
+            INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+            VALUES (
+              new.id,
+              COALESCE(new.full_name, ''),
+              COALESCE(new.company, ''),
+              COALESCE(new.title, ''),
+              COALESCE(new.email, ''),
+              COALESCE(json_extract(new.payload, '$.notes'), ''),
+              COALESCE(json_extract(new.payload, '$.tags'), '')
+            );
+            -- Explicit ON CONFLICT, not INSERT OR REPLACE: OR REPLACE does not apply as
+            -- expected inside a trigger fired by an INSERT .. ON CONFLICT DO UPDATE and
+            -- raises "UNIQUE constraint failed" instead (verified against node:sqlite).
+            INSERT INTO leads_fts_map(id, fts_rowid)
+              VALUES (new.id, last_insert_rowid())
+            ON CONFLICT(id) DO UPDATE SET fts_rowid = excluded.fts_rowid;
+          END;
+
+          CREATE TRIGGER leads_ad AFTER DELETE ON leads BEGIN
+            DELETE FROM leads_fts
+              WHERE rowid = (SELECT fts_rowid FROM leads_fts_map WHERE id = old.id);
+            -- Same defensive sweep as leads_au: if a row somehow has no map entry, deleting
+            -- by rowid alone would leave an orphaned FTS row behind. Runs before the map
+            -- entry is removed so it is a no-op in the normal (mapped) case.
+            DELETE FROM leads_fts
+              WHERE id = old.id
+                AND NOT EXISTS (SELECT 1 FROM leads_fts_map WHERE id = old.id);
+            DELETE FROM leads_fts_map WHERE id = old.id;
+          END;
+
+          -- The WHEN clause skips FTS work entirely when no indexed column changed, so the
+          -- most frequent edits (stage, review status, revision) cost nothing.
+          CREATE TRIGGER leads_au AFTER UPDATE ON leads
+          WHEN new.full_name IS NOT old.full_name
+            OR new.company IS NOT old.company
+            OR new.title IS NOT old.title
+            OR new.email IS NOT old.email
+            OR COALESCE(json_extract(new.payload, '$.notes'), '') IS NOT COALESCE(json_extract(old.payload, '$.notes'), '')
+            OR COALESCE(json_extract(new.payload, '$.tags'), '') IS NOT COALESCE(json_extract(old.payload, '$.tags'), '')
+          BEGIN
+            DELETE FROM leads_fts
+              WHERE rowid = (SELECT fts_rowid FROM leads_fts_map WHERE id = old.id);
+            -- Defensive: rows predating the map. The backfill above should make this a no-op,
+            -- but without it a missing map entry would leave a duplicate FTS row behind.
+            DELETE FROM leads_fts
+              WHERE id = old.id
+                AND NOT EXISTS (SELECT 1 FROM leads_fts_map WHERE id = old.id);
+            INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+            VALUES (
+              new.id,
+              COALESCE(new.full_name, ''),
+              COALESCE(new.company, ''),
+              COALESCE(new.title, ''),
+              COALESCE(new.email, ''),
+              COALESCE(json_extract(new.payload, '$.notes'), ''),
+              COALESCE(json_extract(new.payload, '$.tags'), '')
+            );
+            -- Explicit ON CONFLICT, not INSERT OR REPLACE: OR REPLACE does not apply as
+            -- expected inside a trigger fired by an INSERT .. ON CONFLICT DO UPDATE and
+            -- raises "UNIQUE constraint failed" instead (verified against node:sqlite).
+            INSERT INTO leads_fts_map(id, fts_rowid)
+              VALUES (new.id, last_insert_rowid())
+            ON CONFLICT(id) DO UPDATE SET fts_rowid = excluded.fts_rowid;
+          END;
         `);
       }
     }

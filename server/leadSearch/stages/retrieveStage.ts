@@ -422,9 +422,12 @@ export async function executeRetrieveStage(
                 queryRuns[index].providerUnits += 1;
                 const linkedInQuery = toLinkedInSearchQuery(plan.item);
                 const shouldFetchPage2 = duplicateCollisionRate > 0.3;
-                const bdSearchOptions: BrightDataSearchOptions = shouldFetchPage2
-                  ? { start: 10 }
-                  : {};
+                const bdSearchOptions: BrightDataSearchOptions = {
+                  ...(shouldFetchPage2 ? { start: 10 } : {}),
+                  // Without this, a cancelled session keeps issuing paid SERP calls (and
+                  // waiting through the 500-1200ms jitter) for results nobody will read.
+                  signal: state.abortController.signal,
+                };
                 try {
                   const attemptResults = await ports.brightDataSearch(
                     linkedInQuery || plan.executableQuery,

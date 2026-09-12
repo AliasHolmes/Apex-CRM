@@ -5,6 +5,7 @@ import {
   STRATEGIST_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
   type LLMProviderAttempt,
+  type LLMUsage,
 } from "../../services/llm.js";
 import {
   normalizeQueryPlanItems,
@@ -153,6 +154,7 @@ export async function executePlanStage(
   let planItems: SearchQueryPlanItem[] = [];
   const strategyStarted = Date.now();
   const strategyProviderAttempts: LLMProviderAttempt[] = [];
+  let strategyUsage: LLMUsage | undefined;
   const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
 
   try {
@@ -175,13 +177,31 @@ export async function executePlanStage(
         signal: effectiveSignal,
         onProviderAttempt: (attempt) =>
           strategyProviderAttempts.push(attempt),
+        onUsage: (usage) => {
+          strategyUsage = usage;
+        },
       },
     );
+    const successfulAttempt = strategyProviderAttempts.find(
+      (attempt) => attempt.status === "success",
+    );
+    const resolvedModel =
+      strategyUsage?.model ||
+      successfulAttempt?.actualModel ||
+      successfulAttempt?.model ||
+      process.env.OPENAI_MODEL ||
+      DEFAULT_PRIMARY_MODEL;
+    const latency = Date.now() - strategyStarted;
+    const tokens = strategyUsage?.totalTokens;
+    logEvent(
+      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Strategist Planning: ${normalizeQueryPlanItems(queryResult).length} queries]`,
+    );
+
     const reqLog = {
       timestamp: new Date().toISOString(),
       type: "llm_request",
       label,
-      model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
+      model: resolvedModel,
       prompt: strategistPrompt,
       systemInstruction: STRATEGIST_SYSTEM_PROMPT,
       response: queryResult,
@@ -199,16 +219,18 @@ export async function executePlanStage(
       operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
       status: "success",
       provider: "llm",
+      model: resolvedModel,
       round,
-      latencyMs: Date.now() - strategyStarted,
+      latencyMs: latency,
       counts: { generatedQueries: planItems.length },
       llm: summarizeLLM(
         "strategy",
         strategistPrompt,
         queryResult,
-        Date.now() - strategyStarted,
+        latency,
         0,
         strategyProviderAttempts,
+        strategyUsage,
       ),
     });
   } catch (e: any) {
@@ -216,11 +238,14 @@ export async function executePlanStage(
       logEvent(`Round ${round}: planning was aborted by generation guard.`);
       return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
     }
+    const failedAttempt = strategyProviderAttempts[strategyProviderAttempts.length - 1];
+    const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
     recordTrace({
       phase: "strategy",
       operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
       status: "error",
       provider: "llm",
+      model: failedModel,
       round,
       latencyMs: Date.now() - strategyStarted,
       error: { message: e.message || String(e) },
@@ -231,10 +256,11 @@ export async function executePlanStage(
         Date.now() - strategyStarted,
         0,
         strategyProviderAttempts,
+        strategyUsage,
       ),
     });
     logEvent(
-      `WARN: Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
+      `[LLM ERROR] Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
     );
     const errLog = {
       timestamp: new Date().toISOString(),

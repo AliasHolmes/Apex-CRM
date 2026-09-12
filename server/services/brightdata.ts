@@ -1112,12 +1112,19 @@ export function isAuthwalledUrl(url: string): boolean {
 async function nativeHttpScrape(
   scrapeUrl: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   try {
+    if (signal?.aborted) return null;
     let currentUrl = scrapeUrl;
     let redirectCount = 0;
     const maxRedirects = 3;
     const deadlineSignal = AbortSignal.timeout(Math.min(timeoutMs, 12000));
+    // Honour caller cancellation alongside the internal deadline, so a cancelled session
+    // stops mid-fetch instead of completing paid work nobody will read.
+    const fetchSignal = signal
+      ? AbortSignal.any([deadlineSignal, signal])
+      : deadlineSignal;
 
     while (redirectCount <= maxRedirects) {
       const parsed = new URL(currentUrl);
@@ -1133,7 +1140,7 @@ async function nativeHttpScrape(
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
         redirect: "manual",
-        signal: deadlineSignal,
+        signal: fetchSignal,
       });
 
       if (response.status >= 300 && response.status < 400) {
@@ -1220,17 +1227,22 @@ async function tavilyExtractFallback(scrapeUrl: string): Promise<string | null> 
 export async function scrapeAsMarkdown(
   url: string,
   timeoutMs = baseTimeoutMs(),
+  signal?: AbortSignal,
 ) {
   const scrapeUrl = normalizeBrightDataUrl(url);
   if (!scrapeUrl) {
     return null;
   }
+  // Cancellation is honoured at every await boundary, otherwise a cancelled session keeps
+  // spending Bright Data credits on scrapes whose results will be discarded.
+  if (signal?.aborted) return null;
 
   const isAuthwalled = isAuthwalledUrl(scrapeUrl);
 
   if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
     if (isAuthwalled) return null;
-    const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs);
+    const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs, signal);
+    if (signal?.aborted) return null;
     if (nativeResult) return nativeResult;
     return await tavilyExtractFallback(scrapeUrl);
   }
@@ -1282,10 +1294,12 @@ export async function scrapeAsMarkdown(
 
   // If Bright Data timed out or returned empty body for non-authwalled URL, fall back to native fetch then Tavily
   if (!isAuthwalled) {
-    const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs);
+    if (signal?.aborted) return null;
+    const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs, signal);
     if (nativeResult && nativeResult.trim().length > 50) {
       return nativeResult;
     }
+    if (signal?.aborted) return null;
     const tavilyResult = await tavilyExtractFallback(scrapeUrl);
     if (tavilyResult && tavilyResult.trim().length > 50) {
       return tavilyResult;
@@ -1317,7 +1331,9 @@ export function chunkBrightDataBatchItems<T>(items: T[]): T[][] {
 export async function scrapeBatchAsMarkdown(
   urls: string[],
   timeoutMs = baseTimeoutMs(),
+  signal?: AbortSignal,
 ): Promise<BrightDataBatchResult[]> {
+  if (signal?.aborted) return [];
   const cleanUrls = Array.from(
     new Set(
       urls
@@ -1355,7 +1371,9 @@ export async function scrapeBatchAsMarkdown(
         const fallbackResults = await Promise.all(
           cleanUrls.map(async (url) => {
             try {
-              const content = await scrapeAsMarkdown(url, timeoutMs);
+              // Each scrape checks the signal itself, so a cancelled batch stops issuing
+              // further paid calls as soon as cancellation is observed.
+              const content = await scrapeAsMarkdown(url, timeoutMs, signal);
               return content
                 ? { url, content, sourceProvider: "brightdata_batch" as const }
                 : null;
@@ -1513,6 +1531,8 @@ export type BrightDataSearchOptions = {
   onEngineAttempt?: (engine: "google" | "bing" | "yandex") => void;
   onBingFallback?: (event: { query: string; resultsCount: number }) => void;
   start?: number;
+  /** Cancels in-flight and pending search work; results are discarded on abort. */
+  signal?: AbortSignal;
 };
 
 const LINKEDIN_PROFILE_URL_PATTERN =
@@ -1723,9 +1743,22 @@ export async function brightDataSearch(
   query: string,
   options?: BrightDataSearchOptions,
 ): Promise<BrightDataSearchResult[]> {
-  // Add randomized search jitter (500-1200ms) between search calls
+  // Cancellation is checked before spending anything: a cancelled session must not wait
+  // through jitter or pay for SERP calls whose results will be discarded.
+  if (options?.signal?.aborted) return [];
+  // Randomized search jitter (500-1200ms) between search calls. Uses abortableSleep rather
+  // than a bare setTimeout so the wait ends the moment the session is cancelled.
   const jitterMs = Math.floor(500 + Math.random() * 700);
-  await new Promise((resolve) => setTimeout(resolve, jitterMs));
+  try {
+    await abortableSleep(jitterMs, options?.signal);
+  } catch (error) {
+    // abortableSleep rejects with AbortError when the signal fires mid-wait. Cancellation
+    // is not a fault here - surface it as "no results" rather than letting it propagate, so
+    // this function has one consistent contract: on abort it returns an empty list.
+    if ((error as Error)?.name === "AbortError") return [];
+    throw error;
+  }
+  if (options?.signal?.aborted) return [];
 
   const timeoutMs = options?.timeoutMs || baseTimeoutMs();
   const defaultEngine =

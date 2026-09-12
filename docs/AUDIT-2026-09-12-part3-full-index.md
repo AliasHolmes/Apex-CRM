@@ -381,3 +381,169 @@ Checked with no defects found:
 6. **H5** + §4.1 — FTS trigger and the concurrency clamps: the two largest throughput wins.
 7. **H7, H8, H9** — unbounded paid endpoints, silent CSV data corruption, frontend watcher leak.
 8. **M4, M5, F3–F6** — finish the cleanup the first two audits started.
+
+---
+
+## 9. Remediation applied in this pass
+
+Only files that were **committed and clean** were touched. The rest of the tree was being
+concurrently edited (see §0), so C2, H2, H3, H4, H5 and H7 were deliberately left alone rather
+than risk clobbering in-flight work.
+
+| ID | File(s) | Change |
+| --- | --- | --- |
+| **C1** | `server/services/llm.ts` | Removed the hardcoded `thk_live_*` credential. It was **dead code** — the Token Harbor provider reads `process.env.TOKEN_HARBOR_API_KEY` (`:205`) and never referenced the constant — so removal has zero runtime effect. **The key still exists in git history and must be rotated at the provider.** |
+| **C3 / H1** | `server/services/llm.ts` | Added `UNTRUSTED_MESSAGE` marking, `hasUntrustedMessage()`, and `buildParseFailureError()`. Parse failures now attach the completion as `rawExcerpt` instead of interpolating 300 chars into `message`. `isCircuitBreakingProviderFailure` and the transient-rate-limit check now trust only a typed `status` for such errors. The abort check no longer matches `message.includes("aborted")` — it uses `signal.aborted`, `name`, `cause.name`, or `code === "ABORT_ERR"`. **A second leak was found by the new tests and also fixed:** `JSON.parse` echoes a snippet of the offending text (`Unexpected token 'o', "not json at all" is not valid JSON`), so model output still reached the message via `parse_error=…`. Added `sanitizeParseError()` to redact quoted spans. |
+| **H8** | `src/utils/csvFieldMapping.ts` (new), `src/components/LeadTable.tsx` | Extracted header resolution into a testable util: exact normalized match first, then a substring fallback gated to specific aliases, with per-row header claiming. `fullName` is resolved **after** every other field so it can never capture `Company Name`. |
+| **H9** | `src/components/ScrapeWorkspace.tsx` | `attachActiveSessionWatcher` now tears down any previously attached watcher (interval + SSE + abort) before attaching a new one, and registers a `cleanup` on the ref. Added a `settled` guard so an in-flight poll cannot setState after unmount or after being replaced, and bounded persistent-failure retries to 10 polls instead of the silent 800 (~40 min). |
+| **H2** | `server/leadSearch/stages/judgeStage.ts` | Added an abort guard to **both** fallback paths (`evaluateFinalistBatch` ~:448 and `evaluateSingleBatch` ~:946) — a cancelled session now discards unjudged candidates instead of recursively splitting and then auto-qualifying them. Removed the fabricated confidence numbers from **both** copies of `fallbackResilientCandidates` (there are two, at ~:192 and ~:739): `semanticFit: 7.5` / `evidenceConfidence: 7.0` / `authorityFit: 7.0` are now `0` = "not evaluated", and the invented `\|\| 75` score default is gone. See the note below on what was deliberately **not** changed. |
+| **C2** | `server/leadSearch/discoveryEngine.ts` | Auto-qualified leads now have their qualification applied immediately but are **committed to `qualifiedLeads` only after enrichment**, and only if they survived it. `enrichStage` mutates the shared `acceptedLeads` array in place (`enrichStage.ts:908`), so membership there is the post-enrichment accept signal. Verified `qualifiedLeads` is in `state` but never read by `enrichStage`, so deferring is behaviour-neutral for that stage. Dropped leads are now logged. |
+
+| **Concurrency clamps** (§3) | `discoveryEngine.ts:1080-1088`, `extractStage.ts:652`, `judgeStage.ts:496` | Every site was clamped with `Math.min(…, 1)`, pinning concurrency to 1 and making `LEAD_EXTRACTION_CONCURRENCY` / `FINALIST_JUDGE_CONCURRENCY` completely inert. Now clamped to **2**, the recommended maximum already documented in `configValidation.ts:33-34`. **Default stays 1, so no behaviour changes unless the operator opts in** — deliberately conservative, since raising it drives more concurrent LLM traffic. |
+| **H4** (partial) | `server/services/brightdata.ts`, `stages/extractStage.ts`, `stages/retrieveStage.ts`, `discoveryEngine.ts` | Threaded `AbortSignal` through `scrapeAsMarkdown`, `scrapeBatchAsMarkdown`, `nativeHttpScrape` (combines with its existing deadline via `AbortSignal.any`) and `BrightDataSearchOptions`. Replaced the unabortable 500-1200 ms search jitter `setTimeout` with the existing `abortableSleep`. Wired the session signal at **six** paid call sites: the extract batch scrape, the `scrapeMarkdown`/`scrapeBatchMarkdown` pipeline ports, the Bright Data SERP call in `retrieveStage`, the site-probe domain scrape (which already had an unused `options.abortSignal` in scope), `checkCompanyIntent` (new optional `abortSignal`, wired from `intentEnrichment`), and `enrichLeadProfile` (new optional `abortSignal`; its only caller is the manual single-lead endpoint, so no session signal to pass yet). |
+
+| **H5** | `server/db.ts` (schema v21) | The FTS triggers deleted via `DELETE FROM leads_fts WHERE id = old.id`, and `id` is `UNINDEXED` and is not the fts5 rowid, so every lead UPDATE/DELETE full-scanned the index. Added a `leads_fts_map(id -> fts_rowid)` table (backfilled from `leads_fts`), rewrote all three triggers to target `rowid`, and added a `WHEN` clause so updates that do not touch an indexed column skip FTS work entirely. Also updated `test/enrichmentCache.test.ts` for the new version. **Measured: 500 updates against 20k leads went from 13,289ms to 16ms (~830x).** |
+
+| **H7** | `server/routes/api.ts`, `server/leadSearch/discoveryEngine.ts` | Added `DiscoverySessionEngine.getActiveCount()` and a cap on concurrent discovery runs (`APEX_MAX_CONCURRENT_SESSIONS`, default **2**, max 8) applied to **both** the async (`?mode=job`) and synchronous paths — previously N POSTs with distinct `sessionId`s spawned N parallel paid pipelines. Over-limit requests get a retryable **503** with `Retry-After` rather than queueing, so callers fail fast. Added a small fixed-window `paidRouteLimit` (default 30/min, `APEX_PAID_ROUTE_LIMIT_PER_MIN`) to the five other endpoints that spend money: `/scrape-url`, `/scrape-pasted`, `/leads/:id/enrich-profile`, `/generate-outbound`, `/chat`. |
+
+> **What I deliberately did NOT change in H2 — and why.** I first also gated the fallback behind
+> `ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION` (the codebase's existing "honest shortfall" convention).
+> That broke `test/blueprintBlueprintCoverage.test.ts:177`, which explicitly codifies the opposite
+> policy:
+>
+> ```ts
+> // Split-and-retry must exhaust and apply fallback resilient qualification
+> // so ZERO candidates are dropped!
+> assert.strictEqual(output.qualifiedCandidates.length, 2, 'ZERO candidates must be dropped on upstream failures');
+> assert.ok(lead.finalSelectionScore >= 60, 'Fallback score must be >= 60');
+> ```
+>
+> "Never drop a candidate on an upstream LLM failure" is a deliberate, tested design decision, not
+> an oversight — so I reverted the gate rather than override it. **The promotion policy is your
+> call, not mine**; if you want honest shortfall instead, flip it and update that test. The
+> fabricated *confidence numbers* were removed because no test asserts them and they are the part
+> that actively misleads (an unjudged lead presenting `semanticFit 7.5` looks evaluated).
+
+> **Important caveat on the throughput win (§4.1).** Unpinning the concurrency clamps will *not* by
+> itself deliver the large wall-clock improvement the architecture implies. `llm.ts:339-348`
+> serialises **all** LLM calls process-wide, so extraction and judging concurrency above 1 mostly
+> queues rather than parallelises. The clamps are now correct, but the real bottleneck is that
+> global serial queue — measure before raising these above 1.
+
+**Regression coverage added:**
+
+- `test/csvFieldMapping.test.ts` (6 tests) — these fail against the old logic: the first case
+  resolves `Full Name` to `Ada` instead of `Ada Lovelace`, exactly the reported data-loss symptom.
+- `test/llmUntrustedMessage.test.ts` (3 tests) — proves a malformed completion containing
+  `"aborted"` still cascades to the next provider (previously it killed the whole chain), that one
+  containing `"timeout"` no longer puts a healthy provider on a 30 s cooldown, and that model text
+  never reaches an error message.
+
+> **The new tests earned their keep immediately.** The third one failed on first run and exposed
+> that my own C3 fix was incomplete: `JSON.parse` echoes a snippet of the input
+> (`Unexpected token 'o', "not json at all" is not valid JSON`), so untrusted text still reached
+> the classified message through `parse_error=…`. Caught and fixed with `sanitizeParseError()`.
+
+**Verification:** `tsc --noEmit` clean; `npm test` **617/617 passing across 137 suites**
+(606 before this audit; the 11 new tests are the CSV, LLM and provider-queue regressions).
+
+---
+
+### Manual verification pass - three further defects found
+
+A deliberate file-by-file review of the finished change set (requested separately from the fixes
+themselves). All three were introduced by fixes in this audit and none were caught by tests:
+
+1. **`brightdata.ts` - `abortableSleep` rejects, it does not resolve.** I used it to replace the
+   unabortable jitter `setTimeout`, assuming it resolves on abort. It actually rejects with
+   `AbortError`, so an abort during the jitter wait propagated a rejection out of
+   `brightDataSearch` instead of the intended clean `return []`. Wrapped in a try/catch that
+   converts an abort into the documented empty result; other errors still propagate.
+2. **`ScrapeWorkspace.tsx` - re-entrancy guard could switch the spinner off.** The guard called
+   `cleanup()`, which does `setLoading(false)`. Callers call `setLoading(true)` *before*
+   attaching, so replacing a watcher would immediately clear loading while the new discovery was
+   still running. Split into `teardownWatcher()` (resources only - what the guard uses) and
+   `cleanupDiscoveryUi()` (teardown + `setLoading(false)`).
+3. **`db.ts` - `leads_ad` lacked the defensive sweep `leads_au` has.** If a row ever had no map
+   entry, deleting by rowid alone would leave an orphaned FTS row behind. Added the same
+   `NOT EXISTS` sweep before the map row is removed; it is a no-op in the normal mapped case.
+
+Also confirmed clean during this pass: no `INSERT OR REPLACE INTO leads` anywhere (the one path
+that could have produced the orphan state), `leads_fts_map` needs no entry in the hardcoded
+cascade-delete lists because `leads_ad` handles it, and the full change set builds and runs.
+
+**Note on flaky tests:** one run failed with `database is locked` on
+`test/verifiedBugfixes.test.ts`. It passes 4/4 in isolation and the full suite is green on re-run.
+This is lock contention between parallel test files sharing the real SQLite file - the same hazard
+described below, and another reason to isolate the test database.
+
+### Two defects found by reviewing my own changes
+
+Recorded because both were introduced by fixes in this audit and only surfaced on a deliberate
+second pass over the diff:
+
+1. **Abort-listener leak in the new `runProviderQueue`** (`providerQueue.ts`). The abort race
+   attached an `abort` listener to the session signal and never removed it when no abort occurred.
+   `runProviderQueue` is called once per stage per round against a session-scoped signal, so those
+   listeners accumulate for the whole session and would eventually trip
+   `MaxListenersExceededWarning`. Fixed with `finally { removeEventListener(...) }`.
+2. **Rate-limit default too tight** (`api.ts`). `paidRouteLimit` first shipped at 30/min, which
+   would have blocked legitimate bulk enrichment. Raised to 120/min - still two orders of magnitude
+   below a runaway retry loop, which fires at hundreds per second.
+
+I also re-verified the C2 assumption instead of trusting it: `acceptedLeads` is written in exactly
+two places (`discoveryEngine.ts:1193` resume restore, `enrichStage.ts:908` survivors) and
+`roundFinalistCandidates` is built from pre-enrichment `postFilterLeads`, so the "did it survive
+enrichment" check is meaningful - it is not silently always-true.
+
+---
+
+### H3 — fixed, but not with `allSettled`
+
+The obvious `Promise.all` → `Promise.allSettled` swap is **wrong here**, and it is worth recording
+why. `test/adaptiveScheduler.test.ts:116-152` aborts while task 1 is still pending and asserts
+rejection *before* releasing it:
+
+```ts
+await didStart;
+controller.abort();
+await assert.rejects(queued, e => (e as Error).name === 'AbortError');
+releaseFirst();          // <- only AFTER the assertion
+```
+
+`allSettled` waits for **every** task, including the still-pending one, so it deadlocks on that
+assertion. The implemented fix keeps both properties:
+
+1. Each task settles into its own slot (`results[index]` / `failures.push`), so **one failure no
+   longer discards sibling results** — the actual bug. A single transient provider error used to
+   throw away every other result in the batch, which for Tavily/Bright Data is paid work.
+2. Cancellation is handled by racing the aggregate against an abort promise, so a cancelled run
+   settles **immediately** without waiting for in-flight tasks. Abort still throws `AbortError`,
+   preserving the existing contract for all 8 call sites.
+3. If *nothing* succeeded, the original error is still thrown, so callers keep their error paths.
+
+Regression tests added in `test/adaptiveScheduler.test.ts`: sibling results survive a single task
+failure, and every-task-fails still surfaces the original error.
+
+---
+
+### Gotchas worth recording
+
+- The repo enforces **ASCII-only source** via `test/encodingHygiene.test.ts`. Em dashes in two new
+  comments broke the suite on the first run — use ASCII punctuation in `server/` and `src/`.
+- `discoveryEngine.ts` was refactored upstream mid-session: the inline duplicate check at the
+  auto-qualified site became a `tryAddQualifiedLead(lead)` helper that returns `boolean`. Re-read
+  before editing; this file moves often.
+- **The test suite writes to the real database.** Tests call `getLeadsDb()` directly, so `npm test`
+  mutates `.apex-data/apex-crm.sqlite` (2,195 leads at the time of writing) rather than a temp
+  file. There is an `APEX_DB_PATH` env var for pointing at a throwaway DB. Worth isolating — a
+  failing test can leave real data behind.
+- **Two SQLite facts that shaped the H5 fix** (both verified empirically against `node:sqlite`,
+  neither is obvious):
+  - You **cannot create triggers on a virtual table** (`cannot create triggers on virtual tables`),
+    which rules out maintaining an id→rowid map from `leads_fts` itself. It has to be driven from
+    the `leads` triggers.
+  - `INSERT OR REPLACE` **does not work inside a trigger fired by `INSERT … ON CONFLICT DO UPDATE`**
+    — it raises `UNIQUE constraint failed` instead of replacing. Use an explicit
+    `ON CONFLICT(id) DO UPDATE SET …`. `last_insert_rowid()` *does* correctly reflect an fts5
+    insert, which is what makes the rowid map possible.

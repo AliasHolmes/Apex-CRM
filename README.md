@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-6.0-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v19-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v19" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v21-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v21" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
     <img src="https://img.shields.io/badge/Lead_Engine-32_Core_Tests_Passing-10B981" alt="Lead Engine Tests" />
   </p>
@@ -62,7 +62,7 @@ flowchart TD
     StreamA --> Plan
     StreamB --> Plan
 
-    Judge --> Checkpoint[("Durable SQLite Checkpoint (Schema v15)")]
+    Judge --> Checkpoint[("Durable SQLite Checkpoint (Schema v21)")]
     Judge --> Inventory["Local Prospect Inventory"]
 ```
 
@@ -134,7 +134,7 @@ flowchart TD
 ```mermaid
 graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
-    API --> DB[("SQLite Database (node:sqlite, Schema v15, WAL mode)")]
+    API --> DB[("SQLite Database (node:sqlite, Schema v21, WAL mode)")]
 
     API --> Gateway["LiteLLM Gateway (127.0.0.1:4000)"]
     API --> Direct["Direct OpenAI-Compatible Fallback Chain"]
@@ -257,7 +257,7 @@ All API routes are mounted under `/api`:
 
 ---
 
-## Database & Schema (v15)
+## Database & Schema (v21)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
@@ -318,7 +318,7 @@ src/
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog
     ResumableSessionsBanner  1-click interrupted mining session recovery banner
     TraceTerminal.tsx        Decoupled 60fps streaming telemetry terminal
-  hooks/                     UI hooks and custom store subscriptions
+  context/                   React context providers (leads, toasts)
   lib/
     traceStore.ts            useSyncExternalStore reactive SSE trace and log store
     leadMutations.ts         Optimistic rebase and canonical preference utilities
@@ -328,11 +328,12 @@ server/
   routes/
     api.ts                   REST API endpoints, dual-mode HTTP 202, and resume routes
   services/
-    llm.ts                   LLM gateway, fallbacks, and JSON schemas
-    tavily.ts                Tavily search, extraction, and key rotation
+    llm.ts                   LLM gateway, fallbacks, JSON schemas, and Tavily search/extract
     brightData.ts            Bright Data MCP client, search, and scraper
     keyRotator.ts            Provider key pool and rate-limit manager
-    evidenceService.ts       Markdown extraction and email discovery
+    linkedinEvidence.ts      LinkedIn profile evidence extraction
+    privateHosts.ts          Shared SSRF guard for private/internal hosts
+    sessionStreamHub.ts      Fan-out hub for SSE session streams
   leadSearch/
     stages/                  Decoupled 7-stage pipeline engine
       planStage.ts           Adaptive planner task derivation & query planning
@@ -350,7 +351,7 @@ server/
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
     scoring.ts               Composite scoring, freshness decay & MMR diversity
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v17 schema (with leads_fts virtual table), migrations, checkpoint CRUD & startup sweeps
+  db.ts                      SQLite v21 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
 test/                        Automated unit, integration, and replay test suites (264 tests)
 scripts/                     Dev orchestrator and server runners
 litellm.config.yaml          LiteLLM proxy configuration

@@ -12,6 +12,7 @@ import {
 } from "../finalistJudge.js";
 import {
   openAIStructured,
+  DEFAULT_PRIMARY_MODEL,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -194,10 +195,16 @@ export async function executeJudgeStage(
       reasonMsg: string,
     ): any[] => {
       return candidatesToFallback.map((candidate) => {
+        // The 60 floor is deliberate: it keeps never-judged candidates competitive so an
+        // upstream LLM failure does not silently drop them (see blueprintBlueprintCoverage
+        // "ZERO candidates must be dropped on upstream failures"). The removed `|| 75`
+        // invented a score for leads that have none; 0 is honest and the floor still applies.
+        // semanticFit/evidenceConfidence/authorityFit below are 0 = "not evaluated" rather
+        // than the previous hardcoded 7.5/7.0/7.0, which presented as a real judgment.
         const finalScore = Math.max(
           60,
           Math.round(
-            candidate.lead.finalSelectionScore || candidate.lead.score || 75,
+            candidate.lead.finalSelectionScore ?? candidate.lead.score ?? 0,
           ),
         );
         const fallbackQualification: Qualification = {
@@ -209,10 +216,10 @@ export async function executeJudgeStage(
             requirementId: r.id,
             status: "unknown",
           })),
-          reason: `Fallback resilient qualification: ${reasonMsg}.`,
-          semanticFit: 7.5,
-          evidenceConfidence: 7.0,
-          authorityFit: contract.authorityRequired ? 7.0 : 0,
+          reason: `Not LLM-judged (model unavailable): ${reasonMsg}. Treated as unverified.`,
+          semanticFit: 0,
+          evidenceConfidence: 0,
+          authorityFit: 0,
         };
         candidate.lead.qualification = fallbackQualification;
         candidate.lead.whyThisLead = fallbackQualification.reason;
@@ -385,10 +392,24 @@ export async function executeJudgeStage(
             }
           }
         }
+        const successfulAttempt = judgeAttempts.find((a) => a.status === "success");
+        const resolvedModel =
+          judgeUsage?.model ||
+          successfulAttempt?.actualModel ||
+          successfulAttempt?.model ||
+          process.env.OPENAI_MODEL ||
+          DEFAULT_PRIMARY_MODEL;
+        const latency = Date.now() - judgeStarted;
+        const tokens = judgeUsage?.totalTokens;
+        logEvent(
+          `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Finalist Judge: ${batchQualified.length}/${batch.length} qualified]`,
+        );
+
         debugLogs.push({
           timestamp: new Date().toISOString(),
           type: "llm_response",
           label: `finalist_judge_batch_${batchIndex + 1}_d${attemptDepth}`,
+          model: resolvedModel,
           response: JSON.parse(JSON.stringify(judgmentResult)),
         });
         recordTrace({
@@ -396,8 +417,9 @@ export async function executeJudgeStage(
           operation: "finalist_judge",
           status: "success",
           provider: "llm",
+          model: resolvedModel,
           round: stats.rounds,
-          latencyMs: Date.now() - judgeStarted,
+          latencyMs: latency,
           counts: {
             batchSize: batch.length,
             validJudgments: validation.validJudgmentCount,
@@ -407,7 +429,7 @@ export async function executeJudgeStage(
             "finalist_judge",
             judgePrompt,
             judgmentResult,
-            Date.now() - judgeStarted,
+            latency,
             0,
             judgeAttempts,
             judgeUsage,
@@ -421,11 +443,17 @@ export async function executeJudgeStage(
         });
         return batchQualified;
       } catch (error: any) {
+        const failedAttempt = judgeAttempts[judgeAttempts.length - 1];
+        const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
+        logEvent(
+          `[LLM ERROR] Finalist judge batch ${batchIndex + 1} failed: ${error?.message || String(error)}`,
+        );
         recordTrace({
           phase: "candidate_processing",
           operation: "finalist_judge",
           status: "error",
           provider: "llm",
+          model: failedModel,
           round: stats.rounds,
           latencyMs: Date.now() - judgeStarted,
           error: { message: error.message || String(error) },
@@ -445,6 +473,15 @@ export async function executeJudgeStage(
             requestedOutputTokens: dynamicMaxTokens,
           },
         });
+        // See the equivalent guard in evaluateSingleBatch: a cancelled session must never fall
+        // through to the resilient fallback, which would auto-qualify never-evaluated
+        // candidates with fabricated scores.
+        if (state.abortController.signal.aborted) {
+          logEvent(
+            `Finalist judge batch ${batchIndex + 1} aborted; discarding ${batch.length} unjudged candidate(s).`,
+          );
+          return [];
+        }
         const isTokenOrSizeError =
           error.isTokenLimit ||
           /413|payload too large|too many tokens|rate_limit_exceeded/i.test(
@@ -484,10 +521,12 @@ export async function executeJudgeStage(
         run: async () => evaluateFinalistBatch(batch, batchIndex),
       })),
       {
+        // The upper clamp was 1, which made FINALIST_JUDGE_CONCURRENCY inert. 2 is the
+        // recommended maximum in configValidation.ts; default stays 1 unless opted in.
         concurrency: Math.max(
           1,
           Math.min(
-            1,
+            2,
             Number(
               process.env.FINALIST_JUDGE_CONCURRENCY ||
                 config.judgeConcurrency ||
@@ -730,12 +769,18 @@ export async function evaluateIncrementalJudgeBatches(
     reasonMsg: string,
   ): any[] => {
     return candidatesToFallback.map((candidate) => {
-      const finalScore = Math.max(
-        60,
-        Math.round(
-          candidate.lead.finalSelectionScore || candidate.lead.score || 75,
-        ),
-      );
+        // The 60 floor is deliberate: it keeps never-judged candidates competitive so an
+        // upstream LLM failure does not silently drop them (see blueprintBlueprintCoverage
+        // "ZERO candidates must be dropped on upstream failures"). The removed `|| 75`
+        // invented a score for leads that have none; 0 is honest and the floor still applies.
+        // semanticFit/evidenceConfidence/authorityFit below are 0 = "not evaluated" rather
+        // than the previous hardcoded 7.5/7.0/7.0, which presented as a real judgment.
+        const finalScore = Math.max(
+          60,
+          Math.round(
+            candidate.lead.finalSelectionScore ?? candidate.lead.score ?? 0,
+          ),
+        );
       const fallbackQualification: Qualification = {
         policyVersion: contract.policyVersion,
         verdict: "qualified_partial",
@@ -745,10 +790,10 @@ export async function evaluateIncrementalJudgeBatches(
           requirementId: r.id,
           status: "unknown",
         })),
-        reason: `Fallback resilient qualification: ${reasonMsg}.`,
-        semanticFit: 7.5,
-        evidenceConfidence: 7.0,
-        authorityFit: contract.authorityRequired ? 7.0 : 0,
+        reason: `Not LLM-judged (model unavailable): ${reasonMsg}. Treated as unverified.`,
+        semanticFit: 0,
+        evidenceConfidence: 0,
+        authorityFit: 0,
       };
       candidate.lead.qualification = fallbackQualification;
       candidate.lead.whyThisLead = fallbackQualification.reason;
@@ -885,13 +930,27 @@ export async function evaluateIncrementalJudgeBatches(
         }
       }
 
+      const successfulAttempt = judgeAttempts.find((a) => a.status === "success");
+      const resolvedModel =
+        judgeUsage?.model ||
+        successfulAttempt?.actualModel ||
+        successfulAttempt?.model ||
+        process.env.OPENAI_MODEL ||
+        DEFAULT_PRIMARY_MODEL;
+      const latency = Date.now() - judgeStarted;
+      const tokens = judgeUsage?.totalTokens;
+      logEvent(
+        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Incremental Judge: ${batchQualified.length}/${batch.length} qualified]`,
+      );
+
       recordTrace({
         phase: "candidate_processing",
         operation: "incremental_finalist_judge",
         status: "success",
         provider: "llm",
+        model: resolvedModel,
         round,
-        latencyMs: Date.now() - judgeStarted,
+        latencyMs: latency,
         counts: {
           batchSize: batch.length,
           validJudgments: validation.validJudgmentCount,
@@ -901,7 +960,7 @@ export async function evaluateIncrementalJudgeBatches(
           "incremental_finalist_judge",
           judgePrompt,
           judgmentResult,
-          Date.now() - judgeStarted,
+          latency,
           0,
           judgeAttempts,
           judgeUsage,
@@ -916,14 +975,17 @@ export async function evaluateIncrementalJudgeBatches(
 
       return batchQualified;
     } catch (error: any) {
+      const failedAttempt = judgeAttempts[judgeAttempts.length - 1];
+      const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
       logEvent(
-        `WARN: Incremental judge batch ${batchIndex + 1} failed: ${error.message || String(error)}`,
+        `[LLM ERROR] Incremental judge batch ${batchIndex + 1} failed: ${error.message || String(error)}`,
       );
       recordTrace({
         phase: "candidate_processing",
         operation: "incremental_finalist_judge",
         status: "error",
         provider: "llm",
+        model: failedModel,
         round,
         latencyMs: Date.now() - judgeStarted,
         error: { message: error.message || String(error) },
@@ -943,6 +1005,16 @@ export async function evaluateIncrementalJudgeBatches(
           requestedOutputTokens: dynamicMaxTokens,
         },
       });
+      // A cancelled session must never reach the resilient fallback below: that path invents
+      // `qualified_partial` verdicts with fabricated scores for candidates the LLM never
+      // evaluated, and they would still be persisted. Bail out instead of splitting and
+      // retrying, which would also spend more tokens on a run the user already stopped.
+      if (state.abortController.signal.aborted) {
+        logEvent(
+          `Incremental judge batch ${batchIndex + 1} aborted; discarding ${batch.length} unjudged candidate(s).`,
+        );
+        return [];
+      }
       const isTokenOrSizeError =
         error.isTokenLimit ||
         /413|payload too large|too many tokens|rate_limit_exceeded|429|rate[-_ ]?limit/i.test(

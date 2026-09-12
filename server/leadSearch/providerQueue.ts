@@ -43,6 +43,12 @@ export async function runProviderQueue<T>(tasks: ProviderQueueTask<T>[], options
     ...(intervalCap > 0 && interval > 0 ? { intervalCap, interval } : {})
   });
 
+  // Each task settles individually into `results` / `failures` instead of rejecting into the
+  // aggregate. Previously a single task failure discarded every sibling result - which for
+  // paid Tavily/Bright Data work meant throwing away results that had already been bought.
+  const results = new Array<T | undefined>(tasks.length);
+  const failures: unknown[] = [];
+
   const pending = tasks.map((task, index) => queue.add(
     async ({ signal }) => {
       if (options.signal?.aborted || signal?.aborted) {
@@ -57,7 +63,55 @@ export async function runProviderQueue<T>(tasks: ProviderQueueTask<T>[], options
       priority: Number.isFinite(task.priority) ? task.priority : 0,
       signal: options.signal
     }
+  ).then(
+    (value) => {
+      if (value !== undefined && value !== null) {
+        results[index] = value as T;
+      }
+    },
+    (error) => {
+      failures.push(error);
+    },
   ));
 
-  return Promise.all(pending) as Promise<T[]>;
+  // Cancellation must settle immediately and must NOT wait for in-flight tasks, which may
+  // never settle (see test/adaptiveScheduler.test.ts "removes work that has not started when
+  // the session is cancelled"). A plain Promise.all - or allSettled - would deadlock there.
+  if (options.signal) {
+    const abortSignal = options.signal;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      if (abortSignal.aborted) {
+        resolve();
+        return;
+      }
+      onAbort = () => resolve();
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      await Promise.race([Promise.all(pending), aborted]);
+    } finally {
+      // The signal is session-scoped and runProviderQueue is called once per stage per
+      // round, so without this the listeners would accumulate for the whole session and
+      // eventually trip MaxListenersExceededWarning.
+      if (onAbort) abortSignal.removeEventListener('abort', onAbort);
+    }
+    if (abortSignal.aborted) {
+      const cancelError = new Error('Queued provider work was cancelled.');
+      cancelError.name = 'AbortError';
+      throw cancelError;
+    }
+  }
+
+  await Promise.all(pending);
+
+  const values = results.filter(
+    (value): value is T => value !== undefined && value !== null,
+  );
+  // Nothing succeeded: surface the original failure so callers still see errors.
+  if (values.length === 0 && failures.length > 0) {
+    const first = failures[0];
+    throw first instanceof Error ? first : new Error(String(first));
+  }
+  return values;
 }

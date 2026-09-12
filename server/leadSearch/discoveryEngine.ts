@@ -79,6 +79,7 @@ import {
   getTavilyKeyStatus,
   createLLMSessionCircuitBreaker,
   normalizeTavilyCountry,
+  DEFAULT_PRIMARY_MODEL,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../services/llm.js";
@@ -765,6 +766,8 @@ export async function executeDiscoverySession(
       } else if (hasOpenAIKey()) {
         const contractStarted = Date.now();
         const contractPrompt = buildProspectContractPrompt(query);
+        const contractAttempts: LLMProviderAttempt[] = [];
+        let contractUsage: LLMUsage | undefined;
         try {
           const compiled = await openAIStructured<any>(
             contractPrompt,
@@ -780,19 +783,32 @@ export async function executeDiscoverySession(
               ),
               maxRetries: 0,
               retryOnParseFailure: false,
+              onProviderAttempt: (attempt) => contractAttempts.push(attempt),
+              onUsage: (usage) => {
+                contractUsage = usage;
+              },
             },
           );
           contract = normalizeProspectContract(compiled, query, fallbackContract);
           const hardCount = contract.requirements.filter(
             (req) => req.importance === "hard",
           ).length;
+          const successfulAttempt = contractAttempts.find((a) => a.status === "success");
+          const resolvedModel =
+            contractUsage?.model ||
+            successfulAttempt?.actualModel ||
+            successfulAttempt?.model ||
+            process.env.OPENAI_MODEL ||
+            DEFAULT_PRIMARY_MODEL;
+          const latency = Date.now() - contractStarted;
+          const tokens = contractUsage?.totalTokens;
           logEvent(
-            `Compiled prospect quality contract v${contract.policyVersion} with ${hardCount} hard requirements in ${Date.now() - contractStarted}ms.`,
+            `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Contract Compilation: v${contract.policyVersion} (${hardCount} hard reqs)]`,
           );
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
         } catch (err: any) {
           logEvent(
-            `WARN: Prospect contract compiler failed (${Date.now() - contractStarted}ms): ${err.message || String(err)}. Using deterministic contract.`,
+            `[LLM ERROR] Prospect contract compiler failed (${Date.now() - contractStarted}ms): ${err.message || String(err)}. Using deterministic contract.`,
           );
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, fallbackContract);
         }
@@ -1077,13 +1093,16 @@ export async function executeDiscoverySession(
       profileEnrichmentStage,
       profileConcurrency,
       profileMaxPerSearch,
+      // Both were previously clamped with Math.min(..., 1), which pinned them to 1 and made
+      // the env vars inert no matter what was configured. 2 is the recommended maximum in
+      // configValidation.ts; the default stays 1 so behaviour is unchanged unless opted in.
       extractionConcurrency: Math.min(
         Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1),
-        1,
+        2,
       ),
       judgeConcurrency: Math.min(
         Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 1), 1),
-        1,
+        2,
       ),
     };
 
@@ -1122,8 +1141,16 @@ export async function executeDiscoverySession(
       brightDataSearch: (q, opts, label) =>
         trackableBrightDataSearch(q, opts, label),
       tavilySearch: (q, opts) => tavilySearch(q, opts),
-      scrapeMarkdown: (url) => scrapeAsMarkdown(url),
-      scrapeBatchMarkdown: (urls) => scrapeBatchAsMarkdown(urls),
+      // Thread the session abort signal through so cancelling stops paid Bright Data work
+      // instead of letting in-flight and queued scrapes run to completion.
+      scrapeMarkdown: (url) =>
+        scrapeAsMarkdown(url, undefined, sessionState.abortController.signal),
+      scrapeBatchMarkdown: (urls) =>
+        scrapeBatchAsMarkdown(
+          urls,
+          undefined,
+          sessionState.abortController.signal,
+        ),
     };
 
     const sessionCtx: SessionContext = {
@@ -1735,7 +1762,12 @@ export async function executeDiscoverySession(
 
         const triage = triPartitionCandidatesByEvidence(roundFinalistCandidates, contract);
 
-        // 1. Auto-qualified leads: apply qualification and add directly to qualifiedLeads
+        // 1. Auto-qualified leads: apply the qualification now, but DEFER committing them to
+        //    qualifiedLeads until enrichment has run. They previously went straight in here,
+        //    and because they are not excluded from the enrichment pool, a lead enrichment
+        //    later rejected (not_decision_maker / score_below_minimum) still reached
+        //    selectStage and was persisted - and still counted toward the early-exit target.
+        const autoQualifiedLeads: any[] = [];
         for (const { candidate, qualification } of triage.autoQualified) {
           candidate.lead.qualification = qualification;
           candidate.lead.whyThisLead = qualification.reason;
@@ -1744,7 +1776,7 @@ export async function executeDiscoverySession(
             candidate.lead.scoreBreakdown.finalScore = qualification.finalScore;
           }
           candidate.lead.scoreOverride = qualification.finalScore;
-          tryAddQualifiedLead(candidate.lead);
+          autoQualifiedLeads.push(candidate.lead);
         }
         if (triage.autoQualified.length > 0) {
           logEvent(
@@ -1792,6 +1824,33 @@ export async function executeDiscoverySession(
         brightDataProviderDisabled = enrichResult.brightDataProviderDisabled;
         brightDataTransportRetryAfter =
           enrichResult.brightDataTransportRetryAfter;
+
+        // Commit the deferred auto-qualified leads, but only those enrichment actually
+        // accepted. `acceptedLeads` is mutated in place by enrichStage, so it now holds the
+        // post-enrichment set; anything absent from it was rejected as not_decision_maker or
+        // score_below_minimum and must not reach selectStage.
+        if (autoQualifiedLeads.length > 0) {
+          const acceptedIdentityKeys = new Set<string>();
+          const identityKey = (lead: any) =>
+            String(lead?.id || lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "");
+          for (const lead of acceptedLeads) {
+            const key = identityKey(lead);
+            if (key) acceptedIdentityKeys.add(key);
+          }
+          let committed = 0;
+          for (const lead of autoQualifiedLeads) {
+            const key = identityKey(lead);
+            const survivedEnrichment =
+              acceptedLeads.includes(lead) || (key ? acceptedIdentityKeys.has(key) : false);
+            if (!survivedEnrichment) continue;
+            if (tryAddQualifiedLead(lead)) committed += 1;
+          }
+          const dropped = autoQualifiedLeads.length - committed;
+          logEvent(
+            `Round ${round} Triage: committed ${committed} auto-qualified lead(s) after enrichment` +
+              (dropped > 0 ? `; dropped ${dropped} rejected by enrichment.` : "."),
+          );
+        }
 
         // Post-enrichment micro-batch judging for candidates needing semantic review
         const acceptedInRound = acceptedLeads
@@ -2349,6 +2408,15 @@ export class DiscoverySessionEngine {
 
   isActive(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);
+  }
+
+  /**
+   * Number of sessions currently executing. Used by the API to cap concurrent runs: each
+   * session drives paid Tavily / Bright Data / LLM work, and an unbounded number of them
+   * can be started by simply POSTing distinct sessionIds.
+   */
+  getActiveCount(): number {
+    return this.activeSessions.size;
   }
 
   getActiveSessionId(): string | null {

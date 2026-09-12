@@ -40,6 +40,8 @@ export type LLMProviderAttempt = {
   providerId: LLMProvider["id"];
   provider: string;
   model: string;
+  actualModel?: string;
+  tokens?: { input: number; output: number; total: number };
   status: "success" | "error" | "skipped";
   statusCode?: number;
   latencyMs: number;
@@ -124,8 +126,9 @@ const DEFAULT_LITELLM_MODEL = "apex-primary";
 
 const DEFAULT_TOKEN_HARBOR_BASE = "https://tokenharbor.ai/v1";
 const DEFAULT_TOKEN_HARBOR_MODEL = "deepseek-v4.1-flash:free";
-const DEFAULT_TOKEN_HARBOR_KEY =
-  "thk_live_Lm6R54UoSCBrwjhT25X3vPD5CWob4lY_W9M0fZPwCp5wSPabiu65f35u3AnLeGQc";
+// NOTE: the Token Harbor API key is intentionally NOT defaulted here. It must come from
+// process.env.TOKEN_HARBOR_API_KEY (see buildProviders below). A key was previously hardcoded
+// as a source literal - it was never read, but it remains in git history and must be rotated.
 // Auto-reverts after exactly 7 days from configuration (Sep 19, 2026 00:00:00 +06:00)
 const DEFAULT_TOKEN_HARBOR_EXPIRATION_MS = new Date(
   "2026-09-19T00:00:00+06:00",
@@ -292,6 +295,16 @@ export function getTavilyKeyStatus() {
 export function getAPIKey(): string {
   return getConfiguredLLMProviders()[0]?.apiKey || "";
 }
+
+export function getPrimaryLLMModel(): string {
+  const providers = getConfiguredLLMProviders();
+  return providers[0]?.model || process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL;
+}
+
+export function getPrimaryLLMProvider(): string {
+  const providers = getConfiguredLLMProviders();
+  return providers[0]?.name || "Byesu";
+}
 /**
  * Wraps fetch with a hard AbortController timeout and automatic retry on 5xx/network errors.
  * Prevents indefinite hangs when an LLM provider is slow or overloaded.
@@ -448,8 +461,13 @@ async function fetchWithRetry(
           30_000,
         );
         console.warn(
-          `[llm] HTTP ${res.status} on attempt ${attempt + 1}/${statusMaxRetries + 1}. Retrying in ${waitMs}ms...`,
+          `\x1b[33m[LLM ${res.status} RATE LIMIT]\x1b[0m Attempt ${attempt + 1}/${statusMaxRetries + 1}. Retrying in ${waitMs}ms...`,
         );
+        try {
+          await res.body?.cancel();
+        } catch {
+          // ignore cancel error
+        }
         await sleepWithSignal(waitMs, callerSignal);
         continue;
       }
@@ -522,6 +540,56 @@ export class LLMProviderError extends Error {
   }
 }
 
+/**
+ * Marks an error whose `message` embeds untrusted text - model output, scraped page content,
+ * or lead data. Provider-failure classification must never regex-match these messages:
+ * prospect data routinely contains "413" (area code, "Suite 413"), "timeout", "aborted" and
+ * similar tokens, which previously tripped the circuit breaker on a perfectly healthy provider
+ * and even aborted the entire fallback chain.
+ */
+const UNTRUSTED_MESSAGE = Symbol.for("apex.llm.untrustedMessage");
+
+function markUntrustedMessage<T extends Error>(error: T): T {
+  (error as unknown as Record<symbol, unknown>)[UNTRUSTED_MESSAGE] = true;
+  return error;
+}
+
+/** True when `error` is an Error whose message is known to contain untrusted text. */
+export function hasUntrustedMessage(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return Boolean(
+    (error as unknown as Record<symbol, unknown>)[UNTRUSTED_MESSAGE],
+  );
+}
+
+/**
+ * Sanitises a JSON.parse error before it is embedded in an error message. JSON.parse echoes a
+ * snippet of the offending text (e.g. `Unexpected token 'o', "not json at all" is not valid
+ * JSON`), which would otherwise re-introduce untrusted model output into a message that
+ * failure classification regex-matches.
+ */
+function sanitizeParseError(message: string): string {
+  return message.replace(/"[^"]*"/g, '"[redacted]"').slice(0, 120);
+}
+
+/**
+ * Builds a structured-output parse failure. The offending completion is attached as
+ * `rawExcerpt` rather than interpolated into `message`, because provider-failure
+ * classification regex-matches messages and model/lead text is untrusted.
+ */
+function buildParseFailureError(
+  provider: LLMProvider,
+  summary: string,
+  rawText: string,
+): Error {
+  const error = new Error(`[${provider.name}] ${summary}`);
+  (error as unknown as { rawExcerpt?: string }).rawExcerpt = rawText.slice(
+    0,
+    300,
+  );
+  return markUntrustedMessage(error);
+}
+
 function truncateProviderError(message: string): string {
   return message.length > 500
     ? `${message.slice(0, 500)}... [truncated]`
@@ -536,14 +604,18 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
   const isTokenLimit =
     error instanceof LLMProviderError ? error.isTokenLimit : false;
+  // True when the message embeds untrusted model/lead text (e.g. a JSON parse failure that
+  // echoes the completion). Such a message is DATA, not a fault signal: prospect records
+  // routinely contain "413" (area code, "Suite 413"), "timeout" and "connection error", which
+  // previously tripped the breaker on a perfectly healthy provider. For these errors only a
+  // typed `status` is trustworthy - never the message body.
+  const untrusted = hasUntrustedMessage(error);
+
   // HTTP 429 rate limits are transient concurrency throttles and do not trip the circuit breaker
   // (quota-exhausted 429 with code 1300 is handled separately via isExhaustedQuota)
-  if (
-    status === 429 ||
-    /429|rate[-_ ]?limit/i.test(error.message)
-  ) {
-    return false;
-  }
+  if (status === 429) return false;
+  if (!untrusted && /429|rate[-_ ]?limit/i.test(error.message)) return false;
+
   if (
     status === 408 ||
     status === 413 ||
@@ -557,11 +629,16 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
     return true;
   if (
     status === 500 &&
+    !untrusted &&
     /empty or invalid response|unable to get json response|connection error|internalservererror|openai.*exception|litellm.*error|econnrefused/i.test(
       error.message,
     )
   )
     return true;
+
+  // No typed status and an untrusted message: this is a malformed response, not an outage.
+  if (untrusted) return false;
+
   return /timed out|timeout|connection timed out|no deployments available|cooldown|413|origin took too long|origin web server|connection error|econnrefused|fetch failed/i.test(
     error.message,
   );
@@ -574,7 +651,10 @@ export function clearProviderCooldowns(): void {
 }
 
 async function withProviderFallback<T>(
-  operation: (provider: LLMProvider) => Promise<T>,
+  operation: (
+    provider: LLMProvider,
+    options: LLMExecutionOptions,
+  ) => Promise<T>,
   executionOptions: LLMExecutionOptions = {},
 ): Promise<T> {
   if (executionOptions.signal?.aborted) {
@@ -623,8 +703,16 @@ async function withProviderFallback<T>(
     }
 
     const startedAt = Date.now();
+    let attemptUsage: LLMUsage | undefined;
+    const providerExecutionOptions: LLMExecutionOptions = {
+      ...executionOptions,
+      onUsage: (usage) => {
+        attemptUsage = usage;
+        executionOptions.onUsage?.(usage);
+      },
+    };
     try {
-      const result = await operation(provider);
+      const result = await operation(provider, providerExecutionOptions);
       if (executionOptions.circuitBreaker) {
         executionOptions.circuitBreaker.failureCounts[provider.id] = 0;
       }
@@ -632,6 +720,14 @@ async function withProviderFallback<T>(
         providerId: provider.id,
         provider: provider.name,
         model: provider.model,
+        actualModel: attemptUsage?.model || provider.model,
+        tokens: attemptUsage
+          ? {
+              input: attemptUsage.inputTokens,
+              output: attemptUsage.outputTokens,
+              total: attemptUsage.totalTokens,
+            }
+          : undefined,
         status: "success",
         latencyMs: Date.now() - startedAt,
       });
@@ -640,17 +736,29 @@ async function withProviderFallback<T>(
       const normalized =
         error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
-      if (
+      // Only genuine cancellation aborts the whole fallback chain. This previously also
+      // matched `normalized.message.includes("aborted")`; because parse-failure messages
+      // echo model output, one completion containing the word "aborted" was enough to
+      // abandon every remaining provider instead of cascading to them.
+      const cause = (normalized as { cause?: { name?: string } }).cause;
+      const isAbort =
         executionOptions.signal?.aborted ||
         normalized.name === "AbortError" ||
-        normalized.message.includes("aborted")
-      ) {
+        cause?.name === "AbortError" ||
+        (normalized as unknown as { code?: string }).code === "ABORT_ERR";
+      if (isAbort) {
         throw normalized;
       }
+      const errStatus =
+        normalized instanceof LLMProviderError ? normalized.status : undefined;
+      console.error(
+        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${provider.model}\x1b[0m \u00b7 \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m`,
+      );
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
         model: provider.model,
+        actualModel: attemptUsage?.model || provider.model,
         status: "error",
         statusCode:
           normalized instanceof LLMProviderError
@@ -716,9 +824,10 @@ async function withProviderFallback<T>(
         !isExhaustedQuota &&
         ((normalized instanceof LLMProviderError &&
           (normalized.status === 429 || normalized.status === 524)) ||
-        /429|rate[-_ ]?limit|524|timeout occurred/i.test(
-          normalized.message,
-        ));
+        (!hasUntrustedMessage(normalized) &&
+          /429|rate[-_ ]?limit|524|timeout occurred/i.test(
+            normalized.message,
+          )));
       if (isTransientTimeoutOrRateLimit) {
         const cooldownMs =
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
@@ -764,6 +873,7 @@ async function sendChatCompletion(
       provider.id === "groq"
         ? Math.min(options?.maxTokens || 400, 950)
         : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+    const callStartedAt = Date.now();
     try {
       res = await fetchWithRetry(
         `${provider.baseUrl}/chat/completions`,
@@ -820,22 +930,34 @@ async function sendChatCompletion(
     }
 
     const data = await res.json();
+    const latencyMs = Date.now() - callStartedAt;
+    const actualModel =
+      typeof data?.model === "string" && data.model.trim()
+        ? data.model.trim()
+        : provider.model;
     const usage = data?.usage;
-    if (usage && typeof options?.onUsage === "function") {
-      const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
-      const outputTokens = Number(
-        usage.completion_tokens ?? usage.output_tokens ?? 0,
-      );
-      const suppliedTotal = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
+    const inputTokens = Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0);
+    const outputTokens = Number(
+      usage?.completion_tokens ?? usage?.output_tokens ?? 0,
+    );
+    const suppliedTotal = Number(usage?.total_tokens ?? usage?.totalTokens ?? 0);
+    const totalTokens =
+      Number.isFinite(suppliedTotal) && suppliedTotal > 0
+        ? suppliedTotal
+        : Math.max(0, inputTokens) + Math.max(0, outputTokens);
+
+    // LiteLLM-grade rich ANSI colored console log
+    console.log(
+      `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencyMs}ms\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m`,
+    );
+
+    if (typeof options?.onUsage === "function") {
       options.onUsage({
         inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
         outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
-        totalTokens:
-          Number.isFinite(suppliedTotal) && suppliedTotal > 0
-            ? suppliedTotal
-            : Math.max(0, inputTokens) + Math.max(0, outputTokens),
+        totalTokens,
         provider: provider.name,
-        model: provider.model,
+        model: actualModel,
       });
     }
     return data.choices?.[0]?.message?.content || "";
@@ -1190,8 +1312,11 @@ export async function openAIText(
   });
 
   return withProviderFallback(
-    async (provider) => ({
-      text: await sendChatCompletion(provider, messages, options),
+    async (provider, providerOpts) => ({
+      text: await sendChatCompletion(provider, messages, {
+        ...options,
+        ...providerOpts,
+      }),
       provider: provider.name,
       model: provider.model,
       baseUrl: provider.baseUrl,
@@ -1481,11 +1606,12 @@ export async function openAIStructured<T>(
     throw new Error(parseErrors[0] || "No schema-matching JSON block found");
   };
 
-  return withProviderFallback(async (provider) => {
+  return withProviderFallback(async (provider, providerOpts) => {
     let text = "";
+    const effectiveOptions = { ...options, ...providerOpts };
     try {
       text = await sendChatCompletion(provider, messages, {
-        ...options,
+        ...effectiveOptions,
         ...(useJsonMode
           ? { responseFormat: { type: "json_object" as const } }
           : {}),
@@ -1505,7 +1631,7 @@ export async function openAIStructured<T>(
         console.warn(
           `[llm] Structured output call failed for ${provider.name} with schema validation error. Retrying without response_format...`,
         );
-        text = await sendChatCompletion(provider, messages, options);
+        text = await sendChatCompletion(provider, messages, effectiveOptions);
       } else {
         throw error;
       }
@@ -1516,15 +1642,20 @@ export async function openAIStructured<T>(
     } catch (firstParseError: any) {
       const shouldRetry = options?.retryOnParseFailure !== false;
       if (!shouldRetry) {
-        throw new Error(
-          `[${provider.name}] Failed to parse OpenAI-compatible JSON response (parse_error=${firstParseError?.message || "unknown"}): ${text.slice(0, 300)}`,
+        throw buildParseFailureError(
+          provider,
+          `Failed to parse OpenAI-compatible JSON response (parse_error=${sanitizeParseError(firstParseError?.message || "unknown")})`,
+          text,
         );
       }
 
-      const retryMaxTokens = Math.max(
-        Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
-        Math.min((options?.maxTokens || 4000) * 2, 8000),
-      );
+      const retryMaxTokens =
+        provider.id === "groq"
+          ? Math.min(options?.maxTokens || 400, 950)
+          : Math.max(
+              Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
+              Math.min((options?.maxTokens || 4000) * 2, 8000),
+            );
       const retryMessages: ChatMessage[] = [
         {
           role: "system",
@@ -1538,7 +1669,7 @@ export async function openAIStructured<T>(
         },
       ];
       const retryText = await sendChatCompletion(provider, retryMessages, {
-        ...options,
+        ...effectiveOptions,
         maxTokens: retryMaxTokens,
         temperature: 0,
         ...(useJsonMode
@@ -1549,8 +1680,10 @@ export async function openAIStructured<T>(
       try {
         return parseStructuredText(retryText);
       } catch {
-        throw new Error(
-          `[${provider.name}] Failed to parse OpenAI-compatible JSON response after retry (first_parse_error=${firstParseError?.message || "unknown"}): ${retryText.slice(0, 300)}`,
+        throw buildParseFailureError(
+          provider,
+          `Failed to parse OpenAI-compatible JSON response after retry (first_parse_error=${sanitizeParseError(firstParseError?.message || "unknown")})`,
+          retryText,
         );
       }
     }

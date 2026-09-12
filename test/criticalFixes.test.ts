@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { isExcludedCandidate } from '../server/leadSearch/discoveryEngine.js';
-import { readLeadsStats, readLeadsSummary } from '../server/db.js';
+import { readLeadsStats, readLeadsSummary, upsertLeadWithIdentity } from '../server/db.js';
 import {
   parseHostHeader,
   isLoopbackHost,
@@ -79,6 +79,23 @@ describe('Critical Fixes & Optimizations Verification', () => {
 
   describe('Optimization 2: Sound SQLite Aggregate Stats', () => {
     it('computes sound aggregate stats directly in SQL without full table memory load', () => {
+      // Seed a lead first. `initialized` reflects whether leads have ever been persisted, so
+      // an empty database legitimately reports false - the assertion must not depend on
+      // whatever state happens to exist in the configured database.
+      upsertLeadWithIdentity({
+        id: 'critical-fixes-stats-seed',
+        fullName: 'Stats Seed',
+        company: 'Seed Co',
+        title: 'Analyst',
+        stage: 'NEW',
+        reviewStatus: 'UNREVIEWED',
+        nextAction: 'NONE',
+        profile: {
+          fullName: 'Stats Seed',
+          currentCompany: 'Seed Co',
+          currentTitle: 'Analyst',
+        },
+      });
       const stats = readLeadsStats();
       assert.equal(typeof stats.total, 'number');
       assert.equal(typeof stats.averageQualification, 'number');

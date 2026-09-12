@@ -163,12 +163,19 @@ export async function checkCompanyIntent(
     intentSignals?: IntentSignalSpec;
     /** Pass the session-scoped corpus for TF-IDF weighting (strongly recommended). */
     corpus?: SignalCorpus;
+    /** Cancels the paid website scrape when the session is cancelled. */
+    abortSignal?: AbortSignal;
   }
 ): Promise<CompanyIntentEvidence | null> {
   if (!websiteUrl || isBlockedUrl(websiteUrl)) return null;
+  if (options?.abortSignal?.aborted) return null;
 
   try {
-    const markdown = await scrapeAsMarkdown(websiteUrl, 25000);
+    const markdown = await scrapeAsMarkdown(
+      websiteUrl,
+      25000,
+      options?.abortSignal,
+    );
     if (!markdown) return null;
 
     const lowerMarkdown = markdown.toLowerCase();

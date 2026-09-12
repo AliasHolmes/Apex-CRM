@@ -214,6 +214,40 @@ import { sessionStreamHub } from "../services/sessionStreamHub.js";
 
 const router = Router();
 
+/**
+ * Minimal fixed-window limiter for endpoints that spend money (LLM, Tavily, Bright Data).
+ * This is a single-user local app, so the goal is not abuse prevention - it is to stop an
+ * accidental retry loop (or any caller that gets past the host guard) from hammering paid
+ * providers. Counts are per-route and in-memory, so they reset on restart.
+ */
+const paidRouteWindows = new Map<string, { count: number; resetAt: number }>();
+// Default 120/min (2/sec sustained): generous for interactive and bulk use, but still far
+// below a runaway retry loop, which fires at hundreds per second.
+const paidRouteLimit = (routeKey: string, maxPerMinute = 120) => {
+  const limit = Math.min(
+    Math.max(Number(process.env.APEX_PAID_ROUTE_LIMIT_PER_MIN || maxPerMinute) || maxPerMinute, 1),
+    600,
+  );
+  return (req: any, res: any, next: any): any => {
+    const now = Date.now();
+    const entry = paidRouteWindows.get(routeKey);
+    if (!entry || now >= entry.resetAt) {
+      paidRouteWindows.set(routeKey, { count: 1, resetAt: now + 60_000 });
+      return next();
+    }
+    if (entry.count >= limit) {
+      const retryAfter = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+      res.setHeader("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        error: `Rate limit exceeded for ${routeKey} (${limit}/min). Retry in ${retryAfter}s.`,
+        retryAfter,
+      });
+    }
+    entry.count += 1;
+    return next();
+  };
+};
+
 let _llmHealthCache: { result: Record<string, any>; expiresAt: number } | null =
   null;
 const LLM_HEALTH_CACHE_MS = 60_000;
@@ -830,7 +864,7 @@ router.get("/llm-health", async (req, res) => {
 // Google OAuth is deprecated in favor of standalone primary LLM
 
 // 1. Scrape Public URL / Name lookup via Search Grounding
-router.post("/scrape-url", async (req, res): Promise<any> => {
+router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promise<any> => {
   try {
     const { urlOrName } = req.body;
     if (!urlOrName) {
@@ -895,7 +929,7 @@ ${rawText}`;
 });
 
 // 2. Extractor: Parse copy-pasted raw text or HTML block
-router.post("/scrape-pasted", async (req, res): Promise<any> => {
+router.post("/scrape-pasted", paidRouteLimit("scrape-pasted"), async (req, res): Promise<any> => {
   try {
     const { pastedText } = req.body;
     if (!pastedText || pastedText.trim().length < 20) {
@@ -1176,7 +1210,10 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
       safeWrite(`data: ${JSON.stringify(frame)}\n\n`);
     }
     const status = frame.session?.status;
-    if (status && status !== "running" && status !== "cancellation_requested") {
+    const isTerminated =
+      (status && status !== "running" && status !== "cancellation_requested") ||
+      (frame.session === null && frame.logs.some((log) => log.includes("Session not found")));
+    if (isTerminated) {
       doUnsubscribe();
       safeWrite("event: end\ndata: {}\n\n");
       if (!res.writableEnded) {
@@ -1618,6 +1655,28 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     req.query.mode === "job" || req.headers["prefer"] === "respond-async";
   const targetSessionId = suppliedSessionId || `session-${crypto.randomUUID()}`;
 
+  // Bound concurrent discovery runs. Every session drives paid Tavily / Bright Data / LLM
+  // work, and distinct sessionIds previously allowed an unbounded number of parallel
+  // pipelines. Reject with 503 (retryable) rather than queueing, so callers fail fast.
+  const maxConcurrentSessions = Math.min(
+    Math.max(
+      Number(process.env.APEX_MAX_CONCURRENT_SESSIONS || 2) || 2,
+      1,
+    ),
+    8,
+  );
+  if (
+    !discoveryEngine.isActive(targetSessionId) &&
+    discoveryEngine.getActiveCount() >= maxConcurrentSessions
+  ) {
+    return res.status(503).json({
+      error: `Already running ${discoveryEngine.getActiveCount()} discovery session(s) (limit ${maxConcurrentSessions}). Wait for one to finish, or raise APEX_MAX_CONCURRENT_SESSIONS.`,
+      activeSessions: discoveryEngine.getActiveCount(),
+      limit: maxConcurrentSessions,
+      retryAfter: 30,
+    });
+  }
+
   if (isAsyncMode) {
     if (discoveryEngine.isActive(targetSessionId)) {
       return res.status(409).json({
@@ -1700,7 +1759,7 @@ router.post("/find-leads", async (req, res): Promise<any> => {
   }
 });
 
-router.post("/leads/:id/enrich-profile", async (req, res): Promise<any> => {
+router.post("/leads/:id/enrich-profile", paidRouteLimit("enrich-profile"), async (req, res): Promise<any> => {
   try {
     if (!isSafeLeadId(req.params.id)) {
       return res.status(400).json({ error: "Invalid lead id." });
@@ -1876,7 +1935,7 @@ router.delete("/outreach-drafts/:id", (req, res): any => {
   }
 });
 
-router.post("/generate-outbound", async (req, res): Promise<any> => {
+router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (req, res): Promise<any> => {
   try {
     const {
       leadId,
@@ -2063,7 +2122,7 @@ export const COPILOT_STOP_WORDS = new Set([
 // -----------------------------------------------------------------------------
 // Conversational CRM Copilot
 // -----------------------------------------------------------------------------
-router.post("/chat", async (req, res): Promise<any> => {
+router.post("/chat", paidRouteLimit("chat"), async (req, res): Promise<any> => {
   try {
     const query =
       typeof req.body?.query === "string" ? req.body.query.trim() : "";

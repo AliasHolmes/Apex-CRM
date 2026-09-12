@@ -279,6 +279,19 @@ export const TraceSummaryViewer = ({
                   </span>
                 )}
               </div>
+              {item.models && Object.keys(item.models).length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2 pt-1.5 border-t border-slate-800/80">
+                  {Object.entries(item.models).map(([modelName, count]) => (
+                    <span
+                      key={modelName}
+                      className="px-1.5 py-0.5 rounded text-xs font-mono bg-cyan-950/60 border border-cyan-500/30 text-cyan-300 flex items-center gap-1"
+                    >
+                      <span className="text-cyan-300">{modelName}</span>
+                      <span className="text-cyan-500 font-sans font-semibold">({String(count)})</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -316,15 +329,20 @@ export const TraceSummaryViewer = ({
               key={event.id}
               className="text-xs text-slate-400 font-mono bg-slate-900/40 border border-slate-800/80 rounded px-2 py-1.5 flex items-center justify-between gap-2"
             >
-              <span className="truncate">
-                <span className="text-slate-500 font-semibold">
+              <span className="truncate flex items-center gap-1.5 min-w-0">
+                <span className="text-slate-500 font-semibold shrink-0">
                   {event.provider ? `[${event.provider.toUpperCase()}] ` : ''}
                 </span>
-                <span className="text-slate-300">
+                <span className="text-slate-300 shrink-0">
                   {event.phase}/{event.operation}
                 </span>
+                {(event.model || event.llm?.model) && (
+                  <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 font-mono shrink-0">
+                    {event.model || event.llm?.model}
+                  </span>
+                )}
                 {event.query ? (
-                  <span className="text-slate-400"> - "{event.query}"</span>
+                  <span className="text-slate-400 truncate"> - "{event.query}"</span>
                 ) : (
                   ''
                 )}
@@ -348,6 +366,77 @@ export const TraceSummaryViewer = ({
     </div>
   );
 };
+
+function renderTerminalLog(log: string) {
+  if (log.includes('[LLM 200 OK]')) {
+    const match = log.match(
+      /\[LLM 200 OK\]\s+([^\s\u00b7]+)\s+\u00b7\s+model:\s+([^\s\u00b7]+)\s+\u00b7\s+([\d,]+ms)(?:\s+\u00b7\s+([\d,]+ tok))?(?:\s+(.*))?/,
+    );
+    if (match) {
+      const [, provider, model, latency, tokens, details] = match;
+      return (
+        <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
+          <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-950">
+            200 OK
+          </span>
+          <span className="font-semibold text-slate-200">{provider}</span>
+          <span className="text-slate-600">{"\u00b7"}</span>
+          <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 shadow-sm shadow-cyan-950">
+            {model}
+          </span>
+          <span className="text-slate-600">{"\u00b7"}</span>
+          <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
+            {latency}
+          </span>
+          {tokens && (
+            <>
+              <span className="text-slate-600">{"\u00b7"}</span>
+              <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                {tokens}
+              </span>
+            </>
+          )}
+          {details && (
+            <span className="text-indigo-300 font-medium ml-0.5">{details}</span>
+          )}
+        </span>
+      );
+    }
+  }
+
+  if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) {
+    const isError = log.includes('[LLM ERROR');
+    const badgeText = isError ? 'LLM ERROR' : 'WARNING';
+    const cleanLog = log.replace(/^\[LLM ERROR[^\]]*\]\s*/, '').replace(/^WARN:\s*/, '');
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
+        <span
+          className={`px-1.5 py-0.5 rounded text-xs font-bold ${
+            isError
+              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-950'
+              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+          }`}
+        >
+          {badgeText}
+        </span>
+        <span className={isError ? 'text-rose-300' : 'text-amber-300'}>{cleanLog}</span>
+      </span>
+    );
+  }
+
+  if (log.includes('RATE LIMIT') || log.includes('429')) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
+        <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+          429 BACKOFF
+        </span>
+        <span className="text-amber-300">{log}</span>
+      </span>
+    );
+  }
+
+  return <span>{log}</span>;
+}
 
 export function TraceTerminal({ sessionId }: { sessionId: string | null | undefined }) {
   const shouldReduceMotion = useReducedMotion();
@@ -419,8 +508,11 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
         {logs.length > 0 ? (
           logs.map((log, i) => {
             let colorClass = 'text-slate-300';
-            if (log.includes('WAITING') || log.includes('FILTERING')) colorClass = 'text-amber-400 font-bold';
-            if (
+            if (log.includes('[LLM 200 OK]')) colorClass = 'text-slate-200';
+            else if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) colorClass = 'text-rose-400 font-medium';
+            else if (log.includes('RATE LIMIT') || log.includes('429')) colorClass = 'text-amber-400 font-medium';
+            else if (log.includes('WAITING') || log.includes('FILTERING')) colorClass = 'text-amber-400 font-bold';
+            else if (
               log.includes('REQUEST') ||
               log.includes('QUERY') ||
               log.includes('DISCOVERY') ||
@@ -438,7 +530,7 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
                 transition={{ duration: shouldReduceMotion ? 0 : 0.15 }}
               >
                 <span className="shrink-0 text-slate-600 select-none">{'>'}</span>
-                <span>{log}</span>
+                <div className="min-w-0 flex-1">{renderTerminalLog(log)}</div>
               </motion.div>
             );
           })

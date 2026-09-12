@@ -275,7 +275,8 @@ Verified against `server/routes/api.ts`. The router is mounted twice in `server.
 
 ## 8. Database schema (SQLite v20, `.apex-data/apex-crm.sqlite`)
 
-`LATEST_SCHEMA_VERSION = 20` in `server/db.ts`. 17 regular tables + 1 FTS5 virtual table:
+`LATEST_SCHEMA_VERSION = 21` in `server/db.ts`. 18 regular tables + 1 FTS5 virtual table
+(`leads_fts_map` was added in v21 for O(1) FTS maintenance):
 
 `leads` · `leads_fts` (FTS5) · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts` · `discovered_companies` · `icp_hypothesis_cache`
 

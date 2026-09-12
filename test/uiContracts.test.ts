@@ -231,4 +231,18 @@ test('traceStore exposes frozen DEFAULT_MINING_STATE', () => {
   assert.match(traceStoreSource, /DEFAULT_MINING_STATE:\s*MiningSessionLiveState\s*=\s*Object\.freeze/);
 });
 
+test('ScrapeWorkspace.tsx guarantees completion UI updates are not bypassed by settled flag', () => {
+  const scrapeSource = readFileSync(path.resolve('src/components/ScrapeWorkspace.tsx'), 'utf8');
+  
+  // Ensure cleanupDiscoveryUi is called in finally, not before rehydrateLeads / updateTaskStatus
+  assert.match(scrapeSource, /try\s*\{[\s\S]*?await\s+rehydrateLeads[\s\S]*?updateTaskStatus[\s\S]*?\}\s*finally\s*\{\s*cleanupDiscoveryUi\(\)/);
+  
+  // Ensure updateTaskStatus has fallback logic for active processing tasks
+  assert.match(scrapeSource, /findIndex\(t => t\.status === 'processing'\)/);
+  
+  // Ensure checkActiveSession adds task to Recent Activity
+  assert.match(scrapeSource, /const\s+taskId\s*=\s*handleTaskAdd\('search',\s*taskQuery\);/);
+});
+
+
 

@@ -316,8 +316,17 @@ export default function ScrapeWorkspace() {
     return newTask.id;
   };
 
-  const updateTaskStatus = (taskId: string, status: 'completed' | 'failed' | 'cancelled', resultCount?: number) => {
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status, resultCount } : t));
+  const updateTaskStatus = (taskId: string | undefined, status: 'completed' | 'failed' | 'cancelled', resultCount?: number) => {
+    setTasks(prev => {
+      if (taskId && prev.some(t => t.id === taskId)) {
+        return prev.map(t => t.id === taskId ? { ...t, status, resultCount } : t);
+      }
+      const firstProcessingIdx = prev.findIndex(t => t.status === 'processing');
+      if (firstProcessingIdx !== -1) {
+        return prev.map((t, idx) => idx === firstProcessingIdx ? { ...t, status, resultCount } : t);
+      }
+      return prev;
+    });
   };
 
   const attachActiveSessionWatcher = useCallback((
@@ -424,70 +433,84 @@ export default function ScrapeWorkspace() {
           const status = String(sessionRow?.status || '');
           if (!status || status === 'running' || status === 'cancellation_requested') return;
 
-          cleanupDiscoveryUi();
-          const stats = sessionRow?.stats || {};
-          const createdCount = Number(stats?.createdCount || 0);
-          const updatedCount = Number(stats?.updatedCount || 0);
-          const totalReturned = Number(stats?.returned ?? stats?.persistedCount ?? (createdCount + updatedCount));
-          const skippedCount = Number(stats?.duplicateCount || 0);
-          const skippedInfo = skippedCount > 0 ? ` ${skippedCount} duplicate${skippedCount === 1 ? ' was' : 's were'} skipped.` : '';
-          const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;
-          const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
-                                  (stats?.brightData?.profileScrapesAttempted || 0) + 
-                                  (stats?.brightData?.companyScrapesAttempted || 0) + 
-                                  (stats?.brightData?.batchScrapesAttempted || 0) + 
-                                  (stats?.enriched || 0);
-          const cacheHits = stats?.cacheHits || 0;
-          const metricsInfo = stats ? ` (Queries: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
-          const crmDuplicatesSkipped = Number(
-            stats?.existingCrmLeadsSkipped ||
-            stats?.rejectionReasons?.duplicate_existing_lead ||
-            sessionRow?.traceSummary?.existingCrmLeadsSkipped ||
-            0,
-          );
-          setCrmDuplicatesFiltered(crmDuplicatesSkipped);
-
-          await rehydrateLeads(true);
-          if (settled || requestController.signal.aborted) return;
-          notifyLeadsUpdated();
-
-          if (status === 'success') {
-            if (taskId) updateTaskStatus(taskId, 'completed', totalReturned);
-            if (isResume) {
-              setSuccessMsg(`Resumed discovery finished: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}${metricsInfo}`);
-              triggerToast(`Resumed session finished with ${totalReturned} prospect${totalReturned === 1 ? '' : 's'}.`, 'success');
-            } else if (stats?.shortfall > 0 || stats?.shortfallReason) {
-              setSuccessMsg(`${stats.shortfallReason || `Found ${totalReturned} verified matches after exhausting search queries.`}${skippedInfo}${metricsInfo}`);
-            } else if (totalReturned === 0) {
-              setSuccessMsg(`Discovery completed, but 0 verified prospects matched criteria.${metricsInfo}`);
-            } else if (stats?.stopReason === 'target_reached') {
-              const leadBreakdown = createdCount > 0 && updatedCount > 0
-                ? `${createdCount} new, ${updatedCount} refreshed`
-                : `${totalReturned}`;
-              setSuccessMsg(`Target reached: ${leadBreakdown} qualified prospects ready.${skippedInfo}${metricsInfo}`);
-            } else if (stats?.stopReason) {
-              setSuccessMsg(`Discovery finished with ${totalReturned} qualified prospects (stop reason: ${String(stats.stopReason).replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
-            } else {
-              setSuccessMsg(`Discovery complete: ${totalReturned} LinkedIn-indexed profile${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}`);
-            }
-            if (!isResume) {
-              triggerToast(`Discovery complete: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.`, 'success');
-            }
-          } else if (status === 'cancelled') {
-            const savedCount = Number(stats?.persistedCount || 0);
-            if (taskId) updateTaskStatus(taskId, 'cancelled', savedCount);
-            if (savedCount > 0) {
-              setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
-              triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
-            } else {
-              setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
-              triggerToast('Lead discovery cancelled.', 'info');
-            }
-          } else {
-            if (taskId) updateTaskStatus(taskId, 'failed', totalReturned);
-            setErrorCode(sessionRow?.errorMessage || `Mining session ended with status "${status}".`);
+          // Stop polling timer immediately upon receiving terminal status
+          if (watchTimer) {
+            clearInterval(watchTimer);
+            watchTimer = undefined;
           }
-          void refreshScoutWorkspace().catch(() => {});
+          disconnectStream();
+
+          try {
+            const stats = sessionRow?.stats || {};
+            const createdCount = Number(stats?.createdCount || 0);
+            const updatedCount = Number(stats?.updatedCount || 0);
+            const totalReturned = Number(stats?.returned ?? stats?.persistedCount ?? (createdCount + updatedCount));
+            const skippedCount = Number(stats?.duplicateCount || 0);
+            const skippedInfo = skippedCount > 0 ? ` ${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped.` : '';
+            const tavilyCalls = stats?.queryRuns?.length || stats?.targetEffort?.queryExecutions || stats?.rounds || 0;
+            const brightDataCalls = (stats?.brightData?.searchAttempts || 0) + 
+                                    (stats?.brightData?.profileScrapesAttempted || 0) + 
+                                    (stats?.brightData?.companyScrapesAttempted || 0) + 
+                                    (stats?.brightData?.batchScrapesAttempted || 0) + 
+                                    (stats?.enriched || 0);
+            const cacheHits = stats?.cacheHits || 0;
+            const metricsInfo = stats ? ` (Queries: ${tavilyCalls} | BrightData calls: ${brightDataCalls} | Cache hits: ${cacheHits})` : '';
+            const crmDuplicatesSkipped = Number(
+              stats?.existingCrmLeadsSkipped ||
+              stats?.rejectionReasons?.duplicate_existing_lead ||
+              sessionRow?.traceSummary?.existingCrmLeadsSkipped ||
+              0,
+            );
+            setCrmDuplicatesFiltered(crmDuplicatesSkipped);
+
+            try {
+              await rehydrateLeads(true);
+            } catch (rehydrateErr) {
+              console.warn('Failed to rehydrate leads on session finish:', rehydrateErr);
+            }
+            if (requestController.signal.aborted) return;
+            notifyLeadsUpdated();
+
+            if (status === 'success') {
+              updateTaskStatus(taskId, 'completed', totalReturned);
+              if (isResume) {
+                setSuccessMsg(`Resumed discovery finished: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}${metricsInfo}`);
+                triggerToast(`Resumed session finished with ${totalReturned} prospect${totalReturned === 1 ? '' : 's'}.`, 'success');
+              } else if (stats?.shortfall > 0 || stats?.shortfallReason) {
+                setSuccessMsg(`${stats.shortfallReason || `Found ${totalReturned} verified matches after exhausting search queries.`}${skippedInfo}${metricsInfo}`);
+              } else if (totalReturned === 0) {
+                setSuccessMsg(`Discovery completed, but 0 verified prospects matched criteria.${metricsInfo}`);
+              } else if (stats?.stopReason === 'target_reached') {
+                const leadBreakdown = createdCount > 0 && updatedCount > 0
+                  ? `${createdCount} new, ${updatedCount} refreshed`
+                  : `${totalReturned}`;
+                setSuccessMsg(`Target reached: ${leadBreakdown} qualified prospects ready.${skippedInfo}${metricsInfo}`);
+              } else if (stats?.stopReason) {
+                setSuccessMsg(`Discovery finished with ${totalReturned} qualified prospects (stop reason: ${String(stats.stopReason).replace(/_/g, ' ')}).${skippedInfo}${metricsInfo}`);
+              } else {
+                setSuccessMsg(`Discovery complete: ${totalReturned} LinkedIn-indexed profile${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}`);
+              }
+              if (!isResume) {
+                triggerToast(`Discovery complete: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.`, 'success');
+              }
+            } else if (status === 'cancelled') {
+              const savedCount = Number(stats?.persistedCount || 0);
+              updateTaskStatus(taskId, 'cancelled', savedCount);
+              if (savedCount > 0) {
+                setInfoMsg(`Discovery cancelled - ${savedCount} prospect${savedCount === 1 ? '' : 's'} ${savedCount === 1 ? 'was' : 'were'} already saved.`);
+                triggerToast(`Discovery cancelled. ${savedCount} prospects saved.`, 'info');
+              } else {
+                setInfoMsg('Lead discovery was cancelled. No new prospects were added.');
+                triggerToast('Lead discovery cancelled.', 'info');
+              }
+            } else {
+              updateTaskStatus(taskId, 'failed', totalReturned);
+              setErrorCode(sessionRow?.errorMessage || `Mining session ended with status "${status}".`);
+            }
+          } finally {
+            cleanupDiscoveryUi();
+            void refreshScoutWorkspace().catch(() => {});
+          }
         } catch {
           // Transient network errors: keep polling until the hard cap.
         }
@@ -518,7 +541,9 @@ export default function ScrapeWorkspace() {
             setFindQuery((prev) => prev || data.session.prompt);
           }
           setInfoMsg(`Connected to running mining session (${data.session?.prompt || activeId})...`);
-          attachActiveSessionWatcher(activeId, { promptQuery: data.session?.prompt });
+          const taskQuery = data.session?.prompt || activeId;
+          const taskId = handleTaskAdd('search', taskQuery);
+          attachActiveSessionWatcher(activeId, { taskId, promptQuery: data.session?.prompt });
         } else {
           void rehydrateLeads(true);
         }
@@ -861,6 +886,7 @@ export default function ScrapeWorkspace() {
             activeDiscoveryRef.current = null;
           }
           setLoading(false);
+          updateTaskStatus(undefined, 'cancelled', savedCount);
           await rehydrateLeads(true);
           notifyLeadsUpdated();
           if (savedCount > 0) {

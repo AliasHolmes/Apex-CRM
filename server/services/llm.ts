@@ -600,7 +600,7 @@ function formatProviderFailures(errors: Error[]): string {
   return errors.map((error) => error.message).join(" | ");
 }
 
-function isCircuitBreakingProviderFailure(error: Error): boolean {
+export function isCircuitBreakingProviderFailure(error: Error): boolean {
   const status = error instanceof LLMProviderError ? error.status : undefined;
   const isTokenLimit =
     error instanceof LLMProviderError ? error.isTokenLimit : false;
@@ -617,6 +617,7 @@ function isCircuitBreakingProviderFailure(error: Error): boolean {
   if (!untrusted && /429|rate[-_ ]?limit/i.test(error.message)) return false;
 
   if (
+    status === 404 ||
     status === 408 ||
     status === 413 ||
     status === 502 ||
@@ -825,9 +826,8 @@ async function withProviderFallback<T>(
         ((normalized instanceof LLMProviderError &&
           (normalized.status === 429 || normalized.status === 524)) ||
         (!hasUntrustedMessage(normalized) &&
-          /429|rate[-_ ]?limit|524|timeout occurred/i.test(
-            normalized.message,
-          )));
+          (/429|rate[-_ ]?limit|524/i.test(normalized.message) ||
+           /LLM request timed out after/i.test(normalized.message))));
       if (isTransientTimeoutOrRateLimit) {
         const cooldownMs =
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined

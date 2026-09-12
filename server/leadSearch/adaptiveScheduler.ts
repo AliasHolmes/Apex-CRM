@@ -171,17 +171,17 @@ export function scoreAdaptiveArm(
   // Failures (beta): Rescued low-tier candidates, duplicates, provider burn, latency
   const alphaPrior = 1.0;
   const betaPrior = 1.0;
-  const alphaPost = alphaPrior + qualified * 2.5 + returned * 2.0 + unique * 0.04 + (classBonus > 0 ? classBonus * 0.5 : 0);
-  const betaPost = betaPrior + rescued * 1.25 + duplicates * 0.08 + providerUnits * 0.12 + latencySeconds * 0.002;
+  const alphaPost = alphaPrior + qualified * 3.5 + returned * 2.5 + unique * 0.1 + (classBonus > 0 ? classBonus * 0.5 : 0);
+  const betaPost = betaPrior + rescued * 1.25 + duplicates * 1.5 + providerUnits * 0.12 + latencySeconds * 0.002;
   const thompsonSample = sampleBeta(alphaPost, betaPost);
 
   // Finalist quality and actual returned-list contribution dominate.
   const meanReward = (
-    qualified * 2.5 +
-    returned * 2 +
-    unique * 0.04 -
+    qualified * 3.5 +
+    returned * 2.5 +
+    unique * 0.1 -
     rescued * 1.25 -
-    duplicates * 0.08 -
+    duplicates * 1.2 -
     providerUnits * 0.12 -
     latencySeconds * 0.002 +
     classBonus

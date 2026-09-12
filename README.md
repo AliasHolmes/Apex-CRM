@@ -8,7 +8,7 @@
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
     <img src="https://img.shields.io/badge/SQLite-Schema_v21-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v21" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-32_Core_Tests_Passing-10B981" alt="Lead Engine Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-45_Core_Tests_Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 
@@ -24,9 +24,10 @@ Its primary workflow is intentionally practical:
 2. **Adaptive Prompt Intelligence** classifies your brief:
    - Simple persona briefs run direct high-recall discovery with zero LLM overhead.
    - Long-shot intent briefs decouple into **Stream A (Identity)** for 100% SERP recall and **Stream B (Intent Triggers)** for multi-channel open-web research.
-3. **Stage-Pipelined High-Concurrency Engine**:
+3. **Stage-Pipelined High-Efficiency Engine**:
    - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously.
-   - Overlaps background query planning for Round $N+1$ while Round $N$ profiles are being extracted and verified.
+   - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
+   - Strictly enforces **Sequential LLM Execution** (`withSequentialLLMExecution`) to eliminate concurrency errors and provider 429/524 timeouts.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
 5. **Multi-Source Intent Enrichment**: Analyzes company websites (**TF-IDF Intent**) and public prospect activity (**LinkedIn Post SERP Intent with Temporal Freshness Decay**).
 6. **Durable Checkpoints & Resiliency**: Saves stage-boundary SQLite snapshots (`checkpoint_json`), allowing any interrupted search to be resumed with 1 click.
@@ -45,17 +46,18 @@ flowchart TD
     StreamDual --> StreamA["Stream A: Identity Plane (Role, Geo, Firm)"]
     StreamDual --> StreamB["Stream B: Intent Plane (Tools, Jobs, Pain)"]
 
-    subgraph Stages ["Pipelined 7-Stage Engine Architecture"]
-        Plan["1. planStage (Adaptive Batch Derivation)"]
+    subgraph Stages ["Pipelined Intelligent Engine Architecture"]
+        Plan["1. planStage (CRM Negative Domain Exclusions & Metro Avoidance)"]
         Retrieve["2. retrieveStage (Two-Wave Parallel Lanes)"]
         Fuse["3. fuseStage (Corroboration Fusion)"]
-        Extract["4. extractStage (Budgeted LLM Extraction)"]
+        PreFilter["Stage 2.5: Fast Deterministic Pre-Filter Gate (0ms CRM Dedupe & Noise Stripping)"]
+        Extract["4. extractStage (Token-Diet Budgeted LLM Extraction)"]
         Verify["5. verifyStage (Hard Requirement Verification)"]
         Enrich["6. enrichStage (TF-IDF & Post-Intent Decay)"]
-        Judge["7. judgeStage (3-Tier Finalist Evaluation & Pareto Front)"]
+        PreJudge["Pre-Judge: Role Triage (0ms IC Drop) & Context Grounding (~250ms Site Probe)"]
+        Judge["7. judgeStage (Strict-Evidence Evaluation & Bounded Batches)"]
 
-        Plan --> Retrieve --> Fuse --> Extract --> Verify --> Enrich --> Judge
-        Extract -.->|Pipelined Overlap| PlanNext["planStage (Round N+1 Speculative Plan)"]
+        Plan --> Retrieve --> Fuse --> PreFilter --> Extract --> Verify --> Enrich --> PreJudge --> Judge
     end
 
     StreamIdentity --> Plan
@@ -125,9 +127,16 @@ flowchart TD
 - **Proportional Collection Capacity**: Calibrates candidate pool targets with a tight 1.15x-1.25x cushion (e.g. 25 candidates for a 20-lead target instead of 80-120).
 - **Decoupled Early Exit**: Automatically terminates discovery rounds when verified candidate volume satisfies target limits, eliminating false-recovery round loops caused by keyword heuristics.
 - **Targeted Post-Selection Enrichment**: Defers heavy company site probing (Phase 4) and LinkedIn post SERP intent (Phase 5) until after Finalist Judging and Pareto diversification, eliminating 70%+ of wasted network and LLM token overhead.
-- **Capped Judge Batches**: Prioritizes top pre-ranked candidates for LLM evaluation, bounding judge batches to $1.35\times$ target limit.
+#### 10. Intelligent Low-Waste Filtering & Strict Sequential LLM Invariant (ADR-0005)
+
+- **Stage 2.5 Fast Deterministic Pre-Filter Gate**: Immediately filters out known CRM duplicate leads using SQLite identity keys (`readExistingIdentityKeys`) in 0ms before extraction tokens are spent. Enforces personal LinkedIn anchors when the brief requires people, and strips ~65% of noise (HTML tags, cookie banners, navigation boilerplate) from snippets. If all retrieved candidates are duplicates or non-compliant, extraction exits in 0ms without invoking the LLM.
+- **Upstream CRM Feedback & Metro Saturation**: Reads existing company domains and metro saturation counts from the CRM database. Passes known domains directly into Tavily's `exclude_domains` parameter and directs the query strategist to pivot away from saturated hubs ($\ge 15$ leads) with negative search operators.
+- **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles.
+- **Pre-Judge Context Grounding**: Executes a lightweight, non-LLM site probe (~250ms) to fetch the root `<meta name="description">` or `<title>` for ambiguous accounts, appending verified business context before semantic evaluation.
+- **Strict Sequential LLM Invariant**: All LLM calls across all stages are strictly serialized via `withSequentialLLMExecution`, eliminating concurrency errors, rate-limit storms, and gateway timeouts.
 
 ---
+
 
 ## System Architecture
 

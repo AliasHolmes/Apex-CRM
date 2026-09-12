@@ -1,4 +1,9 @@
-import { readQueryPerformance, readStoredCompanyNames } from "../../db.js";
+import {
+  readQueryPerformance,
+  readStoredCompanyNames,
+  readStoredCompanyDomains,
+  readStoredMetroSaturation,
+} from "../../db.js";
 import {
   openAIStructured,
   searchQueriesSchema,
@@ -127,6 +132,16 @@ export async function executePlanStage(
     ? ctx.state.signalStore.getUniqueCompanyNames()
     : [];
   const crmCompanies = readStoredCompanyNames(100);
+  const crmDomains = readStoredCompanyDomains(50);
+  const metroSaturation = readStoredMetroSaturation();
+
+  if (crmDomains.length > 0) {
+    searchSpec.exclusions = searchSpec.exclusions || { companies: [], domains: [] };
+    searchSpec.exclusions.domains = Array.from(
+      new Set([...(searchSpec.exclusions.domains || []), ...crmDomains]),
+    ).slice(0, 30);
+  }
+
   const knownCompanyEntities = Array.from(
     new Set([...crmCompanies, ...signalCompanies]),
   );
@@ -146,6 +161,7 @@ export async function executePlanStage(
       ?.missingHardRequirementIds,
     discoveredCompanies: signalCompanies,
     knownCompanyEntities,
+    metroSaturation,
     isRecovery: isRecoveryMode,
     recoveryAttempt: currentRecoveryAttempt,
     logEvent,

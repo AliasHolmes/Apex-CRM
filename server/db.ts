@@ -4043,3 +4043,110 @@ export function readStoredCompanyNames(limit = 100): string[] {
   }
 }
 
+const COMMON_PUBLIC_DOMAINS = new Set([
+  'linkedin.com',
+  'twitter.com',
+  'x.com',
+  'facebook.com',
+  'instagram.com',
+  'youtube.com',
+  'github.com',
+  'google.com',
+  'gmail.com',
+  'yahoo.com',
+  'outlook.com',
+  'hotmail.com',
+  'icloud.com',
+  'protonmail.com',
+  'reddit.com',
+  'medium.com',
+  'substack.com',
+]);
+
+export function extractValidCompanyDomain(rawUrlOrDomain?: string): string | null {
+  if (!rawUrlOrDomain || typeof rawUrlOrDomain !== 'string') return null;
+  const raw = rawUrlOrDomain.trim().toLowerCase();
+  if (!raw || raw.length < 4) return null;
+  try {
+    const withProto = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const parsed = new URL(withProto);
+    const host = parsed.hostname.replace(/^www\./, '').trim();
+    if (!host || !host.includes('.') || host.split('.').length < 2) return null;
+    if (COMMON_PUBLIC_DOMAINS.has(host) || COMMON_PUBLIC_DOMAINS.has(`www.${host}`)) return null;
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+export function readStoredCompanyDomains(limit = 100): string[] {
+  try {
+    const db = getLeadsDb();
+    const cappedLimit = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
+    const rows = db.prepare(`
+      SELECT payload
+      FROM leads
+      WHERE payload LIKE '%website%' OR payload LIKE '%domain%' OR payload LIKE '%company%'
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(cappedLimit * 3) as { payload: string }[];
+
+    const domains = new Set<string>();
+    for (const row of rows) {
+      try {
+        const p = JSON.parse(row.payload);
+        const candidates = [
+          p.website,
+          p.companyWebsite,
+          p.companyDomain,
+          p.domain,
+          p.profile?.website,
+          p.profile?.companyWebsite,
+          p.profile?.companyDomain,
+          p.profile?.contactDetails?.website,
+        ];
+        for (const cand of candidates) {
+          const domain = extractValidCompanyDomain(cand);
+          if (domain) domains.add(domain);
+        }
+      } catch {}
+      if (domains.size >= cappedLimit) break;
+    }
+    return Array.from(domains).slice(0, cappedLimit);
+  } catch {
+    return [];
+  }
+}
+
+export function readStoredMetroSaturation(): Record<string, number> {
+  try {
+    const db = getLeadsDb();
+    const rows = db.prepare(`
+      SELECT payload
+      FROM leads
+      WHERE payload LIKE '%location%' OR payload LIKE '%city%'
+      ORDER BY updated_at DESC
+      LIMIT 1000
+    `).all() as { payload: string }[];
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) {
+      try {
+        const p = JSON.parse(row.payload);
+        const loc = String(p.location || p.profile?.location || p.city || p.profile?.city || '').toLowerCase().trim();
+        if (!loc) continue;
+        const tokens = loc.split(/[,|\/\-]/).map(t => t.trim()).filter(Boolean);
+        for (const token of tokens) {
+          if (token.length >= 3 && token.length <= 25 && !/\d/.test(token)) {
+            counts[token] = (counts[token] || 0) + 1;
+          }
+        }
+      } catch {}
+    }
+    return counts;
+  } catch {
+    return {};
+  }
+}
+
+

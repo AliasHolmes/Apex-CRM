@@ -54,3 +54,19 @@ A high-selectivity discovery exit check that terminates search rounds immediatel
 
 ### Targeted Post-Selection Enrichment
 A pipeline execution order that defers intensive Phase 4 company website probing and Phase 5 LinkedIn post intent SERP lookups until after the Finalist Judge and Pareto diversification have selected the top $K$ prospect finalists.
+
+### Deterministic Pre-Filter Gate (Stage 2.5)
+A zero-latency, non-LLM filtration boundary positioned immediately after SERP retrieval and observation fusion. It drops known CRM duplicates (via SQLite identity keys in 0ms), filters out non-LinkedIn items when individual profiles are required, strips HTML boilerplate and cookie banners from snippets, and safely bypasses the extraction LLM when zero viable items remain.
+
+### Upstream CRM Negative Feedback & Metro Saturation Avoidance
+A closed-loop query optimization mechanism that extracts existing company domains from the CRM database and injects them directly into Tavily's `exclude_domains` parameter. It also monitors metropolitan saturation ($\ge 15$ leads in CRM) to steer query generation toward unmined secondary tech clusters while equipping the LLM strategist with negative search operators (`-"Known Agency"`).
+
+### Pre-Judge Context Grounding
+A lightweight, non-LLM website probe executed on ambiguous candidate accounts prior to semantic evaluation. In ~250ms, it fetches the root page `<meta name="description">` or `<title>` and injects verified business context into the candidate's evidence packet, resolving missing-role and company-type ambiguities before the Finalist Judge evaluates them.
+
+### Deterministic Role Triage
+An instant 0ms pre-judge classification regex that identifies and discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) from finalist judging when the contract strictly demands executive, founder, or partner-level decision makers.
+
+### Strict Sequential LLM Invariant (`withSequentialLLMExecution`)
+The core concurrency invariant governing all LLM interactions in the discovery engine. All completion calls across strategist, extraction, verification, and judging stages are serialized through a single execution queue to prevent rate limit collisions, gateway thread starvation, and upstream provider 429/524 errors.
+

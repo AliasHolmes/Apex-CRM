@@ -563,3 +563,120 @@ export function applySiteProbe(
     // ignore cache write errors
   }
 }
+
+export async function groundCandidateWithSiteProbe(
+  lead: Record<string, any>,
+  options: { abortSignal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<string | null> {
+  const derived = deriveCompanyDomainWithProvenance(lead);
+  if (!derived || !derived.domain) return null;
+  const rawTarget = derived.domain.replace(/\/$/, '').toLowerCase();
+  const targetUrl = /^https?:\/\//i.test(rawTarget) ? rawTarget : `https://${rawTarget}`;
+  let host = "";
+  try {
+    host = new URL(targetUrl).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!host || isPrivateOrInternalHost(host)) return null;
+
+  // Check enrichment cache first
+  try {
+    const cached = getEnrichmentCacheEntry({ normalizedUrl: host });
+    if (cached?.evidenceBlock) {
+      const siteEvidence = `[COMPANY SITE (${derived.provenance}): ${host}] ${clean(cached.evidenceBlock).slice(0, 300)}`;
+      lead.evidence = lead.evidence || {};
+      lead.evidence.snippets = lead.evidence.snippets || [];
+      if (!lead.evidence.snippets.some((s: string) => s.includes(host))) {
+        lead.evidence.snippets.push(siteEvidence);
+        lead.evidence.evidenceBlock = [lead.evidence.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
+      }
+      return siteEvidence;
+    }
+    const negative = getNegativeEnrichmentCacheEntry({ normalizedUrl: host });
+    if (negative) return null;
+  } catch {}
+
+  // Fast non-LLM fetch of root page
+  try {
+    const timeout = options.timeoutMs || 2500;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const onAbort = () => controller.abort();
+    if (options.abortSignal) {
+      options.abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    let html = '';
+    try {
+      const resp = await fetch(targetUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      if (resp.ok) {
+        const text = await resp.text();
+        html = text.slice(0, 15000);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (options.abortSignal) {
+        options.abortSignal.removeEventListener('abort', onAbort);
+      }
+    }
+
+    if (!html) return null;
+
+    const metaDescMatch =
+      html.match(/<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']description["']/i) ||
+      html.match(/<meta\s+[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*property=["']og:description["']/i);
+
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const description = metaDescMatch?.[1] ? clean(metaDescMatch[1]).slice(0, 250) : '';
+    const title = titleMatch?.[1] ? clean(titleMatch[1]).slice(0, 150) : '';
+
+    const evidenceContent = description || title;
+    if (!evidenceContent || evidenceContent.length < 15) return null;
+
+    const provenanceTag = derived.provenance === 'slug_guess' ? 'name-match' : 'verified-site';
+    const siteEvidence = `[COMPANY SITE (${provenanceTag}): ${host}] ${evidenceContent}`;
+
+    lead.evidence = lead.evidence || {};
+    lead.evidence.snippets = lead.evidence.snippets || [];
+    if (!lead.evidence.snippets.some((s: string) => s.includes(host))) {
+      lead.evidence.snippets.push(siteEvidence);
+      lead.evidence.evidenceBlock = [lead.evidence.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
+    }
+
+    try {
+      upsertEnrichmentCacheEntry({
+        normalizedUrl: host,
+        companyName: lead.currentCompany || lead.company,
+        evidenceBlock: evidenceContent,
+        scrapeQuality: description ? 'good' : 'partial',
+        sourceProvider: 'site_probe',
+      }, 7);
+    } catch {}
+
+    return siteEvidence;
+  } catch {
+    try {
+      upsertNegativeEnrichmentCacheEntry({
+        normalizedUrl: host,
+        companyName: lead.currentCompany || lead.company,
+        evidenceBlock: 'probe_timeout_or_error',
+        scrapeQuality: 'bad',
+        sourceProvider: 'site_probe',
+      }, 48);
+    } catch {}
+    return null;
+  }
+}
+

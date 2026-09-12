@@ -357,7 +357,15 @@ export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
 const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
   const expanded = [...terms];
   const hasTerm = (list: string[], matches: string[]) =>
-    list.some(t => matches.some(m => t.toLowerCase().includes(m)));
+    list.some(t => {
+      const lowerT = t.toLowerCase().trim();
+      return matches.some(m => {
+        const lowerM = m.toLowerCase().trim();
+        if (lowerT === lowerM) return true;
+        const escaped = lowerM.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+        return new RegExp(`(^|[^a-zA-Z0-9])${escaped}([^a-zA-Z0-9]|$)`, 'i').test(lowerT);
+      });
+    });
 
   if (scope === 'person_location') {
     if (hasTerm(terms, ['usa', 'united states', 'us', 'america'])) {
@@ -903,7 +911,9 @@ export function buildContractFallbackQueries(
 
   const briefLower = (brief || '').toLowerCase();
   for (const [key, canonical] of Object.entries(COUNTRY_CANONICAL_MAP)) {
-    if (!seenCountryKeys.has(canonical.toLowerCase()) && briefLower.includes(key)) {
+    const escapedKey = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const keyRegex = new RegExp(`(^|[^a-zA-Z0-9])${escapedKey}([^a-zA-Z0-9]|$)`, 'i');
+    if (!seenCountryKeys.has(canonical.toLowerCase()) && keyRegex.test(briefLower)) {
       seenCountryKeys.add(canonical.toLowerCase());
       detectedCountries.push(canonical);
     }

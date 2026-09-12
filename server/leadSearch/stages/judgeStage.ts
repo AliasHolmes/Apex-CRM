@@ -21,6 +21,7 @@ import { summarizeLLM } from "../telemetry.js";
 import { runProviderQueue } from "../providerQueue.js";
 import { rankLeadForFinalSelection } from "../scoring.js";
 import { normalizeLinkedInUrl } from "../../services/linkedinEvidence.js";
+import { groundCandidateWithSiteProbe } from "../siteProbe.js";
 import {
   effectiveScore as sharedEffectiveScore,
   buildFallbackEvidence,
@@ -136,6 +137,95 @@ export async function executeJudgeStage(
     ? [...needsJudge].sort((a, b) => (effectiveScore(b.lead) || 0) - (effectiveScore(a.lead) || 0)).slice(0, candidatePoolCap)
     : needsJudge;
 
+  // 1. Fast Deterministic Role Triage (0ms - No LLM)
+  const NON_DECISION_MAKER_REGEX =
+    /\b(intern|internship|student|junior|staff engineer|software engineer|swe|ml engineer|machine learning engineer|data scientist|ai researcher|postdoc|phd candidate|recruiter|talent acquisition|account executive|sdr|bdr)\b/i;
+  const OWNER_TERMS_REGEX =
+    /\b(owner|founder|co-founder|chief|ceo|cto|cmo|coo|president|principal|partner|managing director|director|head|vp|vice president)\b/i;
+  const requiresLeadershipRole = contract.requirements.some(
+    (r) =>
+      r.scope === "person_role" &&
+      r.importance === "hard" &&
+      /\b(owner|founder|director|partner|head|ceo|executive)\b/i.test(
+        r.description + " " + (r.acceptableTerms || []).join(" "),
+      ),
+  );
+
+  const vettedNeedsJudge: FinalistCandidate[] = [];
+  let triageNonDecisionMakers = 0;
+
+  for (const candidate of prioritizedNeedsJudge) {
+    const title = String(
+      candidate.lead.currentTitle ||
+        candidate.lead.title ||
+        candidate.lead.headline ||
+        "",
+    );
+    if (
+      requiresLeadershipRole &&
+      NON_DECISION_MAKER_REGEX.test(title) &&
+      !OWNER_TERMS_REGEX.test(title)
+    ) {
+      triageNonDecisionMakers++;
+      judgmentInsight.set(candidate.candidateId, {
+        status: "hard_fail",
+        score: -100,
+        reason: `Pre-judge triage: title "${title}" is an individual contributor/non-decision-maker role.`,
+      });
+      judgeOutcomeTotals.hardFail++;
+      candidate.lead.qualification = {
+        policyVersion: contract.policyVersion,
+        verdict: "hard_fail",
+        qualificationSource: "deterministic",
+        finalScore: 0,
+        requirements: contract.requirements.map((r) => ({
+          requirementId: r.id,
+          status: r.scope === "person_role" ? "fail" : "unknown",
+        })),
+        reason: `Title "${title}" does not meet decision maker requirement.`,
+      };
+      continue;
+    }
+    vettedNeedsJudge.push(candidate);
+  }
+
+  if (triageNonDecisionMakers > 0) {
+    logEvent(
+      `Pre-Judge Role Triage: Discarded ${triageNonDecisionMakers} non-decision-maker candidate(s) in 0ms without invoking LLM judge.`,
+    );
+  }
+
+  // 2. Pre-Judge Lightweight Site Grounding for candidates needing semantic review
+  const isAgencyBrief =
+    /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(contract.brief) ||
+    contract.requirements.some(
+      (r) =>
+        (r.scope === "company_type" || r.scope === "company_industry") &&
+        /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(
+          `${r.description} ${r.acceptableTerms.join(" ")}`,
+        ),
+    );
+
+  if (isAgencyBrief && vettedNeedsJudge.length > 0) {
+    for (const candidate of vettedNeedsJudge.slice(0, 15)) {
+      try {
+        const probed = await groundCandidateWithSiteProbe(candidate.lead, {
+          abortSignal: state.abortController.signal,
+          timeoutMs: 2000,
+        });
+        if (probed) {
+          const refreshed = finalistCandidateFromLead(
+            candidate.candidateId,
+            candidate.lead,
+            candidate.lead.evidence?.evidenceBlock || getEvidenceForLead(candidate.lead)?.evidenceBlock,
+            contract,
+          );
+          candidate.evidence = refreshed.evidence;
+        }
+      } catch {}
+    }
+  }
+
   const maxBatchSize = Math.max(
     1,
     Math.min(18, Number(process.env.FINALIST_JUDGE_BATCH_SIZE || 3)),
@@ -151,7 +241,7 @@ export async function executeJudgeStage(
   const judgeBatches: FinalistCandidate[][] = [];
   let currentBatch: FinalistCandidate[] = [];
 
-  for (const candidate of prioritizedNeedsJudge) {
+  for (const candidate of vettedNeedsJudge) {
     const proposedBatch = [...currentBatch, candidate];
     const proposedInputTokens = estimateTokenCount(
       buildFinalistJudgePrompt(contract, proposedBatch),
@@ -322,9 +412,9 @@ export async function executeJudgeStage(
               requestedOutputTokens: dynamicMaxTokens,
             },
           });
-          if (batch.length > 1 && attemptDepth < 3) {
+          if (batch.length > 1 && attemptDepth < 1) {
             logEvent(
-              `Finalist judge batch ${batchIndex + 1} omitted judgments; splitting ${batch.length} candidates.`,
+              `Finalist judge batch ${batchIndex + 1} omitted judgments; splitting into smaller batch.`,
             );
             const mid = Math.ceil(batch.length / 2);
             const left = await evaluateFinalistBatch(
@@ -339,11 +429,15 @@ export async function executeJudgeStage(
             );
             return [...left, ...right];
           }
-          judgeOutcomeTotals.qualified += validation.counts.qualified;
-          judgeOutcomeTotals.hardFail += validation.counts.hardFail;
-          judgeOutcomeTotals.unknown += validation.counts.unknown;
-          judgeOutcomeTotals.unjudged += validation.counts.unjudged;
-          return [] as any[];
+          logEvent(
+            `Finalist judge batch ${batchIndex + 1}: applying resilient fallback scoring for unjudged candidates.`,
+          );
+          const resilient = fallbackResilientCandidates(
+            batch,
+            "Finalist judge response omitted candidates",
+          );
+          judgeOutcomeTotals.unjudged += batch.length;
+          return resilient;
         }
 
         judgeOutcomeTotals.qualified += validation.counts.qualified;

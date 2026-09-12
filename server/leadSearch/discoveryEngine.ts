@@ -60,6 +60,7 @@ import {
   readResumableMiningSessions,
   getProspectContractCache,
   upsertProspectContractCache,
+  readStoredCompanyDomains,
 } from "../db.js";
 import {
   hasOpenAIKey,
@@ -746,6 +747,14 @@ export async function executeDiscoverySession(
     let searchSpec = normalizeSearchSpec(options.searchSpec, query);
     if (!options.searchSpec) {
       searchSpec = buildFallbackSearchSpec(query, requestedMode);
+    }
+
+    const crmDomains = readStoredCompanyDomains(30);
+    if (crmDomains.length > 0) {
+      searchSpec.exclusions = searchSpec.exclusions || { companies: [], domains: [] };
+      searchSpec.exclusions.domains = Array.from(
+        new Set([...(searchSpec.exclusions.domains || []), ...crmDomains]),
+      ).slice(0, 30);
     }
 
     // Build deterministic contract first as fallback (or restore from checkpoint).

@@ -1,5 +1,9 @@
 import { runProviderQueue } from "../providerQueue.js";
-import { reserveProviderUsage, recordProviderUsage } from "../../db.js";
+import {
+  reserveProviderUsage,
+  recordProviderUsage,
+  readExistingIdentityKeys,
+} from "../../db.js";
 import {
   chunkBrightDataBatchItems,
   scrapeBatchAsMarkdown,
@@ -29,7 +33,12 @@ import {
 } from "../llmBudget.js";
 import { summarizeLLM } from "../telemetry.js";
 import { incrementRejection, type RejectionReason } from "../rejections.js";
-import { unwrapRedirectUrl } from "../../../src/utils/leadDedupe.js";
+import {
+  unwrapRedirectUrl,
+  canonicalLinkedInIdentity,
+  getLinkedInHandle,
+  isValidLinkedInHandle,
+} from "../../../src/utils/leadDedupe.js";
 import { runWithTransientRetry } from "../sessionHelpers.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceQuality, LeadSourceProvider } from "../scoring.js";
@@ -53,6 +62,30 @@ export type EvidenceMeta = {
 
 const normalizeDedupeValue = (value?: string) =>
   (value || "").trim().toLowerCase();
+
+export function cleanSnippetNoise(text?: string): string {
+  if (!text || typeof text !== "string") return "";
+  return text
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z0-9]+;/gi, " ")
+    .replace(/\b(?:Cookie\s+Settings|Accept\s+All|Privacy\s+Policy|Terms\s+of\s+Service|Skip\s+to\s+content|All\s+rights\s+reserved)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function buildCleanEvidence(item: any): string {
+  const url = item?.url || "";
+  const title = cleanSnippetNoise(item?.title || "Untitled result");
+  const rawSnippet = item?.content || item?.raw_content || "";
+  const cleaned = cleanSnippetNoise(rawSnippet);
+  const snippet = cleaned.length > 500 ? `${cleaned.slice(0, 500)}...` : cleaned;
+  return [
+    `LINK: ${url}`,
+    `TITLE: ${title}`,
+    `[TAVILY SNIPPET]`,
+    snippet,
+  ].filter(Boolean).join("\n");
+}
 
 export type ExtractStageInput = {
   round: number;
@@ -110,8 +143,123 @@ export async function executeExtractStage(
     if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
   };
 
+  // 0. Stage 2.5: FAST DETERMINISTIC PRE-FILTER GATE (0ms - No LLM)
+  const existingCrmKeys = readExistingIdentityKeys();
+  const requiresPerson =
+    config.contract?.requirements.some((r: any) => r.scope === "person_role") ?? true;
+
+  const preFilteredItems: any[] = [];
+  let skippedDuplicates = 0;
+  let skippedMissingLinkedIn = 0;
+
+  for (const item of candidateItems) {
+    const rawUrl = String(item.url || "").trim();
+    const queryRun = item._queryRun as QueryRunStats | undefined;
+    const unwrapped = unwrapRedirectUrl(rawUrl);
+    const effectiveUrl = unwrapped || rawUrl;
+    const normUrl = normalizeDedupeValue(effectiveUrl);
+
+    // a) Check CRM duplicate identities
+    const identityKey =
+      canonicalLinkedInIdentity(effectiveUrl) ||
+      canonicalLinkedInIdentity(rawUrl);
+    const handle = getLinkedInHandle(effectiveUrl);
+    const handleKey = handle ? `linkedin:${handle}` : "";
+
+    const isDuplicate =
+      (identityKey && existingCrmKeys.has(identityKey)) ||
+      (handleKey && existingCrmKeys.has(handleKey)) ||
+      (normUrl && existingCrmKeys.has(`url:${normUrl}`));
+
+    if (isDuplicate) {
+      skippedDuplicates++;
+      stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
+      noteRejection("duplicate_existing_lead", queryRun);
+      continue;
+    }
+
+    // b) Check LinkedIn profile requirement
+    const isExplicitLinkedInProfile = Boolean(
+      /linkedin\.com\/in\/[^/?#]+/i.test(effectiveUrl) ||
+        (handle && isValidLinkedInHandle(handle)),
+    );
+
+    // If item is from a signal lane and has no LinkedIn URL, route company signal to signalStore if available
+    const isSignalLane = item._queryLane === "signal" || item.lane === "signal";
+    if (!isExplicitLinkedInProfile && isSignalLane) {
+      if (state.signalStore && typeof (state.signalStore as any).addCompanySignal === "function") {
+        const companyHint = item.title?.split(/[-|:]/)[0]?.trim();
+        if (companyHint) {
+          (state.signalStore as any).addCompanySignal(companyHint, {
+            query: item._sourceQuery || "",
+            url: effectiveUrl,
+            confidence: 0.7,
+          });
+        }
+      }
+      skippedMissingLinkedIn++;
+      noteRejection("missing_linkedin_profile", queryRun);
+      continue;
+    }
+
+    // If contract requires person profile, reject items with no LinkedIn URL
+    if (requiresPerson && !isExplicitLinkedInProfile) {
+      // Check if snippet contains an explicit linkedin.com/in/ URL
+      const snippet = String(item.content || item.raw_content || "");
+      const snippetLinkedIn = snippet.match(/https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com\/in\/[a-zA-Z0-9_\u0080-\uffff-]+/i);
+      if (snippetLinkedIn?.[0]) {
+        const rescuedUrl = snippetLinkedIn[0];
+        const rescuedIdentity = canonicalLinkedInIdentity(rescuedUrl);
+        const rescuedHandle = getLinkedInHandle(rescuedUrl);
+        const rescuedHandleKey = rescuedHandle ? `linkedin:${rescuedHandle}` : "";
+        const rescuedNorm = normalizeDedupeValue(rescuedUrl);
+
+        const isRescuedDuplicate = Boolean(
+          (rescuedIdentity && existingCrmKeys.has(rescuedIdentity)) ||
+          (rescuedHandleKey && existingCrmKeys.has(rescuedHandleKey)) ||
+          (rescuedNorm && existingCrmKeys.has(`url:${rescuedNorm}`)),
+        );
+
+        if (isRescuedDuplicate) {
+          skippedDuplicates++;
+          stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
+          noteRejection("duplicate_existing_lead", queryRun);
+          continue;
+        }
+
+        item.url = rescuedUrl;
+      } else {
+        skippedMissingLinkedIn++;
+        noteRejection("missing_linkedin_profile", queryRun);
+        continue;
+      }
+    }
+
+    preFilteredItems.push(item);
+  }
+
+  if (skippedDuplicates > 0 || skippedMissingLinkedIn > 0) {
+    logEvent(
+      `Round ${round} Pre-Filter Gate: Filtered out ${skippedDuplicates} CRM duplicate(s) and ${skippedMissingLinkedIn} non-LinkedIn profile(s) in 0ms. Retained ${preFilteredItems.length}/${candidateItems.length} candidate(s).`,
+    );
+  }
+
+  if (preFilteredItems.length === 0) {
+    logEvent(
+      `Round ${round}: No viable candidates remained after Pre-Filter Gate. Skipping extraction LLM.`,
+    );
+    return {
+      extractedProfiles: [],
+      evidenceByUrl,
+      consecutiveFailedExtractionRounds: 0,
+      brightDataProviderDisabled,
+    };
+  }
+
+  const activeCandidateItems = preFilteredItems;
+
   // 1. Thin page evidence upgrades via Bright Data rapid tool or Tavily Extract fallback
-  const upgradeTargets = candidateItems.filter((item: any) => {
+  const upgradeTargets = activeCandidateItems.filter((item: any) => {
     const url = String(item.url || "");
     return (
       url &&
@@ -365,7 +513,7 @@ export async function executeExtractStage(
   // 2. Format evidence blocks
   let evidenceBlocks: string[] = [];
 
-  for (const item of candidateItems) {
+  for (const item of activeCandidateItems) {
     const url = item.url || "";
     const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
     const username = item._linkedinUsername || extractLinkedInUsername(url);
@@ -373,7 +521,7 @@ export async function executeExtractStage(
 
     const sourceProvider: LeadSourceProvider =
       item.sourceProvider === "brightdata_search" ? "brightdata" : "tavily";
-    const evidenceBlock = buildTavilyEvidence(item);
+    const evidenceBlock = buildCleanEvidence(item);
     const evidenceQuality = inferTavilyEvidenceQuality(item);
 
     const evidenceMeta: EvidenceMeta = {

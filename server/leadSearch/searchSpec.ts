@@ -481,6 +481,7 @@ export const buildStrategistPrompt = (params: {
   missingRequirementIds?: string[];
   discoveredCompanies?: string[];
   knownCompanyEntities?: string[];
+  metroSaturation?: Record<string, number>;
   isRecovery?: boolean;
   recoveryAttempt?: number;
   logEvent?: (msg: string) => void;
@@ -519,6 +520,13 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
     lowerQueries.some((q) => q.includes(metro.toLowerCase())),
   );
 
+  // Detect CRM-saturated metros
+  const metroSaturation = params.metroSaturation || {};
+  const saturatedMetros = allKnownMetros.filter((metro) => {
+    const count = metroSaturation[metro.toLowerCase()] || 0;
+    return count >= 15;
+  });
+
   // Determine target countries from brief or contract
   const briefLower = (params.contract?.brief || params.query || "").toLowerCase();
   const relevantCountries = Object.keys(METRO_HUBS_BY_COUNTRY).filter((c) => {
@@ -533,11 +541,26 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
     const countryLabel = c === "uk" ? "UK" : c === "canada" ? "Canada" : c === "australia" ? "Australia" : "";
     return hubList.map((m) => countryLabel && !m.toLowerCase().includes(countryLabel.toLowerCase()) ? `${m} ${countryLabel}` : m);
   });
-  const unvisitedMetros = eligibleMetros.filter((m) => !exploredMetros.some((em) => em.toLowerCase() === m.toLowerCase()));
+  const unvisitedMetros = eligibleMetros.filter((m) => {
+    const mLower = m.toLowerCase();
+    const isExplored = exploredMetros.some((em) => em.toLowerCase() === mLower);
+    const isSaturated = saturatedMetros.some((sm) => mLower.includes(sm.toLowerCase()));
+    return !isExplored && !isSaturated;
+  });
 
-  const metroDirectives = exploredMetros.length > 0
-    ? `\nALREADY EXPLORED METROS IN THIS SESSION (DO NOT query these again): [${exploredMetros.join(", ")}]\nRECOMMENDED UNVISITED METROS TO TARGET NEXT: [${unvisitedMetros.slice(0, 12).join(", ")}]`
-    : (unvisitedMetros.length > 0 ? `\nRECOMMENDED METROS TO TARGET: [${unvisitedMetros.slice(0, 12).join(", ")}]` : "");
+  const saturatedNote = saturatedMetros.length > 0
+    ? `\nCRM-SATURATED METROS (CRM already contains many leads for these cities; DO NOT query these): [${saturatedMetros.join(", ")}]`
+    : "";
+  const exploredNote = exploredMetros.length > 0
+    ? `\nALREADY EXPLORED METROS IN THIS SESSION (DO NOT query these again): [${exploredMetros.join(", ")}]`
+    : "";
+  const unvisitedNote = unvisitedMetros.length > 0
+    ? `\nRECOMMENDED UNVISITED METROS TO TARGET NEXT: [${unvisitedMetros.slice(0, 12).join(", ")}]`
+    : "";
+
+  const metroDirectives = `${saturatedNote}${exploredNote}${unvisitedNote}`.trim()
+    ? `${saturatedNote}${exploredNote}${unvisitedNote}`
+    : "";
 
   const recoveryDirective = params.isRecovery
     ? `\nRECOVERY DIRECTIVE (Attempt ${params.recoveryAttempt || 1}/2):
@@ -561,7 +584,7 @@ Prior rounds had low yield or missed specific criteria.
 
   const knownCompaniesNote =
     params.knownCompanyEntities && params.knownCompanyEntities.length > 0
-      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these): ${params.knownCompanyEntities.slice(0, 25).join(", ")}`
+      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these; optionally use negative operators e.g. -"TopAgency"): ${params.knownCompanyEntities.slice(0, 25).join(", ")}`
       : "";
 
   if (

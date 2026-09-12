@@ -1631,7 +1631,7 @@ router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
       process.env.LANGFUSE_BASEURL ||
       (process.env.LANGFUSE_PUBLIC_KEY ? "https://cloud.langfuse.com" : null);
 
-    const projectId = process.env.LANGFUSE_PROJECT_ID || "default";
+    const projectId = process.env.LANGFUSE_PROJECT_ID || "cmtyxoeu400amad0itl1axqqm";
     const langfuseDeepLink = langfuseHost
       ? `${langfuseHost.replace(/\/$/, "")}/project/${projectId}/traces?search=${encodeURIComponent(sessionId)}`
       : null;

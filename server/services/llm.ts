@@ -4,6 +4,7 @@ import {
   executeWithKeyRotation,
   parseApiKeys,
 } from "./keyRotator.js";
+import { sendDirectLangfuseTrace } from "./langfuse.js";
 
 export const Type = {
   STRING: "STRING",
@@ -924,6 +925,22 @@ async function sendChatCompletion(
       if (error?.name === "AbortError" || options?.signal?.aborted) {
         throw error;
       }
+      if (provider.id !== "litellm") {
+        void sendDirectLangfuseTrace({
+          sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+          stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+          round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+          model: provider.model,
+          provider: provider.name,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          latencyMs: Date.now() - callStartedAt,
+          status: "error",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          messages,
+        });
+      }
       throw new LLMProviderError(
         provider,
         undefined,
@@ -939,6 +956,22 @@ async function sendChatCompletion(
         errorCode = parsed?.error?.code ?? parsed?.code;
       } catch {}
       const err = truncateProviderError(rawText);
+      if (provider.id !== "litellm") {
+        void sendDirectLangfuseTrace({
+          sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+          stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+          round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+          model: provider.model,
+          provider: provider.name,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          latencyMs: Date.now() - callStartedAt,
+          status: "error",
+          errorMessage: err,
+          messages,
+        });
+      }
       throw new LLMProviderError(
         provider,
         res.status,
@@ -968,6 +1001,23 @@ async function sendChatCompletion(
     console.log(
       `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencyMs}ms\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m`,
     );
+
+    if (provider.id !== "litellm") {
+      void sendDirectLangfuseTrace({
+        sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+        stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+        round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+        model: actualModel,
+        provider: provider.name,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        latencyMs,
+        status: "success",
+        messages,
+        output: data.choices?.[0]?.message?.content || "",
+      });
+    }
 
     if (typeof options?.onUsage === "function") {
       options.onUsage({

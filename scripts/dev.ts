@@ -22,8 +22,9 @@ const envFileValues = loadEnvFile();
 for (const [key, value] of Object.entries(envFileValues)) {
   if (process.env[key] === undefined) process.env[key] = value;
 }
-process.env.PYTHONUTF8 = process.env.PYTHONUTF8 || '1';
-process.env.PYTHONIOENCODING = process.env.PYTHONIOENCODING || 'utf-8';
+process.env.PYTHONUTF8 = '1';
+process.env.PYTHONIOENCODING = 'utf-8';
+process.env.PYTHONUNBUFFERED = '1';
 
 const gatewayMode = (process.env.LLM_GATEWAY_MODE || 'litellm').toLowerCase();
 let litellmProcess: ChildProcess | undefined;
@@ -38,7 +39,12 @@ if (gatewayMode === 'litellm') {
     stdio: ['ignore', 'inherit', 'inherit'],
     shell: false,
     windowsHide: true,
-    env: process.env,
+    env: {
+      ...process.env,
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUNBUFFERED: '1',
+    },
   });
 } else {
   console.log(`[dev-entry] Skipping LiteLLM proxy because LLM_GATEWAY_MODE=${gatewayMode}.`);

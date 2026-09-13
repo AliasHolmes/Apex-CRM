@@ -254,7 +254,7 @@ export class ApiKeyPool {
 
     if (classification.kind === 'exhausted') {
       entry.status = 'exhausted';
-      entry.cooldownUntil = 0;
+      entry.cooldownUntil = now + 60 * 60 * 1000;
       entry.consecutiveTransientFailures = 0;
       return;
     }
@@ -302,7 +302,7 @@ export class ApiKeyPool {
     }
 
     for (const entry of this.entries.values()) {
-      if ((entry.status === 'rate_limited' || entry.status === 'transient_cooldown') && entry.cooldownUntil <= now) {
+      if ((entry.status === 'rate_limited' || entry.status === 'transient_cooldown' || entry.status === 'exhausted') && entry.cooldownUntil > 0 && entry.cooldownUntil <= now) {
         entry.status = 'active';
         entry.cooldownUntil = 0;
         entry.consecutiveTransientFailures = 0;
@@ -311,7 +311,10 @@ export class ApiKeyPool {
   }
 
   private isUsable(entry: ApiKeyEntry | undefined, now: number) {
-    if (!entry || entry.status === 'exhausted') return false;
+    if (!entry) return false;
+    if (entry.status === 'exhausted') {
+      return entry.cooldownUntil > 0 && entry.cooldownUntil <= now;
+    }
     return entry.status === 'active' || entry.cooldownUntil <= now;
   }
 

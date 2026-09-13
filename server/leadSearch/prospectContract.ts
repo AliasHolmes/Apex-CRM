@@ -522,7 +522,7 @@ export function isAgencyContract(contractOrBrief: ProspectContract | string): bo
   if (!contractOrBrief) return false;
   const text = typeof contractOrBrief === 'string'
     ? contractOrBrief
-    : `${contractOrBrief.brief} ${contractOrBrief.requirements.map(r => `${r.description} ${r.acceptableTerms?.join(' ') || ''}`).join(' ')}`;
+    : `${contractOrBrief.brief || ''} ${(contractOrBrief.requirements || []).map(r => `${r.description} ${r.acceptableTerms?.join(' ') || ''}`).join(' ')}`;
   return /\b(agenc(y|ies)?|consultan(cy|cies|t|ts)?|consulting|studios?|integrat(or|ors)?|client\s+services?|advisory\s+firm)\b/i.test(text);
 }
 
@@ -559,7 +559,12 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     acceptableTerms: string[],
     importance: 'hard' | 'soft' = 'hard'
   ) => {
-    if (!sourceAppearsInBrief(sourcePhrase, brief)) return;
+    if (!sourceAppearsInBrief(sourcePhrase, brief)) {
+      if (importance === 'hard') {
+        console.warn(`[prospectContract] Dropping ungrounded hard requirement "${sourcePhrase}" (${scope}) not in brief.`);
+      }
+      return;
+    }
     const accepted = expandAcceptableTerms(scope, unique([sourcePhrase, ...acceptableTerms]));
     const reqClass = classifyRequirement(scope, importance, sourcePhrase);
     const hardness = assignQueryHardness(reqClass);
@@ -580,7 +585,6 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
 
   const roleHints = ['owner', 'owners', 'founder', 'founders', 'co-founder', 'ceo', 'chief executive officer', 'president', 'partner', 'partners', 'vp', 'vice president', 'head of', 'director', 'directors'];
   const hintedRoles = roleHints.filter(term => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i').test(brief));
-  const rolePattern = roleHints.map(term => term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
 
   // Guard rails: free-text briefs routinely contain buying-signal timeframes
   // ("from the last 45 days seeking...") and role modifiers ("Managing
@@ -592,7 +596,6 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     const v = String(value || '').trim();
     return v.length > 1 && v.length <= 48 && !JUNK_TERM_PATTERN.test(v);
   };
-  const TITLE_MODIFIER_PATTERN = /^(?:managing|operations?|technical|executive|senior|junior|lead|principal|chief|global|regional|fractional|founding|head|director|directors|vp|vice|deputy|sales|marketing|revops|finance|co-?\s*founder|co-?\s*owner)\b/i;
 
   const ROLE_WORDS_PATTERN = /\b(owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i;
   const CONJUNCTION_STOP_PATTERN = /^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\b|\b(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i;
@@ -801,11 +804,6 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   };
 }
 
-const queryTermsFor = (requirements: ProspectRequirement[]) => requirements
-  .filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal')
-  .map(item => item.acceptableTerms[0] || item.sourcePhrase)
-  .filter(Boolean);
-
 export function buildSignalLaneQueries(
   requirements: ProspectRequirement[],
   identitySpec?: IdentitySpec
@@ -841,7 +839,7 @@ export const ATS_SEARCH_DOMAINS = [
 ] as const;
 
 export function buildAtsLaneQueries(
-  brief: string,
+  _brief: string,
   requirements: ProspectRequirement[],
   identitySpec?: IdentitySpec
 ): SearchQueryPlanItem[] {
@@ -1111,7 +1109,10 @@ export function normalizeProspectContract(
     if (!permittedScopes.has(scope)) continue;
     const sourcePhrase = clean(item?.sourcePhrase);
     const importance = item?.importance === 'soft' ? 'soft' : 'hard';
-    if (importance === 'hard' && !sourceAppearsInBrief(sourcePhrase, brief)) continue;
+    if (importance === 'hard' && !sourceAppearsInBrief(sourcePhrase, brief)) {
+      console.warn(`[prospectContract] Dropping ungrounded hard requirement "${sourcePhrase}" (${scope}) from LLM contract not in brief.`);
+      continue;
+    }
     const rawTerms = unique(Array.isArray(item?.acceptableTerms) ? item.acceptableTerms : [sourcePhrase]);
     const terms = expandAcceptableTerms(scope, rawTerms);
     if (!terms.length || !sourcePhrase) continue;

@@ -41,7 +41,7 @@ export type FinalistCandidate = {
 
 export type Qualification = {
   policyVersion: string;
-  verdict: "qualified" | "qualified_partial";
+  verdict: "qualified" | "qualified_partial" | "unverified";
   qualificationSource: "llm" | "deterministic";
   finalScore: number;
   requirements: RequirementAssessment[];
@@ -56,13 +56,11 @@ const clean = (value: unknown, max = 900) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
-const bounded = (value: unknown) =>
-  Math.min(10, Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0));
 const normalizeScoreTo10 = (value: unknown, defaultVal = 7): number => {
   const num = Number(value);
   if (!Number.isFinite(num)) return defaultVal;
   // If the score was returned on a 0.0 - 1.0 probability/unit scale, scale it to 0 - 10
-  if (num <= 1.0 && num > 0)
+  if (num < 1.0 && num > 0)
     return Math.min(10, Math.max(0, Number((num * 10).toFixed(2))));
   return Math.min(10, Math.max(0, Number(num.toFixed(2))));
 };
@@ -125,7 +123,8 @@ export type FinalistOutcomeStatus =
   | "qualified_partial"
   | "hard_fail"
   | "unknown"
-  | "unjudged";
+  | "unjudged"
+  | "unverified";
 
 export type CandidateOutcome = {
   candidateId: string;
@@ -224,12 +223,34 @@ export function buildFinalistJudgePrompt(
         if (!selected.includes(item)) selected.push(item);
       }
       const evidence = selected
-        .map(
-          (item) =>
-            `[${item.id}] ${clean(item.text, EVIDENCE_CHARS) || "No evidence."}`,
-        )
+        .map((item) => {
+          const rawText = clean(item.text, 2000);
+          if (rawText.length <= EVIDENCE_CHARS) {
+            return `[${item.id}] ${rawText || "No evidence."}`;
+          }
+          const lower = rawText.toLowerCase();
+          const matchIndex = allTerms
+            .map((term) => (term ? lower.indexOf(term.toLowerCase()) : -1))
+            .filter((idx) => idx >= 0)
+            .sort((a, b) => a - b)[0];
+          if (matchIndex === undefined) {
+            return `[${item.id}] ${rawText.slice(0, Math.max(1, EVIDENCE_CHARS - 3)).trim()}...`;
+          }
+          const start = Math.max(0, matchIndex - Math.floor(EVIDENCE_CHARS * 0.3));
+          const end = Math.min(rawText.length, start + Math.max(1, EVIDENCE_CHARS - 6));
+          const cropped = `${start > 0 ? "..." : ""}${rawText.slice(start, end).trim()}${end < rawText.length ? "..." : ""}`;
+          return `[${item.id}] ${cropped}`;
+        })
         .join("\n");
-      return `### ${candidate.candidateId}\nName: ${clean(lead.fullName, 160) || "Unknown"}\nTitle: ${clean(lead.currentTitle || lead.headline, 180) || "Unknown"}\nCompany: ${clean(lead.currentCompany, 180) || "Unknown"}\nLocation: ${clean(lead.location, 160) || "Unknown"}\nEvidence:\n${evidence}`;
+      const ablatedReq = lead._ablatedRequirementId;
+      const ablatedNote = ablatedReq
+        ? `\nRelaxed Requirement: Requirement "${ablatedReq}" was intentionally ablated/relaxed during search query generation for this candidate. Treat "${ablatedReq}" as optional/unknown rather than failing the candidate.`
+        : "";
+      const hasE0 = selected.some((item) => item.id === "e0");
+      const headerFields = hasE0
+        ? ""
+        : `\nName: ${clean(lead.fullName, 160) || "Unknown"}\nTitle: ${clean(lead.currentTitle || lead.headline, 180) || "Unknown"}\nCompany: ${clean(lead.currentCompany, 180) || "Unknown"}\nLocation: ${clean(lead.location, 160) || "Unknown"}`;
+      return `### ${candidate.candidateId}${headerFields}${ablatedNote}\nEvidence:\n${evidence}`;
     })
     .join("\n\n");
   const isAgencyBrief = /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(contract.brief) ||
@@ -330,16 +351,25 @@ const normalizeAssessment = (
   candidate: FinalistCandidate,
   requirement: ProspectRequirement,
 ): RequirementAssessment => {
+  const rawStatus = typeof raw?.status === "string" ? raw.status.trim().toLowerCase() : "";
   const status: RequirementStatus =
-    raw?.status === "pass" || raw?.status === "fail" ? raw.status : "unknown";
+    rawStatus === "pass" || rawStatus === "fail"
+      ? rawStatus
+      : rawStatus === "qualified" || rawStatus === "passed"
+      ? "pass"
+      : rawStatus === "disqualified" || rawStatus === "failed"
+      ? "fail"
+      : "unknown";
   const evidenceId = clean(raw?.evidenceId, 100);
   const evidenceQuote = clean(raw?.evidenceQuote, 400);
   const evidence = candidate.evidence.find((item) => item.id === evidenceId);
 
   let matchedEvidenceId = evidenceId;
   let quoteValid = false;
-  if (status !== 'pass' || !evidenceQuote) {
+  if (status !== 'pass') {
     quoteValid = true;
+  } else if (!evidenceQuote) {
+    quoteValid = !process.env.ENFORCE_CITATION_QUOTES;
   } else if (!isFlagEnabled.fuzzyQuoteGrounding()) {
     quoteValid = Boolean(evidence && evidence.text.includes(evidenceQuote));
   } else if (evidence && verifyEvidencePassage(evidence.text, evidenceQuote).valid) {
@@ -376,8 +406,8 @@ const normalizeAssessment = (
  *   type, industry, size) and/or hard signals merely unknown -> qualified_partial
  *   (15% score discount). Search snippets routinely omit context fields, so an
  *   unverifiable context no longer discards a verified decision-maker.
- * - Identity unverifiable but the judge rates semantic fit >= 7 and authority
- *   fit >= 8 (>= 7 when authority is not required) -> qualified_partial
+ * - Identity unverifiable but the judge rates semantic fit >= 6.5 and authority
+ *   fit >= 7.5 (>= 7.0 when authority is not required) -> qualified_partial
  * - A "pass" whose evidence quote is absent from the packet is treated as a
  *   fabrication signal and blocks qualification entirely -> unknown
  * - Omitted or malformed candidate result -> unjudged
@@ -435,7 +465,12 @@ export function validateFinalistJudgments(
   for (const judgment of rawJudgments) {
     const candidateId = clean(judgment?.candidateId, 180);
     const candidate = byCandidate.get(candidateId);
-    if (!candidate || !Array.isArray(judgment?.requirements)) continue;
+    if (
+      !candidate ||
+      !Array.isArray(judgment?.requirements) ||
+      judgment.requirements.length === 0
+    )
+      continue;
 
     const assessmentById = new Map(
       judgment.requirements
@@ -492,7 +527,11 @@ export function validateFinalistJudgments(
     identityHardTotal = ungroupedHardReqs.filter(r => r.scope === 'person_role').length + groupIdentityTotal;
     contextHardTotal = ungroupedHardReqs.filter(r => r.scope !== 'person_role').length + groupContextTotal;
 
+    const ablatedReqId = candidate.lead?._ablatedRequirementId;
     for (const contractReq of ungroupedHardReqs) {
+      if (ablatedReqId && contractReq.id === ablatedReqId) {
+        continue;
+      }
       const req = requirements.find(r => r.requirementId === contractReq.id);
       if (!req) continue;
       if (req.fabricatedPass) fabricatedHardPass = true;
@@ -734,16 +773,18 @@ export function partitionCandidatesByStrictEvidence(
       }),
     );
     const authorityFit = contract.authorityRequired
-      ? bounded(
+      ? normalizeScoreTo10(
           candidate.lead.decisionMakerVerification?.confidence ??
             candidate.lead.audit?.authorityConfidence ??
             7,
+          7,
         )
       : 0;
-    const evidenceConfidence = bounded(
+    const evidenceConfidence = normalizeScoreTo10(
       candidate.lead.scout?.evidenceCoverageScore ??
         candidate.lead.scoreBreakdown?.evidenceQualityScore ??
         7,
+      7,
     );
     autoQualified.push({
       candidate,
@@ -783,8 +824,6 @@ export function checkStrictContradiction(
 ): { reason: string; requirementId: string } | null {
   const candidateText = `${lead.currentTitle || ""} ${lead.headline || ""} ${lead.currentCompany || lead.company || ""} ${lead.summary || ""}`.toLowerCase();
   const hasStrictAgencyNoun = /\b(agenc(?:y|ies)|consultan(?:cy|cies)|studios?|firms?|boutique)\b/i.test(candidateText);
-  const hasGenericServicesWord = /\b(consult(?:ant|ing)|services?|integrat(?:or|ors|ion)?|advisory|solutions\s+provider|partners?)\b/i.test(candidateText);
-  const hasAgencyTerm = hasStrictAgencyNoun || hasGenericServicesWord;
   const isAgencyContractOrBrief =
     isAgencyContract(contract) ||
     /\b(agenc(?:y|ies)?|consult(?:an(?:cy|cies|t|ts)|ing)?|studios?|firms?|integrat(?:or|ors)?|client\s+services?)\b/i.test(contract.brief) ||
@@ -1061,16 +1100,18 @@ export function triPartitionCandidatesByEvidence(
       },
     );
     const authorityFit = contract.authorityRequired
-      ? bounded(
+      ? normalizeScoreTo10(
           lead.decisionMakerVerification?.confidence ??
             lead.audit?.authorityConfidence ??
             7,
+          7,
         )
       : 0;
-    const evidenceConfidence = bounded(
+    const evidenceConfidence = normalizeScoreTo10(
       lead.scout?.evidenceCoverageScore ??
         lead.scoreBreakdown?.evidenceQualityScore ??
         7,
+      7,
     );
     autoQualified.push({
       candidate,

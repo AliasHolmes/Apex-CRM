@@ -55,9 +55,7 @@ import { PROSPECTS_PAGE_SIZE } from '@/lib/ui';
 import {
   getLeadProvenance,
   getNextAction,
-  getNextActionLabel,
   getReviewStatus,
-  getReviewStatusLabel,
   NEXT_ACTION_OPTIONS,
   REVIEW_STATUS_OPTIONS,
 } from '@/lib/prospectWorkflow';

@@ -302,7 +302,6 @@ export function scheduleAdaptiveRetrievalTasks(
   const selectedTasks = selected
     .sort((a, b) => b.score - a.score || a.task.priority - b.task.priority)
     .map((item, index) => ({ ...item.task, priority: index + 1 }));
-  const selectedQueries = new Set(selectedTasks.map(task => task.query));
 
   return {
     tasks: selectedTasks,

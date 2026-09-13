@@ -4,8 +4,7 @@ import { describe, it } from 'node:test';
 import {
   deriveDomainCluster,
   adaptiveScopeKey,
-  scheduleAdaptiveRetrievalTasks,
-  scoreAdaptiveArm
+  scheduleAdaptiveRetrievalTasks
 } from '../server/leadSearch/adaptiveScheduler.ts';
 import {
   buildRoundDiagnostics

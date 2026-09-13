@@ -110,11 +110,10 @@ export function buildRoundDiagnostics(params: {
     if (lead.qualification?.verdict) {
       return lead.qualification.verdict === 'qualified' || lead.qualification.verdict === 'qualified_partial';
     }
+    const hardReqs = params.contract.requirements.filter(requirement => requirement.importance === 'hard');
     return (
-      lead.decisionMakerVerification?.verified === true ||
-      params.contract.requirements
-        .filter(requirement => requirement.importance === 'hard')
-        .every(requirement => matchesRequirement(lead, requirement))
+      lead.decisionMakerVerification?.verified === true &&
+      (hardReqs.length === 0 || hardReqs.every(requirement => matchesRequirement(lead, requirement)))
     );
   }).length;
 

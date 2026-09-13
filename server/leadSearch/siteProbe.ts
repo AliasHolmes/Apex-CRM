@@ -552,8 +552,12 @@ export function applySiteProbe(
 
   // 6. Record positive cache entry
   try {
+    let host = sourceUrl;
+    try {
+      host = new URL(sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {}
     upsertEnrichmentCacheEntry({
-      normalizedUrl: sourceUrl,
+      normalizedUrl: host,
       companyName: lead.currentCompany || lead.company,
       evidenceBlock: evidenceLines.join('\n'),
       scrapeQuality: signals.location && signals.services ? 'good' : 'partial',
@@ -666,15 +670,22 @@ export async function groundCandidateWithSiteProbe(
     } catch {}
 
     return siteEvidence;
-  } catch {
+  } catch (err: any) {
     try {
-      upsertNegativeEnrichmentCacheEntry({
-        normalizedUrl: host,
-        companyName: lead.currentCompany || lead.company,
-        evidenceBlock: 'probe_timeout_or_error',
-        scrapeQuality: 'bad',
-        sourceProvider: 'site_probe',
-      }, 48);
+      const isDefinitiveFailure =
+        err?.status === 404 ||
+        err?.status === 410 ||
+        err?.code === 'ENOTFOUND' ||
+        /not found|does not exist/i.test(err?.message || '');
+      if (isDefinitiveFailure) {
+        upsertNegativeEnrichmentCacheEntry({
+          normalizedUrl: host,
+          companyName: lead.currentCompany || lead.company,
+          evidenceBlock: 'probe_not_found',
+          scrapeQuality: 'bad',
+          sourceProvider: 'site_probe',
+        }, 48);
+      }
     } catch {}
     return null;
   }

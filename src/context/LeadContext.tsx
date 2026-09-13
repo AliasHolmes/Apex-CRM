@@ -1,4 +1,4 @@
-import React, {
+import {
   createContext,
   useCallback,
   useContext,
@@ -276,6 +276,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   const leadPatchRollbackRef = useRef<Map<string, Lead | null>>(new Map());
   const inFlightDeletionsRef = useRef<Set<string>>(new Set());
   const lastRehydrateTimeRef = useRef<number>(0);
+  const rehydrateRequestIdRef = useRef<number>(0);
 
   const refreshStats = useCallback(async () => {
     const s = await fetchLeadsStats();
@@ -348,8 +349,12 @@ export function LeadProvider({ children }: { children: ReactNode }) {
   }, [saveLeadsToStorage]);
 
   const rehydrateLeads = useCallback(async (preserveExistingOnFailure = false): Promise<boolean> => {
+    const requestId = ++rehydrateRequestIdRef.current;
     try {
       const stored = await loadLeadsFromSqliteBackend();
+      if (requestId !== rehydrateRequestIdRef.current) {
+        return false;
+      }
       lastRehydrateTimeRef.current = Date.now();
       if (stored.initialized) {
         const sanitizedServerLeads = sanitizeLeads(stored.leads);
@@ -581,10 +586,10 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       const serverScore = typeof rawServerScore === 'number' && rawServerScore <= 1.0 && rawServerScore > 0
         ? rawServerScore * 10
         : rawServerScore;
-      const compositeScore = typeof serverScore === 'number'
+      const compositeScore = (qualified as any).compositeScore ?? (typeof serverScore === 'number'
         ? Math.round(serverScore <= 10 ? serverScore * 10 : serverScore)
-        : scoreLeadDeterministically(profile);
-      const predictiveScore = predictiveScoreFromComposite(compositeScore, !!qualified.companyAccount);
+        : scoreLeadDeterministically(profile));
+      const predictiveScore = (qualified as any).predictiveScore ?? predictiveScoreFromComposite(compositeScore, !!qualified.companyAccount);
 
       newLead = {
         id: `lead-${crypto.randomUUID()}`,

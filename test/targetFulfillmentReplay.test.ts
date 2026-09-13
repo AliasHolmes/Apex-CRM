@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { buildDeterministicProspectContract } from '../server/leadSearch/prospectContract.ts';
-import { finalistCandidateFromLead, partitionCandidatesByStrictEvidence, validateFinalistJudgments } from '../server/leadSearch/finalistJudge.ts';
+import { finalistCandidateFromLead, validateFinalistJudgments } from '../server/leadSearch/finalistJudge.ts';
 import { selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
 
 describe('Target Fulfillment Replay Simulation', () => {

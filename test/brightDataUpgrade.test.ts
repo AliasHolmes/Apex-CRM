@@ -27,7 +27,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { brightDataFreeTierCapabilities } from "../server/leadSearch/freeTier.js";
 
-test("verifyDecisionMakerFromEvidence accepts founder", (t) => {
+test("verifyDecisionMakerFromEvidence accepts founder", () => {
   const result = verifyDecisionMakerFromEvidence({
     query: "find me some founders",
     currentTitle: "Founder and CEO",
@@ -61,7 +61,7 @@ test("extractLinkedInProfileUrlFromResult recovers only person profile URLs", ()
   );
 });
 
-test("verifyDecisionMakerFromEvidence rejects intern unless requested", (t) => {
+test("verifyDecisionMakerFromEvidence rejects intern unless requested", () => {
   const result = verifyDecisionMakerFromEvidence({
     query: "find me tech leads",
     currentTitle: "Software Engineering Intern",
@@ -70,7 +70,7 @@ test("verifyDecisionMakerFromEvidence rejects intern unless requested", (t) => {
   assert.strictEqual(result.ignoredTitle, true);
 });
 
-test("verifyDecisionMakerFromEvidence accepts intern if requested", (t) => {
+test("verifyDecisionMakerFromEvidence accepts intern if requested", () => {
   const result = verifyDecisionMakerFromEvidence({
     query: "find me interns",
     currentTitle: "Software Engineering Intern",
@@ -79,7 +79,7 @@ test("verifyDecisionMakerFromEvidence accepts intern if requested", (t) => {
   assert.strictEqual(result.ignoredTitle, false);
 });
 
-test("negative cache works", (t) => {
+test("negative cache works", () => {
   upsertNegativeEnrichmentCacheEntry(
     {
       normalizedUrl: "linkedin.com/in/test-negative",

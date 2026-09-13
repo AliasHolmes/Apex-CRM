@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { unwrapRedirectUrl, getLinkedInHandle, isValidLinkedInHandle, canonicalLinkedInIdentity } from '../src/utils/leadDedupe.js';
-import { normalizeLinkedInUrl, extractLinkedInUsername } from '../server/services/linkedinEvidence.js';
+import { normalizeLinkedInUrl } from '../server/services/linkedinEvidence.js';
 import { extractLinkedInProfileUrlFromResult, parseBingMarkdownResults } from '../server/services/brightdata.js';
 import { COUNTRY_TO_METROS, COUNTRY_CANONICAL_MAP } from '../server/leadSearch/prospectContract.js';
 import { getRecoveryCandidateCeiling, buildCollectionCapacity } from '../server/leadSearch/collectionCapacity.js';
-import { buildRetrievalTasks, buildFallbackQueryPlan, COUNTRY_TO_TAVILY_CODE } from '../server/leadSearch/searchSpec.js';
+import { buildRetrievalTasks, buildFallbackQueryPlan } from '../server/leadSearch/searchSpec.js';
 import { computeEarlyStopThreshold } from '../server/leadSearch/sessionHelpers.js';
 
 describe('Lead Mining Bottlenecks and Artificial Ceilings Fixes', () => {

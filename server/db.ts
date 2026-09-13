@@ -99,7 +99,6 @@ function getCachedStatement(db: DatabaseSync, sql: string): StatementSync {
 }
 
 let pruneEnrichmentCounter = 0;
-let searchLogInsertCounter = 0;
 
 const isUsableEmail = (value: unknown): value is string => {
   if (typeof value !== "string") return false;
@@ -315,6 +314,25 @@ function backupDatabaseBeforeMigration(previousVersion: number) {
       `(Fallback) Database backup created before migration: ${backupPath}`,
     );
   }
+
+  try {
+    const files = fs
+      .readdirSync(backupDir)
+      .filter((f) => f.startsWith("apex-crm.pre-migration-") && f.endsWith(".sqlite"))
+      .map((f) => ({
+        name: f,
+        fullPath: path.join(backupDir, f),
+        mtime: fs.statSync(path.join(backupDir, f)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+    const toDelete = files.slice(3);
+    for (const file of toDelete) {
+      try {
+        fs.unlinkSync(file.fullPath);
+        console.log(`Pruned old database backup: ${file.name}`);
+      } catch {}
+    }
+  } catch {}
 }
 
 /**
@@ -802,13 +820,13 @@ function runMigrations(db: DatabaseSync) {
       addColumnIfMissing(db, "leads", "email", "email TEXT");
 
       db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
+        DROP INDEX IF EXISTS idx_leads_stage;
         CREATE INDEX IF NOT EXISTS idx_leads_review_status ON leads(review_status);
         CREATE INDEX IF NOT EXISTS idx_leads_next_action ON leads(next_action);
         CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
         CREATE INDEX IF NOT EXISTS idx_leads_created_updated ON leads(created_at DESC, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_leads_stage_updated ON leads(stage, datetime(updated_at) DESC);
-        CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC);
+        CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC, created_at DESC);
       `);
 
       const rows = db.prepare("SELECT id, payload FROM leads").all() as {
@@ -1921,6 +1939,8 @@ const readLeadFromRow = (
   }
 };
 
+let leadsInitializedCached = false;
+
 export function upsertLeadInExistingTransaction(
   db: DatabaseSync,
   lead: Record<string, any>,
@@ -2042,14 +2062,17 @@ export function upsertLeadInExistingTransaction(
     ).run(identityKey, storedLead.id, now);
   }
 
-  getCachedStatement(
-    db,
-    `
-    INSERT INTO app_meta (key, value, updated_at)
-    VALUES ('leads_initialized', 'true', ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `,
-  ).run(now);
+  if (!leadsInitializedCached) {
+    getCachedStatement(
+      db,
+      `
+      INSERT INTO app_meta (key, value, updated_at)
+      VALUES ('leads_initialized', 'true', ?)
+      ON CONFLICT(key) DO NOTHING
+    `,
+    ).run(now);
+    leadsInitializedCached = true;
+  }
 
   return {
     disposition: existing ? "updated" : "created",
@@ -3583,7 +3606,8 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
   const rows = getLeadsDb()
     .prepare(
       `
-      SELECT * FROM mining_sessions
+      SELECT id, status, prompt, requested_limit, started_at, completed_at, cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at, checkpoint_json
+      FROM mining_sessions
       WHERE status IN ('interrupted', 'error', 'cancelled') AND checkpoint_json IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 20
@@ -4177,7 +4201,10 @@ export function readStoredCompanyDomains(limit = 100): string[] {
     const rows = db.prepare(`
       SELECT payload
       FROM leads
-      WHERE payload LIKE '%website%' OR payload LIKE '%domain%' OR payload LIKE '%company%'
+      WHERE json_extract(payload, '$.website') IS NOT NULL
+         OR json_extract(payload, '$.companyWebsite') IS NOT NULL
+         OR json_extract(payload, '$.companyDomain') IS NOT NULL
+         OR company IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT ?
     `).all(cappedLimit * 3) as { payload: string }[];
@@ -4215,7 +4242,8 @@ export function readStoredMetroSaturation(): Record<string, number> {
     const rows = db.prepare(`
       SELECT payload
       FROM leads
-      WHERE payload LIKE '%location%' OR payload LIKE '%city%'
+      WHERE json_extract(payload, '$.location') IS NOT NULL
+         OR json_extract(payload, '$.city') IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 1000
     `).all() as { payload: string }[];

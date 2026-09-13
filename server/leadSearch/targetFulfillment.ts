@@ -1,5 +1,5 @@
 export * from './discoveryEngine.js';
-import { discoveryEngine, type DiscoveryRequest } from './discoveryEngine.js';
+import { discoveryEngine } from './discoveryEngine.js';
 import type { Request, Response } from 'express';
 
 export type TargetFulfillmentOptions = {

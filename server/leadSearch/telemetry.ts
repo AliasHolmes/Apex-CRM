@@ -35,7 +35,7 @@ export function summarizeLLM(
   purpose: string,
   promptText: string,
   output: unknown,
-  latencyMs: number,
+  _latencyMs: number,
   parseRetries = 0,
   providerAttempts: LLMProviderAttempt[] = [],
   usage?: LLMUsage,
@@ -367,7 +367,7 @@ function accumulateProviderEvent(
   }
 }
 
-function summarizeProviders(events: MiningTraceEvent[]): ProviderSummary {
+export function summarizeProviders(events: MiningTraceEvent[]): ProviderSummary {
   const summary = blankProviderSummary();
   for (const event of events) {
     accumulateProviderEvent(summary, event);
@@ -407,7 +407,7 @@ function accumulatePhaseEvent(
   byPhase.set(event.phase, existing);
 }
 
-function summarizePhases(events: MiningTraceEvent[]): PhaseTimelineItem[] {
+export function summarizePhases(events: MiningTraceEvent[]): PhaseTimelineItem[] {
   const byPhase = new Map<
     MiningPhase,
     PhaseTimelineItem & { firstMs?: number; lastMs?: number }

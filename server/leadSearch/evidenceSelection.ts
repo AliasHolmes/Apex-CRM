@@ -103,7 +103,10 @@ export function hasStrictStructuredMatch(lead: Record<string, any>, requirement:
   }
   return structuredFieldsForRequirement(lead, requirement)
     .filter(value => value !== undefined && value !== null)
-    .some(value => matchingTerms(String(value), requirement).length > 0);
+    .some(value => {
+      const text = String(value);
+      return requirement.acceptableTerms.some(term => hasWholeTerm(text, term));
+    });
 }
 
 const sourceEvidencePieces = (lead: Record<string, any>, evidenceText?: string) => unique([
@@ -168,7 +171,7 @@ export function selectEvidenceForFinalist(
     : [];
   const signalEvidenceText = signalPieces.map(p => clean(p, 600)).join('\n').slice(0, 600);
 
-  const sentences = toSentences(sourceEvidencePieces(lead, evidenceText));
+  const sentences = toSentences(allPieces);
   const scored = sentences.map((text, index) => {
     const matchedRequirementIds = contract.requirements
       .filter(requirement => matchingTerms(text, requirement).length > 0)
@@ -229,7 +232,7 @@ export function selectEvidenceForFinalist(
   }
 
   if (!evidenceLines.length) {
-    const fallback = sourceEvidencePieces(lead, evidenceText)[0];
+    const fallback = allPieces[0];
     if (fallback && remaining >= 60) evidenceLines.push(crop(fallback, Math.min(remaining, 300)));
   }
 

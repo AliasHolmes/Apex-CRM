@@ -198,7 +198,6 @@ describe('free-tier prospect scout', () => {
     assert.equal(stopReason, null, 'Session should not exit early_exit_stalled after 2 provider-impaired rounds');
 
     // On 3rd consecutive provider impairment, exits with provider_exhausted
-    const lastRoundProviderImpaired = true;
     providerImpairedStallRounds++;
     if (providerImpairedStallRounds >= 3) stopReason = 'provider_exhausted';
     assert.equal(stopReason, 'provider_exhausted');

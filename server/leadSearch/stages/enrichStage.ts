@@ -12,10 +12,8 @@ import {
   isAuthwalledUrl,
 } from "../../services/brightdata.js";
 import {
-  getEnrichmentCacheEntry,
   getEnrichmentCacheEntriesBatch,
   upsertEnrichmentCacheEntry,
-  getNegativeEnrichmentCacheEntry,
   getNegativeEnrichmentCacheEntriesBatch,
   upsertNegativeEnrichmentCacheEntry,
   recordProviderUsage,
@@ -105,11 +103,11 @@ export async function executeEnrichStage(
     enrichmentCap,
     profileConcurrency,
     ttlDays,
-    contract,
+    contract: _contract,
     searchSpec,
     stats,
     leadQueryRuns,
-    trackableBrightDataSearch,
+    trackableBrightDataSearch: _trackableBrightDataSearch,
   } = input;
 
   let brightDataProviderDisabled = input.brightDataProviderDisabled;
@@ -612,7 +610,7 @@ export async function executeEnrichStage(
 
     if (batchQueueTasks.length > 0 && !brightDataProviderDisabled) {
       await runProviderQueue(batchQueueTasks, {
-        concurrency: 3,
+        concurrency: profileConcurrency || 3,
         signal: state.abortController.signal,
       });
     }
@@ -715,7 +713,7 @@ export async function executeEnrichStage(
 
     if (retryQueueTasks.length > 0 && !brightDataProviderDisabled) {
       await runProviderQueue(retryQueueTasks, {
-        concurrency: 2,
+        concurrency: Math.max(1, Math.min(profileConcurrency || 2, 2)),
         signal: state.abortController.signal,
       });
     }

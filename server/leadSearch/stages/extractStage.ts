@@ -20,7 +20,6 @@ import {
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
-import { buildTavilyEvidence } from "../../services/linkedinEvidence.js";
 import { inferTavilyEvidenceQuality } from "../evidence.js";
 import {
   extractLinkedInUsername,
@@ -120,7 +119,7 @@ export async function executeExtractStage(
     rerankPoolTarget,
     brightDataReady,
     tavilyCapabilities,
-    brightDataCapabilities,
+    brightDataCapabilities: _brightDataCapabilities,
     failedExtractionRoundsBeforeStop,
     stats,
   } = input;
@@ -743,6 +742,9 @@ Evidence:
         `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Extraction Chunk ${chunkIndex}/${chunks.length}: ${extractedLeads.length} leads]`,
       );
 
+      if (state.debugLogs.length >= 500) {
+        state.debugLogs.splice(0, state.debugLogs.length - 499);
+      }
       state.debugLogs.push({
         timestamp: new Date().toISOString(),
         type: "llm_request",

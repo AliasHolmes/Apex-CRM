@@ -280,7 +280,9 @@ export function computeMMRDiversitySelection<T extends Record<string, any>>(
       }
 
       const mmr = lambda * score - (1 - lambda) * maxSim;
-      if (mmr > bestMMR) {
+      const currentKey = String(candidate.id || candidate.fullName || candidate.currentTitle || '');
+      const bestKey = bestIdx >= 0 ? String(pool[bestIdx]?.id || pool[bestIdx]?.fullName || pool[bestIdx]?.currentTitle || '') : '';
+      if (mmr > bestMMR || (Math.abs(mmr - bestMMR) < 1e-6 && currentKey < bestKey)) {
         bestMMR = mmr;
         bestIdx = i;
       }
@@ -355,7 +357,7 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   }
   const profileDoc = `${lead.headline || ''} ${lead.summary || ''} ${lead.currentTitle || ''} ${lead.currentCompany || ''}`;
   const bm25Bonus = queryTerms.length > 0
-    ? computeBM25PlusScore(profileDoc, queryTerms, corpusStats) * 0.05
+    ? Math.min(0.10, computeBM25PlusScore(profileDoc, queryTerms, corpusStats) * 0.05)
     : 0;
 
   // Pareto Skyline anti-starvation bonus (+0.30 if lead is non-dominated):

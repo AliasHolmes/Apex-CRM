@@ -120,6 +120,11 @@ export const canonicalLinkedInIdentity = (url?: string) => {
   return handle ? `linkedin:${handle}` : '';
 };
 
+const GENERIC_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 'aol.com',
+  'mail.com', 'zoho.com', 'protonmail.com', 'proton.me', 'gmx.com', 'live.com'
+]);
+
 export const getProfileDomain = (input?: Partial<LinkedInProfile> | Record<string, any>) => {
   if (!input || typeof input !== 'object') return '';
   const record = input as Record<string, any>;
@@ -129,7 +134,12 @@ export const getProfileDomain = (input?: Partial<LinkedInProfile> | Record<strin
   const website = cd.website || record.website || p.website;
   if (website) return normalizeDedupeValue(website).split('/')[0];
   const email = cd.email || record.email || p.email;
-  if (email && typeof email === 'string' && email.includes('@')) return email.toLowerCase().split('@')[1];
+  if (email && typeof email === 'string' && email.includes('@')) {
+    const domain = email.toLowerCase().split('@')[1];
+    if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
+      return domain;
+    }
+  }
   return '';
 };
 

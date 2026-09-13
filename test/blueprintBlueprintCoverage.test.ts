@@ -261,13 +261,16 @@ describe('Blueprint 6-Module Comprehensive Verification Suite', () => {
         round: 1,
       });
 
-      // Split-and-retry must exhaust and apply fallback resilient qualification
-      // so ZERO candidates are dropped!
-      assert.strictEqual(output.qualifiedCandidates.length, 2, 'ZERO candidates must be dropped on upstream failures');
-      for (const lead of output.qualifiedCandidates) {
-        assert.strictEqual(lead.qualification.verdict, 'qualified_partial');
-        assert.strictEqual(lead._qualificationFallback, 'fallback_resilient');
-        assert.ok(lead.finalSelectionScore >= 60, 'Fallback score must be >= 60');
+      // When LLM judging fails completely, candidates must not be falsely promoted to qualified_partial;
+      // they are honestly marked unverified without fabricating a 60-score floor.
+      assert.strictEqual(output.qualifiedCandidates.length, 0, 'Unverified candidates must not be falsely promoted to qualified');
+      assert.strictEqual(output.judgmentInsights.size, 2);
+      for (const [, ins] of output.judgmentInsights) {
+        assert.strictEqual(ins.status, 'unverified');
+      }
+      for (const cand of mockCandidates) {
+        assert.strictEqual((cand.lead as any).qualification?.verdict, 'unverified');
+        assert.strictEqual((cand.lead as any)._qualificationFallback, 'fallback_unverified');
       }
     });
   });

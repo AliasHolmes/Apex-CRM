@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adaptiveScopeKey, scheduleAdaptiveRetrievalTasks } from "../server/leadSearch/adaptiveScheduler.js";
+import { adaptiveScopeKey } from "../server/leadSearch/adaptiveScheduler.js";
 import type { RetrievalTask } from "../server/leadSearch/searchSpec.js";
 
 test("adaptiveScopeKey format matches historicalPerformance row key format", () => {

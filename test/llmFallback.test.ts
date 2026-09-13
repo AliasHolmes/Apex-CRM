@@ -162,6 +162,7 @@ describe('LLM gateway and provider fallback', () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.LLM_MAX_RETRIES = '0';
+    process.env.LLM_PROVIDER_COOLDOWN_MS = '0';
 
     const llm = await importLLM('circuit-breaker-429');
     const breaker = llm.createLLMSessionCircuitBreaker(2);
@@ -365,7 +366,7 @@ describe('LLM gateway and provider fallback', () => {
     let callCount = 0;
     let lastBody: any = null;
 
-    globalThis.fetch = async (url, options: any) => {
+    globalThis.fetch = async (_url, options: any) => {
       callCount++;
       lastBody = JSON.parse(options.body);
       if (callCount === 1) {
@@ -402,7 +403,7 @@ describe('LLM gateway and provider fallback', () => {
     const controller = new AbortController();
     const calls: string[] = [];
 
-    globalThis.fetch = async (url, options: any) => {
+    globalThis.fetch = async (url, _options: any) => {
       calls.push(url.toString());
       // Abort signal while request is in flight
       controller.abort();
@@ -595,7 +596,7 @@ describe('LLM gateway and provider fallback', () => {
     const llm = await importLLM('groq-clamp');
 
     let capturedBody: any;
-    globalThis.fetch = async (url: any, opts: any) => {
+    globalThis.fetch = async (_url: any, opts: any) => {
       capturedBody = JSON.parse(opts.body);
       return new Response(JSON.stringify({
         choices: [{ message: { content: 'groq ok' } }]

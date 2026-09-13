@@ -29,14 +29,12 @@ export function ResumableSessionsBanner({
 }: ResumableSessionsBannerProps) {
   const [resumableSessions, setResumableSessions] = useState<ResumableSession[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(false);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
   const fetchResumable = useCallback(async () => {
     try {
-      setLoading(true);
       const res = await fetch('/api/mining-sessions/resumable');
       if (!res.ok) return;
       const data = await res.json();
@@ -66,8 +64,6 @@ export function ResumableSessionsBanner({
       setResumableSessions(parsed.filter(s => s.id !== activeSessionId));
     } catch {
       // silently ignore transient network failures
-    } finally {
-      setLoading(false);
     }
   }, [activeSessionId]);
 

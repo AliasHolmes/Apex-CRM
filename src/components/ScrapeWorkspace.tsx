@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads, notifyLeadsUpdated } from '../context/LeadContext';
 import { isDiscoveryProviderConfigured } from '@/lib/ui';
@@ -24,7 +24,7 @@ import {
   SlidersHorizontal,
   ChevronDown
 } from 'lucide-react';
-import { ScrapingTask, SearchLog, MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '../types';
+import { ScrapingTask, SearchLog } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -97,11 +97,6 @@ const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
       )}
     </div>
   );
-};
-
-const formatDuration = (ms?: number) => {
-  if (!ms || ms < 0) return '0s';
-  return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 100) / 10}s`;
 };
 
 const DETAILED_SEARCH_EXAMPLE = `Job titles: Founder, CEO, Owner, COO, Head of Growth
@@ -356,7 +351,6 @@ export default function ScrapeWorkspace() {
 
     const disconnectStream = miningTraceStore.connect(sessionId, () => {
       void rehydrateLeads(true);
-      notifyLeadsUpdated();
     });
 
     let watchTimer: ReturnType<typeof setInterval> | undefined;
@@ -810,6 +804,7 @@ export default function ScrapeWorkspace() {
 
   const handleLeadDiscovery = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     if (!findQuery.trim()) return;
 
     cancelPreviewRequest();

@@ -19,8 +19,7 @@ import {
   PROSPECT_CONTRACT_POLICY_VERSION,
   type ProspectRequirement,
   type RequirementClass,
-  type QueryHardness,
-  type ProspectContract
+  type QueryHardness
 } from '../server/leadSearch/prospectContract.js';
 import type { SearchSpec } from '../server/leadSearch/searchSpec.js';
 

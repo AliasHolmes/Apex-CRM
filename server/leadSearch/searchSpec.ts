@@ -544,7 +544,7 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   });
   const unvisitedMetros = eligibleMetros.filter((m) => {
     const mLower = m.toLowerCase();
-    const isExplored = exploredMetros.some((em) => em.toLowerCase() === mLower);
+    const isExplored = exploredMetros.some((em) => mLower.includes(em.toLowerCase()));
     const isSaturated = saturatedMetros.some((sm) => mLower.includes(sm.toLowerCase()));
     return !isExplored && !isSaturated;
   });

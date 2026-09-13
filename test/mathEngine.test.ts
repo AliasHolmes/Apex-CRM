@@ -10,8 +10,7 @@ import {
   BM25CorpusTracker,
   computeParetoFrontier,
   computeEpistemicCredibleInterval,
-  computeScoreBreakdown,
-  rankLeadForFinalSelection
+  computeScoreBreakdown
 } from '../server/leadSearch/scoring.js';
 import {
   computeCareerTrajectoryDCR,

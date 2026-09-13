@@ -164,7 +164,6 @@ describe('Verified Bugfixes Regression Suite', () => {
         url: 'https://linkedin.com/in/test-safe-providers',
         title: 'Safe Provider Test - CEO',
         content: 'CEO at Safe Inc',
-        sourceProvider: 'tavily',
       },
       resultIndex: 0,
     };

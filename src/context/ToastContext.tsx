@@ -12,7 +12,7 @@ import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info';
 
-interface ToastContextType {
+export interface ToastContextType {
   /** The message currently visible. Kept for compatibility with existing consumers. */
   toast: string | null;
   triggerToast: (msg: string, type?: ToastType) => void;

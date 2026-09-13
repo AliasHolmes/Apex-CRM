@@ -21,9 +21,7 @@ const {
   reconcileOrphanedMiningSessions,
   upsertMiningSession,
   readMiningSessionById,
-  deleteMiningSession,
   deleteMiningSessions,
-  clearInterruptedMiningSessions,
   clearResumableMiningSessions
 } = await import('../server/db.js');
 type MiningSessionCheckpoint = import('../server/db.js').MiningSessionCheckpoint;
@@ -169,7 +167,7 @@ test('discoveryEngine.resume fails gracefully when no checkpoint exists', async 
 });
 
 test('deleteMiningSession and deleteMiningSessions delete target sessions', async () => {
-  const { deleteMiningSession, deleteMiningSessions, clearInterruptedMiningSessions } = await import('../server/db.js');
+  const { deleteMiningSession, deleteMiningSessions } = await import('../server/db.js');
   const s1 = `test-del-1-${Date.now()}`;
   const s2 = `test-del-2-${Date.now()}`;
   const s3 = `test-del-3-${Date.now()}`;

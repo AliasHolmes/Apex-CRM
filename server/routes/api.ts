@@ -6,27 +6,16 @@ import {
   NEXT_ACTION_SET as nextActions,
 } from "../../src/types.js";
 import {
-  buildProfileDedupeKeys,
-  hasDuplicateProfile,
-  normalizeDedupeValue,
-  getProfileDomain,
-  getLinkedInHandle,
-} from "../../src/utils/leadDedupe.js";
-
-import {
-  readStoredLeads,
   readLeadsSummary,
   readLeadsStats,
   invalidateLeadsStatsCache,
   getLeadsETag,
-  readExistingIdentityKeys,
   readLeadsStageSummary,
   readStoredLeadById,
   hasLeadStoreBeenInitialized,
   replaceStoredLeads,
   normalizeIncomingLeads,
   getLeadsDb,
-  insertSearchLog,
   readSearchLogs,
   readSearchLogById,
   readMiningSessionById,
@@ -37,16 +26,10 @@ import {
   readResumableMiningSessions,
   deleteMiningSession,
   deleteMiningSessions,
-  clearInterruptedMiningSessions,
   clearResumableMiningSessions,
   upsertMiningSession,
   LeadNotFoundError,
   LeadRevisionConflictError,
-  pruneExpiredEnrichmentCache,
-  getEnrichmentCacheEntry,
-  upsertEnrichmentCacheEntry,
-  getNegativeEnrichmentCacheEntry,
-  upsertNegativeEnrichmentCacheEntry,
   upsertLeadInExistingTransaction,
   upsertLeadWithIdentity,
   deleteLead,
@@ -60,153 +43,50 @@ import {
   readOutreachDraftsByLeadId,
   deleteOutreachDraft,
   readSavedSearches,
-  readSavedSearchById,
   getSavedSearchExcludeList,
   upsertSavedSearch,
   deleteSavedSearch,
-  markSavedSearchRun,
-  readQueryPerformance,
   recordQueryPerformance,
   readProviderUsage,
-  recordProviderUsage,
-  reserveProviderUsage,
   readEngineMetrics,
 } from "../db.js";
 import {
   hasOpenAIKey,
   hasTavilyKey,
   tavilySearch,
-  tavilyExtract,
   openAIStructured,
   singleProfileSchema,
   APEX_SYSTEM_PROMPT,
-  leadsArraySchema,
-  searchQueriesSchema,
   searchSpecSchema,
   openAIText,
   STRATEGIST_SYSTEM_PROMPT,
-  EXTRACTION_SYSTEM_PROMPT,
-  bulkLeadsArraySchema,
   getLLMProviderSummaries,
   getTavilyKeyStatus,
-  createLLMSessionCircuitBreaker,
-  type LLMProviderAttempt,
-  type LLMUsage,
 } from "../services/llm.js";
+import { buildOutboundPrompt } from "../services/outboundPrompt.js";
 import {
-  BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
-  chunkBrightDataBatchItems,
   closeBrightDataClient,
   getBrightDataStatus,
   getBrightDataCapabilities,
   isBrightDataConfigured,
-  scrapeAsMarkdown,
-  scrapeBatchAsMarkdown,
-  brightDataSearch,
-  shouldAttemptBrightData,
-  classifyBrightDataError,
-  executeBrightDataSearchWithRetry,
-  isBrightDataRetryableError,
 } from "../services/brightdata.js";
-import {
-  buildTavilyEvidence,
-  extractLinkedInUsername,
-  normalizeLinkedInUrl,
-  parseLinkedInEvidence,
-} from "../services/linkedinEvidence.js";
-import {
-  computeScoreBreakdown,
-  rankLeadForFinalSelection,
-  type EvidenceQuality,
-  type LeadSourceProvider,
-} from "../leadSearch/scoring.js";
-import {
-  createLeadEvidence,
-  inferTavilyEvidenceQuality,
-} from "../leadSearch/evidence.js";
-import {
-  normalizeQueryPlanItems,
-  toLinkedInSearchQuery,
-  type ProviderRunStats,
-  type QueryRunStats,
-  type SearchQueryPlanItem,
-} from "../leadSearch/strategist.js";
-import {
-  incrementRejection,
-  mapBrightDataRejection,
-  type RejectionReason,
-} from "../leadSearch/rejections.js";
-import { verifyDecisionMakerFromEvidence } from "../leadSearch/verification.js";
-import {
-  checkCompanyIntent,
-  findCompanyWebsite,
-} from "../leadSearch/companyIntent.js";
-import { enrichLeadProfile } from "../leadSearch/profileEnrichment.js";
-import {
-  estimateLLMCostUsd,
-  getLLMRouteLabel,
-  type MiningTraceEvent,
-} from "../leadSearch/telemetry.js";
 import {
   buildFallbackQueryPlan as buildScoutFallbackQueryPlan,
   buildFallbackSearchSpec,
   buildRetrievalTasks,
   buildSearchSpecPrompt,
-  buildStrategistPrompt as buildScoutStrategistPrompt,
   normalizeSearchSpec,
   type DiscoveryMode,
-  type SearchSpec,
 } from "../leadSearch/searchSpec.js";
 import {
-  ScoutFreeTierBudget,
-  brightDataFreeTierCapabilities,
   tavilyFreeTierCapabilities,
   isProviderCreditReservationEnabled,
 } from "../leadSearch/freeTier.js";
 import {
   resolveDiscoveryProviderMode,
   resolveBrightDataSearchMode,
-  shouldRunTavilyForTask,
-  shouldRunBrightDataForTask,
 } from "../leadSearch/discoveryRouting.js";
-import {
-  fuseObservations,
-  type ScoutObservation,
-} from "../leadSearch/observations.js";
-import {
-  buildScoutEvidence,
-  selectDiversifiedLeads,
-} from "../leadSearch/scoutScoring.js";
-import {
-  chunkEvidenceBlocksByTokenBudget,
-  estimateTokenCount,
-  fitOutputTokenBudget,
-} from "../leadSearch/llmBudget.js";
-import {
-  buildDeterministicProspectContract,
-  buildProspectContractPrompt,
-  buildRecoveryQueryPrompt,
-  enforceContractQueries,
-  normalizeProspectContract,
-  prospectContractSchema,
-  PROSPECT_CONTRACT_POLICY_VERSION,
-  searchSpecFromProspectContract,
-  type ProspectContract,
-} from "../leadSearch/prospectContract.js";
-import {
-  FINALIST_JUDGE_SYSTEM_PROMPT,
-  buildFinalistJudgePrompt,
-  finalistCandidateFromLead,
-  finalistJudgeSchema,
-  partitionCandidatesByStrictEvidence,
-  validateFinalistJudgments,
-  type FinalistCandidate,
-} from "../leadSearch/finalistJudge.js";
-import { buildRoundDiagnostics } from "../leadSearch/roundDiagnostics.js";
-import { buildCollectionCapacity } from "../leadSearch/collectionCapacity.js";
-import { scheduleAdaptiveRetrievalTasks } from "../leadSearch/adaptiveScheduler.js";
-import { runProviderQueue } from "../leadSearch/providerQueue.js";
-import { executeTargetFulfillmentSession } from "../leadSearch/targetFulfillment.js";
+import { enrichLeadProfile } from "../leadSearch/profileEnrichment.js";
 import {
   discoveryEngine,
   SessionAlreadyActiveError,
@@ -229,7 +109,7 @@ const paidRouteLimit = (routeKey: string, maxPerMinute = 120) => {
     Math.max(Number(process.env.APEX_PAID_ROUTE_LIMIT_PER_MIN || maxPerMinute) || maxPerMinute, 1),
     600,
   );
-  return (req: any, res: any, next: any): any => {
+  return (_req: any, res: any, next: any): any => {
     const now = Date.now();
     const entry = paidRouteWindows.get(routeKey);
     if (!entry || now >= entry.resetAt) {
@@ -253,10 +133,6 @@ let _llmHealthCache: { result: Record<string, any>; expiresAt: number } | null =
   null;
 const LLM_HEALTH_CACHE_MS = 60_000;
 
-const getTraceBrightDataStatus = () => {
-  const status = getBrightDataStatus();
-  return { ...status, transport: status.transport || undefined };
-};
 
 const isSafeSessionId = (value: string) => /^[A-Za-z0-9_-]{8,80}$/.test(value);
 const isSafeLeadId = (value: string) => /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -802,7 +678,7 @@ router.post("/leads/bulk", (req, res): any => {
 });
 
 // Active Health check
-router.get("/health", (req, res) => {
+router.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     hasKey: hasOpenAIKey(),
@@ -817,7 +693,7 @@ router.get("/health", (req, res) => {
   });
 });
 
-router.get("/key-rotation-status", (req, res) => {
+router.get("/key-rotation-status", (_req, res) => {
   res.json({
     tavily: getTavilyKeyStatus(),
     brightData: getBrightDataStatus().keyPool,
@@ -886,6 +762,7 @@ router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promi
 
     const { text: rawText, sources } = await tavilySearch(
       `${urlOrName} LinkedIn`,
+      { signal: (req as any).signal }
     );
 
     if (!rawText || rawText.length < 50) {
@@ -1239,7 +1116,7 @@ router.get("/mining-sessions", (req, res): any => {
   }
 });
 
-router.get("/mining-sessions/resumable", (req, res): any => {
+router.get("/mining-sessions/resumable", (_req, res): any => {
   try {
     res.json({ apiVersion: 1, sessions: readResumableMiningSessions() });
   } catch (error: any) {
@@ -1290,7 +1167,7 @@ router.delete("/mining-sessions/resumable", (req, res): any => {
   }
 });
 
-router.get("/mining-sessions/active", (req, res): any => {
+router.get("/mining-sessions/active", (_req, res): any => {
   try {
     const sessionId = discoveryEngine.getActiveSessionId();
     if (sessionId) {
@@ -1467,7 +1344,7 @@ router.get("/engine-metrics", (req, res): any => {
   }
 });
 
-router.get("/provider-capabilities", (req, res): any => {
+router.get("/provider-capabilities", (_req, res): any => {
   try {
     const discoveryProviderMode = resolveDiscoveryProviderMode({
       brightDataConfigured: isBrightDataConfigured(),
@@ -2010,116 +1887,54 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
     console.log(
       `[generate-outbound] Generating outreach for: ${profile.fullName} (step: ${sequenceStep || "Step 1"})`,
     );
-    const buyingSignalText = Array.isArray(buyingSignals)
-      ? buyingSignals
-          .map((signal) =>
-            typeof signal === "string"
-              ? signal
-              : [signal?.label, signal?.evidence].filter(Boolean).join(": "),
-          )
-          .filter(Boolean)
-          .join("; ")
-      : typeof buyingSignals === "string"
-        ? buyingSignals
-        : "";
-
-    const evidenceSnippets = Array.isArray(evidence?.snippets)
-      ? evidence.snippets
-          .map((s: any) => (typeof s === "string" ? s : s?.text || ""))
-          .filter(Boolean)
-          .join(" | ")
-      : typeof evidence?.evidenceBlock === "string"
-        ? evidence.evidenceBlock.slice(0, 1000)
-        : "";
-
-    const postIntentSnippets = Array.isArray(postIntentEvidence?.recentPosts) && postIntentEvidence.recentPosts.length > 0
-      ? postIntentEvidence.recentPosts
-          .map((p: any) => typeof p === "string" ? p : [p.topic ? `Topic: ${p.topic}` : '', p.quote ? `Quote: "${p.quote}"` : '', p.postDate ? `Date: ${p.postDate}` : ''].filter(Boolean).join(" | "))
-          .filter(Boolean)
-          .join("\n")
-      : typeof postIntentEvidence?.summary === "string"
-        ? postIntentEvidence.summary
-        : "";
-
-    const companyIntentSnippets = Array.isArray(companyIntentEvidence?.snippets)
-      ? companyIntentEvidence.snippets.join(" | ")
-      : "";
-
-    const hiringTriggers = [
-      ...(Array.isArray(buyingSignalsDetected) ? buyingSignalsDetected : []),
-      ...(Array.isArray(profile?.buyingSignalsDetected) ? profile.buyingSignalsDetected : []),
-      ...(Array.isArray(buyingSignals) ? buyingSignals.map((s: any) => typeof s === 'string' ? s : s?.label) : []),
-      ...(Array.isArray(companyAccount?.buyingSignals) ? companyAccount.buyingSignals.map((s: any) => typeof s === 'string' ? s : s?.label) : []),
-    ].filter((s): s is string => typeof s === "string" && (s.toLowerCase().includes("hiring") || s.toLowerCase().includes("job requisition")));
-    const liveHiringTrigger = hiringTriggers[0] || "";
-
-    const qualificationVerdict =
-      qualification?.explanation || qualification?.verdict || "";
-    const prospectNotes = typeof notes === "string" ? notes.trim() : "";
-
     // Load multi-touch thread context if leadId is available
-    const priorDrafts = (leadId && typeof leadId === "string") ? readOutreachDraftsByLeadId(leadId) : [];
-    const priorDraftSummary = priorDrafts.length > 0
-      ? priorDrafts.map((d: any) => `[${d.sequenceStep || "Earlier Touch"} (${d.medium || "Outreach"})]:\n"${d.body.slice(0, 300)}"`).join("\n\n")
-      : "No prior sequence touchpoints recorded.";
+    const priorDrafts =
+      leadId && typeof leadId === "string"
+        ? readOutreachDraftsByLeadId(leadId)
+        : [];
+    const priorDraftSummary =
+      priorDrafts.length > 0
+        ? priorDrafts
+            .map(
+              (d: any) =>
+                `[${d.sequenceStep || "Earlier Touch"} (${d.medium || "Outreach"})]:\n"${d.body.slice(0, 300)}"`,
+            )
+            .join("\n\n")
+        : "No prior sequence touchpoints recorded.";
 
     // Load few-shot style exemplars from recent approved drafts
     const recentDrafts = readOutreachDrafts(3);
-    const styleExemplars = recentDrafts.length > 0
-      ? recentDrafts.map((d: any) => `[Example Style - ${d.medium} - ${d.tone}]:\n"${d.body.slice(0, 250)}..."`).join("\n\n")
-      : "";
+    const styleExemplars =
+      recentDrafts.length > 0
+        ? recentDrafts
+            .map(
+              (d: any) =>
+                `[Example Style - ${d.medium} - ${d.tone}]:\n"${d.body.slice(0, 250)}..."`,
+            )
+            .join("\n\n")
+        : "";
 
-    const prompt = `Generate a highly personalized outreach message for the following prospect.
-
-## Prospect Profile
-- Name: ${profile.fullName}
-- Title: ${profile.currentTitle} at ${profile.currentCompany}
-- Industry: ${profile.industry || "Unknown"}
-- Location: ${profile.location || "Unknown"}
-- Seniority: ${profile.seniorityLevel || "Unknown"}
-- Company Size: ${profile.companySizeEst || "Unknown"}
-- Summary: ${profile.summary || ""}
-- Pain Indicators: ${(profile.painIndicators || []).join(", ") || "None listed"}
-- Career Signals: ${(profile.careerSignals || []).join(", ") || "None listed"}
-- Tech Stack: ${(profile.techStackHints || []).join(", ") || "Unknown"}
-- Buying Signals: ${buyingSignalText || "None provided"}
-
-## Verified Real-World Triggers & Evidence
-- Active ATS Job Requisition / Live Headcount Trigger: ${liveHiringTrigger || "None active"}
-- Prospect Authored LinkedIn Posts & Quotes: ${postIntentSnippets || "None available"}
-- Company Intent & Website Signals: ${companyIntentSnippets || "None available"}
-- Mined Evidence & Observations: ${evidenceSnippets || "None available"}
-- Qualification Verdict & Match Context: ${qualificationVerdict || "None"}
-- CRM Notes: ${prospectNotes || "None"}
-
-## Sequence & Conversation Thread History
-- Current Step: ${sequenceStep || "Step 1 - First Touch"}
-- Prior Touchpoints in Thread:
-${priorDraftSummary}
-
-## Approved Style Calibration (User Preference Exemplars)
-${styleExemplars || "Write in crisp, concise, high-signal modern B2B tone."}
-
-## Campaign Settings
-- Tone: ${tone || "Professional"}
-- Pitch Type: ${pitchType || "Cold outreach"}
-- Value Proposition: ${valueProposition || "Not specified"}
-- Sender: ${senderName || "Sales Rep"} from ${senderCompany || "Our Company"}
-- Custom Instruction: ${customInstruction || "None"}
-- Channel: ${companyAccount ? "Company LinkedIn Account" : "Personal LinkedIn / Email"}
-
-## Output Requirements
-Return plain text only. Do not use HTML, markdown, or unsupported performance claims.
-Follow the Golden Rules strictly:
-1. Never start with "I"
-2. Be specific - lead with or reference verified real-world facts from their recent LinkedIn posts, hiring signals, or website observations
-3. If this is a follow-up step (> Step 1), advance the conversation thread naturally from prior touchpoints rather than repeating the first pitch
-4. One CTA only
-5. LinkedIn connection note: max 300 characters
-6. Cold email: max 150 words
-7. No spam words: guaranteed, synergy, leverage, disruptive, game-changing, revolutionary
-
-Use normal paragraph breaks so the result can be pasted into email, LinkedIn, or a mailto link.`;
+    const prompt = buildOutboundPrompt({
+      leadId,
+      profile,
+      tone,
+      pitchType,
+      valueProposition,
+      senderName,
+      senderCompany,
+      sequenceStep,
+      customInstruction,
+      companyAccount,
+      buyingSignals,
+      buyingSignalsDetected,
+      evidence,
+      qualification,
+      postIntentEvidence,
+      companyIntentEvidence,
+      notes,
+      priorDraftSummary,
+      styleExemplars,
+    });
 
     const { text: rawText } = await openAIText(prompt, APEX_SYSTEM_PROMPT);
 

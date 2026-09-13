@@ -103,6 +103,7 @@ export async function sendDirectLangfuseTrace(payload: LangfuseLogPayload): Prom
   try {
     const res = await fetch(`${host}/api/public/ingestion`, {
       method: "POST",
+      signal: AbortSignal.timeout(5_000),
       headers: {
         Authorization: `Basic ${auth}`,
         "Content-Type": "application/json",

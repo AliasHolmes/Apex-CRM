@@ -90,10 +90,14 @@ export default function CrmCopilot({ defaultOpen = false }: CrmCopilotProps) {
 
   useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTo({
-        top: scrollRef.current.scrollHeight,
-        behavior: shouldReduceMotion ? 'auto' : 'smooth'
-      });
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 120;
+      if (isNearBottom) {
+        scrollRef.current.scrollTo({
+          top: scrollHeight,
+          behavior: shouldReduceMotion ? 'auto' : 'smooth'
+        });
+      }
     }
   }, [messages, isLoading, isOpen, shouldReduceMotion]);
 

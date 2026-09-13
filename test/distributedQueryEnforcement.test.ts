@@ -4,7 +4,6 @@ import {
   buildDeterministicProspectContract,
   enforceContractQueries,
   buildContractFallbackQueries,
-  type ProspectContract
 } from '../server/leadSearch/prospectContract.js';
 import type { SearchSpec } from '../server/leadSearch/searchSpec.js';
 

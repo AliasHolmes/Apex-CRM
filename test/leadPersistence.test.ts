@@ -427,7 +427,6 @@ test('deleteLead functions correctly inside an existing transaction without thro
 
 
 test('readResumableMiningSessions returns both interrupted and error sessions with checkpoints, excluding null checkpoints', () => {
-  const db = getLeadsDb();
   const cpObj = {
     sessionId: 'test-cp',
     round: 2,

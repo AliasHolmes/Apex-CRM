@@ -4,8 +4,6 @@ import { buildRoundDiagnostics } from '../server/leadSearch/roundDiagnostics.js'
 import { executeJudgeStage } from '../server/leadSearch/stages/judgeStage.js';
 import { executePersistStage } from '../server/leadSearch/stages/persistStage.js';
 import { SignalStore } from '../server/leadSearch/signalStore.js';
-import type { ProspectContract } from '../server/leadSearch/prospectContract.js';
-import type { SessionContext } from '../server/leadSearch/pipelineTypes.js';
 
 const createMockContract = (): any => ({
   version: 1,
@@ -306,7 +304,7 @@ describe('Engine Bug Fixes Verification', () => {
       const originalFetch = globalThis.fetch;
       let callCount = 0;
       try {
-        globalThis.fetch = async (url: any, init: any) => {
+        globalThis.fetch = async (_url: any, init: any) => {
           callCount++;
           const body = JSON.parse(init.body);
           const prompt = body.messages?.[1]?.content || '';

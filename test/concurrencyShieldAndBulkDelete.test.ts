@@ -324,7 +324,7 @@ test("queued patch on a lead undergoing deletion aborts when deletion completes 
 
   // 2. An edit is attempted while deletion is in flight
   let persistedAttempted = false;
-  const reconcileSimulated = (lead: any, rollback: any) => {
+  const reconcileSimulated = (lead: any, _rollback?: any) => {
     if (inFlightDeletions.has(lead.id)) {
       return Promise.resolve(false);
     }

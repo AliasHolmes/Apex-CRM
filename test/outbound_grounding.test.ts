@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { buildOutboundPrompt } from "../server/services/outboundPrompt.js";
+
 test("generate-outbound includes mined evidence, qualification context, and notes in prompt structure", () => {
   const mockLead = {
     profile: {
@@ -25,16 +27,18 @@ test("generate-outbound includes mined evidence, qualification context, and note
     notes: "Follow up regarding Kubernetes observability pipeline.",
   };
 
-  const evidenceSnippets = Array.isArray(mockLead.evidence.snippets)
-    ? mockLead.evidence.snippets.join(" | ")
-    : mockLead.evidence.evidenceBlock;
+  const prompt = buildOutboundPrompt({
+    profile: mockLead.profile,
+    evidence: mockLead.evidence,
+    qualification: mockLead.qualification,
+    notes: mockLead.notes,
+  });
 
-  const qualificationVerdict = mockLead.qualification.explanation;
-  const notesText = mockLead.notes;
-
-  // Assert evidence extraction logic
-  assert.ok(evidenceSnippets.includes("Series B expansion"));
-  assert.ok(evidenceSnippets.includes("scaled from 20 to 65"));
-  assert.ok(qualificationVerdict.includes("Direct VP decision maker"));
-  assert.equal(notesText, "Follow up regarding Kubernetes observability pipeline.");
+  // Assert prompt composition logic includes all grounded context
+  assert.ok(prompt.includes("Marcus Vance"));
+  assert.ok(prompt.includes("Hyperion Cloud"));
+  assert.ok(prompt.includes("Series B expansion"));
+  assert.ok(prompt.includes("scaled from 20 to 65"));
+  assert.ok(prompt.includes("Direct VP decision maker"));
+  assert.ok(prompt.includes("Kubernetes observability pipeline"));
 });

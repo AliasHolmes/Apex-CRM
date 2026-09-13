@@ -22,7 +22,6 @@ import {
   buildFallbackQueryPlan as buildScoutFallbackQueryPlan,
   buildRetrievalTasks,
   buildStrategistPrompt as buildScoutStrategistPrompt,
-  type DiscoveryMode,
   type SearchSpec,
   type RetrievalTask,
 } from "../searchSpec.js";
@@ -71,6 +70,13 @@ export type PlanStageOutput = {
   generation?: number;
   adaptiveSchedulerState?: any;
   debugLogs?: any[];
+};
+
+const pushStateDebugLog = (state: { debugLogs: any[] }, log: any, maxLogs = 500) => {
+  if (state.debugLogs.length >= maxLogs) {
+    state.debugLogs.splice(0, state.debugLogs.length - maxLogs + 1);
+  }
+  state.debugLogs.push(log);
 };
 
 export async function executePlanStage(
@@ -230,7 +236,7 @@ export async function executePlanStage(
     };
     localDebugLogs.push(reqLog);
     if (!input.isSpeculative) {
-      state.debugLogs.push(reqLog);
+      pushStateDebugLog(state, reqLog);
     }
     planItems = normalizeQueryPlanItems(queryResult);
     if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
@@ -293,7 +299,7 @@ export async function executePlanStage(
     };
     localDebugLogs.push(errLog);
     if (!input.isSpeculative) {
-      state.debugLogs.push(errLog);
+      pushStateDebugLog(state, errLog);
     }
   }
 
@@ -381,7 +387,7 @@ export async function executePlanStage(
     };
     localDebugLogs.push(scheduleLog);
     if (!input.isSpeculative) {
-      state.debugLogs.push(scheduleLog);
+      pushStateDebugLog(state, scheduleLog);
     }
   }
 

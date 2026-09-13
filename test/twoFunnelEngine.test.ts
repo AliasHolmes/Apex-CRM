@@ -4,7 +4,6 @@ import {
   SignalStore,
   companiesMatch,
   distinctiveTokens,
-  normalizeCompanyName,
   MAX_SIGNAL_BLOCKS,
   MAX_SIGNAL_TEXT_LENGTH
 } from '../server/leadSearch/signalStore.js';

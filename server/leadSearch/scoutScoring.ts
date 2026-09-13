@@ -124,7 +124,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
       (c as any).effectiveScore ??
       rankLeadForFinalSelection(c)
     );
-    return raw <= 1.0 && raw > 0 ? raw * 10 : raw;
+    return raw < 1.0 && raw > 0 ? raw * 10 : raw > 10 ? raw / 10 : raw;
   });
   const entropyNormalizedScores = normalizeScorePool(rawScores);
   if (logEvent && rawScores.length >= 2) {

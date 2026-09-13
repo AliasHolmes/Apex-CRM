@@ -1,60 +1,15 @@
 import crypto from "crypto";
 import {
-  LEAD_STAGE_SET as leadStages,
-  REVIEW_STATUS_SET as reviewStatuses,
-  NEXT_ACTION_SET as nextActions,
-} from "../../src/types.js";
-import {
   buildProfileDedupeKeys,
-  hasDuplicateProfile,
   normalizeDedupeValue,
-  getProfileDomain,
-  getLinkedInHandle,
 } from "../../src/utils/leadDedupe.js";
 
 import {
-  readStoredLeads,
-  readLeadsSummary,
   readExistingIdentityKeys,
-  readLeadsStageSummary,
-  readStoredLeadById,
-  hasLeadStoreBeenInitialized,
-  replaceStoredLeads,
-  normalizeIncomingLeads,
-  getLeadsDb,
   insertSearchLog,
-  readSearchLogs,
-  readSearchLogById,
-  readMiningSessionById,
-  readMiningSessions,
   upsertMiningSession,
-  LeadNotFoundError,
-  LeadRevisionConflictError,
   pruneExpiredEnrichmentCache,
-  getEnrichmentCacheEntry,
-  upsertEnrichmentCacheEntry,
-  getNegativeEnrichmentCacheEntry,
-  upsertNegativeEnrichmentCacheEntry,
-  upsertLeadInExistingTransaction,
-  upsertLeadWithIdentity,
-  deleteLead,
-  upsertLeadsWithIdentity,
-  transferLeadIdentities,
-  insertLeadActivity,
-  readLeadActivities,
-  upsertOutreachDraft,
-  readOutreachDrafts,
-  deleteOutreachDraft,
-  readSavedSearches,
-  readSavedSearchById,
-  upsertSavedSearch,
-  deleteSavedSearch,
-  markSavedSearchRun,
-  readQueryPerformance,
-  recordQueryPerformance,
-  readProviderUsage,
   recordProviderUsage,
-  reserveProviderUsage,
   saveMiningSessionCheckpoint,
   readMiningSessionCheckpoint,
   readResumableMiningSessions,
@@ -66,18 +21,7 @@ import {
   hasOpenAIKey,
   hasTavilyKey,
   tavilySearch,
-  tavilyExtract,
   openAIStructured,
-  singleProfileSchema,
-  APEX_SYSTEM_PROMPT,
-  leadsArraySchema,
-  searchQueriesSchema,
-  openAIText,
-  STRATEGIST_SYSTEM_PROMPT,
-  EXTRACTION_SYSTEM_PROMPT,
-  bulkLeadsArraySchema,
-  getLLMProviderSummaries,
-  getTavilyKeyStatus,
   createLLMSessionCircuitBreaker,
   normalizeTavilyCountry,
   DEFAULT_PRIMARY_MODEL,
@@ -85,11 +29,8 @@ import {
   type LLMUsage,
 } from "../services/llm.js";
 import {
-  BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
-  chunkBrightDataBatchItems,
   closeBrightDataClient,
   getBrightDataStatus,
-  getBrightDataCapabilities,
   isBrightDataConfigured,
   probeBrightDataRecovery,
   scrapeAsMarkdown,
@@ -98,57 +39,35 @@ import {
   type BrightDataSearchOptions,
   type BrightDataSearchResult,
   shouldAttemptBrightData,
-  classifyBrightDataError,
-  executeBrightDataSearchWithRetry,
-  isBrightDataRetryableError,
   extractLinkedInProfileUrlFromResult,
 } from "../services/brightdata.js";
 import {
-  buildTavilyEvidence,
   extractLinkedInUsername,
   normalizeLinkedInUrl,
-  parseLinkedInEvidence,
 } from "../services/linkedinEvidence.js";
 import {
-  computeScoreBreakdown,
   rankLeadForFinalSelection,
   type EvidenceQuality,
   type LeadSourceProvider,
 } from "./scoring.js";
 import { SignalStore } from "./signalStore.js";
-import { createLeadEvidence, inferTavilyEvidenceQuality } from "./evidence.js";
 import {
-  normalizeQueryPlanItems,
   toLinkedInSearchQuery,
-  type ProviderRunStats,
   type QueryRunStats,
-  type SearchQueryPlanItem,
 } from "./strategist.js";
 import {
   incrementRejection,
-  mapBrightDataRejection,
-  type RejectionReason,
 } from "./rejections.js";
-import { verifyDecisionMakerFromEvidence } from "./verification.js";
-import { runIntentEnrichment } from "./intentEnrichment.js";
-import { enrichLeadProfile } from "./profileEnrichment.js";
 import {
   MiningTelemetryRecorder,
-  estimateLLMCostUsd,
-  getLLMRouteLabel,
   summarizeContractClassification,
   type MiningTraceEvent,
-  type TargetEffortStats,
-  type FinalistJudgeStats,
 } from "./telemetry.js";
 import {
-  buildFallbackQueryPlan as buildScoutFallbackQueryPlan,
   buildFallbackSearchSpec,
-  buildRetrievalTasks,
-  buildStrategistPrompt as buildScoutStrategistPrompt,
   normalizeSearchSpec,
-  type DiscoveryMode,
   type SearchSpec,
+  type DiscoveryMode,
 } from "./searchSpec.js";
 import {
   ScoutFreeTierBudget,
@@ -159,19 +78,16 @@ import {
 import {
   resolveDiscoveryProviderMode,
   resolveBrightDataSearchMode,
-  shouldRunTavilyForTask,
-  shouldRunBrightDataForTask,
 } from "./discoveryRouting.js";
 import { executePlanStage } from "./stages/planStage.js";
 import { executeRetrieveStage } from "./stages/retrieveStage.js";
 import { executeFuseStage } from "./stages/fuseStage.js";
 import {
   executeExtractStage,
-  type EvidenceMeta,
 } from "./stages/extractStage.js";
 import { executeVerifyStage } from "./stages/verifyStage.js";
 import { executeEnrichStage } from "./stages/enrichStage.js";
-import { executeJudgeStage, evaluateIncrementalJudgeBatches } from "./stages/judgeStage.js";
+import { evaluateIncrementalJudgeBatches } from "./stages/judgeStage.js";
 import { executeSelectStage } from "./stages/selectStage.js";
 import { executePersistStage } from "./stages/persistStage.js";
 import type {
@@ -182,34 +98,20 @@ import type {
   MiningSessionCheckpoint,
 } from "./pipelineTypes.js";
 import { LeadQueryRunTracker } from "./pipelineTypes.js";
-import { fuseObservations, type ScoutObservation } from "./observations.js";
-import { buildScoutEvidence, selectDiversifiedLeads } from "./scoutScoring.js";
-import {
-  chunkEvidenceBlocksByTokenBudget,
-  estimateTokenCount,
-  fitOutputTokenBudget,
-} from "./llmBudget.js";
 import {
   buildDeterministicProspectContract,
   buildProspectContractPrompt,
   COUNTRY_CANONICAL_MAP,
   COUNTRY_TO_METROS,
-  enforceContractQueries,
   normalizeProspectContract,
   prospectContractSchema,
   PROSPECT_CONTRACT_POLICY_VERSION,
   searchSpecFromProspectContract,
-  type ProspectContract,
 } from "./prospectContract.js";
 import {
-  FINALIST_JUDGE_SYSTEM_PROMPT,
-  buildFinalistJudgePrompt,
   finalistCandidateFromLead,
-  finalistJudgeSchema,
-  partitionCandidatesByStrictEvidence,
   triPartitionCandidatesByEvidence,
   checkStrictContradiction,
-  validateFinalistJudgments,
   type FinalistCandidate,
 } from "./finalistJudge.js";
 import { buildRoundDiagnostics } from "./roundDiagnostics.js";
@@ -218,26 +120,14 @@ import {
   shouldKeepCollectingAfterStall,
 } from "./collectionCapacity.js";
 import { isFlagEnabled } from "./featureFlags.js";
-import { scheduleAdaptiveRetrievalTasks } from "./adaptiveScheduler.js";
-import { runProviderQueue } from "./providerQueue.js";
-import { runLinkedInPostIntentEnrichment } from "./linkedinPostIntent.js";
 import {
   effectiveScore as sharedEffectiveScore,
   buildFallbackEvidence,
   findEvidenceForLead,
-  incrementCounter,
-  sleepWithAbort,
   buildCheckpointEvidence,
   computeEarlyStopThreshold,
   clampEnvFloat,
-  clampEnvInt,
-  type SessionEvidenceMeta,
 } from "./sessionHelpers.js";
-
-const getTraceBrightDataStatus = () => {
-  const status = getBrightDataStatus();
-  return { ...status, transport: status.transport || undefined };
-};
 
 export interface DiscoveryRequest {
   sessionId?: string;
@@ -349,8 +239,6 @@ export function isExcludedCandidate(
 // Canonical candidate-to-lead mapping lives in leadMapping.ts; re-exported here
 // so checkpoint persistence and existing tests share one implementation.
 export { mapCandidateToPersistedLead } from "./leadMapping.js";
-
-import { mapCandidateToPersistedLead } from "./leadMapping.js";
 
 
 export type ExecuteDiscoveryOptions = {
@@ -499,41 +387,6 @@ export async function executeDiscoverySession(
       );
     }
   };
-  const estimateTokens = estimateTokenCount;
-  const summarizeLLM = (
-    purpose: string,
-    promptText: string,
-    output: unknown,
-    latencyMs: number,
-    parseRetries = 0,
-    providerAttempts: LLMProviderAttempt[] = [],
-    usage?: LLMUsage,
-  ) => {
-    const route = getLLMRouteLabel();
-    const successfulAttempt = providerAttempts.find(
-      (attempt) => attempt.status === "success",
-    );
-    const inputTokens = usage ? usage.inputTokens : estimateTokens(promptText);
-    const outputTokens = usage
-      ? usage.outputTokens
-      : estimateTokens(
-          typeof output === "string" ? output : JSON.stringify(output || ""),
-        );
-    return {
-      purpose,
-      model: usage?.model || successfulAttempt?.model || route.model,
-      route: usage?.provider || successfulAttempt?.provider || route.route,
-      fallbackUsed: providerAttempts.some(
-        (attempt) => attempt.status === "error" || attempt.status === "skipped",
-      ),
-      providerAttempts,
-      inputTokens,
-      outputTokens,
-      totalTokens: inputTokens + outputTokens,
-      estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
-      parseRetries,
-    };
-  };
   const brightDataStats = {
     configured: isBrightDataConfigured(),
     attempted: 0,
@@ -666,21 +519,6 @@ export async function executeDiscoverySession(
     lanes?: string[];
     corroborated?: boolean;
   };
-
-  const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
-    incrementRejection(stats.rejectionReasons, reason);
-    if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
-  };
-
-  const profileKeys = (profile: any) => buildProfileDedupeKeys(profile || {});
-  const hasDuplicateKeys = (profile: any, existingKeys: Set<string>) =>
-    hasDuplicateProfile(profile || {}, existingKeys);
-  const addProfileKeys = (profile: any, existingKeys: Set<string>) => {
-    profileKeys(profile).forEach((key) => existingKeys.add(key));
-  };
-
-  const fallbackEvidenceForLead = (lead: any): SessionEvidenceMeta =>
-    buildFallbackEvidence(lead, promptQuery, stats.rounds || 1);
 
   const effectiveScore = sharedEffectiveScore;
 
@@ -943,9 +781,9 @@ export async function executeDiscoverySession(
     const linkedinPostIntentEnabled =
       String(process.env.LINKEDIN_POST_INTENT_ENABLED || "").toLowerCase() !==
       "false";
-    // Default to on_demand profile enrichment (search snippet grounding + public company site probing)
+    // Default to post_filter profile enrichment (search snippet grounding + public company site probing)
     const profileEnrichmentStage =
-      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE || "on_demand";
+      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE || "post_filter";
 
     const freeTierBudget = new ScoutFreeTierBudget();
     const tavilyCapabilities = tavilyFreeTierCapabilities();
@@ -1004,11 +842,6 @@ export async function executeDiscoverySession(
       }
     }
 
-    const matchesExcludeList = (lead: any) => {
-      if (excludedValues.size === 0) return false;
-      return isExcludedCandidate(lead, excludedValues);
-    };
-
     const checkpointAcceptedLeads = (candidates: any[], stageLabel: string) => {
       if (!candidates || candidates.length === 0) return;
       for (let i = 0; i < candidates.length; i++) {
@@ -1029,11 +862,8 @@ export async function executeDiscoverySession(
     const seenCandidateKeys = new Set<string>();
     const seenQueryTexts = new Set<string>();
     const evidenceByUrl = new Map<string, EvidenceMeta>();
-    const getEvidenceForLead = (lead: any): EvidenceMeta =>
-      findEvidenceForLead(lead, evidenceByUrl) || fallbackEvidenceForLead(lead);
     let brightDataReady = shouldAttemptBrightData();
     let brightDataProviderDisabled = !brightDataReady;
-    let brightDataToolDegraded = false;
     let brightDataTransportRetryAfter = 0;
     const urlRetryQueue = new Set<string>();
     let previousRoundSummary: Record<string, any> = {};
@@ -1115,7 +945,7 @@ export async function executeDiscoverySession(
       ),
       judgeConcurrency: Math.min(
         Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 1), 1),
-        2,
+        4,
       ),
     };
 
@@ -1798,7 +1628,7 @@ export async function executeDiscoverySession(
         }
 
         // 2. Auto-failed leads: mark _autoFailed and attribute failure
-        for (const { candidate, reason, failedRequirementId } of triage.autoFailed) {
+        for (const { candidate, reason: _reason, failedRequirementId } of triage.autoFailed) {
           candidate.lead._autoFailed = true;
           const qRun = leadQueryRuns.get(candidate.lead);
           if (qRun && failedRequirementId) {
@@ -2327,7 +2157,7 @@ export async function executeDiscoverySession(
       trackableBrightDataSearch,
       companyIntentEnabled,
       companyIntentMaxPerSearch,
-      companyIntentConcurrency: 1,
+      companyIntentConcurrency: companyIntentConcurrency,
     });
 
     const { finalLeads } = selectResult;

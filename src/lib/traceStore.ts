@@ -184,6 +184,7 @@ class MiningTraceStore {
       sse.addEventListener('end', () => {
         const state = this.getState(sessionId);
         this.sessions.set(sessionId, { ...state, status: 'completed' });
+        this.notify();
         this.disconnect(sessionId);
       });
 
@@ -252,7 +253,7 @@ const DEFAULT_MINING_STATE: MiningSessionLiveState = Object.freeze({
   status: 'idle',
 });
 
-export function useMiningTraceStream(sessionId: string | null | undefined, onPersistenceEvent?: () => void): MiningSessionLiveState {
+export function useMiningTraceStream(sessionId: string | null | undefined, _onPersistenceEvent?: () => void): MiningSessionLiveState {
   const getSnapshot = () => miningTraceStore.getSnapshot(sessionId);
 
   return useSyncExternalStore(

@@ -74,7 +74,7 @@ export function shouldRunTavilyForTask(
 
 export function shouldRunBrightDataForTask(
   task: Pick<RetrievalTask, 'lane' | 'providerPreference'>,
-  discoveryMode: DiscoveryProviderMode,
+  _discoveryMode: DiscoveryProviderMode,
   brightDataSearchMode: BrightDataSearchMode,
   options: {
     brightDataReady: boolean;

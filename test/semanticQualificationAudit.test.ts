@@ -13,8 +13,6 @@ import {
   buildContractFallbackQueries,
   enforceContractQueries,
   isAgencyContract,
-  PROSPECT_CONTRACT_POLICY_VERSION,
-  type ProspectContract,
 } from '../server/leadSearch/prospectContract.js';
 
 describe('Semantic Qualification & Hard Seam Verification', () => {

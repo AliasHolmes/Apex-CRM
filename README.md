@@ -54,7 +54,7 @@ flowchart TD
         Extract["4. extractStage (Token-Diet Budgeted LLM Extraction)"]
         Verify["5. verifyStage (Hard Requirement Verification)"]
         Enrich["6. enrichStage (TF-IDF & Post-Intent Decay)"]
-        PreJudge["Pre-Judge: Role Triage (0ms IC Drop) & Context Grounding (~250ms Site Probe)"]
+        PreJudge["Pre-Judge: Role Triage (0ms IC Drop)"]
         Judge["7. judgeStage (Strict-Evidence Evaluation & Bounded Batches)"]
 
         Plan --> Retrieve --> Fuse --> PreFilter --> Extract --> Verify --> Enrich --> PreJudge --> Judge
@@ -76,10 +76,10 @@ flowchart TD
 - **Wave 2 (Conditional Supplemental)**: Settle Wave 1, evaluates Tavily yield, and triggers supplemental Bright Data fallback searches only when Tavily yield is low (`< 5`), preserving 100% of hybrid-mode credit policies.
 - **Safety & Error Isolation**: Shared abort signals, race-free in-task credit reservations, and per-task error containment.
 
-#### 2. Speculative Stage Overlap ($\text{Plan}_{N+1}$ over $\text{Extract}_N$)
+#### 2. Synchronous State-Bounded Planning
 
-- While Round $N$ is executing LLM extraction chunking, profile verification, and intent enrichment, the LLM strategist pre-computes queries for Round $N+1$ in the background.
-- `planStage` remains pure: queries and stats are committed to session state only at boundary $N+1$, ensuring early session stops never pollute state.
+- Search planning is evaluated synchronously at each round boundary with verified knowledge of current lead yield and candidate counts.
+- `planStage` stays pure and deterministic: queries and stats are committed to session state strictly at round boundaries, preventing state pollution on early exits.
 
 #### 3. Durable Checkpoints & Session Resumption (ADR-0002)
 

@@ -378,9 +378,8 @@ async function fetchWithRetry(
     CLOUDFLARE_MAX_TIMEOUT_MS,
   );
   const retry429 =
-    process.env.LLM_RETRY_429 === "true" ||
-    (process.env.LLM_RETRY_429 !== "false" && maxRetries > 0);
-  const effectiveMaxRetries = retry429 ? Math.max(maxRetries, 2) : maxRetries;
+    process.env.LLM_RETRY_429 !== "false" && maxRetries > 0;
+  const effectiveMaxRetries = maxRetries;
 
   const headers = {
     "User-Agent":
@@ -416,10 +415,10 @@ async function fetchWithRetry(
       }
     }
     try {
-      const res = await fetch(url, {
+      const res = await withSequentialLLMExecution(async () => fetch(url, {
         ...requestOptions,
         signal: compositeSignal,
-      });
+      }));
       clearTimeout(timer);
       lastResponse = res;
 
@@ -675,7 +674,6 @@ async function withProviderFallback<T>(
   }
 
   const failures: Error[] = [];
-  const now = Date.now();
   for (const provider of providers) {
     if (executionOptions.signal?.aborted) {
       const cancelError = new Error("LLM request was aborted by caller.");
@@ -836,7 +834,7 @@ async function withProviderFallback<T>(
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
             ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
             : process.env.LLM_MAX_RETRIES === "0"
-              ? 0
+              ? 5_000
               : 30_000;
         if (cooldownMs > 0) {
           providerCooldowns.set(provider.id, Date.now() + cooldownMs);
@@ -851,9 +849,17 @@ async function withProviderFallback<T>(
     }
   }
 
-  throw new Error(
+  const failureErr = new Error(
     `All configured LLM providers failed: ${formatProviderFailures(failures)}`,
   );
+  if (failures.length > 0) {
+    const lastErr = failures[failures.length - 1];
+    (failureErr as any).cause = lastErr;
+    if (lastErr instanceof LLMProviderError && lastErr.status) {
+      (failureErr as any).status = lastErr.status;
+    }
+  }
+  throw failureErr;
 }
 
 async function sendChatCompletion(
@@ -865,17 +871,16 @@ async function sendChatCompletion(
     responseFormat?: { type: "json_object" };
   } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata">,
 ): Promise<string> {
-  return withSequentialLLMExecution(async () => {
-    if (options?.signal?.aborted) {
-      const cancelError = new Error("LLM request was aborted by caller.");
-      cancelError.name = "AbortError";
-      throw cancelError;
-    }
-    let res: Response;
-    const effectiveMaxTokens =
-      provider.id === "groq"
-        ? Math.min(options?.maxTokens || 400, 950)
-        : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+  if (options?.signal?.aborted) {
+    const cancelError = new Error("LLM request was aborted by caller.");
+    cancelError.name = "AbortError";
+    throw cancelError;
+  }
+  let res: Response;
+  const effectiveMaxTokens =
+    provider.id === "groq"
+      ? Math.min(options?.maxTokens || 400, 950)
+      : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
     const sessionHeaders: Record<string, string> = {};
     if (options?.metadata?.sessionId) {
       sessionHeaders["x-litellm-session-id"] = String(options.metadata.sessionId);
@@ -1029,7 +1034,6 @@ async function sendChatCompletion(
       });
     }
     return data.choices?.[0]?.message?.content || "";
-  });
 }
 
 export const callLLMProvider = sendChatCompletion;
@@ -1219,7 +1223,7 @@ export async function tavilySearch(
   );
   const includeRawContent =
     options.includeRawContent ??
-    process.env.TAVILY_INCLUDE_RAW_CONTENT !== "false";
+    (process.env.TAVILY_INCLUDE_RAW_CONTENT === "true");
   const topic = options.topic === "news" ? "news" : "general";
   // Tavily documents lowercase country enum values (for example, "united states").
   // Automatically resolves ISO codes/aliases and safely drops unsupported values to prevent 400s.
@@ -1240,40 +1244,51 @@ export async function tavilySearch(
     ),
   ).slice(0, 30);
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
-    const res = await fetch("https://api.tavily.com/search", {
-      method: "POST",
-      signal: options.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query,
-        search_depth: searchDepth,
-        max_results: maxResults,
-        include_answer: false,
-        include_raw_content: includeRawContent,
-        include_usage: true,
-        ...(chunksPerSource ? { chunks_per_source: chunksPerSource } : {}),
-        ...(includeDomains.length ? { include_domains: includeDomains } : {}),
-        ...(excludeDomains.length ? { exclude_domains: excludeDomains } : {}),
-        ...(options.timeRange ? { time_range: options.timeRange } : {}),
-        ...(topic === "news"
-          ? { topic }
-          : { topic, ...(country ? { country } : {}) }),
-      }),
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new KeyRotationError(`Tavily search error ${res.status}: ${err}`, {
-        statusCode: res.status,
-        responseText: err,
-        retryAfterMs: retryAfterMsFromResponse(res),
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    const signal = options.signal
+      ? (typeof (AbortSignal as any).any === "function"
+          ? (AbortSignal as any).any([options.signal, controller.signal])
+          : controller.signal)
+      : controller.signal;
+    try {
+      const res = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          search_depth: searchDepth,
+          max_results: maxResults,
+          include_answer: false,
+          include_raw_content: includeRawContent,
+          include_usage: false,
+          ...(chunksPerSource ? { chunks_per_source: chunksPerSource } : {}),
+          ...(includeDomains.length ? { include_domains: includeDomains } : {}),
+          ...(excludeDomains.length ? { exclude_domains: excludeDomains } : {}),
+          ...(options.timeRange ? { time_range: options.timeRange } : {}),
+          ...(topic === "news"
+            ? { topic }
+            : { topic, ...(country ? { country } : {}) }),
+        }),
       });
-    }
 
-    return res.json();
+      if (!res.ok) {
+        const err = await res.text();
+        throw new KeyRotationError(`Tavily search error ${res.status}: ${err}`, {
+          statusCode: res.status,
+          responseText: err,
+          retryAfterMs: retryAfterMsFromResponse(res),
+        });
+      }
+
+      return res.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
   });
   const items = Array.isArray(data.results) ? data.results : [];
 
@@ -1311,39 +1326,51 @@ export async function tavilyExtract(
   if (cleanUrls.length === 0) return [];
 
   const data = await executeWithKeyRotation(tavilyKeyPool, async (apiKey) => {
-    const res = await fetch("https://api.tavily.com/extract", {
-      method: "POST",
-      signal: options?.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        urls: cleanUrls,
-        query,
-        extract_depth: options?.extractDepth || "basic",
-        chunks_per_source: Math.min(
-          Math.max(Number(options?.chunksPerSource || 5), 1),
-          5,
-        ),
-        format: "markdown",
-        include_images: false,
-        include_favicon: false,
-        include_usage: true,
-        timeout: Math.min(Math.max(Number(options?.timeout || 30), 1), 120),
-      }),
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new KeyRotationError(`Tavily extract error ${res.status}: ${err}`, {
-        statusCode: res.status,
-        responseText: err,
-        retryAfterMs: retryAfterMsFromResponse(res),
+    const controller = new AbortController();
+    const timeoutSeconds = Math.min(Math.max(Number(options?.timeout || 30), 1), 120);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
+    const signal = options?.signal
+      ? (typeof (AbortSignal as any).any === "function"
+          ? (AbortSignal as any).any([options.signal, controller.signal])
+          : controller.signal)
+      : controller.signal;
+    try {
+      const res = await fetch("https://api.tavily.com/extract", {
+        method: "POST",
+        signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          urls: cleanUrls,
+          query,
+          extract_depth: options?.extractDepth || "basic",
+          chunks_per_source: Math.min(
+            Math.max(Number(options?.chunksPerSource || 5), 1),
+            5,
+          ),
+          format: "markdown",
+          include_images: false,
+          include_favicon: false,
+          include_usage: false,
+          timeout: timeoutSeconds,
+        }),
       });
-    }
 
-    return res.json();
+      if (!res.ok) {
+        const err = await res.text();
+        throw new KeyRotationError(`Tavily extract error ${res.status}: ${err}`, {
+          statusCode: res.status,
+          responseText: err,
+          retryAfterMs: retryAfterMsFromResponse(res),
+        });
+      }
+
+      return res.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
   });
   const results = Array.isArray(data.results) ? data.results : [];
   return results

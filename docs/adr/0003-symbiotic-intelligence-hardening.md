@@ -31,7 +31,7 @@ We implement a comprehensive symbiotic intelligence hardening across Pillars 1 a
 - Added recognition and authority weighting for Fractional CXOs, Practice Leads, RevOps/GTM Heads, and Principal Consultants.
 
 ### 4. Resilient Finalist Judging & Multi-Passage Grounding
-- Expanded default evidence window to 5 items / 800 characters (`FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` and `FINALIST_JUDGE_EVIDENCE_CHARS`).
+- Configured evidence window with token-diet defaults of 3 items / 500 characters (`FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` [range 1-8] and `FINALIST_JUDGE_EVIDENCE_CHARS` [range 200-1600]).
 - Added multi-evidence fallback scanning in `normalizeAssessment` to verify quotes across all candidate evidence before assigning `fabricatedPass`.
 
 ### 5. High-Fidelity Site Probing & Global Entity Resolution

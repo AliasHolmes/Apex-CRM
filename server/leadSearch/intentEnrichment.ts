@@ -1,5 +1,5 @@
 import { rankLeadForFinalSelection, applyIntentEnrichmentDelta } from './scoring.js';
-import { findCompanyWebsite, checkCompanyIntent, SignalCorpus, type CompanyIntentEvidence } from './companyIntent.js';
+import { findCompanyWebsite, checkCompanyIntent, computeTfidfScore, SignalCorpus, type CompanyIntentEvidence } from './companyIntent.js';
 import { getIntentCacheEntry, upsertIntentCacheEntry } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
 import type { ProspectContract } from './prospectContract.js';
@@ -94,7 +94,16 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
 
   logEvent(`Intent enrichment: evaluating ${sortedCompanyGroups.length} unique companies for ${qualifiedLeads.size} qualified leads (cap=${companyIntentMaxPerSearch}).`);
 
-  // 3. Build enrichment tasks with priority ordering
+  type EnrichedGroupEntry = {
+    group: (typeof sortedCompanyGroups)[0];
+    intentData: CompanyIntentEvidence;
+    websiteUrl: string;
+    cacheAgeDays?: number;
+    isLive: boolean;
+  };
+  const enrichedEntries: EnrichedGroupEntry[] = [];
+
+  // 3. Build enrichment tasks with priority ordering (Pass 1: data collection & corpus registration)
   const tasks: ProviderQueueTask<void>[] = [];
 
   for (let index = 0; index < sortedCompanyGroups.length; index++) {
@@ -122,31 +131,13 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               signalCorpus.registerOccurrences(intentData.buyingSignals);
             }
             const cacheAgeDays = (cachedEntry as any).updatedAt ? Math.max(0, (Date.now() - new Date((cachedEntry as any).updatedAt).getTime()) / 86400000) : 0;
-            let sampleScore = 0;
-            const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
-            for (const lead of group.leads) {
-              lead.companyIntentEvidence = intentData;
-              const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
-              lead.finalSelectionScore = newScore;
-              if (lead.qualification) lead.qualification.finalScore = newScore;
-              if (lead.scoreBreakdown) {
-                lead.scoreBreakdown.finalScore = newScore;
-                if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
-                else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
-              }
-              if (isCorroborated) {
-                lead.corroborated = true;
-                if (!Array.isArray(lead.tags)) lead.tags = [];
-                if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
-              }
-              sampleScore = newScore;
-            }
-            if (isCorroborated) {
-              stats.succeeded++;
-            } else {
-              stats.noSignal++;
-            }
-            logEvent(`[Phase 4 Cache Hit] ${group.companyName}: quality=${intentData.evidenceQuality}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)}, age=${cacheAgeDays.toFixed(1)}d -> updated score=${sampleScore.toFixed(2)}`);
+            enrichedEntries.push({
+              group,
+              intentData,
+              websiteUrl,
+              cacheAgeDays,
+              isLive: false,
+            });
             return;
           } catch {
             // cache parse error, fallback to live search
@@ -184,31 +175,13 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
               signalCorpus.registerOccurrences(intentData.buyingSignals);
             }
             const cacheAgeDays = (cachedEntry as any).updatedAt ? Math.max(0, (Date.now() - new Date((cachedEntry as any).updatedAt).getTime()) / 86400000) : 0;
-            let sampleScore = 0;
-            const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
-            for (const lead of group.leads) {
-              lead.companyIntentEvidence = intentData;
-              const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
-              lead.finalSelectionScore = newScore;
-              if (lead.qualification) lead.qualification.finalScore = newScore;
-              if (lead.scoreBreakdown) {
-                lead.scoreBreakdown.finalScore = newScore;
-                if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
-                else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
-              }
-              if (isCorroborated) {
-                lead.corroborated = true;
-                if (!Array.isArray(lead.tags)) lead.tags = [];
-                if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
-              }
-              sampleScore = newScore;
-            }
-            if (isCorroborated) {
-              stats.succeeded++;
-            } else {
-              stats.noSignal++;
-            }
-            logEvent(`[Phase 4 Cache Hit] ${group.companyName}: quality=${intentData.evidenceQuality}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)}, age=${cacheAgeDays.toFixed(1)}d -> updated score=${sampleScore.toFixed(2)}`);
+            enrichedEntries.push({
+              group,
+              intentData,
+              websiteUrl,
+              cacheAgeDays,
+              isLive: false,
+            });
             return;
           } catch {
             // parse error
@@ -230,42 +203,12 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
             return;
           }
 
-          const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
-          if (isCorroborated) {
-            stats.succeeded++;
-          } else {
-            stats.noSignal++;
-          }
-
-          let sampleScore = 0;
-          for (const lead of group.leads) {
-            lead.companyIntentEvidence = intentData;
-            const newScore = applyIntentEnrichmentDelta(lead);
-            lead.finalSelectionScore = newScore;
-            if (lead.qualification) lead.qualification.finalScore = newScore;
-            if (lead.scoreBreakdown) {
-              lead.scoreBreakdown.finalScore = newScore;
-              if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
-              else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
-            }
-            if (isCorroborated) {
-              lead.corroborated = true;
-              if (!Array.isArray(lead.tags)) lead.tags = [];
-              if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
-            }
-            sampleScore = newScore;
-          }
-
-          upsertIntentCacheEntry({
-            normalizedUrl: websiteUrl,
-            companyName: group.companyName,
-            evidenceBlock: JSON.stringify(intentData),
-            scrapeQuality: intentData.evidenceQuality,
-            sourceProvider: 'brightdata',
-            intentFingerprint: fingerprint
-          }, ttlDays);
-
-          logEvent(`[Phase 4 Enriched] ${group.companyName} (${websiteUrl}): quality=${intentData.evidenceQuality}, signals=${intentData.buyingSignals?.length || 0}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)} -> updated score=${sampleScore.toFixed(2)}`);
+          enrichedEntries.push({
+            group,
+            intentData,
+            websiteUrl,
+            isLive: true,
+          });
         } catch (err: any) {
           stats.failed++;
           logEvent(`[Phase 4 WARN] Intent check failed for ${group.companyName}: ${err.message || String(err)}`);
@@ -279,6 +222,62 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
     concurrency: companyIntentConcurrency,
     signal: sessionAbortSignal
   });
+
+  // 5. Pass 2: Deterministic TF-IDF rescoring using the completed SignalCorpus
+  for (const entry of enrichedEntries) {
+    const { group, intentData, websiteUrl, cacheAgeDays, isLive } = entry;
+    if (Array.isArray(intentData.buyingSignals) && intentData.buyingSignals.length > 0) {
+      const { tfidfWeightedScore, quality } = computeTfidfScore(
+        intentData.buyingSignals,
+        new Map(),
+        contract.intentSignals,
+        signalCorpus,
+      );
+      intentData.tfidfWeightedScore = tfidfWeightedScore;
+      intentData.evidenceQuality = quality;
+    }
+
+    const isCorroborated = intentData.evidenceQuality === 'good' || intentData.evidenceQuality === 'partial';
+    if (isCorroborated) {
+      stats.succeeded++;
+    } else {
+      stats.noSignal++;
+    }
+
+    let sampleScore = 0;
+    for (const lead of group.leads) {
+      lead.companyIntentEvidence = intentData;
+      const newScore = applyIntentEnrichmentDelta(lead, cacheAgeDays);
+      lead.finalSelectionScore = newScore;
+      if (lead.qualification) lead.qualification.finalScore = newScore;
+      if (lead.scoreBreakdown) {
+        lead.scoreBreakdown.finalScore = newScore;
+        if (intentData.evidenceQuality === 'good') lead.scoreBreakdown.intentScore = 9;
+        else if (intentData.evidenceQuality === 'partial') lead.scoreBreakdown.intentScore = 7;
+      }
+      if (isCorroborated) {
+        lead.corroborated = true;
+        if (!Array.isArray(lead.tags)) lead.tags = [];
+        if (!lead.tags.includes('Intent Corroborated')) lead.tags.push('Intent Corroborated');
+      }
+      sampleScore = newScore;
+    }
+
+    if (isLive && websiteUrl) {
+      try {
+        upsertIntentCacheEntry({
+          normalizedUrl: websiteUrl,
+          companyName: group.companyName,
+          evidenceBlock: JSON.stringify(intentData),
+          scrapeQuality: intentData.evidenceQuality,
+          sourceProvider: 'brightdata',
+          intentFingerprint: fingerprint
+        }, ttlDays);
+      } catch {}
+    }
+
+    logEvent(`[Phase 4 ${isLive ? 'Enriched' : 'Cache Hit'}] ${group.companyName} (${websiteUrl}): quality=${intentData.evidenceQuality}, signals=${intentData.buyingSignals?.length || 0}, tfidfScore=${intentData.tfidfWeightedScore.toFixed(3)} -> updated score=${sampleScore.toFixed(2)}`);
+  }
 
   recordTrace({
     phase: 'candidate_processing',

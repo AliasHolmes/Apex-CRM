@@ -1,8 +1,8 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { motion, useReducedMotion } from 'motion/react';
+import { useMemo, useState, useEffect, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMiningTraceStream } from '@/lib/traceStore';
 import { Badge } from '@/components/ui/badge';
-import { Clock, ExternalLink, Activity, Zap, Cpu, BarChart2 } from 'lucide-react';
+import { Clock, ExternalLink, BarChart2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -636,7 +636,6 @@ function renderTerminalLog(log: string) {
 }
 
 export function TraceTerminal({ sessionId }: { sessionId: string | null | undefined }) {
-  const shouldReduceMotion = useReducedMotion();
   const { logs, traceEvents, status, sessionMeta } = useMiningTraceStream(sessionId);
 
   const isRunning = status === 'running' || status === 'connecting';
@@ -649,11 +648,32 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
     isRunning
   });
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: logs.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 24,
+    overscan: 10,
+  });
+
+  useEffect(() => {
+    if (isRunning && scrollContainerRef.current && logs.length > 0) {
+      const el = scrollContainerRef.current;
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+      if (isNearBottom) {
+        rowVirtualizer.scrollToIndex(logs.length - 1, { align: 'end' });
+      }
+    }
+  }, [logs.length, isRunning, rowVirtualizer]);
+
   if (!sessionId && logs.length === 0) return null;
 
   return (
     <div className="mt-4 rounded-xl border border-indigo-500/20 bg-slate-950/90 overflow-hidden shadow-2xl">
-      <div className="p-5 font-mono text-xs text-indigo-300 space-y-2.5 max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950">
+      <div
+        ref={scrollContainerRef}
+        className="p-5 font-mono text-xs text-indigo-300 space-y-2.5 max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950"
+      >
         <div className="flex flex-wrap gap-3 items-center justify-between mb-1">
           <div className="flex gap-3 items-center">
             <div className="relative h-4 w-4 shrink-0">
@@ -703,34 +723,49 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
         </div>
 
         {logs.length > 0 ? (
-          logs.map((log, i) => {
-            let colorClass = 'text-slate-300';
-            if (log.includes('[LLM 200 OK]')) colorClass = 'text-slate-200';
-            else if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) colorClass = 'text-rose-400 font-medium';
-            else if (log.includes('RATE LIMIT') || log.includes('429')) colorClass = 'text-amber-400 font-medium';
-            else if (log.includes('WAITING') || log.includes('FILTERING')) colorClass = 'text-amber-400 font-bold';
-            else if (
-              log.includes('REQUEST') ||
-              log.includes('QUERY') ||
-              log.includes('DISCOVERY') ||
-              log.includes('EVIDENCE') ||
-              log.includes('EXTRACTION')
-            ) {
-              colorClass = 'text-indigo-400 font-bold';
-            }
-            return (
-              <motion.div
-                key={i}
-                className={`${colorClass} leading-relaxed flex items-start gap-1`}
-                initial={shouldReduceMotion ? false : { opacity: 0, x: -5 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ duration: shouldReduceMotion ? 0 : 0.15 }}
-              >
-                <span className="shrink-0 text-slate-600 select-none">{'>'}</span>
-                <div className="min-w-0 flex-1">{renderTerminalLog(log)}</div>
-              </motion.div>
-            );
-          })
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const log = logs[virtualRow.index];
+              let colorClass = 'text-slate-300';
+              if (log.includes('[LLM 200 OK]')) colorClass = 'text-slate-200';
+              else if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) colorClass = 'text-rose-400 font-medium';
+              else if (log.includes('RATE LIMIT') || log.includes('429')) colorClass = 'text-amber-400 font-medium';
+              else if (log.includes('WAITING') || log.includes('FILTERING')) colorClass = 'text-amber-400 font-bold';
+              else if (
+                log.includes('REQUEST') ||
+                log.includes('QUERY') ||
+                log.includes('DISCOVERY') ||
+                log.includes('EVIDENCE') ||
+                log.includes('EXTRACTION')
+              ) {
+                colorClass = 'text-indigo-400 font-bold';
+              }
+              return (
+                <div
+                  key={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                  className={`${colorClass} leading-relaxed flex items-start gap-1`}
+                >
+                  <span className="shrink-0 text-slate-600 select-none">{'>'}</span>
+                  <div className="min-w-0 flex-1">{renderTerminalLog(log)}</div>
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <p className="text-slate-500 italic">Starting the search...</p>
         )}

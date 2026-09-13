@@ -20,8 +20,6 @@ import { estimateTokenCount } from "../llmBudget.js";
 import { summarizeLLM } from "../telemetry.js";
 import { runProviderQueue } from "../providerQueue.js";
 import { rankLeadForFinalSelection } from "../scoring.js";
-import { normalizeLinkedInUrl } from "../../services/linkedinEvidence.js";
-import { groundCandidateWithSiteProbe } from "../siteProbe.js";
 import {
   effectiveScore as sharedEffectiveScore,
   buildFallbackEvidence,
@@ -38,6 +36,65 @@ const normalizeDedupeValue = (value?: string) =>
 
 export function computeJudgeDynamicMaxTokens(batchLength: number): number {
   return Math.min(950, Math.max(500, batchLength * 350));
+}
+
+export function isEligibleForSafetyNet(
+  lead: any,
+  contract: ProspectContract,
+  insight?: { status?: string; score?: number } | null,
+): boolean {
+  if (lead._autoFailed) return false;
+  if (checkStrictContradiction(lead, contract) !== null) return false;
+  if (insight && insight.status === "hard_fail") return false;
+  return true;
+}
+
+export const NON_DECISION_MAKER_REGEX =
+  /\b(intern|internship|student|junior|staff engineer|software engineer|swe|ml engineer|machine learning engineer|data scientist|ai researcher|postdoc|phd candidate|recruiter|talent acquisition|account executive|sdr|bdr)\b/i;
+export const OWNER_TERMS_REGEX =
+  /\b(owner|founder|co-founder|chief|ceo|cto|cmo|coo|president|principal|partner|managing director|director|head|vp|vice president)\b/i;
+
+export function filterNonDecisionMakers(
+  candidates: FinalistCandidate[],
+  contract: ProspectContract,
+): {
+  admitted: FinalistCandidate[];
+  rejected: FinalistCandidate[];
+} {
+  const requiresLeadershipRole = contract.requirements.some(
+    (r) =>
+      r.scope === "person_role" &&
+      r.importance === "hard" &&
+      /\b(owner|founder|director|partner|head|ceo|executive)\b/i.test(
+        r.description + " " + (r.acceptableTerms || []).join(" "),
+      ),
+  );
+
+  if (!requiresLeadershipRole) {
+    return { admitted: candidates, rejected: [] };
+  }
+
+  const admitted: FinalistCandidate[] = [];
+  const rejected: FinalistCandidate[] = [];
+
+  for (const candidate of candidates) {
+    const title = String(
+      candidate.lead.currentTitle ||
+        candidate.lead.title ||
+        candidate.lead.headline ||
+        "",
+    );
+    if (
+      NON_DECISION_MAKER_REGEX.test(title) &&
+      !OWNER_TERMS_REGEX.test(title)
+    ) {
+      rejected.push(candidate);
+    } else {
+      admitted.push(candidate);
+    }
+  }
+
+  return { admitted, rejected };
 }
 
 export type JudgeStageInput = {
@@ -138,60 +195,40 @@ export async function executeJudgeStage(
     : needsJudge;
 
   // 1. Fast Deterministic Role Triage (0ms - No LLM)
-  const NON_DECISION_MAKER_REGEX =
-    /\b(intern|internship|student|junior|staff engineer|software engineer|swe|ml engineer|machine learning engineer|data scientist|ai researcher|postdoc|phd candidate|recruiter|talent acquisition|account executive|sdr|bdr)\b/i;
-  const OWNER_TERMS_REGEX =
-    /\b(owner|founder|co-founder|chief|ceo|cto|cmo|coo|president|principal|partner|managing director|director|head|vp|vice president)\b/i;
-  const requiresLeadershipRole = contract.requirements.some(
-    (r) =>
-      r.scope === "person_role" &&
-      r.importance === "hard" &&
-      /\b(owner|founder|director|partner|head|ceo|executive)\b/i.test(
-        r.description + " " + (r.acceptableTerms || []).join(" "),
-      ),
-  );
+  const { admitted: vettedNeedsJudge, rejected: triageRejected } =
+    filterNonDecisionMakers(prioritizedNeedsJudge, contract);
 
-  const vettedNeedsJudge: FinalistCandidate[] = [];
-  let triageNonDecisionMakers = 0;
-
-  for (const candidate of prioritizedNeedsJudge) {
+  for (const candidate of triageRejected) {
     const title = String(
       candidate.lead.currentTitle ||
         candidate.lead.title ||
         candidate.lead.headline ||
         "",
     );
-    if (
-      requiresLeadershipRole &&
-      NON_DECISION_MAKER_REGEX.test(title) &&
-      !OWNER_TERMS_REGEX.test(title)
-    ) {
-      triageNonDecisionMakers++;
-      judgmentInsight.set(candidate.candidateId, {
-        status: "hard_fail",
-        score: -100,
-        reason: `Pre-judge triage: title "${title}" is an individual contributor/non-decision-maker role.`,
-      });
-      judgeOutcomeTotals.hardFail++;
-      candidate.lead.qualification = {
-        policyVersion: contract.policyVersion,
-        verdict: "hard_fail",
-        qualificationSource: "deterministic",
-        finalScore: 0,
-        requirements: contract.requirements.map((r) => ({
-          requirementId: r.id,
-          status: r.scope === "person_role" ? "fail" : "unknown",
-        })),
-        reason: `Title "${title}" does not meet decision maker requirement.`,
-      };
-      continue;
-    }
-    vettedNeedsJudge.push(candidate);
+    const triageInsight = {
+      status: "hard_fail" as FinalistOutcomeStatus,
+      score: -100,
+      reason: `Pre-judge triage: title "${title}" is an individual contributor/non-decision-maker role.`,
+    };
+    judgmentInsight.set(candidate.candidateId, triageInsight);
+    candidate.lead.judgmentInsight = triageInsight;
+    judgeOutcomeTotals.hardFail++;
+    candidate.lead.qualification = {
+      policyVersion: contract.policyVersion,
+      verdict: "hard_fail",
+      qualificationSource: "deterministic",
+      finalScore: 0,
+      requirements: contract.requirements.map((r) => ({
+        requirementId: r.id,
+        status: r.scope === "person_role" ? "fail" : "unknown",
+      })),
+      reason: `Title "${title}" does not meet decision maker requirement.`,
+    };
   }
 
-  if (triageNonDecisionMakers > 0) {
+  if (triageRejected.length > 0) {
     logEvent(
-      `Pre-Judge Role Triage: Discarded ${triageNonDecisionMakers} non-decision-maker candidate(s) in 0ms without invoking LLM judge.`,
+      `Pre-Judge Role Triage: Discarded ${triageRejected.length} non-decision-maker candidate(s) in 0ms without invoking LLM judge.`,
     );
   }
 
@@ -636,14 +673,11 @@ export async function executeJudgeStage(
         url: lead.contactDetails?.linkedinUrl || lead.sourceUrl || "",
       }))
       .filter((entry) => !qualifiedUrls.has(entry.url))
-      .filter((entry) => !entry.lead._autoFailed)
-      .filter((entry) => checkStrictContradiction(entry.lead, contract) === null)
-      // The judge said no on hard requirements; the safety net must not override that.
       .filter((entry) => {
         const insight = judgmentInsight.get(
           candidateIdByLead.get(entry.lead) || `c${entry.index}`,
         );
-        return !insight || insight.status !== "hard_fail";
+        return isEligibleForSafetyNet(entry.lead, contract, insight);
       });
     for (const entry of rescuePool) {
       entry.lead.finalSelectionScore = rankLeadForFinalSelection(entry.lead);
@@ -786,7 +820,7 @@ export async function evaluateIncrementalJudgeBatches(
   const {
     candidates,
     contract,
-    stats,
+    stats: _stats,
     leadQueryRuns,
     round,
     targetCushion,
@@ -804,6 +838,43 @@ export async function evaluateIncrementalJudgeBatches(
     return { qualifiedCandidates, judgmentInsights };
   }
 
+  // Pre-Judge Role Triage: Discard obvious non-decision makers deterministically before spending LLM tokens
+  const { admitted: vettedCandidates, rejected: triageRejected } =
+    filterNonDecisionMakers(candidates, contract);
+
+  for (const candidate of triageRejected) {
+    const title = String(
+      candidate.lead.currentTitle ||
+        candidate.lead.title ||
+        candidate.lead.headline ||
+        "",
+    );
+    const triageInsight = {
+      status: "hard_fail" as FinalistOutcomeStatus,
+      score: -100,
+      reason: `Pre-judge triage: title "${title}" is an individual contributor/non-decision-maker role.`,
+    };
+    judgmentInsights.set(candidate.candidateId, triageInsight);
+    candidate.lead.judgmentInsight = triageInsight;
+    candidate.lead.qualification = {
+      policyVersion: contract.policyVersion,
+      verdict: "hard_fail",
+      qualificationSource: "deterministic",
+      finalScore: 0,
+      requirements: contract.requirements.map((r) => ({
+        requirementId: r.id,
+        status: r.scope === "person_role" ? "fail" : "unknown",
+      })),
+      reason: `Title "${title}" does not meet decision maker requirement.`,
+    };
+  }
+
+  if (triageRejected.length > 0) {
+    logEvent(
+      `Round ${round} Pre-Judge Role Triage: Discarded ${triageRejected.length} non-decision-maker candidate(s) in 0ms without invoking LLM judge.`,
+    );
+  }
+
   // Micro-batch size: 4 candidates per batch for optimal latency on reasoning models
   const microBatchSize = Math.max(
     1,
@@ -815,8 +886,8 @@ export async function evaluateIncrementalJudgeBatches(
   );
 
   const microBatches: FinalistCandidate[][] = [];
-  for (let i = 0; i < candidates.length; i += microBatchSize) {
-    microBatches.push(candidates.slice(i, i + microBatchSize));
+  for (let i = 0; i < vettedCandidates.length; i += microBatchSize) {
+    microBatches.push(vettedCandidates.slice(i, i + microBatchSize));
   }
 
   // Chunk micro-batches into waves according to concurrency
@@ -832,21 +903,12 @@ export async function evaluateIncrementalJudgeBatches(
     reasonMsg: string,
   ): any[] => {
     return candidatesToFallback.map((candidate) => {
-        // The 60 floor is deliberate: it keeps never-judged candidates competitive so an
-        // upstream LLM failure does not silently drop them (see blueprintBlueprintCoverage
-        // "ZERO candidates must be dropped on upstream failures"). The removed `|| 75`
-        // invented a score for leads that have none; 0 is honest and the floor still applies.
-        // semanticFit/evidenceConfidence/authorityFit below are 0 = "not evaluated" rather
-        // than the previous hardcoded 7.5/7.0/7.0, which presented as a real judgment.
-        const finalScore = Math.max(
-          60,
-          Math.round(
-            candidate.lead.finalSelectionScore ?? candidate.lead.score ?? 0,
-          ),
-        );
+      const finalScore = Math.round(
+        candidate.lead.finalSelectionScore ?? candidate.lead.score ?? 0,
+      );
       const fallbackQualification: Qualification = {
         policyVersion: contract.policyVersion,
-        verdict: "qualified_partial",
+        verdict: "unverified",
         qualificationSource: "deterministic",
         finalScore,
         requirements: contract.requirements.map((r) => ({
@@ -865,9 +927,14 @@ export async function evaluateIncrementalJudgeBatches(
         candidate.lead.scoreBreakdown.finalScore = finalScore;
       }
       candidate.lead.scoreOverride = finalScore;
-      candidate.lead._qualificationFallback = "fallback_resilient";
+      candidate.lead._qualificationFallback = "fallback_unverified";
+      candidate.lead.judgmentInsight = {
+        status: "unverified",
+        score: finalScore,
+        reason: fallbackQualification.reason,
+      };
       judgmentInsights.set(candidate.candidateId, {
-        status: "qualified_partial",
+        status: "unverified",
         score: finalScore,
         reason: fallbackQualification.reason,
       });
@@ -879,6 +946,7 @@ export async function evaluateIncrementalJudgeBatches(
     batch: FinalistCandidate[],
     batchIndex: number,
     depth = 0,
+    retries = 0,
   ): Promise<any[]> => {
     const judgeStarted = Date.now();
     const judgeAttempts: LLMProviderAttempt[] = [];
@@ -974,6 +1042,10 @@ export async function evaluateIncrementalJudgeBatches(
         if (cid) judgmentsByCandidateId.set(cid, j);
       }
       for (const candidate of batch) {
+        const ins = judgmentInsights.get(candidate.candidateId);
+        if (ins) {
+          candidate.lead.judgmentInsight = ins;
+        }
         const queryRun =
           leadQueryRuns?.get?.(candidate.lead) ||
           leadQueryRuns?.get?.(candidate);
@@ -1078,6 +1150,12 @@ export async function evaluateIncrementalJudgeBatches(
         );
         return [];
       }
+      if (retries < 1) {
+        logEvent(
+          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); retrying once...`,
+        );
+        return evaluateSingleBatch(batch, batchIndex, depth, retries + 1);
+      }
       const isTokenOrSizeError =
         error.isTokenLimit ||
         /413|payload too large|too many tokens|rate_limit_exceeded|429|rate[-_ ]?limit/i.test(
@@ -1101,25 +1179,23 @@ export async function evaluateIncrementalJudgeBatches(
         return [...left, ...right];
       }
       logEvent(
-        `WARN: Incremental judge batch ${batchIndex + 1} failed completely (${error.message || String(error)}); applying fallback resilient qualification to ${batch.length} candidate(s).`,
+        `WARN: Incremental judge batch ${batchIndex + 1} failed completely (${error.message || String(error)}); marking ${batch.length} candidate(s) as unverified.`,
       );
-      return fallbackResilientCandidates(
+      fallbackResilientCandidates(
         batch,
         `incremental judge batch failed: ${error.message || String(error)}`,
       );
+      return [];
     }
   };
 
   for (let w = 0; w < waves.length; w++) {
     const waveBatches = waves[w];
-    const waveResults: any[][] = [];
-    for (let idx = 0; idx < waveBatches.length; idx++) {
-      const batchResult = await evaluateSingleBatch(
-        waveBatches[idx],
-        w * judgeConcurrency + idx,
-      );
-      waveResults.push(batchResult);
-    }
+    const waveResults: any[][] = await Promise.all(
+      waveBatches.map((batch, idx) =>
+        evaluateSingleBatch(batch, w * judgeConcurrency + idx),
+      ),
+    );
     const newlyQualified = waveResults.flat();
     qualifiedCandidates.push(...newlyQualified);
     cumulativeQualified += newlyQualified.length;

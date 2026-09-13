@@ -12,8 +12,6 @@ import {
 import {
   parseSnippetFreshnessDays,
   computeFreshnessMultiplier,
-  buildFallbackIntentSignals,
-  compileIntentSignals
 } from '../server/leadSearch/intentSignals.js';
 
 import { buildRetrievalTasks, buildFallbackSearchSpec } from '../server/leadSearch/searchSpec.js';

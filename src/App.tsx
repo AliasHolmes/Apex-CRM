@@ -156,7 +156,6 @@ function Dashboard() {
     leads,
     stats,
     isHydrated,
-    rehydrateLeads,
     refreshStats,
     handleBulkLeadsAdded,
     handleUpdateLeadStage,

@@ -12,7 +12,7 @@ describe('sessionStreamHub subscriber auto-pruning and lifecycle', () => {
       throw new Error('EPIPE: broken pipe / client disconnected');
     };
 
-    const unsubscribe = sessionStreamHub.subscribe(sessionId, brokenSubscriber);
+    sessionStreamHub.subscribe(sessionId, brokenSubscriber);
 
     const statsBefore = sessionStreamHub.getStats().find(s => s.sessionId === sessionId);
     assert.equal(statsBefore?.subscribers, 1);

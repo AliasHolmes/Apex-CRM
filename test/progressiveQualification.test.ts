@@ -3,9 +3,7 @@ import assert from 'node:assert/strict';
 import { isFlagEnabled } from '../server/leadSearch/featureFlags.js';
 import {
   triPartitionCandidatesByEvidence,
-  checkStrictContradiction,
   buildFinalistJudgePrompt,
-  finalistCandidateFromLead,
   type FinalistCandidate,
 } from '../server/leadSearch/finalistJudge.js';
 import {

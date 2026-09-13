@@ -8,7 +8,6 @@ import { buildScoutEvidence } from "../scoutScoring.js";
 import { computeScoreBreakdown } from "../scoring.js";
 import { incrementRejection, type RejectionReason } from "../rejections.js";
 import {
-  buildProfileDedupeKeys,
   hasDuplicateProfile,
   normalizeDedupeValue,
   unwrapRedirectUrl,

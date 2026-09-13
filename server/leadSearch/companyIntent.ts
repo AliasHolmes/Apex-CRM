@@ -44,6 +44,54 @@ export class SignalCorpus {
   get total(): number { return this.totalDocs; }
 }
 
+export function computeTfidfScore(
+  uniqueBuying: string[],
+  signalCounts: Map<string, number>,
+  intentSignals: IntentSignalSpec | undefined,
+  corpus?: SignalCorpus,
+): { tfidfWeightedScore: number; quality: 'weak' | 'partial' | 'good' } {
+  const categorized = intentSignals?.categorized;
+  const toolingSet = new Set((categorized?.tooling || []).map((s: string) => s.toLowerCase()));
+  const hiringSet = new Set((categorized?.hiring || []).map((s: string) => s.toLowerCase()));
+  const painSet = new Set((categorized?.pain || []).map((s: string) => s.toLowerCase()));
+
+  let tfidfRawTotal = 0;
+  for (const signal of uniqueBuying) {
+    const lowerSig = signal.toLowerCase();
+    const count = signalCounts.get(lowerSig) ?? 1;
+    const catMultiplier = toolingSet.has(lowerSig)
+      ? 1.5
+      : hiringSet.has(lowerSig)
+        ? 1.4
+        : painSet.has(lowerSig)
+          ? 1.2
+          : 1.0;
+    if (corpus) {
+      tfidfRawTotal += corpus.computeWeight(signal, count) * catMultiplier;
+    } else {
+      tfidfRawTotal += Math.log1p(count) * catMultiplier;
+    }
+  }
+  const tfidfWeightedScore = Math.min(1, tfidfRawTotal / 10);
+
+  const dynamicSet = (intentSignals?.dynamic || []).map((s: string) => s.toLowerCase());
+  const universalSet = (intentSignals?.universal || UNIVERSAL_SIGNALS).map((s: string) => s.toLowerCase());
+
+  const dynamicCount = uniqueBuying.filter((s) => dynamicSet.includes(s.toLowerCase())).length;
+  const universalCount = uniqueBuying.filter((s) => universalSet.includes(s.toLowerCase())).length;
+
+  let quality: 'weak' | 'partial' | 'good' = 'weak';
+  if (dynamicCount >= 2 || tfidfWeightedScore >= 0.6) {
+    quality = 'good';
+  } else if (dynamicCount === 1 || universalCount >= 4 || tfidfWeightedScore >= 0.3) {
+    quality = 'partial';
+  } else {
+    quality = 'weak';
+  }
+
+  return { tfidfWeightedScore, quality };
+}
+
 type SearchResult = { title: string; url: string; content: string };
 
 /** @deprecated Use UNIVERSAL_SIGNALS from intentSignals.ts */
@@ -178,7 +226,6 @@ export async function checkCompanyIntent(
     );
     if (!markdown) return null;
 
-    const lowerMarkdown = markdown.toLowerCase();
     const dynamicSet = options?.intentSignals?.dynamic || [];
     const universalSet = options?.intentSignals?.universal || UNIVERSAL_SIGNALS;
 
@@ -244,35 +291,12 @@ export async function checkCompanyIntent(
       options.corpus.registerOccurrences(uniqueBuying);
     }
 
-    // Compute TF-IDF aggregate score with category multipliers (tooling 1.5x, hiring 1.4x, pain 1.2x)
-    const categorized = options?.intentSignals?.categorized;
-    const toolingSet = new Set((categorized?.tooling || []).map(s => s.toLowerCase()));
-    const hiringSet = new Set((categorized?.hiring || []).map(s => s.toLowerCase()));
-    const painSet = new Set((categorized?.pain || []).map(s => s.toLowerCase()));
-
-    let tfidfRawTotal = 0;
-    for (const signal of uniqueBuying) {
-      const lowerSig = signal.toLowerCase();
-      const count = signalCounts.get(lowerSig) ?? 1;
-      const catMultiplier = toolingSet.has(lowerSig) ? 1.5 : hiringSet.has(lowerSig) ? 1.4 : painSet.has(lowerSig) ? 1.2 : 1.0;
-      if (options?.corpus) {
-        tfidfRawTotal += options.corpus.computeWeight(signal, count) * catMultiplier;
-      } else {
-        // Fallback: simple term-frequency proxy when no corpus is provided
-        tfidfRawTotal += Math.log1p(count) * catMultiplier;
-      }
-    }
-    // Normalise to 0-1 using a soft cap (sum of 10 signals at max IDF ~= saturation)
-    const tfidfWeightedScore = Math.min(1, tfidfRawTotal / 10);
-
-    let quality: 'weak' | 'partial' | 'good' = 'weak';
-    if (uniqueDynamic.length >= 2 || tfidfWeightedScore >= 0.6) {
-      quality = 'good';
-    } else if (uniqueDynamic.length === 1 || uniqueUniversal.length >= 4 || tfidfWeightedScore >= 0.3) {
-      quality = 'partial';
-    } else {
-      quality = 'weak';
-    }
+    const { tfidfWeightedScore, quality } = computeTfidfScore(
+      uniqueBuying,
+      signalCounts,
+      options?.intentSignals,
+      options?.corpus,
+    );
 
     const snippets: string[] = [];
     if (uniqueBuying.length > 0) {

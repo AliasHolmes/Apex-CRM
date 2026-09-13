@@ -4,7 +4,6 @@ import {
   buildFallbackSearchSpec,
   buildFallbackQueryPlan,
   buildRetrievalTasks,
-  type SearchSpec
 } from '../server/leadSearch/searchSpec.js';
 import { sanitizeQueryText } from '../server/leadSearch/strategist.js';
 import {

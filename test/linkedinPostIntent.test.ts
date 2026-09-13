@@ -561,7 +561,7 @@ test('runLinkedInPostIntentEnrichment falls back to Tavily search when Bright Da
         brightDataAttempted = true;
         throw new Error('Unexpected non-JSON response from Bright Data for search_engine.');
       },
-      tavilySearchFallback: async (q) => {
+      tavilySearchFallback: async (_q) => {
         tavilyAttempted = true;
         return {
           items: [

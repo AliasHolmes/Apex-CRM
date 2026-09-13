@@ -296,7 +296,10 @@ export async function executeFuseStage(
     uniqueRoundItems.push(item);
   }
 
-  const rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
+  for (const k of roundCandidateKeys) {
+    seenCandidateKeys.add(k);
+  }
+  const rawResultsCount = seenCandidateKeys.size;
   stats.rawCandidates = rawResultsCount;
 
   if (uniqueRoundItems.length === 0) {

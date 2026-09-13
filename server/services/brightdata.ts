@@ -288,7 +288,7 @@ const cooldownMsForFailure = () => {
       : consecutiveFailures === 2
         ? 60_000
         : 5 * 60_000;
-  return Math.min(planned, failureCooldownMs());
+  return Math.max(planned, failureCooldownMs());
 };
 
 const errorMessage = (error: unknown) =>
@@ -766,12 +766,17 @@ export async function probeBrightDataRecovery(): Promise<boolean> {
   if (!isBrightDataConfigured()) return false;
   if (isBrightDataCoolingDown()) return false;
   if (!brightDataKeyPool.hasAvailableKey()) return false;
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("probe timeout")), 10_000);
+  });
   try {
     const results = await Promise.race([
-      brightDataSearch("example", { timeoutMs: 10_000 }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("probe timeout")), 10_000),
-      ),
+      fetch("https://api.brightdata.com", {
+        method: "HEAD",
+        signal: AbortSignal.timeout(10_000),
+      }).then(res => res.ok ? [] : Promise.reject(new Error("HTTP " + res.status))).catch(() => brightDataSearch("example", { timeoutMs: 10_000 })),
+      timeoutPromise,
     ]);
     if (Array.isArray(results)) {
       markProviderSuccess();
@@ -781,6 +786,8 @@ export async function probeBrightDataRecovery(): Promise<boolean> {
   } catch {
     // Probe failure keeps current degraded state; next cooldown applies.
     return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -1746,17 +1753,19 @@ export async function brightDataSearch(
   // Cancellation is checked before spending anything: a cancelled session must not wait
   // through jitter or pay for SERP calls whose results will be discarded.
   if (options?.signal?.aborted) return [];
-  // Randomized search jitter (500-1200ms) between search calls. Uses abortableSleep rather
+  // Configurable search jitter between search calls. Uses abortableSleep rather
   // than a bare setTimeout so the wait ends the moment the session is cancelled.
-  const jitterMs = Math.floor(500 + Math.random() * 700);
-  try {
-    await abortableSleep(jitterMs, options?.signal);
-  } catch (error) {
-    // abortableSleep rejects with AbortError when the signal fires mid-wait. Cancellation
-    // is not a fault here - surface it as "no results" rather than letting it propagate, so
-    // this function has one consistent contract: on abort it returns an empty list.
-    if ((error as Error)?.name === "AbortError") return [];
-    throw error;
+  const configuredJitter = Number(process.env.BRIGHTDATA_SEARCH_JITTER_MS);
+  const jitterMs = Number.isFinite(configuredJitter)
+    ? configuredJitter
+    : (process.env.BRIGHTDATA_ENABLE_SEARCH_JITTER === "true" ? Math.floor(500 + Math.random() * 700) : 0);
+  if (jitterMs > 0) {
+    try {
+      await abortableSleep(jitterMs, options?.signal);
+    } catch (error) {
+      if ((error as Error)?.name === "AbortError") return [];
+      throw error;
+    }
   }
   if (options?.signal?.aborted) return [];
 

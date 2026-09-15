@@ -25,7 +25,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: "litellm" | "primary" | "openrouter" | "groq" | "tokenharbor";
+  id: "litellm" | "primary" | "openrouter" | "groq" | "tokenharbor" | "atria";
   name: string;
   baseUrl: string;
   model: string;
@@ -127,6 +127,14 @@ const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_LITELLM_BASE = "http://127.0.0.1:4000/v1";
 const DEFAULT_LITELLM_MODEL = "apex-primary";
 
+// Atria is a self-hosted vLLM deployment (see docs/ATRIA-ENDPOINT-PROBE-2026-09-16.md).
+// It is a REASONING model: reasoning_content is emitted and billed before any visible
+// content, so a small max_tokens yields content:null with finish_reason:"length".
+// Registered only when ATRIA_API_KEY is set, and appended after the established chain
+// unless ATRIA_PRIORITY=primary, so supplying a key never silently re-routes a session.
+const DEFAULT_ATRIA_BASE = "https://api.atria-asi.ai/v1";
+const DEFAULT_ATRIA_MODEL = "Atria-Dawn-Preview";
+
 const DEFAULT_TOKEN_HARBOR_BASE = "https://tokenharbor.ai/v1";
 const DEFAULT_TOKEN_HARBOR_MODEL = "deepseek-v4.1-flash:free";
 // NOTE: the Token Harbor API key is intentionally NOT defaulted here. It must come from
@@ -205,6 +213,24 @@ function getLiteLLMProvider(): LLMProvider {
   };
 }
 
+/** ATRIA_PRIORITY=primary promotes Atria ahead of the Byesu/OpenRouter/Groq chain. */
+function isAtriaPromoted(): boolean {
+  return (process.env.ATRIA_PRIORITY || "").toLowerCase() === "primary";
+}
+
+/** Returns the Atria provider when ATRIA_API_KEY is set, otherwise null (disabled). */
+function getAtriaProvider(): LLMProvider | null {
+  const apiKey = process.env.ATRIA_API_KEY || "";
+  if (!apiKey) return null;
+  return {
+    id: "atria",
+    name: process.env.ATRIA_PROVIDER_NAME || "Atria",
+    baseUrl: cleanBaseUrl(process.env.ATRIA_BASE || DEFAULT_ATRIA_BASE),
+    model: process.env.ATRIA_MODEL || DEFAULT_ATRIA_MODEL,
+    apiKey,
+  };
+}
+
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
@@ -220,6 +246,11 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       model: process.env.TOKEN_HARBOR_MODEL || DEFAULT_TOKEN_HARBOR_MODEL,
       apiKey: tokenHarborKey,
     });
+  }
+
+  const atria = getAtriaProvider();
+  if (atria && isAtriaPromoted()) {
+    direct.push(atria);
   }
 
   direct.push(
@@ -249,6 +280,10 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
     },
   );
 
+  if (atria && !isAtriaPromoted()) {
+    direct.push(atria);
+  }
+
   return direct;
 }
 
@@ -264,12 +299,20 @@ function getConfiguredLLMProviders(): LLMProvider[] {
   );
   if (getGatewayMode() === "litellm") {
     const tokenHarbor = directProviders.find((p) => p.id === "tokenharbor");
+    const atria = directProviders.find((p) => p.id === "atria");
     const directFallbacks = directProviders.filter(
-      (provider) => provider.id !== "primary" && provider.id !== "tokenharbor",
+      (provider) =>
+        provider.id !== "primary" &&
+        provider.id !== "tokenharbor" &&
+        provider.id !== "atria",
     );
-    return tokenHarbor
+    const gatewayChain = tokenHarbor
       ? [tokenHarbor, getLiteLLMProvider(), ...directFallbacks]
       : [getLiteLLMProvider(), ...directFallbacks];
+    if (!atria) return gatewayChain;
+    return isAtriaPromoted()
+      ? [atria, ...gatewayChain]
+      : [...gatewayChain, atria];
   }
   return directProviders;
 }
@@ -986,6 +1029,39 @@ async function sendChatCompletion(
     }
 
     const data = await res.json();
+    const choice = data?.choices?.[0];
+    const finishReason =
+      typeof choice?.finish_reason === "string"
+        ? choice.finish_reason
+        : undefined;
+    const content =
+      typeof choice?.message?.content === "string" ? choice.message.content : "";
+
+    // A reasoning model (e.g. Atria-Dawn-Preview) emits and bills `reasoning_content`
+    // BEFORE any visible content. When max_tokens runs out during reasoning the gateway
+    // still answers HTTP 200, but with content:null and finish_reason:"length". Collapsing
+    // that to "" lets downstream stages record a zero-yield round with no error anywhere.
+    // Surface it as a provider failure so the chain cascades and the cause is visible.
+    //
+    // Deliberately does NOT set isTokenLimit and does not match the token-limit regexes in
+    // LLMProviderError: this is a budget-sizing fault, not a context-window rejection, and
+    // must not disable an otherwise healthy provider for the rest of the session.
+    if (finishReason === "length" && content === "") {
+      const reasoningChars =
+        typeof choice?.message?.reasoning_content === "string"
+          ? choice.message.reasoning_content.length
+          : 0;
+      throw new LLMProviderError(
+        provider,
+        res.status,
+        `chat completion truncated: finish_reason "length" produced no visible content` +
+          (reasoningChars > 0
+            ? ` (reasoning_content consumed the entire budget: ${reasoningChars} chars)`
+            : "") +
+          `. Raise max_tokens.`,
+      );
+    }
+
     const latencyMs = Date.now() - callStartedAt;
     const actualModel =
       typeof data?.model === "string" && data.model.trim()
@@ -1020,7 +1096,7 @@ async function sendChatCompletion(
         latencyMs,
         status: "success",
         messages,
-        output: data.choices?.[0]?.message?.content || "",
+        output: content,
       });
     }
 
@@ -1033,7 +1109,7 @@ async function sendChatCompletion(
         model: actualModel,
       });
     }
-    return data.choices?.[0]?.message?.content || "";
+    return content;
 }
 
 export const callLLMProvider = sendChatCompletion;

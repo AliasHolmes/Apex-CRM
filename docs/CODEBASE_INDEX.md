@@ -1,384 +1,244 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-09-12 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/` (excludes `node_modules/`, `dist/`, `.venv-litellm/`, `.apex-data/`)
+Generated: 2026-09-16 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+(excludes `node_modules/`, `dist/`, `.venv-litellm/`, `.apex-data/`)
 
-> Companion graph index: this repo is also indexed in `codebase-memory-mcp` as project `D-work-AI-Apex-crm`
-> (1,827 nodes / 4,187 edges, status `ready`). See §12 for the sync protocol.
+> Supersedes the 2026-09-12 index (now `CODEBASE_INDEX-2026-09-12.md`), which had drifted on
+> schema version, route count, and test counts. Verified values below were measured directly
+> from the tree, not inherited.
 
 ---
 
 ## 1. What this is
 
-Apex CRM is a single-user, local-first prospect-scouting CRM. A natural-language "prospect brief" is compiled into a strict **Prospect Contract**, executed as a multi-lane retrieval session (Tavily + Bright Data + LLM) through a 9-stage pipelined engine, judged against cited evidence, enriched with company-website and LinkedIn-post intent signals, checkpointed at stage boundaries for resumability, and persisted into a local SQLite store. React 19 UI for review/pipeline/outreach; Express 5 backend; all outreach on LinkedIn stays manual.
+Apex CRM is a single-user, local-first prospect-scouting CRM. A natural-language "prospect
+brief" is compiled into a strict **Prospect Contract**, executed as a multi-lane retrieval
+session (Tavily + Bright Data + LLM) through a 9-stage pipelined engine, judged against
+cited evidence, enriched with company-website and LinkedIn-post intent signals,
+checkpointed at stage boundaries for resumability, and persisted into a local SQLite
+store. React 19 UI for review/pipeline/outreach; Express 5 backend; all outreach on
+LinkedIn stays manual.
 
 Primary reference docs:
 
 - [`README.md`](../README.md) — product overview, architecture diagrams, API table
-- [`CONTEXT.md`](../CONTEXT.md) — domain glossary (Discovery Session, Prospect Contract, Identity/Intent Plane, Finalist Judge, Pareto Skyline, Reverse Flywheel)
-- [`docs/adr/0001-discovery-session-engine.md`](adr/0001-discovery-session-engine.md) — ADR: extraction of the discovery loop into in-process `DiscoverySessionEngine`
-- [`docs/adr/0002-stage-boundary-session-persistence-and-resumption.md`](adr/0002-stage-boundary-session-persistence-and-resumption.md) — ADR: durable stage-boundary checkpoints & session resumption
-- [`docs/adr/0003-symbiotic-intelligence-hardening.md`](adr/0003-symbiotic-intelligence-hardening.md) — ADR: domain-clustered MAB, dynamic query strategy, DCR leadership scoring, site probe commercial signals, entity resolution
-- [`docs/adr/0004-lean-adaptive-collection-and-targeted-enrichment.md`](adr/0004-lean-adaptive-collection-and-targeted-enrichment.md) — ADR: lean adaptive collection capacity, decoupled early stopping, targeted post-selection enrichment
-- [`docs/adr/0005-deterministic-prefiltering-crm-feedback-and-sequential-execution.md`](adr/0005-deterministic-prefiltering-crm-feedback-and-sequential-execution.md) — ADR: deterministic pre-filtering, CRM negative feedback, pre-judge grounding, and strict sequential LLM execution
-- [`.agents/rules/codebase_memory.md`](../.agents/rules/codebase_memory.md) — graph-index sync protocol (§12)
+- [`CONTEXT.md`](../CONTEXT.md) — domain glossary
+- [`docs/adr/0001`…`0006`](adr/) — six ADRs covering the engine, checkpointing, hardening,
+  lean collection, deterministic pre-filtering, and prospect-quality grounding
+- [`docs/BUG-REPORT-2026-09-15.md`](BUG-REPORT-2026-09-15.md) — most recent deep bug pass
+  (7 findings, 6 fixed, pinned by `test/deepAuditRegression.test.ts`)
+- [`docs/AUDIT-VERIFICATION-2026-09-15.md`](AUDIT-VERIFICATION-2026-09-15.md) — verification
+  of commit `4c385da` plus the last production session's performance baseline
 
 ## 2. Quick stats
 
-| Metric                                                           | Value                                            |
-| ---------------------------------------------------------------- | ------------------------------------------------ |
-| Frontend (`src/`)                                                | ~11,088 lines across 35 files                    |
-| Backend engine (`server/leadSearch/`)                            | ~18,100 lines across 42 modules (incl. 9 `stages/`) |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~11,050 lines                                    |
-| REST routes                                                      | 40 (all under `/api`, also mounted at `/api/v1`) |
-| SQLite tables                                                    | 17 tables + `leads_fts` virtual table (schema v20, WAL mode) |
-| Test suite                                                       | 90 files, 601 test declarations                  |
-| Graph index (codebase-memory-mcp)                                | 1,895 nodes · 4,395 edges · `ready`              |
-
+| Metric                                                           | Value                                                                      |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Frontend (`src/`)                                                | ~11,587 lines across 35 files                                              |
+| Backend engine (`server/leadSearch/`)                            | ~18,577 lines: 33 modules + 9 `stages/`                                    |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
+| REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
+| SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v21**, WAL |
+| Test suite                                                       | 94 files, 670 tests / 148 suites, all passing                              |
+| Total first-party LOC                                            | ~60,100                                                                    |
+| Working tree                                                     | 13 modified files + 3 untracked (uncommitted)                              |
 
 ## 3. Tech stack
 
-- **Frontend**: React 19 · Vite · Tailwind CSS 4 · Radix UI · Motion · Lucide icons · TypeScript
-- **Backend**: Node.js 24+ · Express 5 · native `node:sqlite` (WAL) · `p-queue` rate limiting · tsx dev runner · esbuild prod bundle
-- **LLM**: LiteLLM gateway (`litellm.config.yaml`) or direct OpenAI-compatible fallback chain (Byesu → OpenRouter → Groq) with session circuit breaker
-- **Retrieval**: Tavily Search/Extract with rotating key pool; Bright Data MCP (`search_engine`, `scrape_as_markdown`)
+- **Frontend**: React 19 · Vite · Tailwind CSS 4 · Radix UI · Motion · Lucide ·
+  `@tanstack/react-table` + `react-virtual` · TypeScript
+- **Backend**: Express 5 · `node:sqlite` (schema-versioned, migrated in-transaction with
+  pre-migration backups pruned to 3) · TypeScript, run by `tsx`
+- **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP (scrape/search),
+  OpenAI-compatible LLM via Byesu `gpt-5.5` primary with Mistral/OpenRouter/Groq fallback
+  chain, optional LiteLLM gateway in front, Langfuse telemetry
+- **Discipline**: `tsc --noEmit` under `strict`, `noImplicitAny`, `noUnusedLocals`,
+  `noUnusedParameters`; `prebuild` gates on typecheck; strict ASCII enforced by
+  `test/encodingHygiene.test.ts`
 
 ## 4. Repository layout
 
-```text
-├─ server.ts                 Express bootstrap, host/origin guard, /api + /api/v1 mount (325 lines)
-├─ src/                      React client (entry, components, context, lib, utils)
-├─ server/
-│  ├─ db.ts                  SQLite v20 schema, migrations w/ auto-backup, CRUD, identity dedupe
-│  ├─ hostValidation.ts      Host/Origin header validation (DNS-rebinding guard)
-│  ├─ configValidation.ts    Boot-time env sanity warnings
-│  ├─ routes/api.ts          Thin HTTP adapter → 40 REST routes
-│  ├─ services/              llm.ts, brightdata.ts, keyRotator.ts, linkedinEvidence.ts, sessionStreamHub.ts
-│  └─ leadSearch/            Discovery Session Engine (33 modules + 9 stages/)
-├─ scripts/dev.ts            Dev orchestrator (Vite + Express concurrently)
-├─ test/                     86 node:test suites (~16,470 lines)
-├─ docs/                     CODEBASE_INDEX.md (this file), adr/
-├─ .agents/rules/            Agent-facing conventions (graph-index sync protocol)
-├─ .apex-data/               SQLite DB + WAL-safe backups (runtime artifact)
-├─ litellm.config.yaml       LiteLLM proxy config
-├─ vite.config.ts            Vite config (port 3000, proxy → API)
-└─ components.json           shadcn/ui config
+```
+server.ts                    Express app + static Vite serve (326 lines)
+server/db.ts                 SQLite layer: schema v21, migrations, 40+ readers/writers (4,277)
+server/routes/api.ts         41 REST routes (2,068)
+server/services/             llm.ts (2,211) · brightdata.ts (1,917) · keyRotator ·
+                             sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
+                             outboundPrompt · langfuse
+server/leadSearch/           the discovery engine
+  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,441)
+  prospectContract.ts        brief -> contract compilation + validation (1,563)
+  finalistJudge.ts           tri-partition, contradiction checks, score normalization (1,136)
+  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto (641)
+  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (MAB) · collectionCapacity.ts ·
+  constraintAblation.ts · evidenceSelection.ts · intentEnrichment.ts · companyIntent.ts ·
+  linkedinPostIntent.ts · siteProbe.ts · signalStore.ts · telemetry.ts ·
+  featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
+  sessionHelpers.ts · observations.ts · profileEnrichment.ts · rejections.ts ·
+  roundDiagnostics.ts · scoutScoring.ts · targetFulfillment.ts · verification.ts ·
+  evidence.ts · llmBudget.ts · pipelineTypes.ts
+  stages/                    plan · retrieve · fuse · extract · verify · enrich · judge · select · persist
+src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
+                             ToastContext) · components/ (10 feature + 10 ui) · lib/ · utils/
+test/                        94 files, node:test runner via tsx
+scripts/dev.ts               spawns Vite + Express (+ optional LiteLLM child process)
 ```
 
-## 5. Frontend index (`src/`)
+## 5. The discovery pipeline
 
-### Entry & shell
+Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
-| File             | Lines | Role                                                                                                                                                                  |
-| ---------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main.tsx`       | 10    | React root mount                                                                                                                                                      |
-| `App.tsx`        | 690   | App shell: dashboard tabs, health polling, provider status                                                                                                            |
-| `types.ts`       | 396   | Shared types: `LinkedInProfile`, `LeadEvidence`, `PostIntentEvidence`, `ScoreBreakdown`; stage/review/action enums (`LEAD_STAGES`, `REVIEW_STATUSES`, `NEXT_ACTIONS`) |
-| `index.css`      | 121   | Tailwind theme tokens                                                                                                                                                 |
-| `vite-env.d.ts`  | 3     | Vite ambient types                                                                                                                                                    |
+1. **plan** — CRM negative-domain exclusion, metro-saturation avoidance, strategist query
+   generation (`planStage.ts`)
+2. **retrieve** — two-wave parallel Tavily + Bright Data lanes, conditional supplemental
+   fallback when Tavily yield is low (`retrieveStage.ts`)
+3. **fuse** — corroboration fusion, dedupe, ablation tagging (`fuseStage.ts`)
+4. **extract** — token-dieted LLM extraction, chunked (`extractStage.ts`)
+5. **verify** — hard-requirement verification, borderline survival band (`verifyStage.ts`)
+6. **enrich** — consolidated site probing + TF-IDF company intent + LinkedIn post intent,
+   runs **after** selection (`enrichStage.ts`)
+7. **judge** — pre-judge deterministic role triage, tri-partition by evidence, bounded
+   micro-batch LLM judging (`judgeStage.ts`)
+8. **select** — Pareto skyline + MMR diversification (`selectStage.ts`)
+9. **persist** — identity-keyed upserts, FTS maintenance, exclude-list append (`persistStage.ts`)
 
-### Feature components (`src/components/`)
+Cross-cutting invariants:
 
-| File                          | Lines | Role                                                                                                          |
-| ----------------------------- | ----- | ------------------------------------------------------------------------------------------------------------- |
-| `LeadTable.tsx`               | 1645  | Prospect inventory: filtering, review statuses, evidence drawer, manual add                                   |
-| `ScrapeWorkspace.tsx`         | 1432  | Discovery launcher: brief input, preview contract, live mining trace/logs                                     |
-| `CrmPipeline.tsx`             | 1373  | Kanban-style stage pipeline with drag between stages                                                          |
-| `OutreachStudio.tsx`          | 1197  | Outreach draft generation & management per lead                                                               |
-| `TraceTerminal.tsx`           | 460   | Decoupled streaming telemetry terminal (outside React render tree)                                            |
-| `CrmCopilot.tsx`              | 347   | `/chat` conversational assistant panel                                                                        |
-| `ResumableSessionsBanner.tsx` | 331   | 1-click recovery banner for interrupted mining sessions (checkpoint resume)                                   |
-| `CrmOverview.tsx`             | 232   | Dashboard KPIs and summaries                                                                                  |
-| `ConflictDialog.tsx`          | 159   | Side-by-side diff modal resolving lead revision conflicts (HTTP 409): overwrite / accept server / smart merge |
-| `TabErrorBoundary.tsx`        | 83    | Per-tab React error boundary — isolates a crashing dashboard tab from the shell                               |
-| `ui/*`                        | 535 total | shadcn/Radix primitives: badge, button, card, dialog, input, label, table, tabs, textarea                  |
+- **`withSequentialLLMExecution`** (`llm.ts:357`) serializes every LLM call through one
+  queue to prevent provider 429/524 collisions.
+- **Stage-boundary checkpoints** (`mining_sessions.checkpoint_json`, 512KB guard) power
+  1-click resume; resume rebuilds `seenCandidateKeys` and _replaces_ checkpoint counters.
+- **Per-provider circuit breaker** with cooldown ladders and key rotation.
 
-### State (`src/context/`)
+## 6. Configuration surface
 
-| File               | Lines | Exports                                  | Role                                                                                                                            |
-| ------------------ | ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `LeadContext.tsx`  | 1261  | `LeadProvider`, `useLeads`               | Central client store: fetch/bulk/PATCH leads, dedupe on insert, enrichment, outreach drafts, health, revision-conflict handling |
-| `ToastContext.tsx` | 137   | `ToastProvider`, `useToast`, `ToastType` | Toast notifications                                                                                                             |
+138 keys in `.env` (mirrored by `.env.example`). Notable:
 
-### Lib & utils (`src/lib/`, `src/utils/`)
+- `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) — authoritative round budget; the in-loop
+  extension ceiling now defers to it when set (was hard-coded 10, which is how a run
+  configured for 6 reached 10).
+- `LLM_MAX_RETRIES=0` is now honoured; a 429 falls through immediately with a 5s cooldown.
+- `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` clamped 1–20 (default 10).
+- `LEAD_SEARCH_TIMEOUT_MS=0` disables the 15-minute safety timeout.
+- `server/configValidation.ts` emits non-fatal boot warnings for misconfigurations.
 
-| File                      | Lines | Key exports                                                                  | Role                                                |
-| ------------------------- | ----- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
-| `lib/traceStore.ts`       | 223   | `miningTraceStore`                                                           | `useSyncExternalStore` reactive SSE trace/log store |
-| `utils/leadDedupe.ts`     | 165   | `canonicalLinkedInIdentity`, `buildProfileDedupeKeys`, `hasDuplicateProfile` | LinkedIn canonical-identity dedupe keys             |
-| `lib/pipeline.ts`         | 111   | `PIPELINE_STAGES`, `getPipelineStageMeta`                                    | Stage metadata & ordering                           |
-| `lib/leadMutations.ts`    | 48    | `rebaseLeadChanges`, `preferNewerCanonical`                                  | Optimistic-concurrency rebasing of lead edits       |
-| `lib/prospectWorkflow.ts` | 42    | `REVIEW_STATUS_OPTIONS`, `getLeadProvenance`                                 | Review-status/next-action option maps               |
-| `utils/leadScore.ts`      | 30    | `scoreLeadDeterministically`, `predictiveScoreFromComposite`                 | Client-side deterministic scoring                   |
-| `lib/ui.ts`               | 26    | `PROSPECTS_PAGE_SIZE`, `isDiscoveryProviderConfigured`                       | UI constants/helpers                                |
-| `lib/navigation.ts`       | 25    | `DASHBOARD_NAV_ITEMS`, `getTabFromHash`                                      | Hash-based tab routing                              |
-| `lib/utils.ts`            | 6     | `cn`                                                                         | Tailwind class merge                                |
+`featureFlags.ts` exposes 15 env-overridable flags; **6 are marked `@deprecated` as
+"graduated into standard architecture"** but remain overridable (see §9.6).
 
-> No `src/hooks/` directory exists — the README's project-structure block still lists one.
+## 7. Test suite
 
-## 6. Backend index (`server/`)
+94 files / 670 tests, `npm run test:all` (~6 min). Composition:
 
-### Core
+- **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
+  (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12)
+- **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (32), `keyRotator`,
+  `tavilyRotation`, `kalmanStability`, `serverResilience`, `sessionStreamHubPruning`
+- **Persistence**: `leadPersistence`, `leadDedupe`, `leadIdentityMigration`,
+  `sessionPersistenceAndResume`, `concurrencyShieldAndBulkDelete`
+- **Contracts**: `uiContracts` (16), `encodingHygiene`, `contractShape`
+- Curated subsets are wired as named `npm run test:*` scripts.
 
-| File                    | Lines | Role                                                                                                                                                                                                                                                                                               |
-| ----------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.ts`             | 325   | Express app bootstrap, host/origin guard, static serving, `/api` + `/api/v1` mount                                                                                                                                                                                                                 |
-| `db.ts`                 | 3980  | SQLite v20: migrations w/ auto-backup + batched SAVEPOINT backfills, 17 tables, optimistic revision locks, `lead_identities` canonical dedupe, `checkpoint_json` persistence + resumable-session queries, CRUD helpers (`upsertLeadWithIdentity`, `readLeadsSummary`, `LeadRevisionConflictError`), company domain extraction (`readStoredCompanyDomains`), metro saturation (`readStoredMetroSaturation`) |
-| `routes/api.ts`         | 2149  | Thin HTTP adapter over services/engine (40 routes, §7) incl. async job mode (`?mode=job` / `Prefer: respond-async`) and SSE streams                                                                                                                                                                |
-| `hostValidation.ts`     | 97    | `parseHostHeader`, `isLoopbackHost`, `isAllowedHost`, `isAllowedOrigin` — DNS-rebinding / CSRF-style request-origin guard                                                                                                                   |
-| `configValidation.ts`   | 79    | `validateEngineConfig()` — boot-time env sanity warnings (non-fatal)                                                                                                                                                                                                                        |
+## 8. Assessment — what is strong
 
-### Services (`server/services/`)
+- **Verification discipline is real.** Every recent fix is pinned by a named regression
+  test, and `deepAuditRegression.test.ts` was explicitly checked for non-vacuousness
+  (reverting finding 1 makes exactly the 2 ranking assertions fail).
+- **The audit loop closed correctly.** `AUDIT-VERIFICATION-2026-09-15.md` classified 23
+  findings as 18 fixed / 3 partial / 2 not fixed; the two "not fixed" items were then
+  picked up as findings 3 and 4 of `BUG-REPORT-2026-09-15.md` and fixed.
+- **The SSRF surface is now correct.** `siteProbe.ts` follows redirects manually with
+  per-hop re-validation, and `privateHosts.ts` canonicalises decimal/hex/octal/shortened
+  IPv4 forms and blocks `224.0.0.0/4`, `240.0.0.0/4`, `192.0.0.0/24`.
+- **Score normalization is centralized.** `normalizeToTenScale` (`scoring.ts:43`) is the
+  single implementation of the exclusive `< 1.0` rule, with the rationale documented at
+  the definition so the two halves of the engine cannot drift apart again.
+- **Bounded everywhere.** session logs (1,500 lines), trace events (2MB), checkpoints
+  (512KB), backups (3 newest), trace terminal buffers.
 
-| File                  | Lines | Key exports                                                                                                                                                                         | Role                                                                            |
-| --------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `llm.ts`              | 1885  | `openAIText`, `openAIStructured`, `createLLMSessionCircuitBreaker`, `withSequentialLLMExecution`, `tavilySearch`, `tavilyExtract`, JSON schemas, `APEX_SYSTEM_PROMPT` | LLM gateway + provider fallback chain (strictly sequential); Tavily client with negative domain exclusions |
-| `brightdata.ts`       | 1895  | `getBrightDataClient`, `scrapeAsMarkdown`, `executeBrightDataSearchWithRetry`, error classification/capability/status helpers                                                       | Bright Data MCP client: search + scrape-as-markdown, bounded retries, cooldowns |
-| `keyRotator.ts`       | 434   | `ApiKeyPool`, `parseApiKeys`, `classifyKeyRotationError`, `executeWithKeyRotation`                                                                                                  | Multi-key rotation, 429 backoff, exhaustion quarantine                          |
-| `linkedinEvidence.ts` | 330   | `parseLinkedInEvidence`, `normalizeLinkedInUrl`, `extractPublicEmail`, `buildTavilyEvidence`                                                                                        | Markdown → structured profile evidence parsing                                  |
-| `sessionStreamHub.ts` | 197   | `sessionStreamHub`                                                                                                                                                                  | Per-session SSE broadcaster: one poll interval + one DB read fanned out to N subscribers |
+## 9. Assessment — open issues
 
-### Discovery pipeline (`server/leadSearch/`)
+Ordered by leverage, not severity.
 
-#### Stage modules (`stages/`) — one module per pipeline stage
+### 9.1 Documentation drift (high leverage, low cost)
 
-Stage order is defined by `StageName` in `pipelineTypes.ts`: `plan → retrieve → fuse → extract → verify → enrich → judge → select → persist`.
+- **`CONTEXT.md:50`** still claims "tight maximum round bounds (2-4 rounds)". That is
+  false three ways: `MAX_COLLECTION_ROUNDS = 24`, `.env` sets
+  `LEAD_SEARCH_MAX_ROUNDS="6"`, and `collectionCapacity.ts:117` derives 3/4/6 by target
+  size. The round-cap bug is fixed; the doc claim that described the bug is not.
+- **README badge** `Lead_Engine-45_Core_Tests_Passing` is a static string that no longer
+  matches the 670-test reality. Consider generating it or dropping the count.
 
-| File                      | Lines | Key exports                                                                                                                                                               | Role                                                      |
-| ------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `pipelineTypes.ts`        | 201   | `StageName`, `SessionConfig`, `PipelinePorts`, `PipelineSessionState`, `SessionContext`, `MiningSessionCheckpoint`, `LeadQueryRunTracker`, `StageResult`, `PipelineStage` | Shared stage contracts & checkpoint type                  |
-| `stages/planStage.ts`     | 532   | `executePlanStage`                                                                                                                                                        | Adaptive batch/query derivation w/ CRM negative exclusions & metro saturation guidance |
-| `stages/retrieveStage.ts` | 683   | `executeRetrieveStage`                                                                                                                                                    | Two-wave parallel Tavily/Bright Data lanes                |
-| `stages/fuseStage.ts`     | 365   | `executeFuseStage`                                                                                                                                                        | Corroboration fusion of observations                      |
-| `stages/extractStage.ts`  | 885   | `executeExtractStage`, `cleanSnippetNoise`, `buildCleanEvidence`                                                                                                          | Stage 2.5 Deterministic Pre-Filter Gate (0ms CRM dedupe, token diet, non-LinkedIn drop) & budgeted extraction |
-| `stages/verifyStage.ts`   | 308   | `executeVerifyStage`                                                                                                                                                      | Hard-requirement verification                             |
-| `stages/enrichStage.ts`   | 915   | `executeEnrichStage`                                                                                                                                                      | TF-IDF company intent + LinkedIn post intent              |
-| `stages/judgeStage.ts`    | 1173  | `executeJudgeStage`                                                                                                                                                       | Pre-Judge role triage (0ms IC drop), site grounding, strict-evidence evaluation & bounded batch recursion |
-| `stages/selectStage.ts`   | 175   | `executeSelectStage`                                                                                                                                                      | Pareto/MMR diversified finalist selection                 |
-| `stages/persistStage.ts`  | 212   | `mapCandidateToPersistedLead`, `executePersistStage`                                                                                                                      | Lead persistence into SQLite inventory                    |
+### 9.2 `executeJudgeStage` is dead code with a live duplicate (medium)
 
-#### Engine orchestration & scheduling
+`server/leadSearch/stages/judgeStage.ts:115` exports `executeJudgeStage`, but
+`discoveryEngine.ts` only calls `evaluateIncrementalJudgeBatches`. The dead function's
+body (lines ~180–230) duplicates `filterNonDecisionMakers` and the `judgmentInsight` /
+`qualification` assignment verbatim from the live path (lines ~843–880). It survives only
+because two tests import it. This is the exact failure mode the 2026-09-13 audit was
+written about: a second copy of triage logic that can drift while the live copy is fixed.
 
-| File                    | Lines | Key exports                                                                                                                                                   |
-| ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `discoveryEngine.ts`    | 2488  | `DiscoverySessionEngine`, `executeDiscoverySession`, `discoveryEngine` singleton — session lifecycle, lanes, flywheel, checkpointing, resumption, persistence |
-| `adaptiveScheduler.ts`  | 325   | `scheduleAdaptiveRetrievalTasks`, Thompson-sampling arm scoring (`sampleBeta`, `scoreAdaptiveArm`) w/ enhanced duplicate penalty & qualified reward        |
-| `constraintAblation.ts` | 207   | `ABLATION_TIERS`, `classifyAblationTier`, `ablateQueryTask`, `createAblationTracker` — 4-tier requirement relaxation (Tier 1 immutable core never ablated)      |
-| `roundDiagnostics.ts`   | 185   | `buildRoundDiagnostics` — per-round requirement pass rates, class summaries, bottleneck-class recovery detection                                             |
-| `collectionCapacity.ts` | 145   | `MAX_COLLECTION_ROUNDS`, `buildCollectionCapacity`, stall/refinement logic                                                                                    |
-| `targetFulfillment.ts`  | 26    | `executeTargetFulfillmentSession` — forwarding facade to engine                                                                                               |
-| `featureFlags.ts`       | 101   | `isFlagEnabled.*` — env-overridable, default-ON flags for the Intelligent Hard Term phases, 7 hardening optimizations, and PIQ-BOS                            |
+### 9.3 One residual `<= 1.0` score inversion (medium)
 
-#### Brief compilation & contracts
+The bug report fixed five of six sites and added `normalizeToTenScale`. The sixth is still
+open in the frontend:
 
-| File                  | Lines | Key exports                                                                                                                                                |
-| --------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `prospectContract.ts` | 1563  | `ProspectContract`, `detectDecompositionMode` (single/dual stream), `buildDeterministicProspectContract`, `normalizeProspectContract`, LLM prompt builders |
-| `searchSpec.ts`       | 745   | `SearchSpec`, `RetrievalTask`, `normalizeSearchSpec`, strategist/fallback plan builders w/ metro saturation detection                                     |
-| `intentSignals.ts`    | 208   | `compileIntentSignals`, `UNIVERSAL_SIGNALS`, freshness parsing/multiplier, signal fingerprints                                                             |
-| `strategist.ts`       | 148   | `normalizeQueryPlanItems`, `toLinkedInSearchQuery`, re-exports strategist prompt                                                                           |
+- `src/context/LeadContext.tsx:589` — `handleLeadAdded` still uses
+  `rawServerScore <= 1.0 && rawServerScore > 0 ? rawServerScore * 10 : rawServerScore`.
+  A scraped profile scored exactly `1` (the worst possible 1–10 score, and the clamped
+  output for every judge-marked `reject`) is multiplied by 10 and becomes
+  `compositeScore` 100 / `predictiveScore` 90.
+- The sibling bulk-import path at `LeadContext.tsx:675` was fixed and even carries the
+  comment "`< 1.0`, not `<= 1.0` - mirrors leadMapping.mapCandidateToPersistedLead" —
+  so the correct rule is known and ~30 lines away.
 
-#### Retrieval routing & budgeting
+### 9.4 No LLM completion cache (medium — the real bottleneck)
 
-| File                  | Lines | Key exports                                                                                                                                                         |
-| --------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `siteProbe.ts`        | 677   | `deriveCompanyDomainWithProvenance`, `groundCandidateWithSiteProbe`, `matchesCompanyIdentity`, `parseSiteSignalsFromEvidenceBlock`, `normalizeDomainUrl` — company-site probing, SSRF guards, & root page context grounding |
-| `freeTier.ts`         | 149   | `ScoutFreeTierBudget`, per-provider free-tier capabilities                                                                                                          |
-| `discoveryRouting.ts` | 118   | `resolveDiscoveryProviderMode`, `shouldRunTavilyForTask`, `filterTasksForBrightData`                                                                                |
-| `providerQueue.ts`    | 63    | `runProviderQueue` — concurrency-bounded task queue                                                                                                                 |
-| `llmBudget.ts`        | 53    | `estimateTokenCount`, `chunkEvidenceBlocksByTokenBudget`, output budgets                                                                                            |
+`llm.ts` contains no memoization or completion cache of any kind. The last measured
+session spent **79% of wall clock in LLM latency**, with `extraction` at 37.8s per call
+and the strategist repeating substantially across rounds. Both audit documents recommend a
+completion cache before any further prompt dieting. This is the highest-leverage
+unaddressed performance item.
 
-#### Observation fusion
+### 9.5 Uncommitted work (low, but blocking)
 
-| File              | Lines | Key exports                                                                                    |
-| ----------------- | ----- | ---------------------------------------------------------------------------------------------- |
-| `signalStore.ts`  | 395   | `SignalStore`, `companiesMatch`, `normalizeCompanyName` — reverse-flywheel brand matching      |
-| `observations.ts` | 245   | `fuseObservations`, `isSignalObservation`, company-hint extraction (deterministic/profile/LLM) |
+13 modified files + 3 untracked files are not committed, including the entire
+`deepAuditRegression` suite and both 2026-09-15 docs. The fixes are verified by tests but
+have no commit, so a `git stash` or accidental reset loses them.
 
-#### Evaluation & scoring
+### 9.6 Flag surface that no longer means anything (low)
 
-| File                   | Lines | Key exports                                                                                                                                        |
-| ---------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `finalistJudge.ts`     | 1095  | `FinalistJudgment`, strict-evidence partitioning, judge prompt/schema, `validateFinalistJudgments`                                                 |
-| `scoring.ts`           | 611   | TF-IDF/BM25+ weights, Bayesian/Kalman fusion, sigmoid scaling, `computeParetoFrontier`, MMR selection, credible intervals, `computeScoreBreakdown` |
-| `scoutScoring.ts`      | 252   | `buildScoutEvidence`, `selectDiversifiedLeads`                                                                                                     |
-| `evidenceSelection.ts` | 249   | `selectEvidenceForFinalist`, `hasStrictStructuredMatch`                                                                                            |
-| `verification.ts`      | 203   | `verifyDecisionMakerFromEvidence`, career-trajectory DCR                                                                                           |
-| `evidence.ts`          | 56    | `createLeadEvidence`, quality inference from Tavily results                                                                                        |
-| `rejections.ts`        | 34    | Rejection-reason taxonomy & counters                                                                                                               |
+Six of the fifteen `featureFlags.ts` entries are annotated `@deprecated Graduated into
+standard architecture; active unconditionally`, yet each still reads an env var that can
+turn it off. An operator who sets `DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED=0` gets a
+silently degraded engine against the documented architecture. Either remove the switches
+or document them as unsupported.
 
-#### Intent enrichment (Phases 4–5)
+### 9.7 Test isolation hazard (low)
 
-| File                    | Lines | Key exports                                                                                                     |
-| ----------------------- | ----- | --------------------------------------------------------------------------------------------------------------- |
-| `linkedinPostIntent.ts` | 510   | Phase 5: `runLinkedInPostIntentEnrichment` — post SERP search + LLM classification, quality tiers               |
-| `intentEnrichment.ts`   | 291   | `runIntentEnrichment` — orchestrates intent phases over finalist pool                                           |
-| `companyIntent.ts`      | 291   | Phase 4: `checkCompanyWebsiteIntent` via website scrape vs. categorized signal dictionaries, `SignalCorpus` IDF |
-| `profileEnrichment.ts`  | 263   | `enrichLeadProfile` — profile scrape w/ positive+negative cache                                                 |
+`test/llmUntrustedMessage.test.ts` does
+`for (const key of Object.keys(process.env)) delete process.env[key]` in `beforeEach`,
+restoring in `afterEach`. `node:test` runs files concurrently, so while this file runs the
+process environment is empty for any concurrently-executing test in another file that
+reads `process.env` at call time. It passes today because of scheduling luck and because
+most other files snapshot env at import. Prefer deleting only the keys the file sets.
 
-#### Observability
+### 9.8 Carried-forward audit leftovers (low)
 
-| File           | Lines | Key exports                                                                                 |
-| -------------- | ----- | ------------------------------------------------------------------------------------------- |
-| `telemetry.ts` | 614   | `MiningTelemetryRecorder`, `recordTrace`, cost estimation, retention limits, live-log hooks |
+- `api.ts:349` still writes `runs: 0` on the single-lead verification path, which decays
+  the query-run history that audit finding 1.6 only just started accumulating.
+- `prospectContract.ts:1113` still _drops_ ungrounded hard requirements after warning;
+  no counter reaches the session report, so visibility is console-only.
 
-#### Shared session infrastructure
+## 10. Recommended next actions
 
-| File                | Lines | Key exports                                                                                                                                                                       |
-| ------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sessionHelpers.ts` | 289   | `effectiveScore`, `buildFallbackEvidence`, `findEvidenceForLead`, `incrementCounter`, `sleepWithAbort`, `runWithTransientRetry`, `isTransientLLMError`, `buildCheckpointEvidence` |
-| `leadMapping.ts`    | 124   | `mapCandidateToPersistedLead` — canonical candidate-to-lead mapping (re-exported from `discoveryEngine` for checkpoint persistence and tests)                                     |
-
-## 7. REST API surface (40 routes, all under `/api`)
-
-Verified against `server/routes/api.ts`. The router is mounted twice in `server.ts`: at `/api` and `/api/v1`.
-
-| Method | Route                                | Purpose                                                                            |
-| ------ | ------------------------------------ | ---------------------------------------------------------------------------------- |
-| GET    | `/health`                            | App status/uptime                                                                  |
-| GET    | `/llm-health`                        | LLM gateway/provider latency                                                       |
-| GET    | `/key-rotation-status`               | Sanitized key-pool health                                                          |
-| GET    | `/provider-capabilities`             | Scraper/search feature flags                                                       |
-| GET    | `/engine-metrics`                    | Aggregated engine health: stop reasons, persistence statuses, per-stage LLM totals |
-| POST   | `/lead-search/preview`               | Compile contract + query plan without executing                                    |
-| POST   | `/find-leads`                        | Execute full discovery session (sync HTTP 200 or async HTTP 202 via `?mode=job`)   |
-| POST   | `/scrape-url`                        | Scrape public page → markdown                                                      |
-| POST   | `/scrape-pasted`                     | Parse pasted text into leads                                                       |
-| GET    | `/mining-sessions`                   | List mining sessions                                                               |
-| GET    | `/mining-sessions/active`            | Currently running sessions                                                         |
-| GET    | `/mining-sessions/resumable`         | List interrupted sessions available for resume                                     |
-| DELETE | `/mining-sessions/resumable`         | Dismiss resumable sessions                                                         |
-| GET    | `/mining-sessions/:sessionId`        | Session detail                                                                     |
-| DELETE | `/mining-sessions/:sessionId`        | Delete session record                                                              |
-| GET    | `/mining-sessions/:sessionId/trace`  | Live trace snapshot                                                                |
-| GET    | `/mining-sessions/:sessionId/stream` | Live SSE event stream                                                              |
-| POST   | `/mining-sessions/:sessionId/cancel` | Cancel active run                                                                  |
-| POST   | `/mining-sessions/:sessionId/resume` | Resume interrupted session from checkpoint                                         |
-| GET    | `/search-logs`                       | Query performance/cost summaries                                                   |
-| GET    | `/search-logs/:id`                   | Single log detail                                                                  |
-| GET    | `/search-logs/:id/live`              | Live log stream                                                                    |
-| GET    | `/leads`                             | Filtered lead listing                                                              |
-| GET    | `/leads/stats`                       | Aggregate lead counts by stage/review status                                       |
-| PUT    | `/leads`                             | Replace stored leads                                                               |
-| POST   | `/leads/bulk`                        | Bulk upsert (dedupe-aware)                                                         |
-| PATCH  | `/leads/:id`                         | Stage/review/notes update (revision lock; 409 on conflict)                         |
-| DELETE | `/leads`                             | Bulk clear                                                                         |
-| DELETE | `/leads/:id`                         | Soft-delete/archive                                                                |
-| GET    | `/leads/:id/activities`              | Lead activity audit trail                                                          |
-| POST   | `/leads/:id/merge`                   | Merge duplicate identities                                                         |
-| POST   | `/leads/:id/enrich-profile`          | Bright Data profile enrichment                                                     |
-| GET    | `/saved-searches`                    | List saved searches                                                                |
-| POST   | `/saved-searches`                    | Create/update saved search                                                         |
-| DELETE | `/saved-searches/:id`                | Delete saved search                                                                |
-| GET    | `/outreach-drafts`                   | List drafts                                                                        |
-| POST   | `/outreach-drafts`                   | Save draft                                                                         |
-| DELETE | `/outreach-drafts/:id`               | Delete draft                                                                       |
-| POST   | `/generate-outbound`                 | Generate contextual outreach message                                               |
-| POST   | `/chat`                              | Conversational CRM assistant                                                       |
-
-## 8. Database schema (SQLite v20, `.apex-data/apex-crm.sqlite`)
-
-`LATEST_SCHEMA_VERSION = 21` in `server/db.ts`. 18 regular tables + 1 FTS5 virtual table
-(`leads_fts_map` was added in v21 for O(1) FTS maintenance):
-
-`leads` · `leads_fts` (FTS5) · `app_meta` · `mcp_profile_cache` · `enrichment_cache` · `search_logs` · `mining_sessions` · `lead_activities` · `outreach_drafts` · `saved_searches` · `query_performance` · `provider_usage` · `llm_stage_logs` · `prospect_contract_cache` · `lead_identities` · `lead_identity_conflicts` · `discovered_companies` · `icp_hypothesis_cache`
-
-Key columns and features added by recent migrations:
-
-- `mining_sessions.checkpoint_json` (v14) — compact `MiningSessionCheckpoint` Tier-A snapshot written at stage boundaries (ADR-0002); powers boot-sweep reconciliation of `interrupted` sessions into `resumable` status.
-- `query_performance.requirement_fail_digest` (v16) — serialized breakdown of requirement failure frequencies per query family/lane.
-- `saved_searches.exclude_list_json` (v16) — accumulated canonical identities already returned for a saved search, preventing duplicate rediscovery across runs.
-- `leads_fts` (v17) — SQLite FTS5 full-text search virtual table maintained via automatic triggers (`leads_ai`, `leads_ad`, `leads_au`) indexing promoted columns plus `json_extract` notes/tags for sub-5ms search.
-- `discovered_companies` — reverse-flywheel account registry: `normalized_name` PK, signal counts, strongest signal, source URLs, confidence, `last_seen_at` (indexed DESC). Written by the signal store.
-- `icp_hypothesis_cache` — `query_hash` PK cache of synthesized ICP hypotheses with `expires_at` TTL (indexed).
-
-WAL mode, foreign keys on, busy timeouts set, auto-backup under `.apex-data/backups/` before migrations. Canonical identity dedupe via `lead_identities` with conflict tracking.
-
-> ⚠️ README drift (verified 2026-09-12): the README's schema badge says **v19**, and its architecture diagrams / `Database & Schema` heading say **v15**, while the project-structure block says **v17**. The actual constant is **v20**. The README's table list itself is accurate — the previously-flagged `mining_traces` / `intent_cache` / `search_specs` names are no longer present. The README also references a `server/services/evidenceService.ts` and a `src/hooks/` directory, neither of which exists. Worth a README pass.
-
-## 9. Test suite map (`test/`, node:test runner)
-
-86 suites / 597 top-level test declarations / ~16,470 lines. `npm test` runs **all** of them (`tsx --test "test/*.test.ts"`); the npm groups below are curated subsets.
-
-| Script                    | Files                                                                                                                                                    |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test:intent-engine`      | `adaptiveDecomposition`, `intentSignals`, `intentEnrichment`, `linkedinPostIntent`                                                                       |
-| `test:lead-search`        | `leadSearchHelpers`                                                                                                                                      |
-| `test:scout`              | `scoutPipeline`                                                                                                                                          |
-| `test:prospect-quality`   | `prospectQuality`, `contractShape`                                                                                                                       |
-| `test:taxonomy`           | `contractShape`                                                                                                                                          |
-| `test:distributed-query`  | `distributedQueryEnforcement`                                                                                                                            |
-| `test:semantic-grouping`  | `semanticGrouping`                                                                                                                                       |
-| `test:evidence-aware`     | `evidenceAwareHardness`                                                                                                                                  |
-| `test:class-scheduler`    | `classAwareScheduler`                                                                                                                                    |
-| `test:enhanced-diagnostics` | `enhancedDiagnostics`                                                                                                                                  |
-| `test:hard-terms`         | The six Phase 1–6 suites above combined                                                                                                                  |
-| `test:optimizations`      | `fuzzyQuoteGrounding`, `safeSlugProbe`, `companyEntityResolution`, `resilienceAndCacheHygiene`                                                           |
-| `test:critical-fixes`     | `llmStructuredArrayCoercion`, `siteProbeSsrfGuard`, `sessionStreamHubPruning`, `kalmanStability`                                                         |
-| `test:brightdata-upgrade` | `brightDataUpgrade`                                                                                                                                      |
-| `test:enrichment`         | `enrichmentCache`, `linkedinEvidence`, `linkedinPostIntent`                                                                                              |
-| `test:key-rotation`       | `keyRotator`, `tavilyRotation`                                                                                                                           |
-| `test:llm`                | `llmFallback`, `llmBudget`                                                                                                                               |
-| `test:telemetry`          | `telemetry`                                                                                                                                              |
-| `test:glyphs`             | `encodingHygiene`                                                                                                                                        |
-| `test:ui`                 | `uiContracts`                                                                                                                                            |
-| `test:persistence`        | `leadPersistence`                                                                                                                                        |
-| `test:dedupe`             | `leadDedupe`, `leadIdentityMigration`, `leadPersistence`                                                                                                 |
-| `test:piq-bos`            | `progressiveQualification`                                                                                                                               |
-| `test:lead-engine`        | Large aggregate gate — every group above plus `adaptiveScheduler`, `signalStore`, `targetFulfillment(+Replay)`, `leadMutationContracts`, `sessionPersistenceAndResume`, `parallelRetrieval`, `rateLimitMigration`, `siteProbe` |
-
-43 suites are not referenced by any named npm group (e.g. `architecturalImprovements`, `blueprintBlueprintCoverage`, `engineFixesVerification`, `fts5_search`, `highEfficiencyEngine`, `mathEngine`, `pillar1SearchStrategy`, `pillar2ExtractionJudging`, `semanticQualificationAudit`, `symbioticIntelligence`, `twoFunnelEngine`, `zeroYieldSafetyNet`). They still run under bare `npm test`.
-
-Typecheck gate: `npm run lint` (= `tsc --noEmit`).
-
-## 10. Configuration surface
-
-- `.env.example` — full template. Groups: LLM (`OPENAI_*`, `LLM_GATEWAY_MODE`), Tavily (`TAVILY_API_KEYS`/`TAVILY_API_KEY`, depth, max results, country, concurrency, interval cap/ms, monthly credit budget, scout caps), Bright Data (`BRIGHTDATA_API_TOKENS`/`BRIGHTDATA_API_TOKEN`, plan, request budgets, batch limits, geo, cache TTL, timeouts, retries, MCP transport/stderr debug), and engine tunables
-- `DISCOVERY_PROVIDER_MODE` — `bd_primary` / `hybrid` / `tavily_primary`
-- Engine tunables: `LEAD_SEARCH_MAX_ROUNDS`, `LEAD_SEARCH_MIN_SCORE`, `LEAD_SEARCH_TIMEOUT_MS` (default 900000), `LEAD_EXTRACTION_CHUNK_RETRIES`, `LEAD_TELEMETRY_MAX_EVENTS`, `FINALIST_JUDGE_MAX_EVIDENCE_ITEMS` / `FINALIST_JUDGE_EVIDENCE_CHARS`, `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` (1-20, default 10), `APEX_STRUCTURED_LOGS`, `LEAD_SEARCH_RERANK_POOL_MULTIPLIER` / `_MAX`, `LEAD_ADAPTIVE_SCHEDULER_ENABLED`, `LEAD_ADAPTIVE_TASKS_PER_ROUND`, `LEAD_ADAPTIVE_MIN_OUTCOME_RUNS`, `LEAD_ADAPTIVE_EXPLORATION_STRENGTH`, `LEAD_ADAPTIVE_EXPLORATION_FLOOR_EVERY`, `LEAD_JUDGE_PASS_RATE_ASSUMPTION`, `LEAD_VERIFY_BORDERLINE_PER_ROUND`
-- Feature flags (`featureFlags.ts`, all default ON, disable with `0`/`false`/`no`/`off`): `REQUIREMENT_TAXONOMY_ENABLED`, `DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED`, `SEMANTIC_GROUPING_ENABLED`, `EVIDENCE_AWARE_HARDNESS_ENABLED`, `CLASS_AWARE_SCHEDULER_ENABLED`, `ENHANCED_DIAGNOSTICS_ENABLED`, `FUZZY_QUOTE_GROUNDING_ENABLED`, `SAFE_SLUG_PROBE_ENABLED`, `COMPANY_ENTITY_REGISTRY_ENABLED`, `ANCHORED_FLYWHEEL_QUERIES_ENABLED`, `FULL_JITTER_RETRY_ENABLED`, `TRANSIENT_NEGATIVE_CACHE_ENABLED`, `PROACTIVE_TOKEN_REGULATOR_ENABLED`, `PROGRESSIVE_QUALIFICATION_ENABLED`
-- `APEX_DB_PATH` — overrides default DB location (`db.ts`)
-- `litellm.config.yaml` — LiteLLM proxy model routing
-- Runtime artifacts: `.apex-data/` (DB + backups), log files in repo root (`apex-dev.*.log`, `adaptive_mining_terminal.log`)
-
-## 11. How to navigate common tasks
-
-| Task                        | Start here                                                                                                                                                   |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Change a REST endpoint      | `server/routes/api.ts` (adapter) → service/`leadSearch` module                                                                                               |
-| Touch discovery behavior    | `server/leadSearch/discoveryEngine.ts` → stage module in `leadSearch/stages/` (§6)                                                                           |
-| Add/alter persistence       | `server/db.ts` (schema v20 migrations + helpers)                                                                                                             |
-| Checkpoint/resume logic     | `leadSearch/pipelineTypes.ts` (`MiningSessionCheckpoint`), `discoveryEngine.ts`, `routes/api.ts` (`/resume`, `/resumable`), UI `ResumableSessionsBanner.tsx` |
-| Modify brief→contract logic | `server/leadSearch/prospectContract.ts`, `searchSpec.ts`                                                                                                     |
-| Change scoring/ranking      | `server/leadSearch/scoring.ts`, `finalistJudge.ts`, `stages/selectStage.ts`                                                                                  |
-| Tune query relaxation       | `server/leadSearch/constraintAblation.ts`, `roundDiagnostics.ts`                                                                                             |
-| Toggle/rollback engine behavior | `server/leadSearch/featureFlags.ts` (env-overridable, default ON)                                                                                        |
-| Company-site probing        | `server/leadSearch/siteProbe.ts`, `companyIntent.ts`                                                                                                         |
-| UI screen work              | matching component in `src/components/`, state in `context/LeadContext.tsx`                                                                                  |
-| Provider/key issues         | `services/keyRotator.ts`, `services/brightdata.ts`, `/api/key-rotation-status`                                                                               |
-| Request-origin security     | `server/hostValidation.ts`, guard wiring in `server.ts`                                                                                                       |
-
-## 12. Graph index & incremental sync protocol
-
-This repository is indexed in `codebase-memory-mcp` as project `D-work-AI-Apex-crm`
-(root `D:/work/AI/Apex crm`, data at `~/.cache/codebase-memory-mcp/D-work-AI-Apex-crm.db`).
-
-Current state: **1,895 nodes · 4,395 edges · status `ready`**.
-
-Excluded from the graph index: `.apex-data`, `.git`, `assets`, `dist`, `docs`, `node_modules`, `scripts`, `.venv-litellm/Lib`, `.venv-litellm/Scripts`.
-
-Protocol (see [`.agents/rules/codebase_memory.md`](../.agents/rules/codebase_memory.md)):
-
-1. **On task start** — `detect_changes(project="D-work-AI-Apex-crm")` to inspect recently changed files and impacted symbols.
-2. **If changes detected** — `index_repository(repo_path="D:/work/AI/Apex crm", mode="fast")` to incrementally refresh the graph.
-3. **For code discovery** — prefer graph tools (`search_graph`, `trace_path`, `get_code_snippet`, `query_graph`) over raw grep/file scanning.
-
-CLI equivalent when the MCP server is not attached to the session:
-
-```bash
-codebase-memory-mcp cli detect_changes '{"project":"D-work-AI-Apex-crm"}'
-codebase-memory-mcp cli index_repository '{"repo_path":"D:/work/AI/Apex crm","mode":"fast"}'
-codebase-memory-mcp cli search_graph '{"project":"D-work-AI-Apex-crm","query":"DiscoverySessionEngine","limit":5}'
-```
-
-> Note: `docs/` is excluded from the graph index, so this file is not itself a graph node.
-> No ADR has been stored via `manage_adr` yet (`adr_present: false`) — the four markdown ADRs under `docs/adr/` are the source of truth.
+1. **Commit the working tree** — the fixes and their regression suite are uncommitted.
+2. **Fix `LeadContext.tsx:589`** to `< 1.0`, and add a client-side scoring assertion so the
+   sixth site cannot drift again.
+3. **Delete `executeJudgeStage`** and migrate its two test callers to
+   `evaluateIncrementalJudgeBatches`, removing the duplicate triage block.
+4. **Correct `CONTEXT.md:50`** and regenerate or retire the README test-count badge.
+5. **Add an LLM completion cache** keyed on provider+model+prompt hash, behind a flag, with
+   a TTL — this targets the 79% of wall clock that every other optimization has left
+   untouched.
+6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
+   39.8% LLM failure rate, 79% LLM latency share). No session has run since the fixes.

@@ -137,9 +137,21 @@ export function incrementCounter(
 const TRANSIENT_LLM_ERROR =
   /rate.?limit|429|timeout|etimedout|econnreset|fetch failed|socket hang up|5\d\d|bad gateway|service unavailable|overloaded/i;
 
+/**
+ * Errors that are structurally non-transient and must never be retried, even when the
+ * message happens to contain a digit run that TRANSIENT_LLM_ERROR would otherwise match.
+ *
+ * A reasoning-model truncation embeds an arbitrary character count, so a count such as
+ * "545" or "1500" satisfies the `5\d\d` HTTP-status heuristic. Retrying is pointless:
+ * the token budget is unchanged, so the same provider truncates again on every attempt.
+ * Checked first so the exclusion cannot be re-broken by rewording the count.
+ */
+const NON_TRANSIENT_LLM_ERROR = /chat completion truncated/i;
+
 /** True when an LLM/provider error looks transient and worth retrying. */
 export function isTransientLLMError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error || "");
+  if (NON_TRANSIENT_LLM_ERROR.test(message)) return false;
   return TRANSIENT_LLM_ERROR.test(message);
 }
 

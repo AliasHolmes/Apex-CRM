@@ -142,6 +142,19 @@ describe('Pillar 1: Search Strategy & Multi-Armed Bandit Intelligence', () => {
       assert.ok(diag.observedNonMatchingAttributes?.locations?.includes('San Francisco, CA'));
       assert.ok(diag.observedNonMatchingAttributes?.roles?.includes('VP Marketing'));
       assert.ok(diag.observedNonMatchingAttributes?.roles?.includes('Senior Recruiter'));
+
+      // Contract-satisfying attributes must NOT be reported as non-matching, otherwise the
+      // recovery prompt tells the strategist to steer away from locations/roles that already
+      // satisfy the contract. Manchester satisfies `person_location` ('uk') and 'Owner'
+      // satisfies `req_role` ('owner'), so neither may appear in the non-matching lists.
+      assert.ok(
+        !diag.observedNonMatchingAttributes?.locations?.includes('Manchester, UK'),
+        'a contract-satisfying location must not be reported as non-matching',
+      );
+      assert.ok(
+        !diag.observedNonMatchingAttributes?.roles?.includes('Owner'),
+        'a contract-satisfying title must not be reported as non-matching',
+      );
     });
   });
 

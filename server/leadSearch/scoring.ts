@@ -25,6 +25,29 @@ const scoreOrDefault = (value: unknown, fallback: number) => {
   return Math.min(Math.max(numeric, 1), 10);
 };
 
+/**
+ * Rescale a score that may have arrived on a 0-1 probability scale onto the
+ * 1-10 scale used everywhere else in the engine.
+ *
+ * The upper bound of the probability branch is EXCLUSIVE on purpose. `1` is a
+ * valid and meaningful 1-10 score - the worst a candidate can receive - so
+ * treating `<= 1` as a probability multiplies the weakest candidate by ten and
+ * promotes it to the top of the scale. Every ranking that consumes this value
+ * (MMR/Pareto selection, `rankLeadForFinalSelection`, persisted `compositeScore`)
+ * then puts the worst candidates first.
+ *
+ * `finalistJudge.normalizeScoreTo10` and `scoutScoring.selectDiversifiedLeads`
+ * already use the exclusive form; this is the shared implementation of that
+ * same rule so the two halves of the engine cannot drift apart again.
+ */
+export function normalizeToTenScale(value: unknown, fallback = 5): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  if (numeric > 0 && numeric < 1.0) return numeric * 10; // 0-1 probability scale
+  if (numeric > 10) return numeric / 10; // 0-100 scale
+  return numeric; // already 1-10
+}
+
 export const evidenceQualityScore = (quality: EvidenceQuality) => {
   if (quality === 'good') return 9;
   if (quality === 'partial') return 7;
@@ -200,7 +223,7 @@ export function computeTfIdfSignalWeight(
 
 export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDays = 0): number {
   const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? rankLeadForFinalSelection(lead));
-  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase > 10 ? rawBase / 10 : rawBase;
+  const base = normalizeToTenScale(rawBase, 5);
   const intent = lead.companyIntentEvidence;
   if (!intent) return base;
 
@@ -211,7 +234,10 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
   // fuse the current enriched score with the earlier observation rather than discarding it.
   // processNoise=1.0, observationNoise=2.0 -> Kalman gain ~= 0.33 (conservatively trusts prior)
   const rawPrior = Number(lead._priorScore);
-  const priorObservedScore = rawPrior <= 1.0 && rawPrior > 0 ? rawPrior * 10 : rawPrior > 10 ? rawPrior / 10 : rawPrior;
+  // Deliberately NOT routed through normalizeToTenScale: a missing _priorScore must stay
+  // NaN so the guard below falls through to rawEnriched instead of fusing against a
+  // synthetic prior. Only the 0-1 branch bound is corrected (`< 1.0`, not `<= 1.0`).
+  const priorObservedScore = rawPrior < 1.0 && rawPrior > 0 ? rawPrior * 10 : rawPrior > 10 ? rawPrior / 10 : rawPrior;
   const finalScore = Number.isFinite(priorObservedScore) && priorObservedScore > 0
     ? computeKalmanFusedScore(priorObservedScore, rawEnriched, 1.0, 2.0)
     : rawEnriched;
@@ -221,7 +247,7 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
 
 export function applyPostIntentDelta(lead: Record<string, any>): number {
   const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? lead.scoreOverride ?? 5);
-  const base = rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase > 10 ? rawBase / 10 : rawBase;
+  const base = normalizeToTenScale(rawBase, 5);
   const postIntent = lead.postIntentEvidence;
   if (!postIntent || postIntent.quality === 'none') return base;
 
@@ -339,7 +365,9 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
   const postScore = postIntentScore(lead);
   const rawBase = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore ?? lead.scoreBreakdown?.finalScore ?? lead.scoreOverride ?? lead.fitScore ?? audit?.functionalRelevance);
-  const baseScore = clampScore(rawBase <= 1.0 && rawBase > 0 ? rawBase * 10 : rawBase, 5);
+  // `< 1.0`, not `<= 1.0`: a rank of exactly 1 is the worst possible candidate, not a
+  // 0-1 probability. See normalizeToTenScale for the full rationale.
+  const baseScore = clampScore(rawBase < 1.0 && rawBase > 0 ? rawBase * 10 : rawBase, 5);
 
   // BM25+ Profile & Evidence Text Relevance:
   const queryTerms: string[] = [];

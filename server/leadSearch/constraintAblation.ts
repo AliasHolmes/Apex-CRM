@@ -21,11 +21,36 @@ const VOLATILE_CONTEXT_REGEX = /\b(stack|tool|tech|framework|cloud|database|snow
 
 /**
  * Classifies a contract requirement into its ablation tier.
- * Tier 1 (immutable core: role, company_type, company_industry) is immutable and can never be ablated.
- * Tier 4 (volatile context / stack / tooling) is ablated first.
+ *
+ * Ordering matters, and the two rules below are deliberately in this order:
+ *
+ * 1. **Role / identity is unconditionally Tier 1.** These are checked BEFORE the
+ *    volatile-context text scan. The scan is text-based, so a genuine role such as
+ *    "Cloud Architect" or "Salesforce Administrator" contains a volatile keyword
+ *    ('cloud', 'salesforce') and was previously downgraded to ablatable Tier 4.
+ *    That let `ablateQueryTask` strip the entire identity anchor out of a query -
+ *    measured: `'"cloud architect" London'` -> `'London'` - contradicting this
+ *    module's Tier-1 guarantee ("NEVER ablated") and the immutable-core guard in
+ *    `ablateQueryTask`.
+ *
+ * 2. **A volatile description still outranks a firmographic scope.** A requirement
+ *    compiled as `company_type` but describing tooling ("Snowflake stack") is
+ *    Tier 4 and stays ablatable - see `test/constraintAblation.test.ts`
+ *    ("classifies volatile context / tech stack as Tier 4"). Only role/identity is
+ *    exempt from this rule, because a stripped role yields an anchor-less query
+ *    rather than a slightly looser one.
  */
 export function classifyAblationTier(requirement: ProspectRequirement): AblationTier {
-  // Check if requirement represents specific volatile context (tools, tech stack, funding, signals)
+  // Rule 1: role and identity requirements can never be ablated.
+  if (
+    requirement.requirementClass === 'identity_hard' ||
+    requirement.scope === 'person_role' ||
+    (requirement as any).isImmutableCore
+  ) {
+    return ABLATION_TIERS.TIER_1_IMMUTABLE_CORE;
+  }
+
+  // Rule 2: volatile context (tools, tech stack, funding, signals) is ablated first.
   const fullText = `${requirement.description} ${requirement.sourcePhrase} ${(requirement.acceptableTerms || []).join(' ')}`;
   if (
     requirement.scope === 'signal' ||
@@ -35,11 +60,8 @@ export function classifyAblationTier(requirement: ProspectRequirement): Ablation
   }
 
   if (
-    requirement.requirementClass === 'identity_hard' ||
-    requirement.scope === 'person_role' ||
     requirement.scope === 'company_type' ||
-    requirement.scope === 'company_industry' ||
-    (requirement as any).isImmutableCore
+    requirement.scope === 'company_industry'
   ) {
     return ABLATION_TIERS.TIER_1_IMMUTABLE_CORE;
   }

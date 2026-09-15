@@ -144,14 +144,63 @@ export function buildRoundDiagnostics(params: {
     bottleneckClass
   };
 
+  // Only attributes that actually FAIL the contract may be reported as non-matching.
+  // Previously every accepted candidate's location and title was collected
+  // unconditionally, so a lead in a contract-satisfying location was reported as
+  // "non-matching" and the recovery prompt (searchSpec.buildRecoveryQueryPrompt,
+  // prospectContract.buildContractRefinementPrompt) told the strategist to steer
+  // AWAY from locations and titles that already satisfied the contract.
+  //
+  // The check is deliberately term-based rather than reusing matchesRequirement():
+  // that function is a permissive pass-rate heuristic (its `\bvp\b` / `\bhead of\b`
+  // title fallback treats any senior title as satisfying any person_role), which would
+  // over-suppress genuinely non-matching attributes here.
+  const locationRequirements = params.contract.requirements.filter(
+    (requirement) => requirement.scope === 'person_location',
+  );
+  const roleRequirements = params.contract.requirements.filter(
+    (requirement) => requirement.scope === 'person_role',
+  );
+
+  const attributeSatisfiesTerms = (
+    value: string,
+    requirements: ProspectRequirement[],
+  ): boolean => {
+    if (requirements.length === 0) return true;
+    const normalizedValue = normalize(value);
+    if (!normalizedValue) return true;
+    return requirements.some((requirement) =>
+      requirement.acceptableTerms
+        .map(normalize)
+        .filter(Boolean)
+        .some((term) => normalizedValue.includes(term)),
+    );
+  };
+
   const nonMatchingLocations = new Set<string>();
   const nonMatchingRoles = new Set<string>();
   const rejectedCompanies = new Set<string>();
   for (const lead of params.leads) {
     const loc = String(lead.location || lead.profile?.location || '').trim();
-    if (loc && loc.length > 2 && loc.length < 50) nonMatchingLocations.add(loc);
+    if (
+      loc &&
+      loc.length > 2 &&
+      loc.length < 50 &&
+      !attributeSatisfiesTerms(loc, locationRequirements)
+    ) {
+      nonMatchingLocations.add(loc);
+    }
+
     const title = String(lead.currentTitle || lead.profile?.currentTitle || lead.title || '').trim();
-    if (title && title.length > 2 && title.length < 50) nonMatchingRoles.add(title);
+    if (
+      title &&
+      title.length > 2 &&
+      title.length < 50 &&
+      !attributeSatisfiesTerms(title, roleRequirements)
+    ) {
+      nonMatchingRoles.add(title);
+    }
+
     const company = String(lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || '').trim();
     const isDisqualified = lead._autoFailed || lead.judgmentInsight?.status === 'hard_fail' || (lead.qualification as any)?.verdict === 'disqualified';
     if (isDisqualified && company && company.length >= 2 && company.length <= 60) {

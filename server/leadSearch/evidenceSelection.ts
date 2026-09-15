@@ -71,13 +71,21 @@ export function structuredProfileEvidence(lead: Record<string, any>, maxChars = 
  * automatic pass may only use the candidate's own structured profile fields.
  * Ambiguous narrative evidence stays with the LLM judge.
  */
-export function structuredFieldsForRequirement(lead: Record<string, any>, requirement: ProspectRequirement): string[] {
+export function structuredFieldsForRequirement(
+  lead: Record<string, any>,
+  requirement: ProspectRequirement,
+  options: { includeQueryFallback?: boolean } = {},
+): string[] {
   const profile = lead.profile || {};
+  const includeQueryFallback = options.includeQueryFallback !== false;
   switch (requirement.scope) {
     case 'person_role':
       return [lead.currentTitle, lead.jobTitle, profile.currentTitle, lead.headline, profile.headline];
     case 'person_location': {
-      const locationFallback = (!lead.location && !profile.location)
+      // The search query that surfaced a candidate is NOT evidence about the candidate.
+      // It is exposed for diagnostics, but the strict auto-pass gate must not consume it,
+      // so hasStrictStructuredMatch passes includeQueryFallback: false.
+      const locationFallback = includeQueryFallback && (!lead.location && !profile.location)
         ? (lead._sourceQuery || lead.evidence?.sourceQuery || lead.sourceQuery)
         : undefined;
       return [lead.location, profile.location, locationFallback];
@@ -101,7 +109,11 @@ export function hasStrictStructuredMatch(lead: Record<string, any>, requirement:
       return false;
     }
   }
-  return structuredFieldsForRequirement(lead, requirement)
+  // Query-derived location is deliberately excluded: this predicate is an auto-PASS gate
+  // (triPartitionCandidatesByEvidence auto-qualifies without the judge), and a candidate
+  // surfaced by a query containing "New York" has not thereby demonstrated that they are
+  // in New York. Location stays a judge decision unless the profile states it.
+  return structuredFieldsForRequirement(lead, requirement, { includeQueryFallback: false })
     .filter(value => value !== undefined && value !== null)
     .some(value => {
       const text = String(value);

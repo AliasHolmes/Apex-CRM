@@ -1660,11 +1660,17 @@ export function readLeadsStats(): LeadsStats {
   }
 
   const db = getLeadsDb();
+  // `leads.score` is the promoted composite/predictive score, which every writer produces
+  // on a 0-100 scale (leadMapping.mapCandidateToPersistedLead, predictiveScoreFromComposite,
+  // scoreLeadDeterministically). The previous `CASE WHEN score <= 10 THEN score * 10` was
+  // therefore a pure 10x inflation of the weakest leads - a composite of 10 (10%) counted as
+  // 100 in `averageQualification`. Verified against .apex-data: 2,273 scored leads, min 0,
+  // max 92, and zero rows on a 0-10 scale, so the branch only ever misfired.
   const summaryRow = db
     .prepare(
       `SELECT 
         COUNT(*) AS total,
-        AVG(CASE WHEN score IS NOT NULL AND score > 0 THEN (CASE WHEN score <= 10 THEN score * 10 ELSE score END) ELSE NULL END) AS avgScore
+        AVG(CASE WHEN score IS NOT NULL AND score > 0 THEN score ELSE NULL END) AS avgScore
       FROM leads`,
     )
     .get() as { total?: number; avgScore?: number | null } | undefined;

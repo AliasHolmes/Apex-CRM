@@ -614,18 +614,43 @@ export async function groundCandidateWithSiteProbe(
 
     let html = '';
     try {
-      const resp = await fetch(targetUrl, {
-        method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        signal: controller.signal,
-        redirect: 'follow',
-      });
-      if (resp.ok) {
-        const text = await resp.text();
-        html = text.slice(0, 15000);
+      // Redirects are followed MANUALLY and re-validated at every hop. With
+      // `redirect: 'follow'` the SSRF guard above only ever saw the first URL, so any
+      // public host could 302 the probe to http://169.254.169.254/ or a loopback address
+      // and the fetch would follow it. `brightdata.scrapeAsMarkdown` already implements
+      // this pattern; this brings the site probe in line with it.
+      let currentUrl = targetUrl;
+      for (let redirectCount = 0; redirectCount <= 3; redirectCount++) {
+        const resp = await fetch(currentUrl, {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          signal: controller.signal,
+          redirect: 'manual',
+        });
+
+        if (resp.status >= 300 && resp.status < 400) {
+          const location = resp.headers.get('location');
+          if (!location) break;
+          let nextUrl: string;
+          try {
+            nextUrl = new URL(location, currentUrl).toString();
+          } catch {
+            break;
+          }
+          const nextHost = new URL(nextUrl).hostname.replace(/^www\./, '').toLowerCase();
+          if (!nextHost || isPrivateOrInternalHost(nextHost)) return null;
+          currentUrl = nextUrl;
+          continue;
+        }
+
+        if (resp.ok) {
+          const text = await resp.text();
+          html = text.slice(0, 15000);
+        }
+        break;
       }
     } finally {
       clearTimeout(timeoutId);

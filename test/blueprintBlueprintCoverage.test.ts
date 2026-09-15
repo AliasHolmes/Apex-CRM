@@ -300,10 +300,20 @@ describe('Blueprint 6-Module Comprehensive Verification Suite', () => {
 
       const fields = structuredFieldsForRequirement(leadWithoutLocation, reqLoc);
       assert.ok(fields.includes('"AI agency" founder Australia'), 'Must fall back to _sourceQuery');
+      // The fallback is diagnostic only. The strict gate is an auto-PASS that skips the
+      // judge entirely, so it must not accept the search query as proof of the candidate's
+      // location: a lead surfaced by "founder Australia" has not demonstrated that they are
+      // in Australia. Location stays a judge decision until the profile states it.
       assert.strictEqual(
         hasStrictStructuredMatch(leadWithoutLocation, reqLoc),
+        false,
+        'Query text must never auto-pass a location hard requirement',
+      );
+      // A genuine profile location still auto-passes.
+      assert.strictEqual(
+        hasStrictStructuredMatch({ ...leadWithoutLocation, location: 'Sydney, Australia' }, reqLoc),
         true,
-        'Must auto-qualify via query anchor with 0 LLM tokens',
+        'A stated profile location must still auto-pass',
       );
     });
   });

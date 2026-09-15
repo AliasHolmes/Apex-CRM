@@ -19,7 +19,12 @@ interface CrmOverviewProps {
 function normalizedQualificationScore(lead: Lead): number | null {
   const score = lead.qualificationScore ?? lead.predictiveScore ?? lead.compositeScore;
   if (typeof score !== 'number' || !Number.isFinite(score) || score <= 0) return null;
-  return score <= 10 ? score * 10 : score;
+  // Every writer of these three fields already produces a 0-100 value
+  // (leadMapping.mapCandidateToPersistedLead, predictiveScoreFromComposite,
+  // scoreLeadDeterministically). The previous `score <= 10 ? score * 10` rescale
+  // therefore only ever fired on genuinely poor leads, promoting a composite of 10
+  // (10%) to 100 ("Top tier"). Do not rescale an already-0-100 scale.
+  return score;
 }
 
 function scoreLabel(score: number): string {

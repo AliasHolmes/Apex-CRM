@@ -699,6 +699,13 @@ export async function executeDiscoverySession(
     let rerankPoolTarget = collectionCapacity.rerankPoolTarget;
     stats.rerank.poolTarget = rerankPoolTarget;
     let maxRounds = collectionCapacity.maxRounds;
+    // Ceiling for the in-loop budget extension below. When the operator pinned
+    // LEAD_SEARCH_MAX_ROUNDS the configured value is authoritative and extension is
+    // limited to it; otherwise the original recovery ceiling of 10 is preserved.
+    const configuredRoundCeiling =
+      Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 0) > 0
+        ? collectionCapacity.maxRounds
+        : 10;
     if (collectionCapacity.poolCapped) {
       logEvent(
         `Requested ${targetLimit} prospects exceeds the ${collectionCapacity.rerankPoolTarget}-candidate evidence-pool safety cap; continuing on a best-effort basis.`,
@@ -1990,14 +1997,17 @@ export async function executeDiscoverySession(
           if (
             isFlagEnabled.progressiveQualification() &&
             round >= maxRounds &&
-            maxRounds < 10 &&
+            maxRounds < configuredRoundCeiling &&
             acceptedLeads.length < collectionCapacity.candidateCeiling
           ) {
             if (roundEndEffectiveQualified < qualifiedTargetWithCushion) {
               const previousMax = maxRounds;
-              maxRounds = Math.min(maxRounds + 2, 10);
+              // Never exceed the configured/derived ceiling. The previous hard-coded 10
+              // silently overrode LEAD_SEARCH_MAX_ROUNDS, which is how a run configured for
+              // 6 rounds (and documented as 2-4) reached 10.
+              maxRounds = Math.min(maxRounds + 2, configuredRoundCeiling);
               logEvent(
-                `Round ${round}: Dynamic round budget extension (${previousMax} -> ${maxRounds}). Effective qualified (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion}) below target but collection is active (+${newAcceptedInRound} leads this round).`,
+                `Round ${round}: Dynamic round budget extension (${previousMax} -> ${maxRounds}, ceiling ${configuredRoundCeiling}). Effective qualified (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion}) below target but collection is active (+${newAcceptedInRound} leads this round).`,
               );
             }
           }

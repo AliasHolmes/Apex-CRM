@@ -60,7 +60,10 @@ function computeStatsFromLeads(leadsList: Lead[]): LeadContextStats {
     }
     const score = l.qualificationScore ?? l.predictiveScore ?? l.compositeScore;
     if (typeof score === 'number' && Number.isFinite(score) && score > 0) {
-      qualTotal += score <= 10 ? score * 10 : score;
+      // These three fields are always written on a 0-100 scale, so the previous
+      // `score <= 10 ? score * 10` rescale only inflated genuinely weak leads
+      // (a composite of 10 counted as 100). See CrmOverview.normalizedQualificationScore.
+      qualTotal += score;
       qualCount++;
     }
   }
@@ -668,7 +671,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         const p = item;
         const hasAccountContext = !!p.companyAccount;
         const rawBackendScore = Number(p.finalSelectionScore ?? p.scoreOverride ?? p.scoreBreakdown?.finalScore ?? 0);
-        const backendFinalScore = rawBackendScore <= 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
+        // `< 1.0`, not `<= 1.0` - mirrors leadMapping.mapCandidateToPersistedLead.
+        const backendFinalScore = rawBackendScore < 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
         const compositeScore = backendFinalScore > 0
           ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
           : scoreLeadDeterministically(p, p.companyAccount);

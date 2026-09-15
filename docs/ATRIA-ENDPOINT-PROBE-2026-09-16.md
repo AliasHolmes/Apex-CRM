@@ -201,6 +201,119 @@ deliberate decision.
 `scripts/tpm_probe.py` and `scripts/atria_live_check.ts` read the key from `ATRIA_API_KEY`
 and exit with a clear message when it is unset. No key material is stored in the repository.
 
+---
+
+## 10. TPS assessment
+
+TPM (§2) says nothing about speed. TPS is the metric that decides whether this model can
+serve as the engine's primary, because `withSequentialLLMExecution` serialises every call —
+so the engine runs at concurrency 1 and only ever sees single-stream speed.
+
+Measured with `scripts/tps_bench.py` and `scripts/tps_reliability.py`. Note `llm.ts` makes
+**no streaming calls at all** (the only `text/event-stream` in the codebase is the UI
+telemetry stream in `api.ts:1038`), so the non-streaming figures are the ones that matter.
+TTFT is reported for completeness only.
+
+### 10.1 Single-stream TPS (concurrency 1)
+
+| Mode | Median | Observed range |
+| ---- | ------ | -------------- |
+| Non-streaming, end-to-end | **~90 tok/s** | 43 – 134 |
+| Non-streaming, end-to-end (slower window) | ~44 tok/s | 19 – 99 |
+| Streaming, steady-state | ~91 – 99 tok/s | 79 – 171 |
+| Streaming, end-to-end | ~53 – 83 tok/s | 24 – 138 |
+| TTFT (streaming only) | 2.0 – 10.0s | 1.2 – 16.7s |
+
+**Speed is highly variable** — the same request shape ranged 43 to 134 tok/s across runs,
+and separate windows produced medians of 44 and 92 tok/s. Treat ~90 tok/s as a working
+figure with a slow tail near 44, not a guarantee.
+
+### 10.2 Aggregate throughput scales with concurrency
+
+| Concurrency | Aggregate TPS | Median per-stream TPS |
+| ----------- | ------------- | --------------------- |
+| 1 | 70 | 92.6 |
+| 2 | 98 | 59.2 |
+| 4 | 141 | 35.7 |
+| 8 | **330** | 80.6 |
+
+Aggregate throughput rises ~4.7x from c=1 to c=8, so the deployment does have parallel
+capacity — the absent TPM cap (§2) is real, not a measurement artefact. But per-stream
+latency degrades sharply (p95 67s at c=20, §3). **The engine's serialisation is still the
+right choice**: raising concurrency buys aggregate throughput the engine cannot use while
+pushing individual calls past `LLM_EXTRACTION_TIMEOUT_MS`.
+
+### 10.3 The binding constraint is reliability, not speed
+
+| Window | 502 `upstream_error` rate |
+| ------ | ------------------------- |
+| 12 sequential requests, c=1 | **3 / 12 (25%)** |
+| 40 requests, c=10 (§3 stage 2) | 2 / 40 (5%) |
+| 5 streaming requests, c=1 | 3 / 5 (60%) |
+
+Failures are **fast** (~1s) and always HTTP **502** — never 429. An earlier concern that the
+concurrency sweep's inverted failure pattern (worse at c=1-2 than c=4-8) indicated throttling
+was wrong: those were the same random 502s, which is why they did not correlate with load.
+
+These are handled correctly today: the message renders as `chat completion error 502`, which
+matches the `5\d\d` heuristic in `TRANSIENT_LLM_ERROR`, so `sendChatCompletion` retries and
+the provider cascades. Cost is latency and token spend, not correctness. But at a 25% failure
+rate roughly one call in four pays a retry.
+
+### 10.4 Timeout budget is marginal
+
+`LEAD_EXTRACTION_MAX_TOKENS="2000"` against `LLM_EXTRACTION_TIMEOUT_MS="30000"`:
+
+| Observed TPS | Time for a full 2000-token completion | vs 30s timeout |
+| ------------ | ------------------------------------- | -------------- |
+| ~90 tok/s (median) | ~22s | fits |
+| ~44 tok/s (slow tail) | **~45s** | **exceeds** |
+
+On the slow tail a full-budget extraction call cannot finish inside the extraction timeout.
+This is a sizing risk to confirm against a real session rather than a proven failure — most
+extractions will not emit the full 2000 tokens — but the margin is thin.
+
+### 10.5 `reasoning_effort` is ignored by the endpoint
+
+The engine passes `reasoningEffort: "low"` for extraction, but `isReasoningCapable`
+(`llm.ts:933`) is:
+
+```ts
+provider.id === "litellm" || /\b(gpt-5|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model)
+```
+
+`Atria-Dawn-Preview` matches none of those alternatives, so **the parameter is never sent**.
+
+Worse, sending it would not help. Same prompt, `max_tokens=900`, one call per setting:
+
+| `reasoning_effort` | reasoning chars | visible content chars | finish_reason |
+| ------------------ | --------------- | --------------------- | ------------- |
+| (not sent) | 3,580 | **0** | `length` |
+| `low` | 3,444 | **0** | `length` |
+| `high` | 3,594 | **0** | `length` |
+
+The spread is noise. **Reasoning length is not controllable on this endpoint**, and on a
+long-form prompt the reasoning phase alone consumes the entire 900-token budget before a
+single visible token is emitted.
+
+Two consequences worth acting on:
+
+1. **Do not expect `reasoningEffort` to bound cost or latency here.** Budget `max_tokens`
+   with the reasoning prefix on top of the expected payload.
+2. **This is exactly the case the §9.5 truncation guard exists for.** Without it, an
+   extraction chunk that spends its whole budget reasoning returns `content:null`, collapses
+   to `""`, and the round records zero candidates with no error anywhere. With the guard it
+   surfaces as `finish_reason "length" produced no visible content`. The guard is not
+   theoretical — this endpoint reaches that state readily.
+
+### 10.6 Bottom line
+
+Fast enough at concurrency 1 (~90 tok/s) and it scales further if ever needed, but it is
+**unreliable at a ~5-25% 502 rate** and its reasoning phase is **unbounded and
+uncontrollable**. That makes it a poor primary for the extraction path and a reasonable
+last-resort fallback — which is exactly where the integration puts it by default.
+
+
 
 ## 9. Implementation status
 

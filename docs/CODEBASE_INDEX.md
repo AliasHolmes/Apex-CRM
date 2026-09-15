@@ -39,7 +39,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v21**, WAL |
-| Test suite                                                       | 94 files, 679 tests / 150 suites, all passing                              |
+| Test suite                                                       | 94 files, 681 tests / 149 suites, all passing                              |
 | Total first-party LOC                                            | ~60,100                                                                    |
 | Working tree                                                     | clean (all fixes committed through `4ae2193`)                              |
 
@@ -127,7 +127,7 @@ Cross-cutting invariants:
 
 ## 7. Test suite
 
-94 files / 679 tests, `npm run test:all` (~6 min). Composition:
+94 files / 681 tests, `npm run test:all` (~6 min). Composition:
 
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
   (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12)
@@ -163,61 +163,52 @@ Ordered by leverage, not severity.
 
 `CONTEXT.md:50` now states the derived caps (3 rounds up to target 30, 4 up to 50, 6 above),
 the `MAX_COLLECTION_ROUNDS = 24` ceiling, and the `LEAD_SEARCH_MAX_ROUNDS` override, instead
-of the incorrect "2-4 rounds". The README badge now reads `679_Tests_Passing`, matching the
+of the incorrect "2-4 rounds". The README badge now reads `681_Tests_Passing`, matching the
 measured suite. Generating the badge from the test run remains an option but it is no longer
 wrong.
 
-### 9.2 `executeJudgeStage` is dead code with a live duplicate (medium) — plan revised 2026-09-16
+### 9.2 `executeJudgeStage` dead code — RESOLVED (2026-09-16)
 
-Confirmed dead: no production caller, and no stage registry or dynamic dispatch resolves to
-it (a repo-wide `grep` finds only the definition). `discoveryEngine.ts` calls
-`evaluateIncrementalJudgeBatches` exclusively (lines 1754, 2064).
+Confirmed dead before removal: no production caller, and no stage registry or dynamic
+dispatch resolved to it. `discoveryEngine.ts` called `evaluateIncrementalJudgeBatches`
+only (lines 1754, 2064). The function spanned lines 115-795 — ~680 lines, 56% of the file.
 
-The scale is larger than originally recorded. `executeJudgeStage` spans lines 115-795 —
-~680 lines, 56% of the 1,217-line file — not merely the triage block at ~180-230. It does
-duplicate the pre-judge triage block verbatim (dead 201-216 vs live 845-870), and it
-duplicates `filterNonDecisionMakers` usage (dead 199 vs live 843).
+Three findings changed the remedy from the original "delete it and migrate its two test
+callers":
 
-Three things the original note missed, each of which changes the remedy:
+1. **Two of the four dependent tests asserted on write-only state.** `stats.rerank.poolSize`
+   and `stats.rerank.judge` were written only by the dead function and read by nothing in
+   `server/` or `src/`, so there was nothing meaningful to migrate them to.
+2. **`candidatePoolCap` and `judgeOutcomeTotals` were dead-only, not duplicated.** The live
+   path bounds its pool upstream via `collectionCapacity.candidateCeiling` and
+   `postTriage.needsJudge`. Anyone wanting these in production must build them in the live
+   path, not migrate a test.
+3. **The safety net had drifted, and the LIVE copy was the untested one.** The live safety
+   net (`discoveryEngine.ts:2086`) is marked deprecated and had different semantics, adding
+   dedupe against already-qualified leads plus `_autoFailed`, contradiction and
+   `disqualified` checks. Its three shared checks lived in the exported
+   `isEligibleForSafetyNet`, which the live filter was duplicating inline.
 
-1. **Two of the four dependent tests assert on write-only state.** `stats.rerank.poolSize`
-   (written at line 138) and `stats.rerank.judge` (written at line 643) are written only by
-   the dead function and read by nothing in `server/` or `src/`. The two "Bug 3" tests in
-   `engineFixesVerification.test.ts` (lines 164, 258) assert on those fields, so they provide
-   no production assurance and there is nothing meaningful to migrate them to. Dropping them
-   is correct — but it erases the only record that `candidatePoolCap` and
-   `judgeOutcomeTotals` were ever addressed.
+What was done:
 
-2. **Those mechanisms are dead-only, not duplicated.** `candidatePoolCap` appears solely in
-   the dead function; the live path bounds its pool upstream via
-   `collectionCapacity.candidateCeiling` and `postTriage.needsJudge`. `judgeOutcomeTotals`
-   has no live equivalent either. Anyone wanting these in production must implement them in
-   the live path, not migrate a test.
+- The live safety-net promotion loop was extracted into an exported, tested
+  `promoteSafetyNetCandidates` (`judgeStage.ts`), and the live eligibility filter now calls
+  `isEligibleForSafetyNet` instead of duplicating it. Both changes are behaviour-preserving.
+- `executeJudgeStage` plus `JudgeStageInput` / `JudgeStageOutput` were deleted.
+  `judgeStage.ts` went from 1,303 to 608 lines. Eight now-unused imports were dropped:
+  `finalistCandidateFromLead`, `partitionCandidatesByStrictEvidence`, `runProviderQueue`,
+  `buildFallbackEvidence`, `findEvidenceForLead`, `SessionEvidenceMeta`, `EvidenceMeta`,
+  `normalizeDedupeValue`.
+- `discoveryEngine.ts` shed four now-unused imports: `rankLeadForFinalSelection`,
+  `isEligibleForSafetyNet`, and the `effectiveScore` / `sharedEffectiveScore` alias.
+- The four dead-path tests were removed. Coverage was **replaced, not lost**: eleven
+  assertions now cover `isEligibleForSafetyNet` and `promoteSafetyNetCandidates` directly,
+  where previously the only tests exercised a copy that production never ran.
 
-3. **The safety net has drifted, and the live copy is the untested one.**
-   `zeroYieldSafetyNet.test.ts` encodes the safety-net policy but exercises only the dead
-   copy. The live safety net is inline in `discoveryEngine.ts:2086-2147`, is marked
-   deprecated in its own comment, and has *different semantics* — it additionally excludes
-   candidates already qualified (by id and URL), `_autoFailed` leads, strict contradictions,
-   and `qualification.status === "hard_fail"` / `verdict === "disqualified"`. The dead copy's
-   three shared checks are factored into the exported `isEligibleForSafetyNet`
-   (`judgeStage.ts:41`), which the live filter duplicated inline instead of calling. That is
-   the exact drift the 2026-09-13 audit warned about, and the live half had no coverage.
-
-**Revised remedy — do not simply delete and migrate.**
-
-1. ~~Point the live filter at `isEligibleForSafetyNet`~~ — **done 2026-09-16**. The helper is
-   behaviourally identical to the three inline checks it replaces, so this is
-   behaviour-preserving, and the helper is no longer dead-only. Covered by five new
-   assertions in `zeroYieldSafetyNet.test.ts`.
-2. **Cover the live safety net's promotion loop**, then delete `executeJudgeStage` with the
-   dead-only types (`JudgeStageInput`, `JudgeStageOutput`) and the imports that become unused
-   with it (`finalistCandidateFromLead`, `partitionCandidatesByStrictEvidence`,
-   `runProviderQueue`, `rankLeadForFinalSelection`, `sharedEffectiveScore`,
-   `buildFallbackEvidence`, `findEvidenceForLead`). Not yet done — it involves dropping two
-   tests, which is a judgement call about coverage rather than a mechanical edit.
-3. **Retarget `zeroYieldSafetyNet.test.ts` to live semantics** once (2) lands, and record
-   here that `candidatePoolCap` / `judgeOutcomeTotals` are dead-only.
+**Note for future readers:** `candidatePoolCap` and `judgeOutcomeTotals` no longer exist
+anywhere in the codebase. If pool capping or judge-outcome telemetry is wanted in
+production, it must be built in the live path — the deleted tests were the only record of
+the intent.
 
 ### 9.3 Residual `<= 1.0` score inversion — RESOLVED (2026-09-16)
 

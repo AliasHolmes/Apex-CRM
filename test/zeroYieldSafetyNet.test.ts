@@ -1,241 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  executeJudgeStage,
   isEligibleForSafetyNet,
+  promoteSafetyNetCandidates,
 } from '../server/leadSearch/stages/judgeStage.js';
-import { buildDeterministicProspectContract } from '../server/leadSearch/prospectContract.js';
-
-describe('Zero-Yield Prevention & Starvation Safety Net', () => {
-  it('rescues high-scoring accepted candidates when all candidates receive hard_fail from strict judge', async () => {
-    const contract = buildDeterministicProspectContract('AI agency owner/founder from USA');
-    
-    const acceptedLeads = [
-      {
-        fullName: 'Roberto Martinez',
-        currentTitle: 'CEO',
-        currentCompany: 'Braven Agency',
-        location: 'Los Angeles, CA, USA',
-        contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/robthemarketer' },
-        scout: { corroborationScore: 8, criteriaCoverageScore: 8 },
-        scoreBreakdown: {
-          fitScore: 7,
-          intentScore: 6,
-          timingScore: 6,
-          evidenceQualityScore: 8,
-          sourceConfidenceScore: 7,
-          finalScore: 7.2
-        }
-      },
-      {
-        fullName: 'Jane Doe',
-        currentTitle: 'Founder',
-        currentCompany: 'Apex AI Studio',
-        location: 'New York, NY, USA',
-        contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/janedoe' },
-        scout: { corroborationScore: 9, criteriaCoverageScore: 9 },
-        scoreBreakdown: {
-          fitScore: 8,
-          intentScore: 7,
-          timingScore: 7,
-          evidenceQualityScore: 9,
-          sourceConfidenceScore: 8,
-          finalScore: 8.1
-        }
-      }
-    ];
-
-    const qualifiedLeads: any[] = [];
-    const debugLogs: any[] = [];
-    const sessionLogs: string[] = [];
-
-    const mockCtx: any = {
-      config: {
-        sessionId: 'test-session-123',
-        promptQuery: 'AI agency owner/founder from USA',
-        targetLimit: 5,
-        judgeConcurrency: 1
-      },
-      state: {
-        acceptedLeads,
-        qualifiedLeads,
-        llmCircuitBreaker: { failureCounts: {}, disabledProviderIds: new Set(), failureThreshold: 2 },
-        debugLogs,
-        abortController: new AbortController()
-      },
-      ports: {},
-      logEvent: (msg: string) => sessionLogs.push(msg),
-      recordTrace: () => {}
-    };
-
-    // Simulate judgeStage input where LLM judging produces zero direct qualifications
-    // (mocking the judge queue or running deterministic partition)
-    const stats: any = { rerank: {} };
-    const evidenceByUrl = new Map<string, any>();
-    evidenceByUrl.set('https://www.linkedin.com/in/robthemarketer', {
-      evidenceBlock: 'CEO of Braven Agency based in Los Angeles, CA.',
-      evidenceQuality: 'high',
-      sourceProvider: 'tavily',
-      sourceUrl: 'https://www.linkedin.com/in/robthemarketer',
-      sourceQuery: 'AI agency owner USA',
-      sourceRound: 1
-    });
-    evidenceByUrl.set('https://www.linkedin.com/in/janedoe', {
-      evidenceBlock: 'Founder of Apex AI Studio in New York, NY.',
-      evidenceQuality: 'high',
-      sourceProvider: 'tavily',
-      sourceUrl: 'https://www.linkedin.com/in/janedoe',
-      sourceQuery: 'AI agency founder USA',
-      sourceRound: 1
-    });
-
-    const originalFetch = globalThis.fetch;
-    const originalSafetyNet = process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
-    process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION = 'true';
-    try {
-      globalThis.fetch = async () => {
-        return {
-          ok: true,
-          status: 200,
-          headers: new Headers({ 'content-type': 'application/json' }),
-          json: async () => ({
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    judgments: [
-                      {
-                        candidateIndex: 0,
-                        verdict: 'hard_fail',
-                        confidence: 9,
-                        reason: 'Fails strict criteria for test',
-                        evidencePassage: '',
-                        overallScore: 2.0,
-                      },
-                      {
-                        candidateIndex: 1,
-                        verdict: 'hard_fail',
-                        confidence: 9,
-                        reason: 'Fails strict criteria for test',
-                        evidencePassage: '',
-                        overallScore: 2.0,
-                      },
-                    ],
-                  }),
-                },
-              },
-            ],
-          }),
-          text: async () => '',
-        } as any;
-      };
-
-      await executeJudgeStage(mockCtx, {
-        contract,
-        evidenceByUrl,
-        stats,
-        checkpointAcceptedLeads: () => {},
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (originalSafetyNet !== undefined) {
-        process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION = originalSafetyNet;
-      } else {
-        delete process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
-      }
-    }
-
-    assert.ok(qualifiedLeads.length > 0, `Expected at least 1 rescued lead, got ${qualifiedLeads.length}`);
-    assert.equal(qualifiedLeads.length, 2, 'Should rescue both available candidates');
-    assert.ok(qualifiedLeads.some(l => l.fullName === 'Jane Doe'));
-    assert.ok(qualifiedLeads.some(l => l.fullName === 'Roberto Martinez'));
-    assert.ok(qualifiedLeads.every(l => l.qualification?.verdict === 'qualified' || l.qualification?.verdict === 'rescued' || l.qualification?.verdict === 'qualified_partial'));
-  });
-
-  it('does NOT rescue unverified candidates when ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION is not set (default honest shortfall)', async () => {
-    const contract = buildDeterministicProspectContract('AI agency owner/founder from USA');
-    const acceptedLeads = [
-      {
-        fullName: 'Roberto Martinez',
-        currentTitle: 'Director of Partnerships',
-        currentCompany: 'Braven Agency',
-        location: 'Los Angeles, CA, USA',
-        contactDetails: { linkedinUrl: 'https://www.linkedin.com/in/robthemarketer' },
-        scout: { corroborationScore: 8, criteriaCoverageScore: 8 },
-        scoreBreakdown: { fitScore: 7, intentScore: 6, timingScore: 6, evidenceQualityScore: 8, sourceConfidenceScore: 7, finalScore: 7.2 }
-      }
-    ];
-    const qualifiedLeads: any[] = [];
-    const mockCtx: any = {
-      config: { sessionId: 'test-session-456', promptQuery: 'AI agency owner/founder from USA', targetLimit: 5, judgeConcurrency: 1 },
-      state: { acceptedLeads, qualifiedLeads, llmCircuitBreaker: { failureCounts: {}, disabledProviderIds: new Set(), failureThreshold: 2 }, debugLogs: [], abortController: new AbortController() },
-      ports: {},
-      logEvent: () => {},
-      recordTrace: () => {}
-    };
-    const stats: any = { rerank: {} };
-    const evidenceByUrl = new Map<string, any>();
-    evidenceByUrl.set('https://www.linkedin.com/in/robthemarketer', {
-      evidenceBlock: 'CEO of Braven Agency based in Los Angeles, CA.',
-      evidenceQuality: 'high',
-      sourceProvider: 'tavily',
-      sourceUrl: 'https://www.linkedin.com/in/robthemarketer',
-      sourceQuery: 'AI agency owner USA',
-      sourceRound: 1
-    });
-
-    const originalFetch = globalThis.fetch;
-    const originalSafetyNet = process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
-    delete process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION;
-    try {
-      globalThis.fetch = async (_url: any, opts: any) => {
-        let candidateId = 'clinkedin.com/in/robthemarketer';
-        try {
-          const body = JSON.parse(opts?.body || '{}');
-          const prompt = body?.messages?.[1]?.content || '';
-          const m = prompt.match(/### (c[^\s\n]+)/);
-          if (m) candidateId = m[1];
-        } catch {}
-        return {
-          ok: true,
-          status: 200,
-          headers: new Headers({ 'content-type': 'application/json' }),
-          json: async () => ({
-            choices: [{
-              message: {
-                content: JSON.stringify({
-                  judgments: [{
-                    candidateId,
-                    requirements: contract.requirements.map((r: any) => ({ requirementId: r.id, status: 'fail', reason: 'Fails test' })),
-                    semanticFit: 1,
-                    authorityFit: 1,
-                    evidenceConfidence: 1,
-                    reason: 'Fails strict criteria'
-                  }]
-                })
-              }
-            }]
-          }),
-          text: async () => ''
-        } as any;
-      };
-
-      await executeJudgeStage(mockCtx, {
-        contract,
-        evidenceByUrl,
-        stats,
-        checkpointAcceptedLeads: () => {}
-      });
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (originalSafetyNet !== undefined) {
-        process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION = originalSafetyNet;
-      }
-    }
-
-    assert.equal(qualifiedLeads.length, 0, 'Must NOT rescue failed leads by default');
-  });
-});
 
 describe('isEligibleForSafetyNet (shared safety-net eligibility core)', () => {
   // The live safety net in discoveryEngine.ts:2086 calls this helper. Before 2026-09-16 the
@@ -285,5 +53,130 @@ describe('isEligibleForSafetyNet (shared safety-net eligibility core)', () => {
   it('treats an absent insight as eligible (third argument is optional)', () => {
     assert.equal(isEligibleForSafetyNet(plainLead, permissiveContract, undefined), true);
     assert.equal(isEligibleForSafetyNet(plainLead, permissiveContract), true);
+  });
+});
+
+describe('promoteSafetyNetCandidates (live safety-net promotion)', () => {
+  // Extracted from the inline block in discoveryEngine so the promotion policy is a named,
+  // testable unit. The caller owns the ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION gate; this
+  // function owns what happens once the gate is open.
+  const permissiveContract = {
+    brief: 'software engineers',
+    requirements: [],
+    exclusions: [],
+    policyVersion: 'test',
+  } as any;
+
+  const mkLead = (over: Record<string, any> = {}) => ({
+    fullName: 'Lead',
+    currentTitle: 'CEO',
+    ...over,
+  });
+
+  it('promotes at most `shortfall` leads and reports the counts', () => {
+    const acceptedLeads = [
+      mkLead({ id: 'a', fullName: 'A' }),
+      mkLead({ id: 'b', fullName: 'B' }),
+      mkLead({ id: 'c', fullName: 'C' }),
+    ];
+    const qualifiedLeads: any[] = [];
+
+    const res = promoteSafetyNetCandidates({
+      acceptedLeads,
+      qualifiedLeads,
+      contract: permissiveContract,
+      shortfall: 2,
+    });
+
+    assert.equal(res.promoted, 2);
+    assert.equal(res.considered, 3);
+    assert.equal(qualifiedLeads.length, 2);
+  });
+
+  it('promotes nothing when the shortfall is zero', () => {
+    const qualifiedLeads: any[] = [];
+    const res = promoteSafetyNetCandidates({
+      acceptedLeads: [mkLead({ id: 'a' })],
+      qualifiedLeads,
+      contract: permissiveContract,
+      shortfall: 0,
+    });
+    assert.equal(res.promoted, 0);
+    assert.equal(qualifiedLeads.length, 0);
+  });
+
+  it('marks promoted leads as rescued with an explanation', () => {
+    const qualifiedLeads: any[] = [];
+    promoteSafetyNetCandidates({
+      acceptedLeads: [mkLead({ id: 'a', fullName: 'A' })],
+      qualifiedLeads,
+      contract: permissiveContract,
+      shortfall: 1,
+    });
+
+    assert.equal(qualifiedLeads[0].isRescued, true);
+    assert.equal(qualifiedLeads[0].qualification.verdict, 'rescued');
+    assert.match(qualifiedLeads[0].whyThisLead, /Safety Net/);
+    assert.equal(typeof qualifiedLeads[0].finalSelectionScore, 'number');
+  });
+
+  it('never promotes a lead that is already qualified (matched by id)', () => {
+    const already = mkLead({ id: 'dup', fullName: 'Dup' });
+    const fresh = mkLead({ id: 'new', fullName: 'New' });
+    const qualifiedLeads: any[] = [already];
+
+    const res = promoteSafetyNetCandidates({
+      acceptedLeads: [already, fresh],
+      qualifiedLeads,
+      contract: permissiveContract,
+      shortfall: 5,
+    });
+
+    assert.equal(res.promoted, 1);
+    assert.equal(
+      qualifiedLeads.filter((l) => l.fullName === 'Dup').length,
+      1,
+      'the already-qualified lead must not be appended a second time',
+    );
+    assert.ok(qualifiedLeads.some((l) => l.fullName === 'New'));
+  });
+
+  it('never promotes a lead already qualified by LinkedIn URL', () => {
+    const url = 'https://www.linkedin.com/in/same';
+    const already = mkLead({ fullName: 'Dup', contactDetails: { linkedinUrl: url } });
+    const sameUrl = mkLead({ id: 'other', fullName: 'SameUrl', contactDetails: { linkedinUrl: url } });
+    const qualifiedLeads: any[] = [already];
+
+    const res = promoteSafetyNetCandidates({
+      acceptedLeads: [sameUrl],
+      qualifiedLeads,
+      contract: permissiveContract,
+      shortfall: 5,
+    });
+
+    assert.equal(res.promoted, 0);
+    assert.equal(res.considered, 0);
+    assert.equal(qualifiedLeads.length, 1);
+  });
+
+  it('skips auto-failed, hard-fail, and disqualified leads', () => {
+    const acceptedLeads = [
+      mkLead({ id: 'auto', fullName: 'Auto', _autoFailed: true }),
+      mkLead({ id: 'hf', fullName: 'HardFail', judgmentInsight: { status: 'hard_fail' } }),
+      mkLead({ id: 'disq', fullName: 'Disq', qualification: { verdict: 'disqualified' } }),
+      mkLead({ id: 'ok', fullName: 'Ok' }),
+    ];
+    const qualifiedLeads: any[] = [];
+
+    const res = promoteSafetyNetCandidates({
+      acceptedLeads,
+      qualifiedLeads,
+      contract: permissiveContract,
+      shortfall: 10,
+    });
+
+    assert.equal(res.considered, 1, 'only the clean lead should be eligible');
+    assert.equal(qualifiedLeads.length, 1);
+    assert.equal(qualifiedLeads[0].fullName, 'Ok');
   });
 });

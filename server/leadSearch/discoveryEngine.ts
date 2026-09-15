@@ -46,7 +46,6 @@ import {
   normalizeLinkedInUrl,
 } from "../services/linkedinEvidence.js";
 import {
-  rankLeadForFinalSelection,
   type EvidenceQuality,
   type LeadSourceProvider,
 } from "./scoring.js";
@@ -89,7 +88,7 @@ import { executeVerifyStage } from "./stages/verifyStage.js";
 import { executeEnrichStage } from "./stages/enrichStage.js";
 import {
   evaluateIncrementalJudgeBatches,
-  isEligibleForSafetyNet,
+  promoteSafetyNetCandidates,
 } from "./stages/judgeStage.js";
 import { executeSelectStage } from "./stages/selectStage.js";
 import { executePersistStage } from "./stages/persistStage.js";
@@ -123,7 +122,6 @@ import {
 } from "./collectionCapacity.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import {
-  effectiveScore as sharedEffectiveScore,
   buildFallbackEvidence,
   findEvidenceForLead,
   buildCheckpointEvidence,
@@ -521,8 +519,6 @@ export async function executeDiscoverySession(
     lanes?: string[];
     corroborated?: boolean;
   };
-
-  const effectiveScore = sharedEffectiveScore;
 
   const acceptedLeads: any[] = [];
   let persistedCount = 0;
@@ -2086,67 +2082,16 @@ export async function executeDiscoverySession(
       // Deprecate unverified safety net promotions.
       // Quota fulfillment must never promote candidates that fail hard requirements or lack positive evidence.
       if (process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION === "true") {
-        const qualifiedUrls = new Set(
-          qualifiedLeads
-            .map((l) => l.contactDetails?.linkedinUrl || l.sourceUrl || "")
-            .filter(Boolean),
-        );
-        const qualifiedIds = new Set(
-          qualifiedLeads.map((l) => l.id).filter(Boolean),
-        );
-
-        const safetyNetCandidates = acceptedLeads.filter((lead) => {
-          if (lead.id && qualifiedIds.has(lead.id)) return false;
-          const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
-          if (url && qualifiedUrls.has(url)) return false;
-          // Shared eligibility core rather than a second inline copy of the same three
-          // checks (already-qualified dedupe and the disqualified/hard_fail qualification
-          // checks below are the only additions this call site needs).
-          if (!isEligibleForSafetyNet(lead, contract, lead.judgmentInsight)) {
-            return false;
-          }
-          if (
-            (lead.qualification as any)?.status === "hard_fail" ||
-            lead.qualification?.verdict === "disqualified"
-          ) {
-            return false;
-          }
-          return true;
+        const { promoted } = promoteSafetyNetCandidates({
+          acceptedLeads,
+          qualifiedLeads,
+          contract,
+          shortfall,
         });
 
-        for (const lead of safetyNetCandidates) {
-          lead.finalSelectionScore = rankLeadForFinalSelection(lead);
-        }
-
-        safetyNetCandidates.sort((a, b) => {
-          const rankDelta =
-            Number(b.finalSelectionScore || 0) -
-            Number(a.finalSelectionScore || 0);
-          if (rankDelta !== 0) return rankDelta;
-          return effectiveScore(b) - effectiveScore(a);
-        });
-
-        const promoted = safetyNetCandidates.slice(0, shortfall);
-        for (const lead of promoted) {
-          lead.qualification = lead.qualification || {
-            verdict: "rescued",
-            reason:
-              "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool",
-            finalScore: lead.finalSelectionScore || 5.0,
-          };
-          lead.whyThisLead =
-            lead.whyThisLead ||
-            "Safety Net: Best-effort delivery for top-scoring candidate from discovery pool";
-          lead.isRescued = true;
-          qualifiedLeads.push(lead);
-          if (lead.id) qualifiedIds.add(lead.id);
-          const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
-          if (url) qualifiedUrls.add(url);
-        }
-
-        if (promoted.length > 0) {
+        if (promoted > 0) {
           logEvent(
-            `Safety Net (Legacy Override): Promoted ${promoted.length} candidate(s) to fulfill shortfall. Cumulative qualified: ${qualifiedLeads.length}.`,
+            `Safety Net (Legacy Override): Promoted ${promoted} candidate(s) to fulfill shortfall. Cumulative qualified: ${qualifiedLeads.length}.`,
           );
         }
       }

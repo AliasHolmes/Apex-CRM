@@ -87,7 +87,10 @@ import {
 } from "./stages/extractStage.js";
 import { executeVerifyStage } from "./stages/verifyStage.js";
 import { executeEnrichStage } from "./stages/enrichStage.js";
-import { evaluateIncrementalJudgeBatches } from "./stages/judgeStage.js";
+import {
+  evaluateIncrementalJudgeBatches,
+  isEligibleForSafetyNet,
+} from "./stages/judgeStage.js";
 import { executeSelectStage } from "./stages/selectStage.js";
 import { executePersistStage } from "./stages/persistStage.js";
 import type {
@@ -111,7 +114,6 @@ import {
 import {
   finalistCandidateFromLead,
   triPartitionCandidatesByEvidence,
-  checkStrictContradiction,
   type FinalistCandidate,
 } from "./finalistJudge.js";
 import { buildRoundDiagnostics } from "./roundDiagnostics.js";
@@ -2097,9 +2099,12 @@ export async function executeDiscoverySession(
           if (lead.id && qualifiedIds.has(lead.id)) return false;
           const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
           if (url && qualifiedUrls.has(url)) return false;
-          if (lead._autoFailed) return false;
-          if (checkStrictContradiction(lead, contract) !== null) return false;
-          if (lead.judgmentInsight?.status === "hard_fail") return false;
+          // Shared eligibility core rather than a second inline copy of the same three
+          // checks (already-qualified dedupe and the disqualified/hard_fail qualification
+          // checks below are the only additions this call site needs).
+          if (!isEligibleForSafetyNet(lead, contract, lead.judgmentInsight)) {
+            return false;
+          }
           if (
             (lead.qualification as any)?.status === "hard_fail" ||
             lead.qualification?.verdict === "disqualified"

@@ -3,9 +3,8 @@
 Generated: 2026-09-16 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.venv-litellm/`, `.apex-data/`)
 
-> Supersedes the 2026-09-12 index (now `CODEBASE_INDEX-2026-09-12.md`), which had drifted on
-> schema version, route count, and test counts. Verified values below were measured directly
-> from the tree, not inherited.
+> Supersedes the retired 2026-09-12 index, which had drifted on schema version, route count,
+> and test counts. Verified values below were measured directly from the tree, not inherited.
 
 ---
 
@@ -25,10 +24,11 @@ Primary reference docs:
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary
 - [`docs/adr/0001`…`0006`](adr/) — six ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, and prospect-quality grounding
-- [`docs/BUG-REPORT-2026-09-15.md`](BUG-REPORT-2026-09-15.md) — most recent deep bug pass
-  (7 findings, 6 fixed, pinned by `test/deepAuditRegression.test.ts`)
-- [`docs/AUDIT-VERIFICATION-2026-09-15.md`](AUDIT-VERIFICATION-2026-09-15.md) — verification
-  of commit `4c385da` plus the last production session's performance baseline
+
+The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
+2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
+either fixed (commits `4c385da`, `e3c851d`, `4ae2193`) and pinned by a regression test, or
+carried forward in §9 below. Recover them from git history if the detail is ever needed.
 
 ## 2. Quick stats
 
@@ -39,9 +39,9 @@ Primary reference docs:
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v21**, WAL |
-| Test suite                                                       | 94 files, 674 tests / 149 suites, all passing                              |
+| Test suite                                                       | 94 files, 679 tests / 150 suites, all passing                              |
 | Total first-party LOC                                            | ~60,100                                                                    |
-| Working tree                                                     | 13 modified files + 3 untracked (uncommitted)                              |
+| Working tree                                                     | clean (all fixes committed through `4ae2193`)                              |
 
 ## 3. Tech stack
 
@@ -127,7 +127,7 @@ Cross-cutting invariants:
 
 ## 7. Test suite
 
-94 files / 674 tests, `npm run test:all` (~6 min). Composition:
+94 files / 679 tests, `npm run test:all` (~6 min). Composition:
 
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
   (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12)
@@ -143,9 +143,9 @@ Cross-cutting invariants:
 - **Verification discipline is real.** Every recent fix is pinned by a named regression
   test, and `deepAuditRegression.test.ts` was explicitly checked for non-vacuousness
   (reverting finding 1 makes exactly the 2 ranking assertions fail).
-- **The audit loop closed correctly.** `AUDIT-VERIFICATION-2026-09-15.md` classified 23
-  findings as 18 fixed / 3 partial / 2 not fixed; the two "not fixed" items were then
-  picked up as findings 3 and 4 of `BUG-REPORT-2026-09-15.md` and fixed.
+- **The audit loop closed correctly.** The 2026-09-15 verification classified 23 findings as
+  18 fixed / 3 partial / 2 not fixed; the two "not fixed" items were then picked up by the
+  2026-09-15 bug pass (findings 3 and 4) and fixed in `e3c851d`.
 - **The SSRF surface is now correct.** `siteProbe.ts` follows redirects manually with
   per-hop re-validation, and `privateHosts.ts` canonicalises decimal/hex/octal/shortened
   IPv4 forms and blocks `224.0.0.0/4`, `240.0.0.0/4`, `192.0.0.0/24`.
@@ -163,18 +163,61 @@ Ordered by leverage, not severity.
 
 `CONTEXT.md:50` now states the derived caps (3 rounds up to target 30, 4 up to 50, 6 above),
 the `MAX_COLLECTION_ROUNDS = 24` ceiling, and the `LEAD_SEARCH_MAX_ROUNDS` override, instead
-of the incorrect "2-4 rounds". The README badge now reads `674_Tests_Passing`, matching the
+of the incorrect "2-4 rounds". The README badge now reads `679_Tests_Passing`, matching the
 measured suite. Generating the badge from the test run remains an option but it is no longer
 wrong.
 
-### 9.2 `executeJudgeStage` is dead code with a live duplicate (medium)
+### 9.2 `executeJudgeStage` is dead code with a live duplicate (medium) — plan revised 2026-09-16
 
-`server/leadSearch/stages/judgeStage.ts:115` exports `executeJudgeStage`, but
-`discoveryEngine.ts` only calls `evaluateIncrementalJudgeBatches`. The dead function's
-body (lines ~180–230) duplicates `filterNonDecisionMakers` and the `judgmentInsight` /
-`qualification` assignment verbatim from the live path (lines ~843–880). It survives only
-because two tests import it. This is the exact failure mode the 2026-09-13 audit was
-written about: a second copy of triage logic that can drift while the live copy is fixed.
+Confirmed dead: no production caller, and no stage registry or dynamic dispatch resolves to
+it (a repo-wide `grep` finds only the definition). `discoveryEngine.ts` calls
+`evaluateIncrementalJudgeBatches` exclusively (lines 1754, 2064).
+
+The scale is larger than originally recorded. `executeJudgeStage` spans lines 115-795 —
+~680 lines, 56% of the 1,217-line file — not merely the triage block at ~180-230. It does
+duplicate the pre-judge triage block verbatim (dead 201-216 vs live 845-870), and it
+duplicates `filterNonDecisionMakers` usage (dead 199 vs live 843).
+
+Three things the original note missed, each of which changes the remedy:
+
+1. **Two of the four dependent tests assert on write-only state.** `stats.rerank.poolSize`
+   (written at line 138) and `stats.rerank.judge` (written at line 643) are written only by
+   the dead function and read by nothing in `server/` or `src/`. The two "Bug 3" tests in
+   `engineFixesVerification.test.ts` (lines 164, 258) assert on those fields, so they provide
+   no production assurance and there is nothing meaningful to migrate them to. Dropping them
+   is correct — but it erases the only record that `candidatePoolCap` and
+   `judgeOutcomeTotals` were ever addressed.
+
+2. **Those mechanisms are dead-only, not duplicated.** `candidatePoolCap` appears solely in
+   the dead function; the live path bounds its pool upstream via
+   `collectionCapacity.candidateCeiling` and `postTriage.needsJudge`. `judgeOutcomeTotals`
+   has no live equivalent either. Anyone wanting these in production must implement them in
+   the live path, not migrate a test.
+
+3. **The safety net has drifted, and the live copy is the untested one.**
+   `zeroYieldSafetyNet.test.ts` encodes the safety-net policy but exercises only the dead
+   copy. The live safety net is inline in `discoveryEngine.ts:2086-2147`, is marked
+   deprecated in its own comment, and has *different semantics* — it additionally excludes
+   candidates already qualified (by id and URL), `_autoFailed` leads, strict contradictions,
+   and `qualification.status === "hard_fail"` / `verdict === "disqualified"`. The dead copy's
+   three shared checks are factored into the exported `isEligibleForSafetyNet`
+   (`judgeStage.ts:41`), which the live filter duplicated inline instead of calling. That is
+   the exact drift the 2026-09-13 audit warned about, and the live half had no coverage.
+
+**Revised remedy — do not simply delete and migrate.**
+
+1. ~~Point the live filter at `isEligibleForSafetyNet`~~ — **done 2026-09-16**. The helper is
+   behaviourally identical to the three inline checks it replaces, so this is
+   behaviour-preserving, and the helper is no longer dead-only. Covered by five new
+   assertions in `zeroYieldSafetyNet.test.ts`.
+2. **Cover the live safety net's promotion loop**, then delete `executeJudgeStage` with the
+   dead-only types (`JudgeStageInput`, `JudgeStageOutput`) and the imports that become unused
+   with it (`finalistCandidateFromLead`, `partitionCandidatesByStrictEvidence`,
+   `runProviderQueue`, `rankLeadForFinalSelection`, `sharedEffectiveScore`,
+   `buildFallbackEvidence`, `findEvidenceForLead`). Not yet done — it involves dropping two
+   tests, which is a judgement call about coverage rather than a mechanical edit.
+3. **Retarget `zeroYieldSafetyNet.test.ts` to live semantics** once (2) lands, and record
+   here that `candidatePoolCap` / `judgeOutcomeTotals` are dead-only.
 
 ### 9.3 Residual `<= 1.0` score inversion — RESOLVED (2026-09-16)
 
@@ -200,11 +243,11 @@ and the strategist repeating substantially across rounds. Both audit documents r
 completion cache before any further prompt dieting. This is the highest-leverage
 unaddressed performance item.
 
-### 9.5 Uncommitted work (low, but blocking)
+### 9.5 Uncommitted work — RESOLVED (2026-09-16)
 
-13 modified files + 3 untracked files are not committed, including the entire
-`deepAuditRegression` suite and both 2026-09-15 docs. The fixes are verified by tests but
-have no commit, so a `git stash` or accidental reset loses them.
+The working tree is clean. The engine fixes, the `deepAuditRegression` suite and the
+documentation are committed (`e3c851d`, `4ae2193`), so nothing is at risk from a stash or
+an accidental reset.
 
 ### 9.6 Flag surface that no longer means anything (low)
 
@@ -230,6 +273,27 @@ most other files snapshot env at import. Prefer deleting only the keys the file 
 - `prospectContract.ts:1113` still _drops_ ungrounded hard requirements after warning;
   no counter reaches the session report, so visibility is console-only.
 
+### 9.9 `LLM_MAX_RETRIES` is overridden on the 429 path (low, decision needed)
+
+`llm.ts:487` reads:
+
+```ts
+const statusMaxRetries = is429 ? Math.max(maxRetries, 2) : maxRetries;
+```
+
+The general path honours the configured budget (`llm.ts:382`, `effectiveMaxRetries =
+maxRetries`), and the 2026-09-15 verification records that fix as complete. But for 429s
+specifically the floor survives: with the default `LLM_MAX_RETRIES=1`, a rate-limited call
+gets `maxRetries = 2`, i.e. up to three attempts on the same key before rotation. The
+operator's configured budget is silently tripled for exactly the error class they set it for.
+
+Deliberately **not** changed, because it is a resilience trade-off rather than a defect: the
+last measured session showed a 39.8% LLM failure rate with 44% fallback usage, so removing
+the 429 floor could trade correctness for throughput. The one-line fix is
+`const statusMaxRetries = maxRetries;` — the existing `retry429` gate at `llm.ts:381` already
+disables 429 retries when `LLM_MAX_RETRIES=0`. Decide deliberately, then either apply it or
+document the floor as intended.
+
 ## 10. Recommended next actions
 
 Updated 2026-09-16. Items 1, 2 and 4 below are done; the rest stand.
@@ -247,3 +311,8 @@ Updated 2026-09-16. Items 1, 2 and 4 below are done; the rest stand.
    untouched.
 6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
    39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the fixes.
+7. **Decide §9.9** (`LLM_MAX_RETRIES` 429 floor) — apply the one-line change or document the
+   floor as intended. Low effort, but leaving it undocumented means the next reader will
+   re-derive it from scratch.
+8. **Commit this index** alongside the removal of the retired audit reports, so the
+   documentation state matches the tree.

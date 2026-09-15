@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { executeJudgeStage } from '../server/leadSearch/stages/judgeStage.js';
+import {
+  executeJudgeStage,
+  isEligibleForSafetyNet,
+} from '../server/leadSearch/stages/judgeStage.js';
 import { buildDeterministicProspectContract } from '../server/leadSearch/prospectContract.js';
 
 describe('Zero-Yield Prevention & Starvation Safety Net', () => {
@@ -231,5 +234,56 @@ describe('Zero-Yield Prevention & Starvation Safety Net', () => {
     }
 
     assert.equal(qualifiedLeads.length, 0, 'Must NOT rescue failed leads by default');
+  });
+});
+
+describe('isEligibleForSafetyNet (shared safety-net eligibility core)', () => {
+  // The live safety net in discoveryEngine.ts:2086 calls this helper. Before 2026-09-16 the
+  // same three checks were duplicated inline at that call site while this exported helper had
+  // no production caller at all, so the rule had two definitions and only the dead one was
+  // covered. These assertions pin the shared rule itself.
+  //
+  // A permissive contract is used deliberately: with the agency contract below,
+  // checkStrictContradiction() returns non-null for any minimal lead, so the helper would
+  // return false at the contradiction branch and every later assertion would pass vacuously.
+  const permissiveContract = {
+    brief: 'software engineers',
+    requirements: [],
+    exclusions: [],
+    policyVersion: 'test',
+  } as any;
+  const plainLead = { currentTitle: 'CEO', fullName: 'Jane Doe' };
+
+  it('admits a lead with no disqualifying signal', () => {
+    assert.equal(isEligibleForSafetyNet(plainLead, permissiveContract, null), true);
+  });
+
+  it('rejects auto-failed leads', () => {
+    assert.equal(
+      isEligibleForSafetyNet({ ...plainLead, _autoFailed: true }, permissiveContract, null),
+      false,
+    );
+  });
+
+  it('rejects leads whose judge insight is hard_fail', () => {
+    // Assert the otherwise-eligible baseline first, so this cannot pass vacuously via the
+    // contradiction branch.
+    assert.equal(isEligibleForSafetyNet(plainLead, permissiveContract, null), true);
+    assert.equal(
+      isEligibleForSafetyNet(plainLead, permissiveContract, { status: 'hard_fail' }),
+      false,
+    );
+  });
+
+  it('admits a non-hard_fail insight', () => {
+    assert.equal(
+      isEligibleForSafetyNet(plainLead, permissiveContract, { status: 'qualified', score: 8 }),
+      true,
+    );
+  });
+
+  it('treats an absent insight as eligible (third argument is optional)', () => {
+    assert.equal(isEligibleForSafetyNet(plainLead, permissiveContract, undefined), true);
+    assert.equal(isEligibleForSafetyNet(plainLead, permissiveContract), true);
   });
 });

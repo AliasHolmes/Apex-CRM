@@ -47,7 +47,7 @@ A multi-tier extraction engine that inspects target company root websites and de
 An alias-matching and normalization system that strips global corporate entity forms (`S.R.L.`, `S.A.S.`, `S.L.`, `AG`, `Pte Ltd`, `Sdn Bhd`, `Sp. z o.o.`, `ApS`, `Pty Ltd`) and regional branch designations (`EMEA`, `APAC`, `Global`, `Holdings`) to prevent company profile duplicates.
 
 ### Lean Adaptive Collection Capacity
-A dynamic candidate sizing policy that sets search pool targets proportional to requested output limits (1.15x–1.25x cushion) with dynamic batch scaling (15–40 leads/round) and tight maximum round bounds (2–4 rounds).
+A dynamic candidate sizing policy that sets search pool targets proportional to requested output limits (1.15x–1.25x cushion) with dynamic batch scaling (15–40 leads/round). Round budgets are derived by target size (default cap of 3 rounds for targets up to 30, 4 up to 50, 6 above), bounded by a hard ceiling of `MAX_COLLECTION_ROUNDS = 24`, and overridden by `LEAD_SEARCH_MAX_ROUNDS` when that is set (6 in the shipped configuration).
 
 ### Decoupled Early Shortlist Termination
 A high-selectivity discovery exit check that terminates search rounds immediately when verified candidate volume satisfies target limits, decoupled from literal keyword substring heuristics.

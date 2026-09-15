@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 import { applyIntentEnrichmentDelta, applyPostIntentDelta } from '../server/leadSearch/scoring.js';
+import { normalizeServerScore } from '../src/utils/leadScore';
 import { executePlanStage } from '../server/leadSearch/stages/planStage.js';
 import { executeVerifyStage } from '../server/leadSearch/stages/verifyStage.js';
 import { executeFuseStage } from '../server/leadSearch/stages/fuseStage.js';
@@ -179,5 +182,62 @@ describe('Verified Bugfixes Regression Suite', () => {
     assert.ok(Array.isArray(output.candidateItems), 'fuseStage must succeed without throwing TypeError');
     assert.ok(output.candidateItems.length > 0, 'Candidate item must be fused');
     assert.equal(output.candidateItems[0].sourceProvider, 'tavily', 'Must safely default sourceProvider to tavily');
+  });
+});
+
+describe('Client-side score normalization (LeadContext.tsx:589 inversion)', () => {
+  // The sixth and last site of a bug class fixed five times elsewhere. A scraped profile
+  // scored exactly 1 - the worst possible 1-10 score, and what the engine clamps every
+  // judge-marked reject to - was treated as a 0-1 probability, multiplied by ten, then
+  // scaled by ten again by compositeScore, landing on 100 instead of 10.
+  it('does not scale a score of exactly 1 (the worst candidate must not become the best)', () => {
+    assert.equal(normalizeServerScore(1), 1, 'exactly 1 is a 1-10 score, not a probability');
+  });
+
+  it('reproduces the full single-lead composite math without the inversion', () => {
+    // Mirrors LeadContext.handleLeadAdded: normalize, then scale to the 0-100 composite.
+    const compositeFrom = (raw: unknown) => {
+      const serverScore = normalizeServerScore(raw);
+      return typeof serverScore === 'number'
+        ? Math.round(serverScore <= 10 ? serverScore * 10 : serverScore)
+        : null;
+    };
+
+    assert.equal(compositeFrom(1), 10, 'worst candidate must land at 10/100, not 100/100');
+    assert.equal(compositeFrom(10), 100, 'best candidate still reaches 100');
+    assert.equal(compositeFrom(0.85), 85, '0-1 probability scale still expands');
+    assert.equal(compositeFrom(85), 85, 'already 0-100 passes through unchanged');
+    assert.equal(compositeFrom(0), 0);
+    assert.equal(compositeFrom(undefined), null, 'absent score defers to the caller fallback');
+  });
+
+  it('preserves the 0-1 probability branch on its exclusive lower bound', () => {
+    assert.equal(normalizeServerScore(0.05), 0.5);
+    assert.equal(normalizeServerScore(0.999), 9.99);
+    assert.equal(normalizeServerScore(0), 0, 'zero is not rescaled');
+    assert.equal(normalizeServerScore(undefined), undefined);
+    assert.equal(normalizeServerScore(NaN), undefined);
+    assert.equal(normalizeServerScore('7' as unknown), undefined, 'non-numbers defer to the caller');
+  });
+
+  it('keeps no executable `<= 1.0` score comparison in the client', () => {
+    // Source guard so a seventh copy cannot be reintroduced. Comments are stripped first,
+    // because the fix deliberately documents the rule in prose.
+    const src = readFileSync(
+      path.join(process.cwd(), 'src', 'context', 'LeadContext.tsx'),
+      'utf8',
+    );
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => line.replace(/\/\/.*$/, ''))
+      .join('\n');
+
+    assert.equal(
+      /<=\s*1\.0/.test(code),
+      false,
+      'LeadContext.tsx must not compare scores with <= 1.0; use normalizeServerScore',
+    );
+    assert.match(code, /normalizeServerScore/, 'LeadContext.tsx must use the shared helper');
   });
 });

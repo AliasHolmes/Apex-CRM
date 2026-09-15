@@ -39,7 +39,7 @@ Primary reference docs:
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v21**, WAL |
-| Test suite                                                       | 94 files, 670 tests / 148 suites, all passing                              |
+| Test suite                                                       | 94 files, 674 tests / 149 suites, all passing                              |
 | Total first-party LOC                                            | ~60,100                                                                    |
 | Working tree                                                     | 13 modified files + 3 untracked (uncommitted)                              |
 
@@ -127,7 +127,7 @@ Cross-cutting invariants:
 
 ## 7. Test suite
 
-94 files / 670 tests, `npm run test:all` (~6 min). Composition:
+94 files / 674 tests, `npm run test:all` (~6 min). Composition:
 
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
   (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12)
@@ -159,14 +159,13 @@ Cross-cutting invariants:
 
 Ordered by leverage, not severity.
 
-### 9.1 Documentation drift (high leverage, low cost)
+### 9.1 Documentation drift — RESOLVED (2026-09-16)
 
-- **`CONTEXT.md:50`** still claims "tight maximum round bounds (2-4 rounds)". That is
-  false three ways: `MAX_COLLECTION_ROUNDS = 24`, `.env` sets
-  `LEAD_SEARCH_MAX_ROUNDS="6"`, and `collectionCapacity.ts:117` derives 3/4/6 by target
-  size. The round-cap bug is fixed; the doc claim that described the bug is not.
-- **README badge** `Lead_Engine-45_Core_Tests_Passing` is a static string that no longer
-  matches the 670-test reality. Consider generating it or dropping the count.
+`CONTEXT.md:50` now states the derived caps (3 rounds up to target 30, 4 up to 50, 6 above),
+the `MAX_COLLECTION_ROUNDS = 24` ceiling, and the `LEAD_SEARCH_MAX_ROUNDS` override, instead
+of the incorrect "2-4 rounds". The README badge now reads `674_Tests_Passing`, matching the
+measured suite. Generating the badge from the test run remains an option but it is no longer
+wrong.
 
 ### 9.2 `executeJudgeStage` is dead code with a live duplicate (medium)
 
@@ -177,19 +176,21 @@ body (lines ~180–230) duplicates `filterNonDecisionMakers` and the `judgmentIn
 because two tests import it. This is the exact failure mode the 2026-09-13 audit was
 written about: a second copy of triage logic that can drift while the live copy is fixed.
 
-### 9.3 One residual `<= 1.0` score inversion (medium)
+### 9.3 Residual `<= 1.0` score inversion — RESOLVED (2026-09-16)
 
-The bug report fixed five of six sites and added `normalizeToTenScale`. The sixth is still
-open in the frontend:
+The bug report fixed five of six sites and added `normalizeToTenScale`; the sixth was in the
+frontend. `src/context/LeadContext.tsx` no longer contains an executable `<= 1.0` comparison.
+Both call sites — `handleLeadAdded` and the bulk-import path — now use a shared
+`normalizeServerScore` (`src/utils/leadScore.ts`) that mirrors `normalizeToTenScale` in
+`server/leadSearch/scoring.ts`, so the client and server halves of the rule cannot drift
+apart again. It returns `undefined` for absent input so each caller keeps its own fallback
+(`scoreLeadDeterministically` vs `0`) rather than adopting a default inside the helper.
 
-- `src/context/LeadContext.tsx:589` — `handleLeadAdded` still uses
-  `rawServerScore <= 1.0 && rawServerScore > 0 ? rawServerScore * 10 : rawServerScore`.
-  A scraped profile scored exactly `1` (the worst possible 1–10 score, and the clamped
-  output for every judge-marked `reject`) is multiplied by 10 and becomes
-  `compositeScore` 100 / `predictiveScore` 90.
-- The sibling bulk-import path at `LeadContext.tsx:675` was fixed and even carries the
-  comment "`< 1.0`, not `<= 1.0` - mirrors leadMapping.mapCandidateToPersistedLead" —
-  so the correct rule is known and ~30 lines away.
+Pinned by `test/verifiedBugfixes.test.ts` ("Client-side score normalization"), which covers
+the unit rule, the full composite math (`compositeFrom(1) === 10`, not `100`), and a source
+guard that fails if an executable `<= 1.0` comparison is reintroduced in `LeadContext.tsx`.
+Non-vacuousness was verified by reintroducing the original expression at the call site and
+confirming the guard fails.
 
 ### 9.4 No LLM completion cache (medium — the real bottleneck)
 
@@ -231,14 +232,18 @@ most other files snapshot env at import. Prefer deleting only the keys the file 
 
 ## 10. Recommended next actions
 
-1. **Commit the working tree** — the fixes and their regression suite are uncommitted.
-2. **Fix `LeadContext.tsx:589`** to `< 1.0`, and add a client-side scoring assertion so the
-   sixth site cannot drift again.
+Updated 2026-09-16. Items 1, 2 and 4 below are done; the rest stand.
+
+1. ~~**Commit the working tree.**~~ Done (`e3c851d`), along with the Atria provider work
+   (`172fb00`) and its TPS assessment (`4de56b5`).
+2. ~~**Fix `LeadContext.tsx:589`** to `< 1.0`.~~ Done — see §9.3.
 3. **Delete `executeJudgeStage`** and migrate its two test callers to
-   `evaluateIncrementalJudgeBatches`, removing the duplicate triage block.
-4. **Correct `CONTEXT.md:50`** and regenerate or retire the README test-count badge.
+   `evaluateIncrementalJudgeBatches`, removing the duplicate triage block. Still the
+   clearest remaining correctness risk: a second copy of triage logic that can drift while
+   the live copy is fixed.
+4. ~~**Correct `CONTEXT.md:50`** and fix the README badge.~~ Done — see §9.1.
 5. **Add an LLM completion cache** keyed on provider+model+prompt hash, behind a flag, with
    a TTL — this targets the 79% of wall clock that every other optimization has left
    untouched.
 6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
-   39.8% LLM failure rate, 79% LLM latency share). No session has run since the fixes.
+   39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the fixes.

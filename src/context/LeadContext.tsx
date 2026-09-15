@@ -9,7 +9,7 @@ import {
   ReactNode,
 } from 'react';
 import { Lead, LeadStage, LEAD_STAGES, LinkedInProfile, NextAction, QualifiedLeadProfile, ReviewStatus } from '../types';
-import { predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
+import { normalizeServerScore, predictiveScoreFromComposite, scoreLeadDeterministically } from '../utils/leadScore';
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 import { preferNewerCanonical, rebaseLeadChanges } from '@/lib/leadMutations';
 import { ConflictDialog } from '@/components/ConflictDialog';
@@ -586,9 +586,9 @@ export function LeadProvider({ children }: { children: ReactNode }) {
 
       const qualified = profile as QualifiedLeadProfile;
       const rawServerScore = qualified.finalSelectionScore ?? qualified.scoreOverride ?? qualified.scoreBreakdown?.finalScore;
-      const serverScore = typeof rawServerScore === 'number' && rawServerScore <= 1.0 && rawServerScore > 0
-        ? rawServerScore * 10
-        : rawServerScore;
+      // `normalizeServerScore` uses `< 1.0`, not `<= 1.0`: a score of exactly 1 is the worst
+      // a candidate can receive, so scaling it would promote it to the top of the scale.
+      const serverScore = normalizeServerScore(rawServerScore);
       const compositeScore = (qualified as any).compositeScore ?? (typeof serverScore === 'number'
         ? Math.round(serverScore <= 10 ? serverScore * 10 : serverScore)
         : scoreLeadDeterministically(profile));
@@ -671,8 +671,8 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         const p = item;
         const hasAccountContext = !!p.companyAccount;
         const rawBackendScore = Number(p.finalSelectionScore ?? p.scoreOverride ?? p.scoreBreakdown?.finalScore ?? 0);
-        // `< 1.0`, not `<= 1.0` - mirrors leadMapping.mapCandidateToPersistedLead.
-        const backendFinalScore = rawBackendScore < 1.0 && rawBackendScore > 0 ? rawBackendScore * 10 : rawBackendScore;
+        // Shared with the single-lead path above; `< 1.0`, not `<= 1.0`.
+        const backendFinalScore = normalizeServerScore(rawBackendScore) ?? 0;
         const compositeScore = backendFinalScore > 0
           ? Math.round(backendFinalScore <= 10 ? backendFinalScore * 10 : backendFinalScore)
           : scoreLeadDeterministically(p, p.companyAccount);

@@ -8,7 +8,7 @@
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
     <img src="https://img.shields.io/badge/SQLite-Schema_v21-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v21" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-45_Core_Tests_Passing-10B981" alt="Lead Engine Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-674_Tests_Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 

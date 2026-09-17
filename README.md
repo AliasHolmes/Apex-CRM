@@ -8,7 +8,7 @@
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
     <img src="https://img.shields.io/badge/SQLite-Schema_v21-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v21" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-681_Tests_Passing-10B981" alt="Lead Engine Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-689_Tests_Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 
@@ -161,7 +161,7 @@ graph TD
 
 - **Frontend**: React 19, Vite 6, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 5.9, Express 5, `p-queue` rate limiting.
-- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (version 14), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
+- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v21**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
 - **LLM Routing**: Direct OpenAI-compatible provider chain with automatic fallback (Atria / Byesu -> OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
@@ -192,9 +192,15 @@ cp .env.example .env
 A minimal `.env` setup:
 
 ```env
-OPENAI_API_KEY="your_primary_key"
-OPENAI_BASE="https://your-openai-compatible-provider.example/v1"
-OPENAI_MODEL="your_model"
+# Primary LLM Provider: Atria or Byesu/OpenAI-compatible
+ATRIA_API_KEY="your_atria_api_key"
+ATRIA_PRIORITY="primary"
+
+# Secondary/Fallback OpenAI-compatible endpoint:
+OPENAI_API_KEY="your_byesu_or_openai_key"
+OPENAI_BASE="https://byesu.com/v1"
+OPENAI_MODEL="gpt-5.5"
+OPENAI_PROVIDER_NAME="Byesu"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'
 TAVILY_API_KEY="tavily_key_3"
@@ -237,6 +243,7 @@ All API routes are mounted under `/api`:
 |                     | `GET /llm-health`                         | LLM gateway and provider latency status                                                        |
 |                     | `GET /key-rotation-status`                | Sanitized provider key pool health                                                             |
 |                     | `GET /provider-capabilities`              | Supported scraper and search features                                                          |
+|                     | `GET /engine-metrics`                     | Aggregate engine health, stop reasons, and LLM stage latency                                   |
 | **Discovery**       | `POST /lead-search/preview`               | Preview compiled contract and query plan                                                       |
 |                     | `POST /find-leads`                        | Execute discovery session (supports synchronous HTTP 200 or async HTTP 202 via `?mode=job`)    |
 |                     | `POST /scrape-url`                        | Scrape public web page markdown                                                                |
@@ -247,17 +254,22 @@ All API routes are mounted under `/api`:
 |                     | `GET /mining-sessions/:sessionId/stream`  | High-frequency SSE execution trace and logs                                                    |
 |                     | `POST /mining-sessions/:sessionId/resume` | Resume interrupted mining session from checkpoint                                              |
 |                     | `POST /mining-sessions/:sessionId/cancel` | Cancel active mining run                                                                       |
+|                     | `POST /mining-sessions/clear-resumable`   | Clear all interrupted resumable session checkpoints                                            |
 | **Search Logs**     | `GET /search-logs`                        | Query performance and cost summaries                                                           |
 |                     | `GET /search-logs/:id/live`               | Live log stream for active search                                                              |
 | **Prospects & CRM** | `GET /leads`                              | List stored prospects with filtering                                                           |
 |                     | `POST /leads/bulk`                        | Bulk insert or update prospect records                                                         |
 |                     | `PATCH /leads/:id`                        | Update lead stage, review status, or notes (returns 409 with server lead on revision conflict) |
 |                     | `DELETE /leads/:id`                       | Soft-delete or archive prospect                                                                |
+|                     | `POST /leads/:id/merge`                   | Merge duplicate prospect into primary lead with conflict resolution and relation reassignment  |
 |                     | `POST /leads/:id/enrich`                  | Enrich specific lead via Bright Data                                                           |
+|                     | `GET /leads/export`                       | Export stored prospects to CSV or JSON                                                         |
+|                     | `GET /leads/:id/activities`               | Audit trail activities for prospect                                                            |
 | **Saved Searches**  | `GET /saved-searches`                     | List saved search specifications                                                               |
 |                     | `POST /saved-searches`                    | Create or update saved search                                                                  |
 |                     | `DELETE /saved-searches/:id`              | Delete saved search                                                                            |
 | **Outreach**        | `POST /generate-outbound`                 | Generate contextual outreach message                                                           |
+|                     | `POST /leads/:id/drafts`                  | Create and store outreach draft for prospect                                                   |
 |                     | `POST /chat`                              | CRM conversational assistant                                                                   |
 
 ---
@@ -283,17 +295,20 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite:
+Apex CRM maintains an extensive test suite (689 tests across 157 suites in 95 files):
 
 ```bash
 # Typecheck (0 errors)
 npm run lint
 
-# Strict ASCII & UTF-8 Encoding Hygiene
-npm run test:glyphs
+# Full test suite (689 tests, 100% pass)
+npm test
 
-# Full Lead Engine Suite (180 tests across 12 suites)
+# Full Lead Engine Suite (293 tests across 32 suites)
 npm run test:lead-engine
+
+# Audit Invariants & Engine Resilience Suite (11 tests across 8 suites)
+npx tsx --test test/auditFixesResilience.test.ts
 
 # Two-Wave Parallel Retrieval & Planner Derivation (4 tests)
 npx tsx --test test/parallelRetrieval.test.ts
@@ -357,7 +372,7 @@ server/
     scoring.ts               Composite scoring, freshness decay & MMR diversity
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v21 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
-test/                        Automated unit, integration, and replay test suites (264 tests)
+test/                        Automated unit, integration, and replay test suites (689 tests across 95 files)
 scripts/                     Dev orchestrator and server runners
 .env.example                 Configuration variables and default settings
 ```

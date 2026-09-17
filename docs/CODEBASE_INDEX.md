@@ -39,9 +39,9 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v21**, WAL |
-| Test suite                                                       | 94 files, 681 tests / 149 suites, all passing                              |
+| Test suite                                                       | 95 files, 689 tests / 157 suites, all passing                              |
 | Total first-party LOC                                            | ~60,100                                                                    |
-| Working tree                                                     | clean (all fixes committed through `4ae2193`)                              |
+| Working tree                                                     | clean (all fixes committed through `15beacf`)                              |
 
 ## 3. Tech stack
 
@@ -257,32 +257,28 @@ Wholesale `delete process.env[key]` wipe loops in `test/llmUntrustedMessage.test
 
 ### 9.9 `LLM_MAX_RETRIES` is overridden on the 429 path — RESOLVED (2026-09-17)
 
-`server/services/llm.ts` now strictly honors configured `LLM_MAX_RETRIES` on 429 rate limit responses:
+`server/services/llm.ts` now strictly honors configured `LLM_MAX_RETRIES` on 429 and 5xx responses:
 ```ts
-const statusMaxRetries = is429
-  ? maxRetries
-  : is502Atria
-    ? Math.max(maxRetries, 1)
-    : maxRetries;
+const statusMaxRetries = maxRetries;
 ```
 When `LLM_MAX_RETRIES=0` (or `1`), the engine cascades immediately after the configured retry count rather than forcing a 2-retry minimum. Furthermore, the request timeout timer is armed only once queued HTTP execution begins, preventing queue wait starvation.
 
 ## 10. Recommended next actions
 
-Updated 2026-09-17. Items 1, 2, 4, and 7 below are done; the rest stand.
+Updated 2026-09-17. Items 1, 2, 4, 7, and 8 below are done; the rest stand.
 
 1. ~~**Commit the working tree.**~~ Done (`e3c851d`), along with the Atria provider work
-   (`172fb00`) and its TPS assessment (`4de56b5`).
+   (`172fb00`), TPS assessment (`4de56b5`), and audit fixes (`15beacf`).
 2. ~~**Fix `LeadContext.tsx:589`** to `< 1.0`.~~ Done — see §9.3.
 3. **Delete `executeJudgeStage`** and migrate its two test callers to
    `evaluateIncrementalJudgeBatches`, removing the duplicate triage block. Still the
    clearest remaining correctness risk: a second copy of triage logic that can drift while
    the live copy is fixed.
-4. ~~**Correct `CONTEXT.md:50`** and fix the README badge.~~ Done — see §9.1.
+4. ~~**Correct `CONTEXT.md:50`** and fix the README badge.~~ Done — see §9.1 and `README.md`.
 5. **Add an LLM completion cache** keyed on provider+model+prompt hash, behind a flag, with
    a TTL — this targets the 79% of wall clock that every other optimization has left
    untouched.
 6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
    39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the fixes.
 7. ~~**Decide §9.9** (`LLM_MAX_RETRIES` 429 floor)~~ Done — strictly honors `LLM_MAX_RETRIES`.
-8. **Commit this index** alongside the engine resilience fixes, so the documentation state matches the tree.
+8. ~~**Commit this index** alongside the engine resilience fixes.~~ Done (`15beacf`).

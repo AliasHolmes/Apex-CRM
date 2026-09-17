@@ -3,6 +3,8 @@ import {
   isBrightDataConfigured,
   isBrightDataCoolingDown,
   scrapeAsMarkdown,
+  isBrightDataPro,
+  brightDataScrapeAsHtml,
 } from '../services/brightdata.js';
 import {
   getEnrichmentCacheEntry,
@@ -457,9 +459,15 @@ export async function probeCompanySites(
     const bdPromises = unextractedDomains.slice(0, 5).map(async (domain) => {
       if (options.abortSignal?.aborted) return;
       try {
-        const md = await scrapeAsMarkdown(domain, 12000, options.abortSignal);
-        if (md && md.trim().length > 100) {
-          extractedByDomain.set(domain, [md]);
+        let content: string | null = null;
+        if (isBrightDataPro()) {
+          content = await brightDataScrapeAsHtml(domain, 15000);
+        }
+        if (!content) {
+          content = await scrapeAsMarkdown(domain, 12000, options.abortSignal);
+        }
+        if (content && content.trim().length > 100) {
+          extractedByDomain.set(domain, [content]);
         }
       } catch {
         // Safe skip

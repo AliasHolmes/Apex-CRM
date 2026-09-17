@@ -90,6 +90,21 @@ export function buildCleanEvidence(item: any): string {
   ].filter(Boolean).join("\n");
 }
 
+export function formatExperienceBlock(experiences: any[]): string {
+  if (!Array.isArray(experiences) || experiences.length === 0) return "";
+  const lines: string[] = ["EXPERIENCE:"];
+  for (const exp of experiences.slice(0, 5)) {
+    const title = exp.title || exp.position || "";
+    const company = exp.company || exp.company_name || "";
+    const duration = exp.duration || exp.dates || "";
+    const summary = exp.summary || exp.description || "";
+    lines.push(
+      `- ${title} at ${company}${duration ? ` (${duration})` : ""}${summary ? `: ${summary}` : ""}`,
+    );
+  }
+  return lines.join("\n");
+}
+
 export type ExtractStageInput = {
   round: number;
   candidateItems: any[];
@@ -259,7 +274,124 @@ export async function executeExtractStage(
     };
   }
 
-  const activeCandidateItems = preFilteredItems;
+  // Separate pre-filtered items into dataset-derived dossiers vs standard SERP candidates
+  const datasetCandidateItems = preFilteredItems.filter(
+    (item: any) =>
+      item.sourceProvider === "brightdata_dataset" ||
+      item.raw?.sourceProvider === "brightdata_dataset",
+  );
+  const standardCandidateItems = preFilteredItems.filter(
+    (item: any) =>
+      item.sourceProvider !== "brightdata_dataset" &&
+      item.raw?.sourceProvider !== "brightdata_dataset",
+  );
+
+  const datasetExtractedProfiles: any[] = [];
+  for (const item of datasetCandidateItems) {
+    const hit = item.raw || {};
+    const fullName =
+      hit.name ||
+      `${hit.first_name || ""} ${hit.last_name || ""}`.trim() ||
+      item.title?.split(" - ")[0]?.split(" at ")[0]?.trim() ||
+      "Unknown";
+    const currentTitle = hit.position || "";
+    const currentCompany =
+      hit.current_company_name ||
+      (typeof hit.current_company === "object"
+        ? hit.current_company?.name
+        : "") ||
+      "";
+    const canonicalUrl = item.url;
+    const normalizedUrl =
+      item._normalizedUrl || normalizeLinkedInUrl(canonicalUrl);
+    const username =
+      item._linkedinUsername || extractLinkedInUsername(canonicalUrl);
+    const queryRun = item._queryRun as QueryRunStats | undefined;
+
+    const experienceArray = Array.isArray(hit.experience) ? hit.experience : [];
+    const aboutText = hit.about || "";
+
+    const evidenceBlock = [
+      `LINK: ${canonicalUrl}`,
+      `TITLE: ${currentTitle} at ${currentCompany}`,
+      `[BRIGHTDATA DOSSIER]`,
+      aboutText ? `ABOUT: ${aboutText}` : "",
+      formatExperienceBlock(experienceArray),
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const evidenceMeta: EvidenceMeta = {
+      evidenceBlock,
+      evidenceQuality: "good",
+      sourceProvider: "brightdata",
+      sourceUrl: canonicalUrl,
+      sourceQuery: item._sourceQuery || "",
+      sourceRound: item._sourceRound || round,
+      queryRun,
+      sourceProviders: Array.isArray(item._sourceProviders)
+        ? item._sourceProviders
+        : ["brightdata"],
+      sourceCount: Number(item._sourceCount || 1),
+      lanes: Array.isArray(item._lanes)
+        ? item._lanes
+        : [item._queryLane || "person"],
+      corroborated: Boolean(item._corroborated),
+      ablatedRequirementId:
+        item._ablatedRequirementId || item.ablatedRequirementId,
+      ablatedTerm: item._ablatedTerm || item.ablatedTerm,
+    };
+
+    const primaryKey = normalizedUrl || normalizeDedupeValue(canonicalUrl);
+    if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);
+    if (canonicalUrl && canonicalUrl !== primaryKey)
+      evidenceByUrl.set(canonicalUrl, evidenceMeta);
+    if (username) {
+      evidenceByUrl.set(`linkedin:${username}`, evidenceMeta);
+      evidenceByUrl.set(`linkedin.com/in/${username}`, evidenceMeta);
+    }
+    if (queryRun) queryRun.evidenceBlocks++;
+
+    datasetExtractedProfiles.push({
+      id: `lead-${crypto.randomUUID()}`,
+      fullName,
+      currentTitle,
+      currentCompany,
+      company: currentCompany,
+      headline: currentTitle,
+      location: hit.city || hit.location || "",
+      contactDetails: {
+        linkedinUrl: normalizedUrl ? `https://${normalizedUrl}` : canonicalUrl,
+        website: hit.current_company_website || "",
+      },
+      extractionConfidence: 10,
+      sourceProvider: "brightdata",
+      sourceRound: round,
+      evidenceReasons: [
+        `Verified profile dossier via Bright Data dataset: ${currentTitle} at ${currentCompany}`,
+      ],
+      experiences: experienceArray,
+      about: aboutText,
+      _rawDossier: hit,
+    });
+  }
+
+  if (
+    standardCandidateItems.length === 0 &&
+    datasetExtractedProfiles.length > 0
+  ) {
+    logEvent(
+      `Round ${round}: All ${datasetExtractedProfiles.length} candidate(s) resolved via Bright Data dataset dossiers. Skipping extraction LLM.`,
+    );
+    return {
+      extractedProfiles: datasetExtractedProfiles,
+      evidenceByUrl,
+      consecutiveFailedExtractionRounds: 0,
+      brightDataProviderDisabled,
+    };
+  }
+
+  const activeCandidateItems = standardCandidateItems;
 
   // 1. Thin page evidence upgrades via Bright Data rapid tool or Tavily Extract fallback
   const upgradeTargets = activeCandidateItems.filter((item: any) => {
@@ -916,7 +1048,7 @@ Evidence:
     };
   }
 
-  const extractedProfiles = extractionResults.flat().map((lead: any) => {
+  const standardProfiles = extractionResults.flat().map((lead: any) => {
     if (lead?.contactDetails?.linkedinUrl) {
       const unwrapped = unwrapRedirectUrl(lead.contactDetails.linkedinUrl);
       const normalized = normalizeLinkedInUrl(unwrapped);
@@ -926,6 +1058,7 @@ Evidence:
     }
     return lead;
   });
+  const extractedProfiles = [...datasetExtractedProfiles, ...standardProfiles];
   return {
     extractedProfiles,
     evidenceByUrl,

@@ -144,5 +144,166 @@ export function toLinkedInSearchQuery(item: SearchQueryPlanItem) {
   return `site:linkedin.com/in/ ${query}`;
 }
 
+import type { DatasetFilter, DatasetFilterLeaf } from '../services/brightdata.js';
+
+function normalizeCountryToCode(raw: string): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed.length === 2 && /^[a-z]{2}$/.test(trimmed)) {
+    return trimmed.toUpperCase();
+  }
+  const map: Record<string, string> = {
+    "united states": "US",
+    usa: "US",
+    "united kingdom": "GB",
+    uk: "GB",
+    canada: "CA",
+    germany: "DE",
+    france: "FR",
+    israel: "IL",
+    australia: "AU",
+    india: "IN",
+    singapore: "SG",
+    netherlands: "NL",
+    switzerland: "CH",
+    sweden: "SE",
+    spain: "ES",
+    italy: "IT",
+    brazil: "BR",
+    japan: "JP",
+  };
+  return map[trimmed] || null;
+}
+
+export function toDatasetFilter(
+  item: SearchQueryPlanItem,
+  fallbackCountry?: string,
+): DatasetFilter | null {
+  const query = sanitizeQueryText(item.query);
+  if (!query) return null;
+
+  const filters: DatasetFilterLeaf[] = [];
+
+  // 1. Country code filter
+  const rawCountry =
+    item.country ||
+    fallbackCountry ||
+    process.env.BRIGHTDATA_SEARCH_GEO_LOCATION ||
+    "";
+  const countryCode = normalizeCountryToCode(rawCountry);
+  if (countryCode) {
+    filters.push({ name: "country_code", operator: "=", value: countryCode });
+  }
+
+  // 2. Position / Role extraction
+  const commonRoles = [
+    "co-founder",
+    "founder",
+    "ceo",
+    "cto",
+    "cpo",
+    "cfo",
+    "cro",
+    "coo",
+    "cmo",
+    "cio",
+    "vp of engineering",
+    "vp of sales",
+    "vp of marketing",
+    "vp of product",
+    "vice president",
+    "vp",
+    "head of engineering",
+    "head of product",
+    "head of sales",
+    "head of growth",
+    "head of marketing",
+    "head",
+    "director of engineering",
+    "director of product",
+    "director of sales",
+    "director",
+    "partner",
+    "managing director",
+    "president",
+    "owner",
+    "lead architect",
+    "lead engineer",
+    "staff engineer",
+    "principal engineer",
+  ];
+
+  const lowerQuery = query.toLowerCase();
+  let matchedRole: string | undefined;
+  for (const role of commonRoles) {
+    const roleRegex = new RegExp(`\\b${role.replace("-", "[- ]")}s?\\b`, "i");
+    if (roleRegex.test(lowerQuery)) {
+      matchedRole = role;
+      break;
+    }
+  }
+
+  if (matchedRole) {
+    const titleVal = matchedRole
+      .split(/\s+/)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+    filters.push({ name: "position", operator: "includes", value: titleVal });
+  }
+
+  // 3. Location / City extraction
+  const techHubs = [
+    "san francisco",
+    "austin",
+    "new york",
+    "seattle",
+    "boston",
+    "los angeles",
+    "chicago",
+    "denver",
+    "miami",
+    "atlanta",
+    "london",
+    "toronto",
+    "berlin",
+    "paris",
+    "tel aviv",
+    "singapore",
+  ];
+  for (const hub of techHubs) {
+    const hubRegex = new RegExp(`\\b${hub}\\b`, "i");
+    if (hubRegex.test(lowerQuery)) {
+      const cityVal = hub
+        .split(/\s+/)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+      filters.push({ name: "city", operator: "includes", value: cityVal });
+      break;
+    }
+  }
+
+  // 4. If no position matched, use meaningful keyword
+  if (!matchedRole) {
+    const words = query.split(/\s+/).filter((w) => w.length > 2);
+    if (words.length > 0) {
+      filters.push({ name: "position", operator: "includes", value: words[0] });
+    }
+  }
+
+  if (filters.length === 0) {
+    return { name: "position", operator: "includes", value: query.slice(0, 50) };
+  }
+
+  if (filters.length === 1) {
+    return filters[0];
+  }
+
+  return {
+    operator: "and",
+    filters,
+  };
+}
+
 export { buildFallbackQueryPlan, buildStrategistPrompt } from './searchSpec.js';
+
 

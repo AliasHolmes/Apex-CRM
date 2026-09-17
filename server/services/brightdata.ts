@@ -100,8 +100,8 @@ let batchToolState: BatchToolState = {
 };
 
 const brightDataKeyPool = new ApiKeyPool("Bright Data", () =>
-  parseApiKeys(process.env.BRIGHTDATA_API_TOKENS, [
-    process.env.BRIGHTDATA_API_TOKEN,
+  parseApiKeys(process.env.BRIGHTDATA_API_TOKEN, [
+    process.env.BRIGHTDATA_API_TOKENS,
     process.env.API_TOKEN,
   ]),
 );
@@ -722,6 +722,10 @@ export function isBrightDataFreeTier() {
   return (process.env.BRIGHTDATA_PLAN || "free").trim().toLowerCase() !== "pro";
 }
 
+export function isBrightDataPro() {
+  return !isBrightDataFreeTier() && isBrightDataConfigured();
+}
+
 export function getBrightDataCapabilities() {
   const free = isBrightDataFreeTier();
   return {
@@ -736,6 +740,16 @@ export function getBrightDataCapabilities() {
             "search_engine",
             "scrape_as_markdown",
             "scrape_batch",
+            "search_dataset",
+            "list_dataset_fields",
+            "web_data_linkedin_person_profile",
+            "web_data_linkedin_company_profile",
+            "web_data_linkedin_job_listings",
+            "web_data_linkedin_posts",
+            "web_data_crunchbase_company",
+            "web_data_zoominfo_company_profile",
+            "scraping_browser_snapshot",
+            "scrape_as_html",
           ],
           unavailableTools: [] as string[],
         }),
@@ -874,19 +888,30 @@ async function connectLocalClient(apiToken: string, generation: number) {
   const timeoutSeconds = String(baseTimeoutSeconds());
   const maxRetries = String(baseMaxRetries());
   const safeEnv = { ...process.env };
-  delete (safeEnv as any)["PRO_MODE"];
-  delete (safeEnv as any)["GROUPS"];
-  delete (safeEnv as any)["TOOLS"];
+  const envOverrides: Record<string, string> = {
+    API_TOKEN: apiToken,
+    BRIGHTDATA_API_TOKEN: apiToken,
+    BASE_TIMEOUT: timeoutSeconds,
+    BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
+    BASE_MAX_RETRIES: maxRetries,
+  };
+
+  if (!isBrightDataFreeTier()) {
+    envOverrides.PRO_MODE = "true";
+    envOverrides.POLLING_TIMEOUT =
+      process.env.BRIGHTDATA_POLLING_TIMEOUT || "110";
+  } else {
+    delete (safeEnv as any)["PRO_MODE"];
+    delete (safeEnv as any)["GROUPS"];
+    delete (safeEnv as any)["TOOLS"];
+  }
+
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
     env: {
       ...safeEnv,
-      API_TOKEN: apiToken,
-      BRIGHTDATA_API_TOKEN: apiToken,
-      BASE_TIMEOUT: timeoutSeconds,
-      BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
-      BASE_MAX_RETRIES: maxRetries,
+      ...envOverrides,
     } as Record<string, string>,
     stderr: mcpStderrDebugEnabled() ? "inherit" : "pipe",
     cwd: process.cwd(),
@@ -930,7 +955,8 @@ async function initBrightDataClient() {
   }
   if (isBrightDataCoolingDown()) return null;
 
-  const mode = (process.env.BRIGHTDATA_MCP_TRANSPORT || "hosted").toLowerCase();
+  const defaultMode = !isBrightDataFreeTier() ? "local" : "hosted";
+  const mode = (process.env.BRIGHTDATA_MCP_TRANSPORT || defaultMode).toLowerCase();
   const attempts: BrightDataTransport[] =
     mode === "local"
       ? ["local"]
@@ -1318,6 +1344,293 @@ export async function scrapeAsMarkdown(
   }
 
   return null;
+}
+
+export interface DatasetFilterLeaf {
+  name: string;
+  operator: string;
+  value: string | number | boolean | Array<string | number | boolean>;
+}
+
+export interface DatasetFilterGroup {
+  operator: "and" | "or";
+  filters: Array<DatasetFilterGroup | DatasetFilterLeaf>;
+}
+
+export type DatasetFilter = DatasetFilterGroup | DatasetFilterLeaf;
+
+export interface BrightDataDatasetSearchResult {
+  hits: any[];
+  total_hits?: number;
+  took?: number;
+  search_after?: any[];
+}
+
+export async function brightDataSearchDataset(
+  datasetId: string,
+  filter: DatasetFilter,
+  size: number = 10,
+  sort?: "default" | "random" | Array<Record<string, "asc" | "desc">>,
+  searchAfter?: any[],
+  timeoutMs: number = 15_000,
+): Promise<BrightDataDatasetSearchResult | null> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+  const clampedSize = Math.min(10, Math.max(1, size || 10));
+
+  return await withBrightDataClient(
+    "search_dataset",
+    async (client) => {
+      const args: Record<string, any> = {
+        dataset_id: datasetId,
+        filter,
+        size: clampedSize,
+      };
+      if (sort !== undefined) args.sort = sort;
+      if (searchAfter !== undefined) args.search_after = searchAfter;
+
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "search_dataset", arguments: args },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data search_dataset",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data search_dataset returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return { hits: [] };
+      try {
+        const parsed = JSON.parse(text);
+        return {
+          hits: Array.isArray(parsed?.hits) ? parsed.hits : [],
+          total_hits: parsed?.total_hits,
+          took: parsed?.took,
+          search_after: parsed?.search_after,
+        };
+      } catch (err) {
+        console.warn("[brightdata] Failed to parse search_dataset JSON:", err);
+        return { hits: [] };
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataGetPersonProfile(
+  url: string,
+  timeoutMs: number = 120_000,
+): Promise<any | null> {
+  const targetUrl = normalizeBrightDataUrl(url);
+  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "web_data_linkedin_person_profile",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "web_data_linkedin_person_profile",
+            arguments: { url: targetUrl },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data web_data_linkedin_person_profile",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data web_data_linkedin_person_profile returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed[0] || null;
+        return parsed;
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataGetCompanyProfile(
+  url: string,
+  timeoutMs: number = 120_000,
+): Promise<any | null> {
+  const targetUrl = normalizeBrightDataUrl(url);
+  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "web_data_linkedin_company_profile",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "web_data_linkedin_company_profile",
+            arguments: { url: targetUrl },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data web_data_linkedin_company_profile",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data web_data_linkedin_company_profile returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) return parsed[0] || null;
+        return parsed;
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataGetLinkedInJobs(
+  url: string,
+  timeoutMs: number = 120_000,
+): Promise<any | null> {
+  const targetUrl = normalizeBrightDataUrl(url);
+  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "web_data_linkedin_job_listings",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "web_data_linkedin_job_listings",
+            arguments: { url: targetUrl },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data web_data_linkedin_job_listings",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data web_data_linkedin_job_listings returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataGetLinkedInPosts(
+  postUrl: string,
+  timeoutMs: number = 120_000,
+): Promise<any | null> {
+  const targetUrl = normalizeBrightDataUrl(postUrl);
+  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "web_data_linkedin_posts",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "web_data_linkedin_posts",
+            arguments: { url: targetUrl },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data web_data_linkedin_posts",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data web_data_linkedin_posts returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataScrapeAsHtml(
+  url: string,
+  timeoutMs: number = 60_000,
+): Promise<string | null> {
+  const targetUrl = normalizeBrightDataUrl(url);
+  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "scrape_as_html",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "scrape_as_html",
+            arguments: { url: targetUrl },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scrape_as_html",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scrape_as_html returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      return text && text.trim() ? text : null;
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
 }
 
 export type BrightDataBatchResult = {

@@ -1002,6 +1002,7 @@ export async function executeDiscoverySession(
       recoveryAttempts: Number(
         options.initialCheckpoint?.recoveryAttempts || 0,
       ),
+      datasetSearchAfter: options.initialCheckpoint?.datasetSearchAfter,
     };
 
     const pipelinePorts: PipelinePorts = {
@@ -1871,6 +1872,7 @@ export async function executeDiscoverySession(
           debugLogsTail: debugLogs.slice(-100),
           signalStoreState: sessionState.signalStore?.toJSON(),
           recoveryAttempts: sessionState.recoveryAttempts,
+          datasetSearchAfter: sessionState.datasetSearchAfter,
           updatedAt: new Date().toISOString(),
         });
         checkpointedQueryRunCount = stats.queryRuns.length;
@@ -2065,6 +2067,7 @@ export async function executeDiscoverySession(
       debugLogsTail: debugLogs.slice(-100),
       signalStoreState: sessionState.signalStore?.toJSON(),
       recoveryAttempts: sessionState.recoveryAttempts,
+      datasetSearchAfter: sessionState.datasetSearchAfter,
       updatedAt: new Date().toISOString(),
     });
     checkpointedQueryRunCount = stats.queryRuns.length;

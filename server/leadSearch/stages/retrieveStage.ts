@@ -5,11 +5,13 @@ import {
   shouldRunBrightDataForTask,
   type BrightDataSearchMode,
 } from "../discoveryRouting.js";
-import { toLinkedInSearchQuery } from "../strategist.js";
+import { toLinkedInSearchQuery, toDatasetFilter } from "../strategist.js";
 import {
   classifyBrightDataError,
   executeBrightDataSearchWithRetry,
   getBrightDataStatus,
+  isBrightDataPro,
+  brightDataSearchDataset,
   type BrightDataSearchResult,
   type BrightDataSearchOptions,
 } from "../../services/brightdata.js";
@@ -603,6 +605,119 @@ export async function executeRetrieveStage(
     }
   };
 
+  const executeBrightDataDatasetLane = async (
+    plans: { plan: (typeof roundPlans)[0]; index: number }[],
+  ) => {
+    if (plans.length === 0 || !isBrightDataPro()) return;
+
+    for (const { plan, index } of plans) {
+      const locationRequirement = config.contract?.requirements?.find(
+        (r) => r.category === "location",
+      );
+      const fallbackCountry = locationRequirement?.values?.[0];
+      const filter = toDatasetFilter(plan.item, fallbackCountry);
+      if (!filter) continue;
+
+      const startedAt = Date.now();
+      logEvent(
+        `Round ${round}: executing Bright Data Pro dataset search (gd_l1viktl72bvl7bjuj0)...`,
+      );
+      recordTrace({
+        phase: "search",
+        operation: "brightdata_dataset_search",
+        status: "started",
+        provider: "brightdata",
+        round,
+        query: plan.executableQuery,
+        metadata: { filter: JSON.stringify(filter) },
+      });
+
+      try {
+        const datasetResult = await brightDataSearchDataset(
+          "gd_l1viktl72bvl7bjuj0",
+          filter,
+          10,
+          undefined,
+          state.datasetSearchAfter,
+        );
+
+        if (datasetResult?.search_after) {
+          state.datasetSearchAfter = datasetResult.search_after;
+        }
+
+        const hits = datasetResult?.hits || [];
+        if (hits.length > 0) {
+          recordProviderUsage("brightdata", hits.length);
+          state.brightDataStats.succeeded += hits.length;
+          usingBrightDataSearch = true;
+
+          for (const hit of hits) {
+            if (!hit?.url) continue;
+            roundItems.push({
+              item: {
+                title: `${hit.position || "Professional"} at ${hit.current_company_name || (typeof hit.current_company === "object" ? hit.current_company?.name : "") || "Company"}`,
+                url: hit.url,
+                content: JSON.stringify(hit),
+                sourceProvider: "brightdata_dataset",
+                raw: {
+                  ...hit,
+                  sourceProvider: "brightdata_dataset",
+                },
+              },
+              resultIndex: index,
+            });
+          }
+
+          logEvent(
+            `Round ${round}: Bright Data dataset discovery found ${hits.length} structured dossiers in ${Date.now() - startedAt}ms.`,
+          );
+          recordTrace({
+            phase: "search",
+            operation: "brightdata_dataset_search",
+            status: "success",
+            provider: "brightdata",
+            round,
+            query: plan.executableQuery,
+            counts: { candidates: hits.length },
+            metadata: {
+              latencyMs: Date.now() - startedAt,
+              took: datasetResult?.took,
+              totalHits: datasetResult?.total_hits,
+            },
+          });
+        } else {
+          logEvent(
+            `Round ${round}: Bright Data dataset search returned 0 hits in ${Date.now() - startedAt}ms.`,
+          );
+          recordTrace({
+            phase: "search",
+            operation: "brightdata_dataset_search",
+            status: "completed",
+            provider: "brightdata",
+            round,
+            query: plan.executableQuery,
+            counts: { candidates: 0 },
+            metadata: { latencyMs: Date.now() - startedAt },
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logEvent(
+          `Round ${round}: Bright Data dataset search failed: ${msg}`,
+        );
+        recordTrace({
+          phase: "search",
+          operation: "brightdata_dataset_search",
+          status: "failed",
+          provider: "brightdata",
+          round,
+          query: plan.executableQuery,
+          metadata: { error: msg },
+        });
+      }
+    }
+  };
+
   const bdSearchMode = brightDataSearchMode as BrightDataSearchMode;
   const canAttemptBD =
     brightDataReady &&
@@ -632,10 +747,19 @@ export async function executeRetrieveStage(
         )
     : [];
 
-  // Run Wave 1 (Tavily || Unconditional Bright Data) concurrently in parallel
+  const datasetPlans =
+    isBrightDataPro() && canAttemptBD
+      ? roundPlans
+          .map((plan, index) => ({ plan, index }))
+          .filter(({ plan }) => !plan.item.lane || plan.item.lane === "person")
+          .slice(0, 1)
+      : [];
+
+  // Run Wave 1 (Tavily || Unconditional Bright Data || Bright Data Dataset) concurrently in parallel
   await Promise.all([
     executeTavilyLane(tavilyPlans),
     executeBrightDataLane(unconditionalBdPlans, "Wave 1 parallel"),
+    executeBrightDataDatasetLane(datasetPlans),
   ]);
 
   // Aggregate Tavily items into roundItems

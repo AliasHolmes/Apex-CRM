@@ -84,6 +84,7 @@ export type PipelineSessionState = {
   previousRoundSummary?: any;
   signalStore?: SignalStore;
   recoveryAttempts?: number;
+  datasetSearchAfter?: any[];
 };
 
 export type SessionContext = {
@@ -121,6 +122,7 @@ export type MiningSessionCheckpoint = {
   debugLogsTail?: any[];
   signalStoreState?: SignalStoreData;
   recoveryAttempts?: number;
+  datasetSearchAfter?: any[];
   updatedAt: string;
 };
 

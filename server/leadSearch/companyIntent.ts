@@ -1,4 +1,9 @@
-import { scrapeAsMarkdown } from '../services/brightdata.js';
+import {
+  scrapeAsMarkdown,
+  isBrightDataPro,
+  brightDataSearchDataset,
+  brightDataGetCompanyProfile,
+} from '../services/brightdata.js';
 import type { SearchSpec } from './searchSpec.js';
 import { UNIVERSAL_SIGNALS, type IntentSignalSpec } from './intentSignals.js';
 
@@ -319,4 +324,102 @@ export async function checkCompanyIntent(
     console.warn(`[checkCompanyIntent] failed for ${websiteUrl}:`, error instanceof Error ? error.message : String(error));
     return null;
   }
+}
+
+export interface CompanyFirmographics {
+  name?: string;
+  headcount?: string | number;
+  employeesInLinkedin?: number;
+  funding?: any;
+  investors?: any[];
+  crunchbaseUrl?: string;
+  website?: string;
+  industry?: string;
+  description?: string;
+}
+
+export async function fetchCompanyFirmographics(
+  identifier: { linkedinUrl?: string; domain?: string; companyName?: string },
+  abortSignal?: AbortSignal,
+): Promise<CompanyFirmographics | null> {
+  if (!isBrightDataPro() || abortSignal?.aborted) return null;
+
+  try {
+    let filter: any = null;
+    if (
+      identifier.linkedinUrl &&
+      identifier.linkedinUrl.includes("linkedin.com/company/")
+    ) {
+      filter = {
+        name: "url",
+        operator: "=",
+        value: identifier.linkedinUrl.trim(),
+      };
+    } else if (identifier.domain && identifier.companyName) {
+      const cleanDomain = identifier.domain
+        .replace(/^https?:\/\//, "")
+        .replace(/\/.*$/, "")
+        .toLowerCase();
+      filter = {
+        operator: "and",
+        filters: [
+          { name: "website_simplified", operator: "=", value: cleanDomain },
+          {
+            name: "name",
+            operator: "includes",
+            value: identifier.companyName.trim(),
+          },
+        ],
+      };
+    }
+
+    if (!filter) return null;
+
+    const result = await brightDataSearchDataset(
+      "gd_l1vikfnt1wgvvqz95w",
+      filter,
+      1,
+    );
+    const companyHit = result?.hits?.[0];
+    if (companyHit) {
+      return {
+        name: companyHit.name,
+        headcount: companyHit.company_size || companyHit.employees_in_linkedin,
+        employeesInLinkedin: companyHit.employees_in_linkedin,
+        funding: companyHit.funding,
+        investors: Array.isArray(companyHit.investors)
+          ? companyHit.investors
+          : [],
+        crunchbaseUrl: companyHit.crunchbase_url,
+        website: companyHit.website,
+        industry: companyHit.industry,
+        description: companyHit.about || companyHit.description,
+      };
+    }
+
+    if (identifier.linkedinUrl && !abortSignal?.aborted) {
+      const snapshot = await brightDataGetCompanyProfile(
+        identifier.linkedinUrl,
+        60_000,
+      );
+      if (snapshot) {
+        return {
+          name: snapshot.name,
+          headcount: snapshot.company_size || snapshot.employees_in_linkedin,
+          employeesInLinkedin: snapshot.employees_in_linkedin,
+          funding: snapshot.funding,
+          investors: Array.isArray(snapshot.investors)
+            ? snapshot.investors
+            : [],
+          crunchbaseUrl: snapshot.crunchbase_url,
+          website: snapshot.website,
+          industry: snapshot.industry,
+          description: snapshot.about || snapshot.description,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[companyIntent] Failed to fetch company firmographics:", err);
+  }
+  return null;
 }

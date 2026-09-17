@@ -10,7 +10,12 @@ import {
   getBrightDataStatus,
   BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
   isAuthwalledUrl,
+  isBrightDataFreeTier,
+  isBrightDataPro,
+  brightDataSearchDataset,
+  brightDataGetPersonProfile,
 } from "../../services/brightdata.js";
+import { formatExperienceBlock } from "./extractStage.js";
 import {
   getEnrichmentCacheEntriesBatch,
   upsertEnrichmentCacheEntry,
@@ -372,6 +377,74 @@ export async function executeEnrichStage(
       return false;
     };
 
+    const applyDatasetDossierToTarget = (
+      target: EnrichmentTarget,
+      dossier: any,
+    ) => {
+      if (!dossier) return false;
+      const hit = dossier;
+      const fullName =
+        hit.name ||
+        `${hit.first_name || ""} ${hit.last_name || ""}`.trim();
+      const currentTitle = hit.position || target.lead.currentTitle || "";
+      const currentCompany =
+        hit.current_company_name ||
+        (typeof hit.current_company === "object"
+          ? hit.current_company?.name
+          : "") ||
+        target.lead.currentCompany ||
+        "";
+      const experienceArray = Array.isArray(hit.experience)
+        ? hit.experience
+        : [];
+      const aboutText = hit.about || "";
+
+      const evidenceBlock = [
+        `LINK: ${target.url}`,
+        `TITLE: ${currentTitle} at ${currentCompany}`,
+        `[BRIGHTDATA DOSSIER]`,
+        aboutText ? `ABOUT: ${aboutText}` : "",
+        formatExperienceBlock(experienceArray),
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      target.evidenceMeta.sourceProvider = "brightdata";
+      target.evidenceMeta.evidenceQuality = "good";
+      target.evidenceMeta.evidenceBlock = evidenceBlock;
+      target.enriched = true;
+      target.highValue = true;
+      brightDataStats.profileScrapesSucceeded++;
+
+      if (fullName && !target.lead.fullName) target.lead.fullName = fullName;
+      if (currentTitle) target.lead.currentTitle = currentTitle;
+      if (currentCompany) {
+        target.lead.currentCompany = currentCompany;
+        target.lead.company = currentCompany;
+      }
+      if (hit.city || hit.location)
+        target.lead.location = hit.city || hit.location;
+      if (experienceArray.length > 0)
+        target.lead.experiences = experienceArray;
+      if (aboutText) target.lead.about = aboutText;
+
+      upsertEnrichmentCacheEntry(
+        {
+          normalizedUrl: target.normalizedUrl,
+          linkedinUsername: target.username,
+          personName: fullName || target.lead.fullName,
+          companyName: currentCompany,
+          evidenceBlock,
+          scrapeQuality: "good",
+          sourceProvider: "brightdata",
+        },
+        ttlDays,
+      );
+      stats.cacheWrites++;
+      refreshLeadEvidence(target);
+      return true;
+    };
+
     const targetsByUrl = new Map<string, EnrichmentTarget>();
     let reservedSlots = 0;
 
@@ -467,11 +540,96 @@ export async function executeEnrichStage(
     }
 
     const uncachedTargets = Array.from(targetsByUrl.values());
-    // Immediately ground authwalled profile targets (e.g. LinkedIn profiles) on snippet evidence
-    for (const target of uncachedTargets) {
-      if (isAuthwalledUrl(target.url)) {
-        target.enriched = true;
-        refreshLeadEvidence(target);
+
+    if (isBrightDataFreeTier()) {
+      // Immediately ground authwalled profile targets (e.g. LinkedIn profiles) on snippet evidence
+      for (const target of uncachedTargets) {
+        if (isAuthwalledUrl(target.url)) {
+          target.enriched = true;
+          refreshLeadEvidence(target);
+        }
+      }
+    } else {
+      // Pro mode: Structured 3-Tier Profile Waterfall for authwalled targets
+      const authwalledTargets = uncachedTargets.filter((t) =>
+        isAuthwalledUrl(t.url),
+      );
+
+      for (const target of authwalledTargets) {
+        // 1. If lead was already discovered via brightdata_dataset, it's already pre-enriched
+        if (
+          target.lead.sourceProvider === "brightdata" &&
+          (target.lead._rawDossier ||
+            target.evidenceMeta.evidenceQuality === "good")
+        ) {
+          target.enriched = true;
+          target.highValue = true;
+          refreshLeadEvidence(target);
+          continue;
+        }
+
+        // 2. Tier 2: Fast exact URL lookup in gd_l1viktl72bvl7bjuj0 (<1s)
+        const canonicalUrl = target.normalizedUrl
+          ? `https://${target.normalizedUrl}`
+          : target.url;
+        let enriched = false;
+        try {
+          const filter = {
+            name: "url",
+            operator: "=",
+            value: canonicalUrl,
+          };
+          const datasetResult = await brightDataSearchDataset(
+            "gd_l1viktl72bvl7bjuj0",
+            filter,
+            1,
+          );
+          if (datasetResult?.hits && datasetResult.hits.length > 0) {
+            applyDatasetDossierToTarget(target, datasetResult.hits[0]);
+            enriched = true;
+            recordProviderUsage("brightdata", 1);
+            logEvent(
+              `Round ${round}: Bright Data Pro Tier 2 dataset lookup enriched ${target.username || target.url} in ${datasetResult.took || 0}ms.`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[brightdata] Tier 2 dataset lookup failed for ${target.url}:`,
+            err,
+          );
+        }
+
+        // 3. Tier 3: Live Snapshot Collection (20-60s fallback for unindexed profiles)
+        if (!enriched && target.highValue && !brightDataProviderDisabled) {
+          try {
+            logEvent(
+              `Round ${round}: Bright Data Pro Tier 3 live snapshot triggering for ${target.username || target.url}...`,
+            );
+            const snapshotResult = await brightDataGetPersonProfile(
+              target.url,
+              120_000,
+            );
+            if (snapshotResult) {
+              applyDatasetDossierToTarget(target, snapshotResult);
+              enriched = true;
+              recordProviderUsage("brightdata", 1);
+              logEvent(
+                `Round ${round}: Bright Data Pro Tier 3 snapshot enriched ${target.username || target.url}.`,
+              );
+            }
+          } catch (err) {
+            console.warn(
+              `[brightdata] Tier 3 snapshot failed for ${target.url}:`,
+              err,
+            );
+          }
+        }
+
+        // Fallback: If not enriched by Pro dataset/snapshot, ground on snippet evidence
+        if (!enriched) {
+          target.enriched = true;
+          refreshLeadEvidence(target);
+        }
       }
     }
 

@@ -56,7 +56,20 @@ export function fuseObservations(observations: ScoutObservation[]): FusedObserva
     if (!existing.sourceProviders.includes(observation.provider)) existing.sourceProviders.push(observation.provider);
     if (!existing.sourceQueries.includes(observation.query)) existing.sourceQueries.push(observation.query);
     if (observation.lane && !existing.lanes.includes(observation.lane)) existing.lanes.push(observation.lane);
-    if (observation.content.length > existing.content.length) {
+    const isIncomingDataset =
+      observation.raw?.sourceProvider === "brightdata_dataset";
+    const isExistingDataset =
+      existing.raw?.sourceProvider === "brightdata_dataset";
+
+    if (isIncomingDataset && !isExistingDataset) {
+      existing.content = observation.content;
+      existing.title = observation.title || existing.title;
+      existing.url = observation.url || existing.url;
+      existing.raw = observation.raw;
+    } else if (
+      !isExistingDataset &&
+      observation.content.length > existing.content.length
+    ) {
       existing.content = observation.content;
       existing.title = observation.title || existing.title;
       existing.url = observation.url || existing.url;

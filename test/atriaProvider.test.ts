@@ -18,11 +18,13 @@ const MANAGED_KEYS = [
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'TOKEN_HARBOR_API_KEY',
+  'TOKEN_HARBOR_ENABLED',
   'ATRIA_API_KEY',
   'ATRIA_BASE',
   'ATRIA_MODEL',
   'ATRIA_PROVIDER_NAME',
   'ATRIA_PRIORITY',
+  'ATRIA_MAX_TOKENS',
   'LANGFUSE_PUBLIC_KEY',
   'LANGFUSE_SECRET_KEY',
 ] as const;
@@ -309,3 +311,196 @@ describe('truncation errors are never retried', () => {
     assert.equal(isTransientLLMError(new Error('LLM request timed out after 30000ms')), false);
   });
 });
+
+describe('Atria consecutive provider priority & dynamic reasoning', () => {
+  beforeEach(() => {
+    for (const key of MANAGED_KEYS) {
+      envSnapshot[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const key of MANAGED_KEYS) {
+      if (envSnapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = envSnapshot[key] as string;
+    }
+  });
+
+  it('guarantees exact consecutive provider priority: Atria -> Byesu -> OpenRouter -> Groq -> TokenHarbor', async () => {
+    process.env.ATRIA_API_KEY = 'test-atria-key';
+    process.env.ATRIA_PRIORITY = 'primary';
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+    process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
+    delete process.env.TOKEN_HARBOR_ENABLED;
+
+    const llm = await importLLM('consecutive-priority');
+    llm.resetTokenHarborRetirement();
+
+    const ids = llm
+      .getLLMProviderSummaries()
+      .filter((p: any) => p.configured)
+      .map((p: any) => p.id);
+
+    assert.deepEqual(ids, [
+      'atria',
+      'primary',
+      'openrouter',
+      'groq',
+      'tokenharbor',
+    ]);
+    assert.equal(llm.getPrimaryLLMProvider(), 'Atria');
+    assert.equal(llm.isAtriaPrimary(), true);
+    assert.equal(llm.isAtriaConfigured(), true);
+  });
+
+  it('clearProviderCooldowns resets 24h quota bans and temporary cooldowns', async () => {
+    const llm = await importLLM('cooldown-reset');
+    llm.providerCooldowns.set('primary', Date.now() + 24 * 3600 * 1000);
+    llm.providerCooldowns.set('atria', Date.now() + 30_000);
+    assert.equal(llm.providerCooldowns.size, 2);
+
+    llm.clearProviderCooldowns();
+    assert.equal(llm.providerCooldowns.size, 0);
+  });
+
+  it('computeAtriaDynamicMaxTokens provides flexible reasoning headroom based on task type and chunk size', async () => {
+    const llm = await importLLM('dynamic-tokens');
+
+    // 1. Diagnostics / test truncation calls (<= 50 tokens) are preserved without inflation
+    assert.equal(
+      llm.computeAtriaDynamicMaxTokens(10, [
+        { role: 'user', content: 'test prompt' },
+      ]),
+      10,
+    );
+
+    // 2. General task: requested 4000 + default headroom >= 7000
+    const generalBudget = llm.computeAtriaDynamicMaxTokens(4000, [
+      { role: 'user', content: 'Hello world' },
+    ]);
+    assert.ok(
+      generalBudget >= 7000,
+      `expected >= 7000, got ${generalBudget}`,
+    );
+
+    // 3. Heavy extraction chunk (8000 chars evidence): headroom scales up dynamically
+    const heavyEvidence = 'A'.repeat(8000);
+    const extractionBudget = llm.computeAtriaDynamicMaxTokens(
+      4000,
+      [{ role: 'user', content: heavyEvidence }],
+      { stage: 'extraction', chunkSize: 8000 },
+    );
+    assert.ok(
+      extractionBudget >= 10000,
+      `expected extraction budget >= 10000 for 8000-char chunk, got ${extractionBudget}`,
+    );
+    assert.ok(
+      extractionBudget > generalBudget,
+      'extraction budget should exceed general budget due to reasoning headroom',
+    );
+
+    // 4. Explicit ATRIA_MAX_TOKENS override is respected
+    process.env.ATRIA_MAX_TOKENS = '24000';
+    const overriddenBudget = llm.computeAtriaDynamicMaxTokens(4000, [
+      { role: 'user', content: 'short' },
+    ]);
+    assert.ok(
+      overriddenBudget >= 24000,
+      `expected >= 24000, got ${overriddenBudget}`,
+    );
+  });
+
+  it('passes flexible max_tokens and dynamic timeout to fetch for Atria extraction calls', async () => {
+    process.env.ATRIA_API_KEY = 'test-atria-key';
+    process.env.ATRIA_PRIORITY = 'primary';
+
+    const llm = await importLLM('atria-fetch-params');
+
+    let capturedBody: any = null;
+
+    globalThis.fetch = async (_url, options) => {
+      capturedBody = JSON.parse((options as RequestInit).body as string);
+      return jsonResponse({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: '{"leads":[]}' },
+          },
+        ],
+      });
+    };
+
+    const heavyChunk = 'EVIDENCE '.repeat(600); // ~5400 chars
+    await llm.openAIStructured(
+      `Extract all distinct individuals:\n${heavyChunk}`,
+      { type: 'object', properties: { leads: { type: 'array' } } },
+      'System prompt',
+      {
+        maxTokens: 4000,
+        metadata: { stage: 'extraction', chunkSize: heavyChunk.length },
+      },
+    );
+
+    assert.ok(
+      capturedBody.max_tokens >= 8000,
+      `expected max_tokens >= 8000 for heavy extraction, got ${capturedBody?.max_tokens}`,
+    );
+  });
+
+  it('keeps Byesu ahead of TokenHarbor when ATRIA_PRIORITY=primary even if ATRIA_API_KEY is unset', async () => {
+    delete process.env.ATRIA_API_KEY;
+    process.env.ATRIA_PRIORITY = 'primary';
+    process.env.OPENAI_API_KEY = 'test-primary-key';
+    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
+    delete process.env.TOKEN_HARBOR_ENABLED;
+
+    const llm = await importLLM('atria-absent-priority');
+    llm.resetTokenHarborRetirement();
+
+    const ids = llm
+      .getLLMProviderSummaries()
+      .filter((p: any) => p.configured)
+      .map((p: any) => p.id);
+
+    assert.equal(ids[0], 'primary', 'Byesu must remain primary when Atria key is missing');
+    assert.ok(ids.indexOf('primary') < ids.indexOf('tokenharbor'), 'Byesu must precede TokenHarbor');
+  });
+
+  it('computeAtriaDynamicMaxTokens scales flexibly without being locked to a static ceiling for large chunks', async () => {
+    const llm = await importLLM('large-chunk-budget');
+
+    // Extreme evidence chunk (35,000 chars)
+    const massiveChunk = 'X'.repeat(35000);
+    const massiveBudget = llm.computeAtriaDynamicMaxTokens(
+      4000,
+      [{ role: 'user', content: massiveChunk }],
+      { stage: 'extraction', chunkSize: 35000 },
+    );
+    // 4000 base + 35000 * 0.8 (28000) = 32000 tokens
+    assert.ok(
+      massiveBudget >= 32000,
+      `expected budget >= 32000 for 35k-char chunk, got ${massiveBudget}`,
+    );
+
+    // Handles empty or malformed messages gracefully
+    assert.equal(llm.computeAtriaDynamicMaxTokens(4000, [] as any), 7000);
+    assert.equal(
+      llm.computeAtriaDynamicMaxTokens(4000, [{ role: 'user', content: undefined as any }]),
+      7000,
+    );
+
+    // Detects judge stage from prompt text even when metadata is omitted
+    const judgeBudget = llm.computeAtriaDynamicMaxTokens(2000, [
+      { role: 'user', content: 'Evaluate these candidates and give your final verdict and disqualifications.' },
+    ]);
+    assert.ok(
+      judgeBudget >= 5500,
+      `expected judge headroom >= 3500 (total >= 5500), got ${judgeBudget}`,
+    );
+  });
+});
+

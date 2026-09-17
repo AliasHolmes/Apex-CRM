@@ -191,6 +191,15 @@ function isAtriaPromoted(): boolean {
   return (process.env.ATRIA_PRIORITY || "").toLowerCase() === "primary";
 }
 
+export function isAtriaConfigured(): boolean {
+  return Boolean(process.env.ATRIA_API_KEY);
+}
+
+export function isAtriaPrimary(): boolean {
+  const providers = getConfiguredLLMProviders();
+  return providers[0]?.id === "atria";
+}
+
 /** Returns the Atria provider when ATRIA_API_KEY is set, otherwise null (disabled). */
 function getAtriaProvider(): LLMProvider | null {
   const apiKey = process.env.ATRIA_API_KEY || "";
@@ -208,52 +217,67 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
   const tokenHarborKey = process.env.TOKEN_HARBOR_API_KEY || "";
-
-  if (isTokenHarborActive() && tokenHarborKey) {
-    direct.push({
-      id: "tokenharbor",
-      name: "Token Harbor (DeepSeek V4.1 Flash)",
-      baseUrl: cleanBaseUrl(
-        process.env.TOKEN_HARBOR_BASE || DEFAULT_TOKEN_HARBOR_BASE,
-      ),
-      model: process.env.TOKEN_HARBOR_MODEL || DEFAULT_TOKEN_HARBOR_MODEL,
-      apiKey: tokenHarborKey,
-    });
-  }
+  const tokenHarborProvider: LLMProvider | null =
+    isTokenHarborActive() && tokenHarborKey
+      ? {
+          id: "tokenharbor",
+          name: "Token Harbor (DeepSeek V4.1 Flash)",
+          baseUrl: cleanBaseUrl(
+            process.env.TOKEN_HARBOR_BASE || DEFAULT_TOKEN_HARBOR_BASE,
+          ),
+          model: process.env.TOKEN_HARBOR_MODEL || DEFAULT_TOKEN_HARBOR_MODEL,
+          apiKey: tokenHarborKey,
+        }
+      : null;
 
   const atria = getAtriaProvider();
-  if (atria && isAtriaPromoted()) {
+  const atriaPromoted = isAtriaPromoted();
+
+  if (atria && atriaPromoted) {
+    // 1) Atria (Primary)
     direct.push(atria);
+  } else if (tokenHarborProvider && !atriaPromoted) {
+    // Legacy trial: Token Harbor ahead of Byesu only when Atria is not promoted
+    direct.push(tokenHarborProvider);
   }
 
-  direct.push(
-    {
-      id: "primary",
-      name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
-      baseUrl: cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE),
-      model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
-      apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
-    },
-    {
-      id: "openrouter",
-      name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
-      baseUrl: cleanBaseUrl(
-        process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE,
-      ),
-      model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
-      apiKey: process.env.OPENROUTER_API_KEY || "",
-      headers: getOpenRouterHeaders(),
-    },
-    {
-      id: "groq",
-      name: "Groq",
-      baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
-      model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
-      apiKey: process.env.GROQ_API_KEY || "",
-    },
-  );
+  // 2) Byesu (Secondary when Atria is primary)
+  direct.push({
+    id: "primary",
+    name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
+    baseUrl: cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE),
+    model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
+    apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
+  });
 
-  if (atria && !isAtriaPromoted()) {
+  // 3) OpenRouter / Mistral (Tertiary)
+  direct.push({
+    id: "openrouter",
+    name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
+    baseUrl: cleanBaseUrl(
+      process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE,
+    ),
+    model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+    apiKey: process.env.OPENROUTER_API_KEY || "",
+    headers: getOpenRouterHeaders(),
+  });
+
+  // 4) Groq (Quaternary)
+  direct.push({
+    id: "groq",
+    name: "Groq",
+    baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
+    model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+    apiKey: process.env.GROQ_API_KEY || "",
+  });
+
+  // 5) TokenHarbor / others (quinary when Atria is promoted)
+  if (tokenHarborProvider && atriaPromoted) {
+    direct.push(tokenHarborProvider);
+  }
+
+  // Atria appended last when not promoted
+  if (atria && !atriaPromoted) {
     direct.push(atria);
   }
 
@@ -410,11 +434,21 @@ async function fetchWithRetry(
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
   maxRetries = Number(process.env.LLM_MAX_RETRIES || 1),
+  isAtria = false,
 ): Promise<Response> {
-  const effectiveTimeoutMs = Math.min(
-    Number(timeoutMs || CLOUDFLARE_MAX_TIMEOUT_MS),
-    CLOUDFLARE_MAX_TIMEOUT_MS,
-  );
+  const atriaConfiguredBase = process.env.ATRIA_BASE
+    ? cleanBaseUrl(process.env.ATRIA_BASE)
+    : "";
+  const isAtriaUrl =
+    isAtria ||
+    /atria-asi\.ai|atria/i.test(url) ||
+    (atriaConfiguredBase ? url.startsWith(atriaConfiguredBase) : false);
+  const effectiveTimeoutMs = isAtriaUrl
+    ? Number(timeoutMs || process.env.LLM_TIMEOUT_MS || 120_000)
+    : Math.min(
+        Number(timeoutMs || CLOUDFLARE_MAX_TIMEOUT_MS),
+        CLOUDFLARE_MAX_TIMEOUT_MS,
+      );
   const retry429 =
     process.env.LLM_RETRY_429 !== "false" && maxRetries > 0;
   const effectiveMaxRetries = maxRetries;
@@ -542,7 +576,7 @@ async function fetchWithRetry(
       }
       if (isFetchTimeout) {
         lastError = new Error(
-          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s (bounded within Cloudflare 120s limit)`,
+          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s${isAtriaUrl ? " (adaptive reasoning timeout)" : " (bounded within Cloudflare 120s limit)"}`,
         );
         break;
       }
@@ -912,6 +946,91 @@ async function withProviderFallback<T>(
   throw failureErr;
 }
 
+export function computeAtriaDynamicMaxTokens(
+  requestedMaxTokens: number | undefined,
+  messages: ChatMessage[],
+  metadata?: Record<string, any>,
+): number {
+  // If caller explicitly requested a tiny budget (<= 50 tokens, e.g. for testing truncation errors),
+  // honor it directly without inflating.
+  if (
+    requestedMaxTokens !== undefined &&
+    requestedMaxTokens > 0 &&
+    requestedMaxTokens <= 50
+  ) {
+    return requestedMaxTokens;
+  }
+
+  const baseRequested =
+    requestedMaxTokens !== undefined && requestedMaxTokens > 0
+      ? requestedMaxTokens
+      : 4000;
+
+  // Calculate total prompt characters from messages and metadata safely
+  const messageChars = (Array.isArray(messages) ? messages : []).reduce(
+    (acc, m) =>
+      acc + (typeof m?.content === "string" ? m.content.length : 0),
+    0,
+  );
+  const chunkChars = Number(metadata?.chunkSize || 0);
+  const effectiveInputChars = Math.max(messageChars, chunkChars);
+
+  // Identify task type / stage
+  const stage = String(
+    metadata?.stage || metadata?.taskType || "",
+  ).toLowerCase();
+  const isExtraction =
+    stage === "extraction" ||
+    /extract/i.test(stage) ||
+    messages.some(
+      (m) =>
+        typeof m?.content === "string" &&
+        /evidence blocks|extract all distinct/i.test(m.content),
+    );
+  const isJudgeOrVerify =
+    stage === "judge" ||
+    /judge|verify|finalist/i.test(stage) ||
+    messages.some(
+      (m) =>
+        typeof m?.content === "string" &&
+        /finalist|verdict|judge|disqualif/i.test(m.content),
+    );
+
+  let reasoningHeadroom = 4000;
+
+  if (isExtraction) {
+    // Extraction: requires deep thinking over multi-source evidence blocks.
+    // Scales dynamically with chunk size / prompt length without an artificial ceiling.
+    reasoningHeadroom = Math.max(
+      4000,
+      Math.round(effectiveInputChars * 0.8),
+    );
+  } else if (isJudgeOrVerify) {
+    // Evaluation / verification of prospect criteria
+    reasoningHeadroom = Math.max(
+      3500,
+      Math.round(effectiveInputChars * 0.6),
+    );
+  } else {
+    // General / strategist / contract generation
+    reasoningHeadroom = Math.max(
+      3000,
+      Math.round(effectiveInputChars * 0.5),
+    );
+  }
+
+  // Combined token budget for Atria (reasoning_content + visible content)
+  const flexibleBudget = baseRequested + reasoningHeadroom;
+
+  // Allow explicit env override if provided, otherwise allow flexible budget without static ceiling
+  const envOverride = Number(process.env.ATRIA_MAX_TOKENS || 0);
+  if (envOverride > 0) {
+    return Math.max(flexibleBudget, envOverride);
+  }
+
+  return Math.max(4000, flexibleBudget);
+}
+
 async function sendChatCompletion(
   provider: LLMProvider,
   messages: ChatMessage[],
@@ -932,8 +1051,40 @@ async function sendChatCompletion(
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, 950)
       : isAtriaTarget
-        ? Math.max(options?.maxTokens ? options.maxTokens + 3000 : 4000, 4000)
+        ? computeAtriaDynamicMaxTokens(
+            options?.maxTokens,
+            messages,
+            options?.metadata,
+          )
         : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+
+  let timeoutForCall = options?.timeoutMs;
+  if (isAtriaTarget) {
+    const promptChars = (Array.isArray(messages) ? messages : []).reduce(
+      (acc, m) =>
+        acc + (typeof m?.content === "string" ? m.content.length : 0),
+      0,
+    );
+    const chunkChars = Number(options?.metadata?.chunkSize || 0);
+    const effectiveChars = Math.max(promptChars, chunkChars);
+    const stage = String(options?.metadata?.stage || "").toLowerCase();
+    const isExtraction = stage === "extraction" || /extract/i.test(stage);
+
+    // Compute dynamic adaptive timeout for Atria (120s–180s for heavy chunks)
+    const minAtriaTimeout = 120_000;
+    const maxAtriaTimeout = 180_000;
+    let adaptiveTimeout = minAtriaTimeout;
+    if (isExtraction || effectiveChars > 3000) {
+      const scale = Math.min(1, Math.max(0, (effectiveChars - 2000) / 6000));
+      adaptiveTimeout = Math.round(
+        minAtriaTimeout + scale * (maxAtriaTimeout - minAtriaTimeout),
+      );
+    }
+    if (!options?.timeoutMs || options.timeoutMs >= 1000) {
+      timeoutForCall = Math.max(options?.timeoutMs || 0, adaptiveTimeout);
+    }
+  }
+
   const sessionHeaders: Record<string, string> = {};
   if (options?.metadata?.sessionId) {
     sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
@@ -971,8 +1122,9 @@ async function sendChatCompletion(
         }),
         signal: options?.signal,
       },
-      options?.timeoutMs,
+      timeoutForCall,
       options?.maxRetries,
+      isAtriaTarget,
     );
   } catch (error: any) {
     if (error?.name === "AbortError" || options?.signal?.aborted) {

@@ -353,6 +353,12 @@ export async function evaluateIncrementalJudgeBatches(
           ),
           circuitBreaker: llmCircuitBreaker,
           signal: state.abortController.signal,
+          metadata: {
+            stage: "judge",
+            candidateCount: batch.length,
+            promptSize: judgePrompt.length,
+            sessionId: config.sessionId,
+          },
           onProviderAttempt: (attempt) => judgeAttempts.push(attempt),
           onUsage: (usage) => {
             judgeUsage = usage;

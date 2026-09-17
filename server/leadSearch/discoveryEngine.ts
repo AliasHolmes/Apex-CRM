@@ -25,6 +25,7 @@ import {
   createLLMSessionCircuitBreaker,
   normalizeTavilyCountry,
   DEFAULT_PRIMARY_MODEL,
+  clearProviderCooldowns,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../services/llm.js";
@@ -276,6 +277,10 @@ export async function executeDiscoverySession(
     activeSessionEvents,
     cancelledSessions,
   } = options;
+
+  // Clear in-memory provider cooldowns so stale 24-hour quota bans or temporary
+  // rate-limit cooldowns from previous sessions never persist into a new mining session.
+  clearProviderCooldowns();
 
   const sessionLogs: string[] = [];
   const debugLogs: any[] = [];

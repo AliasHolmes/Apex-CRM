@@ -36,6 +36,8 @@ const MANAGED_KEYS = [
   'LLM_RETRY_429',
   'BYESU_API_KEY',
   'APP_URL',
+  'LANGFUSE_PUBLIC_KEY',
+  'LANGFUSE_SECRET_KEY',
 ] as const;
 
 const envSnapshot: Record<string, string | undefined> = {};

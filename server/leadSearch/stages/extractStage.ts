@@ -18,6 +18,9 @@ import {
   bulkLeadsArraySchema,
   EXTRACTION_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
+  isAtriaConfigured,
+  isAtriaPrimary,
+  CLOUDFLARE_MAX_TIMEOUT_MS,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -672,6 +675,26 @@ Evidence:
         Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_RETRIES ?? 1), 0),
         2,
       );
+      const isAtria = isAtriaPrimary() || isAtriaConfigured();
+      const chunkChars = chunk.length;
+      let extractionTimeoutMs: number;
+      if (isAtria) {
+        // Atria: reasoning model requiring 120s–180s for heavy evidence chunks
+        const scale = Math.min(1, Math.max(0, (chunkChars - 2000) / 6000));
+        const dynamicTimeout = Math.round(120_000 + scale * 60_000); // 120s to 180s
+        const configuredTimeout = Number(
+          process.env.LLM_EXTRACTION_TIMEOUT_MS || 0,
+        );
+        extractionTimeoutMs =
+          configuredTimeout > 0
+            ? Math.max(configuredTimeout, dynamicTimeout)
+            : dynamicTimeout;
+      } else {
+        extractionTimeoutMs = Math.min(
+          CLOUDFLARE_MAX_TIMEOUT_MS,
+          Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),
+        );
+      }
       const extracted = await runWithTransientRetry(
         () =>
           openAIStructured<any[]>(
@@ -684,10 +707,14 @@ Evidence:
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
               reasoningEffort: "low",
-              timeoutMs: Math.min(
-                120_000,
-                Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),
-              ),
+              timeoutMs: extractionTimeoutMs,
+              metadata: {
+                stage: "extraction",
+                chunkIndex,
+                chunkTotal: chunks.length,
+                chunkSize: chunk.length,
+                sessionId: config.sessionId,
+              },
               onProviderAttempt: (attempt) =>
                 extractionProviderAttempts.push(attempt),
               onUsage: (usage) => {

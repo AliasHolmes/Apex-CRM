@@ -85,6 +85,7 @@ export type ProspectContract = {
   exclusions: string[];
   initialQueries: SearchQueryPlanItem[];
   intentSignals?: IntentSignalSpec;
+  droppedUngroundedRequirements?: Array<{ phrase: string; scope: string }>;
 };
 
 const clean = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -1104,6 +1105,7 @@ export function normalizeProspectContract(
   const rawRequirements = Array.isArray(raw.requirements) ? raw.requirements : [];
   const requirements: ProspectRequirement[] = [];
   const scopeCounts = new Map<RequirementScope, number>();
+  const droppedUngroundedRequirements: Array<{ phrase: string; scope: string }> = [];
   for (const item of rawRequirements) {
     const scope = clean(item?.scope) as RequirementScope;
     if (!permittedScopes.has(scope)) continue;
@@ -1111,6 +1113,7 @@ export function normalizeProspectContract(
     const importance = item?.importance === 'soft' ? 'soft' : 'hard';
     if (importance === 'hard' && !sourceAppearsInBrief(sourcePhrase, brief)) {
       console.warn(`[prospectContract] Dropping ungrounded hard requirement "${sourcePhrase}" (${scope}) from LLM contract not in brief.`);
+      droppedUngroundedRequirements.push({ phrase: sourcePhrase, scope });
       continue;
     }
     const rawTerms = unique(Array.isArray(item?.acceptableTerms) ? item.acceptableTerms : [sourcePhrase]);
@@ -1312,9 +1315,12 @@ export function normalizeProspectContract(
     authorityRequired: Boolean(raw.authorityRequired) || inferredAuthority(finalRequirements),
     requirements: finalRequirements,
     exclusions,
-    initialQueries: initialQueries.length ? initialQueries : buildContractFallbackQueries(brief, finalRequirements)
+    initialQueries: initialQueries.length ? initialQueries : buildContractFallbackQueries(brief, finalRequirements),
+    droppedUngroundedRequirements: droppedUngroundedRequirements.length ? droppedUngroundedRequirements : undefined
   };
 }
+
+export const validateCompiledProspectContract = normalizeProspectContract;
 
 const includesAny = (query: string, terms: string[]) => terms.some(term => lower(query).includes(lower(term)));
 

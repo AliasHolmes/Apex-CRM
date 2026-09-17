@@ -181,6 +181,24 @@ export class LeadQueryRunTracker {
       this.map.set(key, run);
     }
   }
+
+  relink(queryRuns: QueryRunStats[]): void {
+    if (!Array.isArray(queryRuns) || queryRuns.length === 0) return;
+    const runByKey = new Map<string, QueryRunStats>();
+    for (const run of queryRuns) {
+      if (run && run.query !== undefined) {
+        runByKey.set(`${run.round}:${run.query}`, run);
+      }
+    }
+    for (const [key, run] of this.map.entries()) {
+      if (run && run.query !== undefined) {
+        const match = runByKey.get(`${run.round}:${run.query}`);
+        if (match) {
+          this.map.set(key, match);
+        }
+      }
+    }
+  }
 }
 
 export type StageResult<T = void> = {

@@ -41,16 +41,19 @@ export function ResumableSessionsBanner({
       const raw = Array.isArray(data.sessions) ? data.sessions : [];
       const parsed: ResumableSession[] = raw.map((s: any) => {
         let cp = null;
-        if (s.checkpoint_json) {
-          try {
-            const parsedCp = typeof s.checkpoint_json === 'string' ? JSON.parse(s.checkpoint_json) : s.checkpoint_json;
-            cp = {
-              round: parsedCp.round || 1,
-              stage: parsedCp.stage || 'enrich',
-              acceptedLeadsCount: Array.isArray(parsedCp.acceptedLeads) ? parsedCp.acceptedLeads.length : 0,
-              updatedAt: parsedCp.updatedAt || s.startedAt
-            };
-          } catch {}
+        const cpSource = s.checkpoint || (s.checkpoint_json ? (() => { try { return typeof s.checkpoint_json === 'string' ? JSON.parse(s.checkpoint_json) : s.checkpoint_json; } catch { return null; } })() : null);
+        if (cpSource) {
+          cp = {
+            round: cpSource.round || 1,
+            stage: cpSource.stage || 'enrich',
+            acceptedLeadsCount:
+              typeof cpSource.acceptedLeadsCount === 'number'
+                ? cpSource.acceptedLeadsCount
+                : Array.isArray(cpSource.acceptedLeads)
+                  ? cpSource.acceptedLeads.length
+                  : 0,
+            updatedAt: cpSource.updatedAt || s.startedAt || s.started_at,
+          };
         }
         return {
           id: s.id,

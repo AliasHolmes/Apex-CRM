@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 const originalFetch = globalThis.fetch;
-const originalEnv = { ...process.env };
+
+const MANAGED_KEYS = [
+  'TAVILY_API_KEYS',
+  'TAVILY_API_KEY',
+  'TAVILY_COUNTRY',
+  'TAVILY_BACKOFF_BASE_MS',
+] as const;
+
+const envSnapshot: Record<string, string | undefined> = {};
 
 async function importLLM(suffix: string) {
   return import(`../server/services/llm.ts?t=${Date.now()}-${suffix}`);
@@ -10,17 +18,18 @@ async function importLLM(suffix: string) {
 
 describe('Tavily key rotation', () => {
   beforeEach(() => {
-    for (const key of Object.keys(process.env)) {
+    for (const key of MANAGED_KEYS) {
+      envSnapshot[key] = process.env[key];
       delete process.env[key];
     }
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    for (const key of Object.keys(process.env)) {
-      delete process.env[key];
+    for (const key of MANAGED_KEYS) {
+      if (envSnapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = envSnapshot[key] as string;
     }
-    Object.assign(process.env, originalEnv);
   });
 
   it('rotates tavilySearch from an exhausted key to a healthy key', async () => {

@@ -300,7 +300,7 @@ export function estimateLLMCostUsd(inputTokens = 0, outputTokens = 0): number {
 }
 
 export function getLLMRouteLabel() {
-  const mode = process.env.LLM_GATEWAY_MODE || "direct";
+  const mode = "direct";
   const model = getPrimaryLLMModel();
   const provider = getPrimaryLLMProvider();
   return { mode, model, provider, route: `${mode}:${model}` };

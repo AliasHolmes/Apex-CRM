@@ -647,8 +647,10 @@ export async function executeDiscoverySession(
             DEFAULT_PRIMARY_MODEL;
           const latency = Date.now() - contractStarted;
           const tokens = contractUsage?.totalTokens;
+          const droppedCount = contract.droppedUngroundedRequirements?.length || 0;
+          const droppedInfo = droppedCount > 0 ? `, ${droppedCount} dropped ungrounded` : "";
           logEvent(
-            `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Contract Compilation: v${contract.policyVersion} (${hardCount} hard reqs)]`,
+            `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Contract Compilation: v${contract.policyVersion} (${hardCount} hard reqs${droppedInfo})]`,
           );
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
         } catch (err: any) {
@@ -671,6 +673,18 @@ export async function executeDiscoverySession(
       status: "info",
       metadata: taxonomySummary,
     });
+
+    if (contract.droppedUngroundedRequirements && contract.droppedUngroundedRequirements.length > 0) {
+      recordTrace({
+        phase: "strategy",
+        provider: "system",
+        operation: "contract_dropped_ungrounded",
+        query: "contract.dropped_ungrounded",
+        status: "info",
+        counts: { droppedCount: contract.droppedUngroundedRequirements.length },
+        metadata: { dropped: contract.droppedUngroundedRequirements },
+      });
+    }
 
     // Apply contract synonyms to searchSpec
     searchSpec = searchSpecFromProspectContract(searchSpec, contract);
@@ -1081,6 +1095,7 @@ export async function executeDiscoverySession(
       }
       if (cp.leadQueryRunMap) {
         leadQueryRuns.fromJSON(cp.leadQueryRunMap);
+        leadQueryRuns.relink(stats.queryRuns);
       }
       // Restore crash-time debug context so post-resume diagnostics retain
       // what happened before the interruption.

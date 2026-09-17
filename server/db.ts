@@ -1648,7 +1648,18 @@ export function getLeadsETag(queryParams?: Record<string, any>): string {
     .get() as { max_updated?: string; count?: number } | undefined;
   const maxUpdated = row?.max_updated || "0";
   const count = Number(row?.count || 0);
-  const qStr = queryParams ? JSON.stringify(queryParams) : "";
+  let qStr = "";
+  if (queryParams && typeof queryParams === "object") {
+    const ignoredKeys = new Set(["_t", "_", "timestamp", "t", "cachebuster", "_cachebuster"]);
+    const sortedKeys = Object.keys(queryParams)
+      .filter((k) => !ignoredKeys.has(k.toLowerCase()))
+      .sort();
+    const sortedObj: Record<string, any> = {};
+    for (const k of sortedKeys) {
+      sortedObj[k] = queryParams[k];
+    }
+    qStr = JSON.stringify(sortedObj);
+  }
   const hash = crypto.createHash("md5").update(`${maxUpdated}:${count}:${qStr}`).digest("hex").slice(0, 16);
   return `W/"${hash}"`;
 }
@@ -3295,18 +3306,18 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_key) DO UPDATE SET
       domain_cluster = excluded.domain_cluster,
-      runs = CAST(ROUND(query_performance.runs * 0.95 + excluded.runs) AS INTEGER),
-      raw_candidates = CAST(ROUND(query_performance.raw_candidates * 0.95 + excluded.raw_candidates) AS INTEGER),
-      unique_candidates = CAST(ROUND(query_performance.unique_candidates * 0.95 + excluded.unique_candidates) AS INTEGER),
-      extracted_candidates = CAST(ROUND(query_performance.extracted_candidates * 0.95 + excluded.extracted_candidates) AS INTEGER),
-      accepted_candidates = CAST(ROUND(query_performance.accepted_candidates * 0.95 + excluded.accepted_candidates) AS INTEGER),
-      duplicate_candidates = CAST(ROUND(query_performance.duplicate_candidates * 0.95 + excluded.duplicate_candidates) AS INTEGER),
+      runs = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.runs * 0.95 + excluded.runs) AS INTEGER) ELSE query_performance.runs END,
+      raw_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.raw_candidates * 0.95 + excluded.raw_candidates) AS INTEGER) ELSE query_performance.raw_candidates END,
+      unique_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.unique_candidates * 0.95 + excluded.unique_candidates) AS INTEGER) ELSE query_performance.unique_candidates END,
+      extracted_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.extracted_candidates * 0.95 + excluded.extracted_candidates) AS INTEGER) ELSE query_performance.extracted_candidates END,
+      accepted_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.accepted_candidates * 0.95 + excluded.accepted_candidates) AS INTEGER) ELSE query_performance.accepted_candidates END,
+      duplicate_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.duplicate_candidates * 0.95 + excluded.duplicate_candidates) AS INTEGER) ELSE query_performance.duplicate_candidates END,
       outcome_runs = CAST(ROUND(query_performance.outcome_runs * 0.95 + excluded.outcome_runs) AS INTEGER),
       qualified_candidates = CAST(ROUND(query_performance.qualified_candidates * 0.95 + excluded.qualified_candidates) AS INTEGER),
       rescued_candidates = CAST(ROUND(query_performance.rescued_candidates * 0.95 + excluded.rescued_candidates) AS INTEGER),
       returned_candidates = CAST(ROUND(query_performance.returned_candidates * 0.95 + excluded.returned_candidates) AS INTEGER),
       search_latency_ms = CASE WHEN excluded.search_latency_ms > 0 THEN CAST(ROUND(query_performance.search_latency_ms * 0.95 + excluded.search_latency_ms) AS INTEGER) ELSE query_performance.search_latency_ms END,
-      provider_units = CAST(ROUND(query_performance.provider_units * 0.95 + excluded.provider_units) AS INTEGER),
+      provider_units = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.provider_units * 0.95 + excluded.provider_units) AS INTEGER) ELSE query_performance.provider_units END,
       judged_candidates = CAST(ROUND(query_performance.judged_candidates * 0.95 + excluded.judged_candidates) AS INTEGER),
       hard_failed_candidates = CAST(ROUND(query_performance.hard_failed_candidates * 0.95 + excluded.hard_failed_candidates) AS INTEGER),
       unknown_candidates = CAST(ROUND(query_performance.unknown_candidates * 0.95 + excluded.unknown_candidates) AS INTEGER),
@@ -3612,7 +3623,11 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
   const rows = getLeadsDb()
     .prepare(
       `
-      SELECT id, status, prompt, requested_limit, started_at, completed_at, cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at, checkpoint_json
+      SELECT id, status, prompt, requested_limit, started_at, completed_at, cancellation_requested_at, error_message, stats_json, trace_summary_json, updated_at,
+             json_extract(checkpoint_json, '$.round') AS cp_round,
+             json_extract(checkpoint_json, '$.stage') AS cp_stage,
+             COALESCE(json_array_length(checkpoint_json, '$.acceptedLeads'), 0) AS cp_accepted_count,
+             json_extract(checkpoint_json, '$.updatedAt') AS cp_updated_at
       FROM mining_sessions
       WHERE status IN ('interrupted', 'error', 'cancelled') AND checkpoint_json IS NOT NULL
       ORDER BY updated_at DESC
@@ -3620,7 +3635,16 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
     `,
     )
     .all() as any[];
-  return rows.map(toMiningSessionRecord);
+  return rows.map((row) => {
+    const record = toMiningSessionRecord(row);
+    record.checkpoint = {
+      round: Number(row.cp_round || 1),
+      stage: row.cp_stage || "enrich",
+      acceptedLeadsCount: Number(row.cp_accepted_count || 0),
+      updatedAt: row.cp_updated_at || row.updated_at,
+    } as any;
+    return record;
+  });
 }
 
 export function saveMiningSessionCheckpoint(
@@ -3760,7 +3784,7 @@ export function upsertMiningSession(
     },
 ) {
   const db = getLeadsDb();
-  const existing = readMiningSessionById(update.id);
+  const existing = readMiningSessionSummaryById(update.id);
   const now = update.updatedAt || new Date().toISOString();
   const record: MiningSessionRecord = {
     id: update.id,
@@ -3780,6 +3804,12 @@ export function upsertMiningSession(
     updatedAt: now,
   };
 
+  const hasCheckpointUpdate = update.checkpoint !== undefined ? 1 : 0;
+  const checkpointJsonParam =
+    update.checkpoint !== undefined
+      ? (update.checkpoint ? JSON.stringify(update.checkpoint) : null)
+      : null;
+
   db.prepare(
     `
     INSERT INTO mining_sessions (
@@ -3796,7 +3826,7 @@ export function upsertMiningSession(
       error_message = excluded.error_message,
       stats_json = excluded.stats_json,
       trace_summary_json = excluded.trace_summary_json,
-      checkpoint_json = COALESCE(excluded.checkpoint_json, mining_sessions.checkpoint_json),
+      checkpoint_json = CASE WHEN ? = 1 THEN excluded.checkpoint_json ELSE mining_sessions.checkpoint_json END,
       updated_at = excluded.updated_at
   `,
   ).run(
@@ -3810,8 +3840,9 @@ export function upsertMiningSession(
     record.errorMessage || null,
     record.stats ? JSON.stringify(record.stats) : null,
     record.traceSummary ? JSON.stringify(record.traceSummary) : null,
-    record.checkpoint ? JSON.stringify(record.checkpoint) : null,
+    checkpointJsonParam,
     record.updatedAt,
+    hasCheckpointUpdate,
   );
 
   return record;

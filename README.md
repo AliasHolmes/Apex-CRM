@@ -145,10 +145,8 @@ graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
     API --> DB[("SQLite Database (node:sqlite, Schema v21, WAL mode)")]
 
-    API --> Gateway["LiteLLM Gateway (127.0.0.1:4000)"]
-    API --> Direct["Direct OpenAI-Compatible Fallback Chain"]
-    Gateway --> Primary["Primary LLM Model"]
-    Direct --> Byesu["Byesu Provider"]
+    API --> Direct["Direct OpenAI-Compatible Provider Chain"]
+    Direct --> Primary["Atria / Byesu Provider"]
     Direct --> OpenRouter["OpenRouter"]
     Direct --> Groq["Groq"]
 
@@ -164,7 +162,7 @@ graph TD
 - **Frontend**: React 19, Vite 6, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 5.9, Express 5, `p-queue` rate limiting.
 - **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (version 14), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
-- **LLM Routing**: LiteLLM proxy gateway or direct OpenAI-compatible provider fallback chain (Byesu -> OpenRouter -> Groq) with session circuit breaker.
+- **LLM Routing**: Direct OpenAI-compatible provider chain with automatic fallback (Atria / Byesu -> OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
 ---
@@ -176,7 +174,6 @@ graph TD
 - Node.js 24 or newer (for native `node:sqlite`).
 - At least one OpenAI-compatible LLM endpoint/key.
 - At least one search provider: Tavily or Bright Data (both recommended for hybrid discovery).
-- Python 3.12 (optional, only when using `LLM_GATEWAY_MODE="litellm"`).
 
 ### Installation
 
@@ -195,7 +192,6 @@ cp .env.example .env
 A minimal `.env` setup:
 
 ```env
-LLM_GATEWAY_MODE="direct"
 OPENAI_API_KEY="your_primary_key"
 OPENAI_BASE="https://your-openai-compatible-provider.example/v1"
 OPENAI_MODEL="your_model"
@@ -363,7 +359,6 @@ server/
   db.ts                      SQLite v21 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
 test/                        Automated unit, integration, and replay test suites (264 tests)
 scripts/                     Dev orchestrator and server runners
-litellm.config.yaml          LiteLLM proxy configuration
 .env.example                 Configuration variables and default settings
 ```
 

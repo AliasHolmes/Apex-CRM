@@ -522,7 +522,7 @@ export const TraceSummaryViewer = ({
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    <span className="text-xs font-semibold text-slate-200">LiteLLM + Langfuse Tracing</span>
+                    <span className="text-xs font-semibold text-slate-200">Langfuse Tracing</span>
                   </div>
                   {tokenStats.langfuseDeepLink ? (
                     <a
@@ -547,7 +547,7 @@ export const TraceSummaryViewer = ({
                       <span>Telemetry Ready (Langfuse Host Optional)</span>
                     </div>
                     <div>
-                      LiteLLM callback proxy is configured. To view rich interactive traces in the Langfuse dashboard, set <code className="text-slate-200">LANGFUSE_PUBLIC_KEY</code>, <code className="text-slate-200">LANGFUSE_SECRET_KEY</code>, and <code className="text-slate-200">LANGFUSE_HOST</code> in your environment.
+                      Direct LLM tracing is active. To view rich interactive traces in the Langfuse dashboard, set <code className="text-slate-200">LANGFUSE_PUBLIC_KEY</code>, <code className="text-slate-200">LANGFUSE_SECRET_KEY</code>, and <code className="text-slate-200">LANGFUSE_HOST</code> in your environment.
                     </div>
                   </div>
                 )}

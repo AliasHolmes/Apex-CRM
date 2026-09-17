@@ -2,7 +2,30 @@ import assert from 'node:assert/strict';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 
 const originalFetch = globalThis.fetch;
-const originalEnv = { ...process.env };
+
+const MANAGED_KEYS = [
+  'OPENAI_API_KEY',
+  'OPENAI_BASE',
+  'OPENAI_MODEL',
+  'OPENAI_PROVIDER_NAME',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_MODEL',
+  'OPENROUTER_BASE_URL',
+  'OPENROUTER_PROVIDER_NAME',
+  'GROQ_API_KEY',
+  'GROQ_BASE_URL',
+  'GROQ_MODEL',
+  'TOKEN_HARBOR_API_KEY',
+  'TOKEN_HARBOR_ENABLED',
+  'ATRIA_API_KEY',
+  'LLM_GATEWAY_MODE',
+  'LLM_MAX_RETRIES',
+  'LLM_TIMEOUT_MS',
+  'LLM_PROVIDER_COOLDOWN_MS',
+  'BYESU_API_KEY',
+] as const;
+
+const envSnapshot: Record<string, string | undefined> = {};
 
 async function importLLM(suffix: string) {
   return import(`../server/services/llm.ts?t=${Date.now()}-${suffix}`);
@@ -25,15 +48,20 @@ const okResponse = (content: string) =>
  */
 describe('LLM failure classification ignores untrusted model text', () => {
   beforeEach(() => {
-    for (const key of Object.keys(process.env)) delete process.env[key];
+    for (const key of MANAGED_KEYS) {
+      envSnapshot[key] = process.env[key];
+      delete process.env[key];
+    }
     process.env.LLM_GATEWAY_MODE = 'direct';
     process.env.LLM_MAX_RETRIES = '0';
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    for (const key of Object.keys(process.env)) delete process.env[key];
-    Object.assign(process.env, originalEnv);
+    for (const key of MANAGED_KEYS) {
+      if (envSnapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = envSnapshot[key] as string;
+    }
   });
 
   it('still cascades to the next provider when malformed output contains "aborted"', async () => {

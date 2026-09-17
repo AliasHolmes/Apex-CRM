@@ -1,7 +1,7 @@
 # Apex CRM — Codebase Index
 
 Generated: 2026-09-16 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
-(excludes `node_modules/`, `dist/`, `.venv-litellm/`, `.apex-data/`)
+(excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Supersedes the retired 2026-09-12 index, which had drifted on schema version, route count,
 > and test counts. Verified values below were measured directly from the tree, not inherited.
@@ -50,8 +50,8 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 - **Backend**: Express 5 · `node:sqlite` (schema-versioned, migrated in-transaction with
   pre-migration backups pruned to 3) · TypeScript, run by `tsx`
 - **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP (scrape/search),
-  OpenAI-compatible LLM via Byesu `gpt-5.5` primary with Mistral/OpenRouter/Groq fallback
-  chain, optional LiteLLM gateway in front, Langfuse telemetry
+  OpenAI-compatible LLM via Atria / Byesu primary with Mistral/OpenRouter/Groq fallback
+  chain, Langfuse telemetry
 - **Discipline**: `tsc --noEmit` under `strict`, `noImplicitAny`, `noUnusedLocals`,
   `noUnusedParameters`; `prebuild` gates on typecheck; strict ASCII enforced by
   `test/encodingHygiene.test.ts`
@@ -81,7 +81,7 @@ server/leadSearch/           the discovery engine
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 10 ui) · lib/ · utils/
 test/                        94 files, node:test runner via tsx
-scripts/dev.ts               spawns Vite + Express (+ optional LiteLLM child process)
+scripts/dev.ts               spawns Vite + Express
 ```
 
 ## 5. The discovery pipeline
@@ -240,54 +240,36 @@ The working tree is clean. The engine fixes, the `deepAuditRegression` suite and
 documentation are committed (`e3c851d`, `4ae2193`), so nothing is at risk from a stash or
 an accidental reset.
 
-### 9.6 Flag surface that no longer means anything (low)
+### 9.6 Flag surface that no longer means anything — RESOLVED (2026-09-17)
 
-Six of the fifteen `featureFlags.ts` entries are annotated `@deprecated Graduated into
-standard architecture; active unconditionally`, yet each still reads an env var that can
-turn it off. An operator who sets `DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED=0` gets a
-silently degraded engine against the documented architecture. Either remove the switches
-or document them as unsupported.
+Six deprecated architecture flags in `server/leadSearch/featureFlags.ts` (`taxonomy`, `distributedQuery`, `semanticGrouping`, `enhancedDiagnostics`, `transientNegativeCache`, `proactiveTokenRegulator`) have been graduated into permanent architectural invariants that return `true` unconditionally, eliminating the risk of operators unintentionally degrading engine correctness via env vars.
 
-### 9.7 Test isolation hazard (low)
+### 9.7 Test isolation hazard — RESOLVED (2026-09-17)
 
-`test/llmUntrustedMessage.test.ts` does
-`for (const key of Object.keys(process.env)) delete process.env[key]` in `beforeEach`,
-restoring in `afterEach`. `node:test` runs files concurrently, so while this file runs the
-process environment is empty for any concurrently-executing test in another file that
-reads `process.env` at call time. It passes today because of scheduling luck and because
-most other files snapshot env at import. Prefer deleting only the keys the file sets.
+Wholesale `delete process.env[key]` wipe loops in `test/llmUntrustedMessage.test.ts`, `test/llmFallback.test.ts`, `test/tavilyRotation.test.ts`, and `test/brightDataUpgrade.test.ts` have been replaced with scoped `MANAGED_KEYS` snapshots. This eliminates cross-suite test pollution during parallel `node:test` execution.
 
-### 9.8 Carried-forward audit leftovers (low)
+### 9.8 Carried-forward audit leftovers — RESOLVED (2026-09-17)
 
-- `api.ts:349` still writes `runs: 0` on the single-lead verification path, which decays
-  the query-run history that audit finding 1.6 only just started accumulating.
-- `prospectContract.ts:1113` still _drops_ ungrounded hard requirements after warning;
-  no counter reaches the session report, so visibility is console-only.
+- `server/db.ts:recordQueryPerformance`: Protected `runs` decay behind `runs = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.runs * 0.95 + excluded.runs) AS INTEGER) ELSE query_performance.runs END`, preventing single-lead CRM reviews (`runs: 0`) from degrading historical query run counts.
+- `server/leadSearch/prospectContract.ts`: Dropped ungrounded hard requirements are now recorded in `contract.droppedUngroundedRequirements`, surfaced in compilation log diagnostics, and emitted as structured trace telemetry events (`contract_dropped_ungrounded`) in `discoveryEngine.ts`.
+- `server/leadSearch/stages/selectStage.ts`: All conversion funnel counts (`rawCandidates`, `uniqueCandidates`, `extractedCandidates`, `acceptedCandidates`, `duplicateCandidates`, `searchLatencyMs`, `providerUnits`) are now written to `recordQueryPerformance`.
+- `server/leadSearch/stages/planStage.ts`: `requirementFailDigest` is now populated in `historicalYield`, restoring the frequent failure prompt guidance.
 
-### 9.9 `LLM_MAX_RETRIES` is overridden on the 429 path (low, decision needed)
+### 9.9 `LLM_MAX_RETRIES` is overridden on the 429 path — RESOLVED (2026-09-17)
 
-`llm.ts:487` reads:
-
+`server/services/llm.ts` now strictly honors configured `LLM_MAX_RETRIES` on 429 rate limit responses:
 ```ts
-const statusMaxRetries = is429 ? Math.max(maxRetries, 2) : maxRetries;
+const statusMaxRetries = is429
+  ? maxRetries
+  : is502Atria
+    ? Math.max(maxRetries, 1)
+    : maxRetries;
 ```
-
-The general path honours the configured budget (`llm.ts:382`, `effectiveMaxRetries =
-maxRetries`), and the 2026-09-15 verification records that fix as complete. But for 429s
-specifically the floor survives: with the default `LLM_MAX_RETRIES=1`, a rate-limited call
-gets `maxRetries = 2`, i.e. up to three attempts on the same key before rotation. The
-operator's configured budget is silently tripled for exactly the error class they set it for.
-
-Deliberately **not** changed, because it is a resilience trade-off rather than a defect: the
-last measured session showed a 39.8% LLM failure rate with 44% fallback usage, so removing
-the 429 floor could trade correctness for throughput. The one-line fix is
-`const statusMaxRetries = maxRetries;` — the existing `retry429` gate at `llm.ts:381` already
-disables 429 retries when `LLM_MAX_RETRIES=0`. Decide deliberately, then either apply it or
-document the floor as intended.
+When `LLM_MAX_RETRIES=0` (or `1`), the engine cascades immediately after the configured retry count rather than forcing a 2-retry minimum. Furthermore, the request timeout timer is armed only once queued HTTP execution begins, preventing queue wait starvation.
 
 ## 10. Recommended next actions
 
-Updated 2026-09-16. Items 1, 2 and 4 below are done; the rest stand.
+Updated 2026-09-17. Items 1, 2, 4, and 7 below are done; the rest stand.
 
 1. ~~**Commit the working tree.**~~ Done (`e3c851d`), along with the Atria provider work
    (`172fb00`) and its TPS assessment (`4de56b5`).
@@ -302,8 +284,5 @@ Updated 2026-09-16. Items 1, 2 and 4 below are done; the rest stand.
    untouched.
 6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
    39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the fixes.
-7. **Decide §9.9** (`LLM_MAX_RETRIES` 429 floor) — apply the one-line change or document the
-   floor as intended. Low effort, but leaving it undocumented means the next reader will
-   re-derive it from scratch.
-8. **Commit this index** alongside the removal of the retired audit reports, so the
-   documentation state matches the tree.
+7. ~~**Decide §9.9** (`LLM_MAX_RETRIES` 429 floor)~~ Done — strictly honors `LLM_MAX_RETRIES`.
+8. **Commit this index** alongside the engine resilience fixes, so the documentation state matches the tree.

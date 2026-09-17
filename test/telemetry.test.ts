@@ -33,7 +33,7 @@ test('MiningTelemetryRecorder aggregates provider and cost summaries', () => {
       estimatedCostUsd: 0.002,
       fallbackUsed: true,
       providerAttempts: [
-        { providerId: 'litellm', provider: 'LiteLLM', model: 'apex-primary', status: 'error', statusCode: 504, latencyMs: 30_000 },
+        { providerId: 'primary', provider: 'Byesu', model: 'gpt-5.5', status: 'error', statusCode: 504, latencyMs: 30_000 },
         { providerId: 'openrouter', provider: 'OpenRouter', model: 'fallback-model', status: 'success', latencyMs: 900 },
       ]
     }

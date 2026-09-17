@@ -120,6 +120,7 @@ export async function executePlanStage(
         duplicates: Number(row.duplicate_candidates || 0),
         providerUnits: Number(row.provider_units || 0),
         searchLatencyMs: Number(row.search_latency_ms || 0),
+        requirementFailDigest: row.requirement_fail_digest || undefined,
       },
     ]),
   );

@@ -10,7 +10,6 @@ const originalFetch = globalThis.fetch;
  * leaks into other files that read process.env at call time (a known hazard in this repo).
  */
 const MANAGED_KEYS = [
-  'LLM_GATEWAY_MODE',
   'OPENAI_API_KEY',
   'BYESU_API_KEY',
   'OPENAI_BASE',
@@ -19,8 +18,6 @@ const MANAGED_KEYS = [
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'TOKEN_HARBOR_API_KEY',
-  'LITELLM_MASTER_KEY',
-  'LITELLM_API_KEY',
   'ATRIA_API_KEY',
   'ATRIA_BASE',
   'ATRIA_MODEL',
@@ -47,7 +44,6 @@ describe('Atria provider registration', () => {
       envSnapshot[key] = process.env[key];
       delete process.env[key];
     }
-    process.env.LLM_GATEWAY_MODE = 'direct';
   });
 
   afterEach(() => {
@@ -121,7 +117,6 @@ describe('reasoning-model truncation handling', () => {
       envSnapshot[key] = process.env[key];
       delete process.env[key];
     }
-    process.env.LLM_GATEWAY_MODE = 'direct';
   });
 
   afterEach(() => {

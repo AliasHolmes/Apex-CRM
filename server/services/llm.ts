@@ -16,7 +16,7 @@ export const Type = {
 };
 
 // -----------------------------------------------------------------------------
-// OpenAI-compatible REST API helpers with LiteLLM gateway and direct provider fallback.
+// OpenAI-compatible REST API helpers with direct provider fallback chain.
 // -----------------------------------------------------------------------------
 
 type ChatMessage = {
@@ -25,7 +25,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: "litellm" | "primary" | "openrouter" | "groq" | "tokenharbor" | "atria";
+  id: "primary" | "openrouter" | "groq" | "tokenharbor" | "atria";
   name: string;
   baseUrl: string;
   model: string;
@@ -124,8 +124,6 @@ const DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 const DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
-const DEFAULT_LITELLM_BASE = "http://127.0.0.1:4000/v1";
-const DEFAULT_LITELLM_MODEL = "apex-primary";
 
 // Atria is a self-hosted vLLM deployment (see docs/ATRIA-ENDPOINT-PROBE-2026-09-16.md).
 // It is a REASONING model: reasoning_content is emitted and billed before any visible
@@ -186,31 +184,6 @@ function getOpenRouterHeaders(): Record<string, string> {
     headers["HTTP-Referer"] = referer;
   }
   return headers;
-}
-
-function getGatewayMode(): "litellm" | "direct" {
-  return (process.env.LLM_GATEWAY_MODE || "litellm").toLowerCase() === "direct"
-    ? "direct"
-    : "litellm";
-}
-
-function getLiteLLMProvider(): LLMProvider {
-  return {
-    id: "litellm",
-    name: "LiteLLM",
-    baseUrl: cleanBaseUrl(
-      process.env.LITELLM_BASE_URL ||
-        process.env.LITELLM_BASE ||
-        DEFAULT_LITELLM_BASE,
-    ),
-    model: process.env.LITELLM_MODEL || DEFAULT_LITELLM_MODEL,
-    apiKey:
-      process.env.LITELLM_API_KEY ||
-      process.env.LITELLM_MASTER_KEY ||
-      process.env.OPENAI_API_KEY ||
-      process.env.BYESU_API_KEY ||
-      "local-litellm",
-  };
 }
 
 /** ATRIA_PRIORITY=primary promotes Atria ahead of the Byesu/OpenRouter/Groq chain. */
@@ -288,45 +261,19 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
 }
 
 function getLLMProviderCandidates(): LLMProvider[] {
-  return getGatewayMode() === "litellm"
-    ? [getLiteLLMProvider(), ...getDirectLLMProviderCandidates()]
-    : getDirectLLMProviderCandidates();
+  return getDirectLLMProviderCandidates();
 }
 
 function getConfiguredLLMProviders(): LLMProvider[] {
-  const directProviders = getDirectLLMProviderCandidates().filter(
+  return getDirectLLMProviderCandidates().filter(
     (provider) => !!provider.apiKey,
   );
-  if (getGatewayMode() === "litellm") {
-    const tokenHarbor = directProviders.find((p) => p.id === "tokenharbor");
-    const atria = directProviders.find((p) => p.id === "atria");
-    const directFallbacks = directProviders.filter(
-      (provider) =>
-        provider.id !== "primary" &&
-        provider.id !== "tokenharbor" &&
-        provider.id !== "atria",
-    );
-    const gatewayChain = tokenHarbor
-      ? [tokenHarbor, getLiteLLMProvider(), ...directFallbacks]
-      : [getLiteLLMProvider(), ...directFallbacks];
-    if (!atria) return gatewayChain;
-    return isAtriaPromoted()
-      ? [atria, ...gatewayChain]
-      : [...gatewayChain, atria];
-  }
-  return directProviders;
 }
 
 export function getLLMProviderSummaries(): LLMProviderSummary[] {
-  const isLiteLLM = getGatewayMode() === "litellm";
   return getLLMProviderCandidates().map(({ apiKey, headers, ...provider }) => ({
     ...provider,
-    configured:
-      provider.id === "litellm"
-        ? isLiteLLM
-        : isLiteLLM && provider.id === "primary"
-          ? false
-          : !!apiKey,
+    configured: !!apiKey,
   }));
 }
 
@@ -397,13 +344,61 @@ export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
  */
 let globalLLMQueue: Promise<any> = Promise.resolve();
 
-export function withSequentialLLMExecution<T>(task: () => Promise<T>): Promise<T> {
-  const run = async () => {
-    return await task();
-  };
-  const resultPromise = globalLLMQueue.then(run, run);
-  globalLLMQueue = resultPromise.catch(() => {});
-  return resultPromise;
+export function withSequentialLLMExecution<T>(
+  task: () => Promise<T>,
+  signal?: AbortSignal | null,
+): Promise<T> {
+  if (signal?.aborted) {
+    const abortErr = new Error("LLM request was aborted by caller.");
+    abortErr.name = "AbortError";
+    return Promise.reject(abortErr);
+  }
+
+  const prev = globalLLMQueue;
+  let releaseSlot: () => void;
+  const slotPromise = new Promise<void>((r) => {
+    releaseSlot = r;
+  });
+  globalLLMQueue = slotPromise;
+
+  return new Promise<T>((resolve, reject) => {
+    let abortedInQueue = false;
+
+    const onAbort = () => {
+      abortedInQueue = true;
+      const abortErr = new Error("LLM request was aborted by caller.");
+      abortErr.name = "AbortError";
+      reject(abortErr);
+    };
+
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    prev.finally(async () => {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
+      }
+      if (abortedInQueue || signal?.aborted) {
+        releaseSlot();
+        if (!abortedInQueue) {
+          const abortErr = new Error("LLM request was aborted by caller.");
+          abortErr.name = "AbortError";
+          reject(abortErr);
+        }
+        return;
+      }
+
+      try {
+        const result = await task();
+        resolve(result);
+      } catch (err) {
+        reject(err);
+      } finally {
+        releaseSlot();
+      }
+    });
+  });
 }
 
 /**
@@ -439,30 +434,42 @@ async function fetchWithRetry(
   let lastResponse: Response | undefined;
   for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
     const callerSignal = requestOptions.signal;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
-    let compositeSignal = controller.signal;
-    if (callerSignal) {
-      if (callerSignal.aborted) {
-        clearTimeout(timer);
-        const abortErr = new Error("LLM request was aborted by caller.");
-        abortErr.name = "AbortError";
-        throw abortErr;
-      }
-      if (typeof AbortSignal.any === "function") {
-        compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
-      } else {
-        callerSignal.addEventListener("abort", () => controller.abort(), {
-          once: true,
-        });
-      }
+    if (callerSignal?.aborted) {
+      const abortErr = new Error("LLM request was aborted by caller.");
+      abortErr.name = "AbortError";
+      throw abortErr;
     }
+
+    let controller: AbortController | undefined;
+    let timer: NodeJS.Timeout | undefined;
+
     try {
-      const res = await withSequentialLLMExecution(async () => fetch(url, {
-        ...requestOptions,
-        signal: compositeSignal,
-      }));
-      clearTimeout(timer);
+      const res = await withSequentialLLMExecution(async () => {
+        controller = new AbortController();
+        timer = setTimeout(() => controller?.abort(), effectiveTimeoutMs);
+        let compositeSignal = controller.signal;
+        if (callerSignal) {
+          if (callerSignal.aborted) {
+            clearTimeout(timer);
+            const abortErr = new Error("LLM request was aborted by caller.");
+            abortErr.name = "AbortError";
+            throw abortErr;
+          }
+          if (typeof AbortSignal.any === "function") {
+            compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
+          } else {
+            callerSignal.addEventListener("abort", () => controller?.abort(), {
+              once: true,
+            });
+          }
+        }
+        return await fetch(url, {
+          ...requestOptions,
+          signal: compositeSignal,
+        });
+      }, callerSignal);
+
+      if (timer) clearTimeout(timer);
       lastResponse = res;
 
       // 413 is a deterministic payload-budget failure and must never be
@@ -484,7 +491,7 @@ async function fetchWithRetry(
         !isExhaustedQuota &&
         ((res.status >= 500 && res.status <= 599) || (is429 && retry429));
 
-      const statusMaxRetries = is429 ? Math.max(maxRetries, 2) : maxRetries;
+      const statusMaxRetries = maxRetries;
       if (isRetryableStatus && attempt < statusMaxRetries) {
         const retryAfter = res.headers.get("retry-after");
         const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
@@ -518,12 +525,12 @@ async function fetchWithRetry(
       }
       return res;
     } catch (err: any) {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       lastResponse = undefined;
       const isCallerAbort = Boolean(callerSignal?.aborted);
       const isFetchTimeout =
         !isCallerAbort &&
-        (controller.signal.aborted ||
+        ((controller && controller.signal.aborted) ||
           err?.name === "AbortError" ||
           err?.name === "TimeoutError" ||
           /timed out/i.test(err?.message || ""));
@@ -712,7 +719,7 @@ async function withProviderFallback<T>(
   const providers = getConfiguredLLMProviders();
   if (providers.length === 0) {
     throw new Error(
-      "No LLM provider available. Use LLM_GATEWAY_MODE=litellm for the local LiteLLM proxy, or configure OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY for direct mode.",
+      "No LLM provider available. Configure ATRIA_API_KEY, OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY in .env.",
     );
   }
 
@@ -920,113 +927,107 @@ async function sendChatCompletion(
     throw cancelError;
   }
   let res: Response;
+  const isAtriaTarget = provider.id === "atria";
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, 950)
-      : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
-    const sessionHeaders: Record<string, string> = {};
-    if (options?.metadata?.sessionId) {
-      sessionHeaders["x-litellm-session-id"] = String(options.metadata.sessionId);
-      sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
-      sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
-    }
-    const isReasoningCapable =
-      provider.id === "litellm" ||
-      /\b(gpt-5|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model);
-    const callStartedAt = Date.now();
-    try {
-      res = await fetchWithRetry(
-        `${provider.baseUrl}/chat/completions`,
-        {
-          method: "POST",
-          headers: {
-            ...(provider.headers || {}),
-            ...sessionHeaders,
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${provider.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: provider.model,
-            messages,
-            // Some third-party OpenAI-compatible gateways default to SSE when the
-            // flag is omitted. Apex expects one JSON response for structured calls.
-            stream: false,
-            temperature:
-              options?.temperature !== undefined ? options.temperature : 0.1,
-            max_tokens: effectiveMaxTokens,
-            ...(options?.responseFormat
-              ? { response_format: options.responseFormat }
-              : {}),
-            ...(options?.reasoningEffort && isReasoningCapable
-              ? { reasoning_effort: options.reasoningEffort }
-              : {}),
-            ...(options?.metadata && provider.id === "litellm"
-              ? { metadata: options.metadata }
-              : {}),
-          }),
-          signal: options?.signal,
+      : isAtriaTarget
+        ? Math.max(options?.maxTokens ? options.maxTokens + 3000 : 4000, 4000)
+        : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+  const sessionHeaders: Record<string, string> = {};
+  if (options?.metadata?.sessionId) {
+    sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
+    sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
+  }
+  const isReasoningCapable =
+    /\b(gpt-5|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model);
+  const callStartedAt = Date.now();
+  try {
+    res = await fetchWithRetry(
+      `${provider.baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          ...(provider.headers || {}),
+          ...sessionHeaders,
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${provider.apiKey}`,
         },
-        options?.timeoutMs,
-        options?.maxRetries,
-      );
-    } catch (error: any) {
-      if (error?.name === "AbortError" || options?.signal?.aborted) {
-        throw error;
-      }
-      if (provider.id !== "litellm") {
-        void sendDirectLangfuseTrace({
-          sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
-          stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
-          round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+        body: JSON.stringify({
           model: provider.model,
-          provider: provider.name,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          latencyMs: Date.now() - callStartedAt,
-          status: "error",
-          errorMessage: error instanceof Error ? error.message : String(error),
           messages,
-        });
-      }
-      throw new LLMProviderError(
-        provider,
-        undefined,
-        error instanceof Error ? error.message : String(error),
-      );
+          // Some third-party OpenAI-compatible gateways default to SSE when the
+          // flag is omitted. Apex expects one JSON response for structured calls.
+          stream: false,
+          temperature:
+            options?.temperature !== undefined ? options.temperature : 0.1,
+          max_tokens: effectiveMaxTokens,
+          ...(options?.responseFormat
+            ? { response_format: options.responseFormat }
+            : {}),
+          ...(options?.reasoningEffort && isReasoningCapable
+            ? { reasoning_effort: options.reasoningEffort }
+            : {}),
+        }),
+        signal: options?.signal,
+      },
+      options?.timeoutMs,
+      options?.maxRetries,
+    );
+  } catch (error: any) {
+    if (error?.name === "AbortError" || options?.signal?.aborted) {
+      throw error;
     }
+    void sendDirectLangfuseTrace({
+      sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+      stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+      round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+      model: provider.model,
+      provider: provider.name,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      latencyMs: Date.now() - callStartedAt,
+      status: "error",
+      errorMessage: error instanceof Error ? error.message : String(error),
+      messages,
+    });
+    throw new LLMProviderError(
+      provider,
+      undefined,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 
-    if (!res.ok) {
-      const rawText = await res.text();
-      let errorCode: string | number | undefined;
-      try {
-        const parsed = JSON.parse(rawText);
-        errorCode = parsed?.error?.code ?? parsed?.code;
-      } catch {}
-      const err = truncateProviderError(rawText);
-      if (provider.id !== "litellm") {
-        void sendDirectLangfuseTrace({
-          sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
-          stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
-          round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-          model: provider.model,
-          provider: provider.name,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          latencyMs: Date.now() - callStartedAt,
-          status: "error",
-          errorMessage: err,
-          messages,
-        });
-      }
-      throw new LLMProviderError(
-        provider,
-        res.status,
-        `chat completion error ${res.status}: ${err}`,
-        errorCode,
-      );
-    }
+  if (!res.ok) {
+    const rawText = await res.text();
+    let errorCode: string | number | undefined;
+    try {
+      const parsed = JSON.parse(rawText);
+      errorCode = parsed?.error?.code ?? parsed?.code;
+    } catch {}
+    const err = truncateProviderError(rawText);
+    void sendDirectLangfuseTrace({
+      sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+      stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+      round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+      model: provider.model,
+      provider: provider.name,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      latencyMs: Date.now() - callStartedAt,
+      status: "error",
+      errorMessage: err,
+      messages,
+    });
+    throw new LLMProviderError(
+      provider,
+      res.status,
+      `chat completion error ${res.status}: ${err}`,
+      errorCode,
+    );
+  }
 
     const data = await res.json();
     const choice = data?.choices?.[0];
@@ -1078,27 +1079,25 @@ async function sendChatCompletion(
         ? suppliedTotal
         : Math.max(0, inputTokens) + Math.max(0, outputTokens);
 
-    // LiteLLM-grade rich ANSI colored console log
+    // Rich ANSI colored console log
     console.log(
       `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencyMs}ms\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m`,
     );
 
-    if (provider.id !== "litellm") {
-      void sendDirectLangfuseTrace({
-        sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
-        stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
-        round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-        model: actualModel,
-        provider: provider.name,
-        inputTokens,
-        outputTokens,
-        totalTokens,
-        latencyMs,
-        status: "success",
-        messages,
-        output: content,
-      });
-    }
+    sendDirectLangfuseTrace({
+      sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+      stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+      round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+      model: actualModel,
+      provider: provider.name,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      latencyMs,
+      status: "success",
+      messages,
+      output: content,
+    });
 
     if (typeof options?.onUsage === "function") {
       options.onUsage({

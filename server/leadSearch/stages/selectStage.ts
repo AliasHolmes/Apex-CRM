@@ -151,6 +151,15 @@ export async function executeSelectStage(
       provider: run.providerPreference || 'tavily',
       runs: 1,
       outcomeRuns: 1,
+      rawCandidates: run.rawCandidates || 0,
+      uniqueCandidates: run.uniqueCandidates || 0,
+      extractedCandidates: run.extractedLeads || 0,
+      acceptedCandidates: run.acceptedLeads || 0,
+      duplicateCandidates:
+        (run.rejectionReasons?.duplicate_existing_lead || 0) +
+        Math.max(0, (run.rawCandidates || 0) - (run.uniqueCandidates || 0)),
+      searchLatencyMs: run.searchLatencyMs || 0,
+      providerUnits: run.providerUnits || 0,
       qualifiedCandidates: run.qualifiedFinalists,
       rescuedCandidates: run.rescuedFinalists,
       returnedCandidates: run.returnedFinalists,

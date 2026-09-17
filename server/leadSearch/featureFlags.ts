@@ -18,23 +18,23 @@ export const isFlagEnabled = {
   /**
    * Phase 1: Requirement Taxonomy Enhancement
    * Adds requirementClass and queryHardness fields.
-   * @deprecated Graduated into standard architecture; active unconditionally.
+   * Permanent architectural invariant; active unconditionally.
    */
-  taxonomy: () => readFlag('REQUIREMENT_TAXONOMY_ENABLED'),
+  taxonomy: () => true,
 
   /**
    * Phase 2: Query Enforcement Decoupling
    * Replaces append-all-hard-reqs with 1 Identity + 1 Distributed Context.
-   * @deprecated Graduated into standard architecture; active unconditionally.
+   * Permanent architectural invariant; active unconditionally.
    */
-  distributedQuery: () => readFlag('DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED'),
+  distributedQuery: () => true,
 
   /**
    * Phase 3: Semantic Grouping Support
    * Honors any_of groups; if one member passes, all members pass.
-   * @deprecated Graduated into standard architecture; active unconditionally.
+   * Permanent architectural invariant; active unconditionally.
    */
-  semanticGrouping: () => readFlag('SEMANTIC_GROUPING_ENABLED'),
+  semanticGrouping: () => true,
 
   /**
    * Phase 4: Evidence-Aware Hardness
@@ -51,9 +51,9 @@ export const isFlagEnabled = {
   /**
    * Phase 6: Diagnostics Enhancement
    * Emits class-level diagnostics; recovery considers class bottlenecks.
-   * @deprecated Graduated into standard architecture; active unconditionally.
+   * Permanent architectural invariant; active unconditionally.
    */
-  enhancedDiagnostics: () => readFlag('ENHANCED_DIAGNOSTICS_ENABLED'),
+  enhancedDiagnostics: () => true,
 
   /**
    * Optimization 1: Fuzzy Token-Aligned Quote Grounding
@@ -88,16 +88,16 @@ export const isFlagEnabled = {
   /**
    * Optimization 6: Transient vs Permanent Negative Cache Separation
    * Prevents temporary 429/timeout errors from locking leads for 14 days.
-   * @deprecated Graduated into standard architecture; active unconditionally.
+   * Permanent architectural invariant; active unconditionally.
    */
-  transientNegativeCache: () => readFlag('TRANSIENT_NEGATIVE_CACHE_ENABLED'),
+  transientNegativeCache: () => true,
 
   /**
    * Optimization 7: Proactive Token Regulator & Load Shedder
    * Meters sliding-window token rates to prevent 429 rate limits.
-   * @deprecated Enforced globally via withSequentialLLMExecution; inert.
+   * Enforced globally via withSequentialLLMExecution; active unconditionally.
    */
-  proactiveTokenRegulator: () => readFlag('PROACTIVE_TOKEN_REGULATOR_ENABLED'),
+  proactiveTokenRegulator: () => true,
 
   /**
    * PIQ-BOS: Progressive Interleaved Qualification with Bounded Multi-Objective Selection

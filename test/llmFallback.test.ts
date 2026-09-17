@@ -1,9 +1,44 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 
 const originalFetch = globalThis.fetch;
-const originalEnv = { ...process.env };
+
+const MANAGED_KEYS = [
+  'OPENAI_API_KEY',
+  'OPENAI_BASE',
+  'OPENAI_MODEL',
+  'OPENAI_PROVIDER_NAME',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_BASE_URL',
+  'OPENROUTER_MODEL',
+  'OPENROUTER_PROVIDER_NAME',
+  'OPENROUTER_APP_TITLE',
+  'OPENROUTER_HTTP_REFERER',
+  'GROQ_API_KEY',
+  'GROQ_BASE_URL',
+  'GROQ_MODEL',
+  'TOKEN_HARBOR_API_KEY',
+  'TOKEN_HARBOR_BASE',
+  'TOKEN_HARBOR_MODEL',
+  'TOKEN_HARBOR_ENABLED',
+  'TOKEN_HARBOR_EXPIRATION_MS',
+  'TOKEN_HARBOR_EXPIRATION',
+  'ATRIA_API_KEY',
+  'ATRIA_BASE',
+  'ATRIA_MODEL',
+  'ATRIA_PROVIDER_NAME',
+  'ATRIA_PRIORITY',
+  'LLM_GATEWAY_MODE',
+  'LLM_MAX_RETRIES',
+  'LLM_TIMEOUT_MS',
+  'LLM_PROVIDER_COOLDOWN_MS',
+  'LLM_SESSION_PROVIDER_FAILURE_THRESHOLD',
+  'LLM_RETRY_429',
+  'BYESU_API_KEY',
+  'APP_URL',
+] as const;
+
+const envSnapshot: Record<string, string | undefined> = {};
 
 async function importLLM(suffix: string) {
   return import(`../server/services/llm.ts?t=${Date.now()}-${suffix}`);
@@ -11,18 +46,18 @@ async function importLLM(suffix: string) {
 
 describe('LLM gateway and provider fallback', () => {
   beforeEach(() => {
-    for (const key of Object.keys(process.env)) {
+    for (const key of MANAGED_KEYS) {
+      envSnapshot[key] = process.env[key];
       delete process.env[key];
     }
-    process.env.LLM_GATEWAY_MODE = 'direct';
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    for (const key of Object.keys(process.env)) {
-      delete process.env[key];
+    for (const key of MANAGED_KEYS) {
+      if (envSnapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = envSnapshot[key] as string;
     }
-    Object.assign(process.env, originalEnv);
   });
 
   it('uses Byesu-compatible primary defaults first', async () => {
@@ -53,81 +88,6 @@ describe('LLM gateway and provider fallback', () => {
     const body = JSON.parse(capturedOptions.body);
     assert.equal(body.model, 'gpt-5.5');
     assert.equal(body.stream, false);
-  });
-
-  it('routes through LiteLLM apex-primary when LLM_GATEWAY_MODE=litellm', async () => {
-    process.env.LLM_GATEWAY_MODE = 'litellm';
-    process.env.LITELLM_MASTER_KEY = 'test-litellm-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
-
-    const llm = await importLLM('litellm-gateway');
-
-    let capturedUrl = '';
-    let capturedOptions: any = null;
-
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url.toString();
-      capturedOptions = options;
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'litellm ok' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'litellm ok');
-    assert.equal(res.provider, 'LiteLLM');
-    assert.equal(res.model, 'apex-primary');
-    assert.equal(capturedUrl, 'http://127.0.0.1:4000/v1/chat/completions');
-    assert.equal(capturedOptions.headers['Authorization'], 'Bearer test-litellm-key');
-
-    const body = JSON.parse(capturedOptions.body);
-    assert.equal(body.model, 'apex-primary');
-  });
-
-  it('falls back from LiteLLM to direct non-primary providers when the proxy route fails', async () => {
-    process.env.LLM_GATEWAY_MODE = 'litellm';
-    process.env.LITELLM_MASTER_KEY = 'test-litellm-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
-    process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
-    process.env.OPENROUTER_MODEL = 'openrouter-test-model';
-    process.env.GROQ_API_KEY = 'test-groq-key';
-    process.env.LLM_MAX_RETRIES = '0';
-
-    const llm = await importLLM('litellm-direct-fallback');
-    const calls: Array<{ url: string; body: any; auth: string }> = [];
-
-    globalThis.fetch = async (url, options: any) => {
-      calls.push({
-        url: url.toString(),
-        body: JSON.parse(options.body),
-        auth: options.headers['Authorization'],
-      });
-
-      if (calls.length === 1) {
-        return new Response('proxy timeout', { status: 504 });
-      }
-
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'direct fallback ok' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const attempts: any[] = [];
-    const res = await llm.openAIText('test prompt', undefined, {
-      onProviderAttempt: (attempt: any) => attempts.push(attempt),
-    });
-    assert.equal(res.text, 'direct fallback ok');
-    assert.equal(res.provider, 'OpenRouter');
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].url, 'http://127.0.0.1:4000/v1/chat/completions');
-    assert.equal(calls[0].body.model, 'apex-primary');
-    assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
-    assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
-    assert.equal(calls[1].body.model, 'openrouter-test-model');
-    assert.deepEqual(attempts.map(attempt => [attempt.providerId, attempt.status]), [
-      ['litellm', 'error'],
-      ['openrouter', 'success'],
-    ]);
   });
 
   it('opens the session circuit breaker after two availability failures', async () => {
@@ -222,13 +182,6 @@ describe('LLM gateway and provider fallback', () => {
     const response = await llm.openAIText('test prompt');
     assert.equal(response.text, 'ok');
     assert.equal(calls, 2);
-  });
-
-  it('keeps LiteLLM responsible for the primary deployment only', () => {
-    const config = readFileSync(new URL('../litellm.config.yaml', import.meta.url), 'utf8');
-    assert.doesNotMatch(config, /apex-openrouter-fallback|apex-groq-fallback|\bfallbacks:/);
-    assert.match(config, /model_name:\s+apex-primary/);
-    assert.match(config, /model:\s+openai\/gpt-5\.5/);
   });
 
   it('falls back directly to OpenRouter when the primary provider fails', async () => {
@@ -426,23 +379,22 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls.length, 1);
   });
 
-  it('trips the circuit breaker when LiteLLM returns 500 connection errors', async () => {
-    process.env.LLM_GATEWAY_MODE = 'litellm';
-    process.env.LITELLM_MASTER_KEY = 'test-litellm-key';
+  it('trips the circuit breaker when primary provider returns 500 connection errors', async () => {
+    process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.LLM_MAX_RETRIES = '0';
 
-    const llm = await importLLM('litellm-circuit-breaker');
+    const llm = await importLLM('primary-circuit-breaker');
     const circuitBreaker = llm.createLLMSessionCircuitBreaker(2);
     const calls: string[] = [];
 
     globalThis.fetch = async (url: any) => {
       const urlStr = url.toString();
       calls.push(urlStr);
-      if (urlStr.includes('127.0.0.1:4000')) {
+      if (urlStr.includes('byesu.com')) {
         return new Response(JSON.stringify({
           error: {
-            message: 'litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.. Received Model Group=apex-primary',
+            message: 'InternalServerError: Connection error',
             code: 500
           }
         }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -452,21 +404,21 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    // Call 1: LiteLLM fails (count = 1), falls back to OpenRouter
+    // Call 1: Primary fails (count = 1), falls back to OpenRouter
     const res1 = await llm.openAIText('prompt 1', undefined, { circuitBreaker });
     assert.equal(res1.text, 'openrouter ok');
 
-    // Call 2: LiteLLM fails (count = 2 -> trips breaker!), falls back to OpenRouter
+    // Call 2: Primary fails (count = 2 -> trips breaker!), falls back to OpenRouter
     const res2 = await llm.openAIText('prompt 2', undefined, { circuitBreaker });
     assert.equal(res2.text, 'openrouter ok');
-    assert.equal(circuitBreaker.disabledProviderIds.has('litellm'), true);
+    assert.equal(circuitBreaker.disabledProviderIds.has('primary'), true);
 
-    // Call 3: LiteLLM is disabled by circuit breaker, directly routes to OpenRouter without hitting 127.0.0.1:4000!
+    // Call 3: Primary is disabled by circuit breaker, directly routes to OpenRouter without hitting byesu.com!
     const callsBefore3 = calls.length;
     const res3 = await llm.openAIText('prompt 3', undefined, { circuitBreaker });
     assert.equal(res3.text, 'openrouter ok');
     const newCalls = calls.slice(callsBefore3);
-    assert.equal(newCalls.some(u => u.includes('127.0.0.1:4000')), false);
+    assert.equal(newCalls.some(u => u.includes('byesu.com')), false);
   });
 
   it('exports CLOUDFLARE_MAX_TIMEOUT_MS clamped to 115s', async () => {
@@ -875,7 +827,6 @@ describe('LLM gateway and provider fallback', () => {
     process.env.OPENAI_API_KEY = 'test-byesu-key';
     process.env.OPENAI_PROVIDER_NAME = 'Byesu';
     process.env.OPENAI_MODEL = 'gpt-5.5';
-    process.env.LLM_GATEWAY_MODE = 'direct';
 
     const llm = await importLLM('byesu-primary');
     assert.equal(llm.getPrimaryLLMProvider(), 'Byesu');
@@ -898,7 +849,6 @@ describe('LLM gateway and provider fallback', () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_PROVIDER_NAME;
     delete process.env.OPENAI_MODEL;
-    delete process.env.LLM_GATEWAY_MODE;
   });
 });
 

@@ -545,6 +545,9 @@ router.post("/leads/:id/merge", (req, res): any => {
         );
       }
       transferLeadIdentities(db, duplicateId, winner.id);
+      db.prepare("UPDATE outreach_drafts SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
+      db.prepare("UPDATE lead_activities SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
+      db.prepare("DELETE FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?").run(duplicateId, duplicateId);
       db.prepare("DELETE FROM leads WHERE id = ?").run(duplicateId);
 
       // Log the merge activity.
@@ -1062,7 +1065,7 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   const logs = discoveryEngine.getLiveLogs(sessionId) || [];
   const traceEvents = discoveryEngine.getLiveTrace(sessionId) || [];
   safeWrite(
-    `data: ${JSON.stringify({ logs, traceEvents, session: readMiningSessionById(sessionId) })}\n\n`,
+    `data: ${JSON.stringify({ logs, traceEvents, session: readMiningSessionSummaryById(sessionId) })}\n\n`,
   );
 
   let unsubscribed = false;

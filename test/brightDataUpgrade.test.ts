@@ -504,16 +504,30 @@ test("Bright Data search arguments match the installed MCP search_engine schema"
 const originalConnect = Client.prototype.connect;
 const originalCallTool = Client.prototype.callTool;
 const originalListTools = Client.prototype.listTools;
-const originalEnv = { ...process.env };
+const BRIGHTDATA_MANAGED_KEYS = [
+  "BRIGHTDATA_API_TOKEN",
+  "BRIGHTDATA_PLAN",
+  "BRIGHTDATA_MCP_TRANSPORT",
+  "BRIGHTDATA_DATASET_ID",
+  "BRIGHTDATA_SNAPSHOT_ID",
+] as const;
+
+const brightDataEnvSnapshot: Record<string, string | undefined> = {};
+for (const key of BRIGHTDATA_MANAGED_KEYS) {
+  brightDataEnvSnapshot[key] = process.env[key];
+}
 
 function restoreMocks() {
   Client.prototype.connect = originalConnect;
   Client.prototype.callTool = originalCallTool;
   Client.prototype.listTools = originalListTools;
-  for (const key of Object.keys(process.env)) {
-    delete process.env[key];
+  for (const key of BRIGHTDATA_MANAGED_KEYS) {
+    if (brightDataEnvSnapshot[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = brightDataEnvSnapshot[key] as string;
+    }
   }
-  Object.assign(process.env, originalEnv);
 }
 
 test("scrape_batch actually invoked on free tier when listTools() advertises it", async (t) => {

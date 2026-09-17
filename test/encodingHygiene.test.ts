@@ -11,7 +11,7 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 const sourceRoots = ['src', 'server', 'scripts', 'test'];
 const rootFiles = ['server.ts', 'vite.config.ts', 'index.html', 'package.json', 'README.md'];
 const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.html', '.css']);
-const skipDirs = new Set(['node_modules', 'dist', '.git', '.apex-data', '.venv-litellm', '.python', '.codebase-memory']);
+const skipDirs = new Set(['node_modules', 'dist', '.git', '.apex-data', '.python', '.codebase-memory']);
 
 function collectSourceFiles(dir: string, files: string[] = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

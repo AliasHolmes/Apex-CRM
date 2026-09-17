@@ -11,7 +11,6 @@ const show = (label: string) => {
   return import(`../server/services/llm.ts?chain=${label}-${Date.now()}`);
 };
 
-console.log('LLM_GATEWAY_MODE =', process.env.LLM_GATEWAY_MODE || '(unset -> litellm)');
 console.log('ATRIA_API_KEY    =', process.env.ATRIA_API_KEY ? 'set' : 'NOT SET');
 console.log('ATRIA_PRIORITY   =', process.env.ATRIA_PRIORITY || '(unset -> fallback)');
 console.log('');

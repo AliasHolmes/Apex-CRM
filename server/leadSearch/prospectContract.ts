@@ -449,7 +449,7 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   }
 
   if (scope === 'company_type' || scope === 'company_industry') {
-    if (terms.some(t => /\b(agenc|firm|consult|service|solution|advisory|studio|partner|integrat)/i.test(t))) {
+    if (terms.some(t => /\b(agenc|firm|consult|service|solution|advisory|studio|partner|integrat|business|provider)/i.test(t))) {
       const isAI = terms.some(t => /\b(ai|artificial intelligence|machine learning|ml)\b/i.test(t));
       if (isAI) {
         expanded.push(
@@ -602,6 +602,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const CONJUNCTION_STOP_PATTERN = /^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\b|\b(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i;
   const COMPANY_TITLE_PREFIX_PATTERN = /^(?:managing|senior|junior|lead|principal|chief|executive|vp|vice|deputy|head|director|directors|founder|owner|ceo|president)\b/i;
 
+  const ACTION_VERB_PREFIX_PATTERN = /^(?:find|search|get|locate|look\s+for|target|identify|seek|discover|show\s+me|give\s+me|i\s+want(?:\s+to)?|i\s+need(?:\s+to)?)\s+/i;
+  const ACTION_VERB_ALONE_PATTERN = /^(?:find|search|get|locate|look|target|identify|seek|discover|show|want|need)$/i;
+
   const isCleanCompanyTypeTerm = (value: unknown): boolean => {
     const v = clean(value);
     if (!v || v.length < 2 || v.length > 48) return false;
@@ -609,6 +612,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     if (CONJUNCTION_STOP_PATTERN.test(v)) return false;
     if (COMPANY_TITLE_PREFIX_PATTERN.test(v)) return false;
     if (JUNK_TERM_PATTERN.test(v)) return false;
+    if (ACTION_VERB_ALONE_PATTERN.test(v)) return false;
     return true;
   };
 
@@ -621,7 +625,8 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
 
   // Pattern B: Direct Prefix "[Company Type] [Role]"
   // e.g. "AI agency owner" -> "AI agency"
-  const prefixCompanyMatch = clean(brief).match(/\b([^,.]+?)\s+(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i)?.[1]?.trim() || '';
+  const rawPrefixMatch = clean(brief).match(/\b([^,.]+?)\s+(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i)?.[1]?.trim() || '';
+  const prefixCompanyMatch = rawPrefixMatch.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
 
   // Pattern C: Headcount / Employee size
   // e.g. "with 5-50 employees"
@@ -668,13 +673,47 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   }
 
   add('person_location', [...(spec?.person?.locations || []), ...(spec?.company?.locations || []), ...extractedLocations].filter(isCleanRequirementTerm));
-  if (firmMatch && isCleanCompanyTypeTerm(firmMatch)) {
-    addWithAlternatives('company_type', firmMatch, [firmMatch.replace(/lawyer firm/i, 'law firm')]);
-  }
+
+  const extractedCompanyTypes: string[] = [];
+  const addCompanyType = (t: string) => {
+    const cleaned = clean(t).replace(/\s+(?:in|near|from|located\s+in)\s+.*$/i, '').trim();
+    if (cleaned && isCleanCompanyTypeTerm(cleaned) && !extractedCompanyTypes.includes(cleaned)) {
+      extractedCompanyTypes.push(cleaned);
+    }
+  };
+
   if (prepCompanyMatch && isCleanCompanyTypeTerm(prepCompanyMatch)) {
-    addWithAlternatives('company_type', prepCompanyMatch, [prepCompanyMatch]);
-  } else if (prefixCompanyMatch && isCleanCompanyTypeTerm(prefixCompanyMatch)) {
-    addWithAlternatives('company_type', prefixCompanyMatch, [prefixCompanyMatch]);
+    for (const sub of prepCompanyMatch.split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
+      addCompanyType(sub);
+    }
+    addCompanyType(prepCompanyMatch);
+  }
+  if (prefixCompanyMatch && isCleanCompanyTypeTerm(prefixCompanyMatch)) {
+    for (const sub of prefixCompanyMatch.split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
+      addCompanyType(sub);
+    }
+    addCompanyType(prefixCompanyMatch);
+  }
+  if (firmMatch && isCleanCompanyTypeTerm(firmMatch)) {
+    addCompanyType(firmMatch.replace(/lawyer firm/i, 'law firm'));
+  }
+
+  const roleStopRegex = /\b(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i;
+  for (const segment of clean(brief).split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
+    if (!segment) continue;
+    const rawPrefix = segment.match(/\b([^,.]+?)\s+(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i)?.[1]?.trim();
+    const prefix = rawPrefix ? rawPrefix.replace(ACTION_VERB_PREFIX_PATTERN, '').trim() : '';
+    const cleanSegment = segment.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
+    if (prefix) {
+      addCompanyType(prefix);
+    } else if (cleanSegment && !roleStopRegex.test(cleanSegment)) {
+      addCompanyType(cleanSegment);
+    }
+  }
+
+  const primaryCompanyType = extractedCompanyTypes[0] || prefixCompanyMatch || prepCompanyMatch || firmMatch;
+  if (primaryCompanyType && isCleanCompanyTypeTerm(primaryCompanyType)) {
+    addWithAlternatives('company_type', primaryCompanyType, extractedCompanyTypes);
   }
   add('company_type', explicitCompanyKeywords);
   add('company_industry', spec?.company?.industries || []);
@@ -711,7 +750,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const archetype = resolveBusinessArchetype(brief);
   const isAgency = isAgencyContract(brief) || archetype?.id === 'b2b_agency';
   const defaultExclusions = archetype
-    ? [...archetype.exclusions, ...archetype.mandatoryNegativeFilters]
+    ? archetype.exclusions.filter(e => !e.startsWith('-'))
     : isAgency
       ? ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'DeepMind', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product']
       : [];
@@ -721,7 +760,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     ...(spec?.person?.excludeTitles || []),
     ...(spec?.exclusions?.companies || []),
     ...(spec?.exclusions?.domains || [])
-  ]);
+  ].filter(e => !e.startsWith('-')));
 
   // Deduplicate requirements of the same scope.
   // For person_role, always merge into a single any_of requirement so candidates
@@ -949,7 +988,8 @@ export function buildContractFallbackQueries(
     const loc = locations[i % locations.length];
     const parts = [vertical, role, loc].filter(Boolean);
     let baseQuery = parts.join(' ');
-    if (isAgencyBrief && agencyDisambiguation) {
+    const hasExplicitVertical = /\b(agency|agencies|consult\w*|service\w*|solution\w*|studio\w*|firm\w*|integrat\w*|advisory|business|partner\w*)\b/i.test(baseQuery);
+    if (isAgencyBrief && agencyDisambiguation && !hasExplicitVertical) {
       if ((baseQuery + ' ' + agencyDisambiguation).length <= 240) {
         baseQuery = `${baseQuery} ${agencyDisambiguation}`;
       }
@@ -1487,7 +1527,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       }
 
       // 3. Agency disambiguation: do not clobber queries that already have agency vertical words
-      const hasAgencyVertical = /\b(agency|agencies|consultan\w*|studio|integrat\w*|advisory)\b/i.test(query);
+      const hasAgencyVertical = /\b(agency|agencies|consult\w*|service\w*|solution\w*|studio\w*|firm\w*|integrat\w*|advisory|business|partner\w*)\b/i.test(query);
       if (isAgency && !hasAgencyVertical && !lower(query).includes('-software') && !lower(query).includes('-saas')) {
         const agencyDisambig = '-software -platform -SaaS';
         if ((query + ' ' + agencyDisambig).length <= 240) {

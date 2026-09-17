@@ -1,4 +1,11 @@
-import { scrapeAsMarkdown } from '../services/brightdata.js';
+import {
+  scrapeAsMarkdown,
+  brightDataSearch,
+  isAuthwalledUrl,
+  isBrightDataConfigured,
+  isBrightDataCoolingDown,
+} from '../services/brightdata.js';
+import { tavilySearch, hasTavilyKey } from '../services/llm.js';
 import { extractLinkedInUsername, normalizeLinkedInUrl, parseLinkedInEvidence } from '../services/linkedinEvidence.js';
 import { getEnrichmentCacheEntry, upsertEnrichmentCacheEntry, getNegativeEnrichmentCacheEntry, upsertNegativeEnrichmentCacheEntry } from '../db.js';
 import { verifyDecisionMakerFromEvidence } from './verification.js';
@@ -177,14 +184,89 @@ export async function enrichLeadProfile(
     }
   }
 
+  let evidenceSourceProvider: LeadSourceProvider = 'brightdata';
+
   try {
-    const markdown = await scrapeAsMarkdown(rawUrl, undefined, options.abortSignal);
+    let markdown: string | null = null;
+
+    if (isAuthwalledUrl(rawUrl)) {
+      // Free tier strategy: Google/Bing and Tavily index public LinkedIn profile snippets.
+      // Target the handle and prospect details via SERP rather than attempting an authwalled markdown scrape.
+      const searchTarget = username
+        ? `site:linkedin.com/in/${username}`
+        : `"${profile.fullName || ''}" "${profile.currentCompany || ''}" site:linkedin.com/in/`;
+
+      let searchSnippets: string[] = [];
+
+      if (isBrightDataConfigured() && !isBrightDataCoolingDown()) {
+        try {
+          const bdResults = await brightDataSearch(searchTarget, {
+            timeoutMs: 15_000,
+            signal: options.abortSignal,
+          });
+          if (bdResults && bdResults.length > 0) {
+            searchSnippets = bdResults
+              .slice(0, 3)
+              .map((r) => [r.title, r.content].filter(Boolean).join('\n'));
+            evidenceSourceProvider = 'brightdata';
+          }
+        } catch {
+          // Fall through to Tavily
+        }
+      }
+
+      if (searchSnippets.length === 0 && hasTavilyKey()) {
+        try {
+          const tavilyRes = await tavilySearch(searchTarget, {
+            searchDepth: 'basic',
+            maxResults: 3,
+            includeDomains: ['linkedin.com'],
+            signal: options.abortSignal,
+          });
+          const items = Array.isArray(tavilyRes)
+            ? tavilyRes
+            : tavilyRes?.items || (tavilyRes as any)?.results || [];
+          if (items.length > 0) {
+            searchSnippets = items
+              .slice(0, 3)
+              .map((r: any) => [r.title, r.content || r.raw_content || r.snippet].filter(Boolean).join('\n'));
+            evidenceSourceProvider = 'tavily';
+          }
+        } catch {
+          // Fall through
+        }
+      }
+
+      // If company website/domain is present, scrape it using free scrapeAsMarkdown (no login wall)
+      const companyDomain = lead.companyDomain || lead.website || profile.companyWebsite;
+      let companyMarkdown = '';
+      if (companyDomain && !isAuthwalledUrl(String(companyDomain))) {
+        try {
+          const domainUrl = String(companyDomain).startsWith('http')
+            ? String(companyDomain)
+            : `https://${companyDomain}`;
+          const siteContent = await scrapeAsMarkdown(domainUrl, 15_000, options.abortSignal);
+          if (siteContent && siteContent.trim().length > 100) {
+            companyMarkdown = `\n\n[Company Website Evidence]:\n${siteContent.slice(0, 2000)}`;
+          }
+        } catch {
+          // Ignore company site scrape failure
+        }
+      }
+
+      if (searchSnippets.length > 0 || companyMarkdown) {
+        markdown = [searchSnippets.join('\n\n'), companyMarkdown].filter(Boolean).join('\n\n');
+      }
+    } else {
+      markdown = await scrapeAsMarkdown(rawUrl, undefined, options.abortSignal);
+    }
+
     if (!markdown || markdown.trim().length === 0) {
       return {
         lead,
         result: {
           status: 'rejected_low_quality',
-          sourceProvider: 'brightdata',
+          sourceProvider: evidenceSourceProvider,
           evidenceQuality: 'weak',
           cacheHit: false,
           scraped: true,
@@ -209,16 +291,16 @@ export async function enrichLeadProfile(
         publicEmail: parsed.publicEmail,
         evidenceBlock: parsed.evidenceBlock,
         scrapeQuality: parsed.quality,
-        sourceProvider: 'brightdata'
+        sourceProvider: evidenceSourceProvider
       }, ttlDays);
 
-      refreshLeadEvidence('brightdata', parsed.quality, parsed.evidenceBlock);
+      refreshLeadEvidence(evidenceSourceProvider, parsed.quality, parsed.evidenceBlock);
 
       return {
         lead,
         result: {
           status: 'scraped',
-          sourceProvider: 'brightdata',
+          sourceProvider: evidenceSourceProvider,
           evidenceQuality: parsed.quality,
           cacheHit: false,
           scraped: true,
@@ -233,14 +315,14 @@ export async function enrichLeadProfile(
       linkedinUsername: username,
       evidenceBlock: mappedReason,
       scrapeQuality: 'bad',
-      sourceProvider: 'brightdata'
+      sourceProvider: evidenceSourceProvider
     }, parsed.rejectionReason === 'blocked_or_login_wall' ? 0.25 : undefined);
 
     return {
       lead,
       result: {
         status: 'rejected_low_quality',
-        sourceProvider: 'brightdata',
+        sourceProvider: evidenceSourceProvider,
         evidenceQuality: 'weak',
         cacheHit: false,
         scraped: true,
@@ -253,12 +335,12 @@ export async function enrichLeadProfile(
       lead,
       result: {
         status: 'error',
-        sourceProvider: 'brightdata',
+        sourceProvider: evidenceSourceProvider,
         evidenceQuality: 'weak',
         cacheHit: false,
         scraped: true,
         updatedFields: [],
-        error: err?.message || 'Bright Data scrape failed'
+        error: err?.message || 'Profile enrichment failed'
       }
     };
   }

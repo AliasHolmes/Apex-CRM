@@ -9,6 +9,7 @@ import {
   scrapeBatchAsMarkdown,
   classifyBrightDataError,
   getBrightDataStatus,
+  isAuthwalledUrl,
 } from "../../services/brightdata.js";
 import {
   tavilyExtract,
@@ -262,7 +263,7 @@ export async function executeExtractStage(
     const url = String(item.url || "");
     return (
       url &&
-      !/linkedin\.com\/in\//i.test(url) &&
+      !isAuthwalledUrl(url) &&
       String(item.content || item.raw_content || "").length < 420
     );
   });

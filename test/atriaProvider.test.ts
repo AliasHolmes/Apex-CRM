@@ -23,6 +23,8 @@ const MANAGED_KEYS = [
   'ATRIA_MODEL',
   'ATRIA_PROVIDER_NAME',
   'ATRIA_PRIORITY',
+  'LANGFUSE_PUBLIC_KEY',
+  'LANGFUSE_SECRET_KEY',
 ] as const;
 
 const envSnapshot: Record<string, string | undefined> = {};

@@ -15,6 +15,26 @@ test("isAuthwalledUrl detects LinkedIn, Twitter, Instagram, and social URLs", ()
     isAuthwalledUrl("https://linkedin.com/in/williamhgates"),
     true,
   );
+  assert.equal(
+    isAuthwalledUrl("https://www.linkedin.com/posts/johndoe_ai-automation-activity-712345-abcd"),
+    true,
+  );
+  assert.equal(
+    isAuthwalledUrl("https://www.linkedin.com/feed/update/urn:li:activity:7123456789"),
+    true,
+  );
+  assert.equal(
+    isAuthwalledUrl("https://www.linkedin.com/company/apex-ai-solutions"),
+    true,
+  );
+  assert.equal(
+    isAuthwalledUrl("https://www.linkedin.com/pulse/scaling-ai-agencies-john-doe"),
+    true,
+  );
+  assert.equal(
+    isAuthwalledUrl("https://uk.linkedin.com/posts/jane-smith-ai-growth"),
+    true,
+  );
   assert.equal(isAuthwalledUrl("https://twitter.com/jack"), true);
   assert.equal(isAuthwalledUrl("https://x.com/elonmusk"), true);
   assert.equal(isAuthwalledUrl("https://instagram.com/natgeo"), true);
@@ -25,16 +45,27 @@ test("isAuthwalledUrl detects LinkedIn, Twitter, Instagram, and social URLs", ()
 });
 
 test("scrapeAsMarkdown immediately returns null for authwalled URLs without MCP call", async () => {
-  const result = await scrapeAsMarkdown(
+  const profileResult = await scrapeAsMarkdown(
     "https://www.linkedin.com/in/alex-smith-12345",
   );
-  assert.equal(result, null);
+  assert.equal(profileResult, null);
+
+  const postResult = await scrapeAsMarkdown(
+    "https://www.linkedin.com/posts/alex-smith_ai-agents-activity-712345",
+  );
+  assert.equal(postResult, null);
+
+  const feedResult = await scrapeAsMarkdown(
+    "https://www.linkedin.com/feed/update/urn:li:activity:99999999",
+  );
+  assert.equal(feedResult, null);
 });
 
 test("scrapeBatchAsMarkdown filters out authwalled URLs before scraping", async () => {
   const urls = [
     "https://www.linkedin.com/in/user1",
-    "https://www.linkedin.com/in/user2",
+    "https://www.linkedin.com/posts/user2_growth-post",
+    "https://www.linkedin.com/feed/update/urn:li:activity:12345",
   ];
   const results = await scrapeBatchAsMarkdown(urls);
   assert.deepEqual(results, []);

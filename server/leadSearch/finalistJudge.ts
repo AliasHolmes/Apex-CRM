@@ -858,13 +858,13 @@ export function checkStrictContradiction(
   );
   for (const exclusion of contract.exclusions || []) {
     const term = clean(exclusion, 100).toLowerCase();
-    if (!term || term.length < 2) continue;
+    if (!term || term.length < 2 || term.startsWith('-')) continue;
     const isIcRoleTerm = /\b(staff\s+engineer|principal\s+engineer|principal\s+product\s+manager|product\s+manager|senior\s+software\s+engineer)\b/i.test(term);
     if (isIcRoleTerm && hasFounderOrOwnerLeadership) {
       continue;
     }
     const isProductTerm = /\b(saas|software\s+product|software\s+platform|consumer\s+app|mobile\s+app)\b/i.test(term);
-    if (isProductTerm && hasStrictAgencyNoun) {
+    if (isProductTerm && (hasStrictAgencyNoun || (hasFounderOrOwnerLeadership && isAgencyContractOrBrief))) {
       // An agency serving SaaS or providing software services is client-services, not a pure product firm
       continue;
     }

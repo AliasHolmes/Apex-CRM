@@ -1108,7 +1108,7 @@ const textFromToolResult = (result: any) => {
 };
 
 const AUTHWALLED_HOST_PATTERN =
-  /(?:linkedin\.com\/in\/|twitter\.com|x\.com|instagram\.com|facebook\.com|tiktok\.com)/i;
+  /(?:(?:[a-z0-9-]+\.)?linkedin\.com|twitter\.com|x\.com|instagram\.com|facebook\.com|tiktok\.com)/i;
 
 export function isAuthwalledUrl(url: string): boolean {
   if (!url) return true;
@@ -1245,9 +1245,13 @@ export async function scrapeAsMarkdown(
   if (signal?.aborted) return null;
 
   const isAuthwalled = isAuthwalledUrl(scrapeUrl);
+  if (isAuthwalled) {
+    // Authwalled domains (LinkedIn, X, Facebook, Instagram, TikTok) cannot be scraped via markdown scrapers.
+    // Return null immediately without calling Bright Data, native fetch, or Tavily extract.
+    return null;
+  }
 
   if (!isBrightDataConfigured() || isBrightDataCoolingDown()) {
-    if (isAuthwalled) return null;
     const nativeResult = await nativeHttpScrape(scrapeUrl, timeoutMs, signal);
     if (signal?.aborted) return null;
     if (nativeResult) return nativeResult;

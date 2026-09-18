@@ -97,6 +97,11 @@ export function normalizeDomainUrl(rawUrl?: string): string | null {
     if (!host || BLOCKED_DOMAINS.has(host) || BLOCKED_DOMAINS.has(`www.${host}`)) {
       return null;
     }
+    for (const blocked of BLOCKED_DOMAINS) {
+      if (host === blocked || host.endsWith(`.${blocked}`)) {
+        return null;
+      }
+    }
     if (isPrivateOrInternalHost(host)) {
       return null;
     }
@@ -110,7 +115,12 @@ export function normalizeDomainUrl(rawUrl?: string): string | null {
 
 export function deriveCompanyDomainWithProvenance(lead: Record<string, any>): DerivedDomain | null {
   // 1. Check explicit website fields
-  const explicitSite = lead.website || lead.companyWebsite || lead.profile?.website || lead.companyAccount?.website;
+  const explicitSite =
+    lead.website ||
+    lead.companyWebsite ||
+    lead.contactDetails?.website ||
+    lead.profile?.website ||
+    lead.companyAccount?.website;
   const fromExplicit = normalizeDomainUrl(explicitSite);
   if (fromExplicit) return { domain: fromExplicit, provenance: 'explicit' };
 

@@ -4,6 +4,7 @@ import { fuseObservations, type ScoutObservation } from "../server/leadSearch/ob
 
 test("fuseObservations prioritizes brightdata_dataset even when raw snippet is longer", () => {
   const shortDatasetObs: ScoutObservation = {
+    round: 1,
     provider: "brightdata",
     query: "site:linkedin.com/in/ test",
     title: "Alice Smith - Founder & CEO",
@@ -18,6 +19,7 @@ test("fuseObservations prioritizes brightdata_dataset even when raw snippet is l
   };
 
   const longTavilySnippetObs: ScoutObservation = {
+    round: 1,
     provider: "tavily",
     query: "site:linkedin.com/in/ alicesmith",
     title: "Alice Smith | LinkedIn",

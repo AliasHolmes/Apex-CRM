@@ -229,7 +229,7 @@ describe('evidence-grounded prospect quality', () => {
     }, rawEvidence, contract);
     const finalistText = candidate.evidence.map(item => item.text).join('\n');
 
-    assert.ok(candidate.evidence.reduce((sum, item) => sum + item.text.length, 0) <= 1_100);
+    assert.ok(candidate.evidence.reduce((sum, item) => sum + item.text.length, 0) <= 2_800);
     assert.match(finalistText, /VP Engineering/i);
     assert.match(finalistText, /fintech/i);
     assert.match(finalistText, /London/i);

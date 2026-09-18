@@ -81,11 +81,15 @@ export function buildCleanEvidence(item: any): string {
   const title = cleanSnippetNoise(item?.title || "Untitled result");
   const rawSnippet = item?.content || item?.raw_content || "";
   const cleaned = cleanSnippetNoise(rawSnippet);
-  const snippet = cleaned.length > 500 ? `${cleaned.slice(0, 500)}...` : cleaned;
+  const maxChars = item?._evidenceUpgraded ? 1800 : 500;
+  const snippet = cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}...` : cleaned;
+  const providerLabel = String(item?.sourceProvider || "").startsWith("brightdata")
+    ? "[BRIGHTDATA SNIPPET]"
+    : "[TAVILY SNIPPET]";
   return [
     `LINK: ${url}`,
     `TITLE: ${title}`,
-    `[TAVILY SNIPPET]`,
+    providerLabel,
     snippet,
   ].filter(Boolean).join("\n");
 }
@@ -458,6 +462,7 @@ export async function executeExtractStage(
               item.content = [item.content, markdown.slice(0, 1800)]
                 .filter(Boolean)
                 .join("\n");
+              item._evidenceUpgraded = true;
               upgraded++;
               stats.scout.brightDataEvidenceUpgrades =
                 (stats.scout.brightDataEvidenceUpgrades || 0) + 1;
@@ -508,6 +513,15 @@ export async function executeExtractStage(
       );
   }
 
+  // Deduplicate URLs for Tavily extract to avoid redundant queries in one round (F7)
+  const seenExtractUrls = new Set<string>();
+  remainingForTavilyExtract = remainingForTavilyExtract.filter((item: any) => {
+    const norm = normalizeDedupeValue(String(item?.url || ""));
+    if (!norm || seenExtractUrls.has(norm)) return false;
+    seenExtractUrls.add(norm);
+    return true;
+  });
+
   const acceptedUpgradeCount = freeTierBudget.reserveTavilyExtract(
     remainingForTavilyExtract.length,
   );
@@ -555,6 +569,7 @@ export async function executeExtractStage(
               item.content = [item.content, extracted.slice(0, 1800)]
                 .filter(Boolean)
                 .join("\n");
+              item._evidenceUpgraded = true;
             }
           }
           stats.scout.lightweightEvidenceUpgrades += extractedPages.length;

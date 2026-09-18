@@ -172,9 +172,13 @@ export async function executeRetrieveStage(
               recordProviderUsage("tavily", estimatedCredits);
             }
             queryRuns[index].providerUnits += estimatedCredits;
+            const isPersonLane = !plan.item.lane || plan.item.lane === "person";
+            const rawContentEnabled =
+              process.env.TAVILY_RAW_CONTENT_PERSON_LANE === "true" && isPersonLane;
             const res = await ports.tavilySearch(plan.executableQuery, {
               ...tavilyOptions,
               maxResults: dynamicTavilyMaxResults,
+              ...(rawContentEnabled ? { includeRawContent: true } : {}),
               signal: signal || state.abortController.signal,
             });
             let resultsCount = res.items?.length || 0;
@@ -612,9 +616,9 @@ export async function executeRetrieveStage(
 
     for (const { plan, index } of plans) {
       const locationRequirement = config.contract?.requirements?.find(
-        (r) => r.category === "location",
+        (r) => r.scope === "person_location",
       );
-      const fallbackCountry = locationRequirement?.values?.[0];
+      const fallbackCountry = locationRequirement?.acceptableTerms?.[0];
       const filter = toDatasetFilter(plan.item, fallbackCountry);
       if (!filter) continue;
 
@@ -692,7 +696,7 @@ export async function executeRetrieveStage(
           recordTrace({
             phase: "search",
             operation: "brightdata_dataset_search",
-            status: "completed",
+            status: "success",
             provider: "brightdata",
             round,
             query: plan.executableQuery,
@@ -708,7 +712,7 @@ export async function executeRetrieveStage(
         recordTrace({
           phase: "search",
           operation: "brightdata_dataset_search",
-          status: "failed",
+          status: "error",
           provider: "brightdata",
           round,
           query: plan.executableQuery,
@@ -747,12 +751,19 @@ export async function executeRetrieveStage(
         )
     : [];
 
+  const datasetPlansLimit = Math.max(
+    1,
+    Math.min(
+      4,
+      Math.floor(Number(process.env.BRIGHTDATA_DATASET_PLANS_PER_ROUND) || 2),
+    ),
+  );
   const datasetPlans =
     isBrightDataPro() && canAttemptBD
       ? roundPlans
           .map((plan, index) => ({ plan, index }))
           .filter(({ plan }) => !plan.item.lane || plan.item.lane === "person")
-          .slice(0, 1)
+          .slice(0, datasetPlansLimit)
       : [];
 
   // Run Wave 1 (Tavily || Unconditional Bright Data || Bright Data Dataset) concurrently in parallel

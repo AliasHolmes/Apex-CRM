@@ -11,7 +11,6 @@ import {
   BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
   isAuthwalledUrl,
   isBrightDataFreeTier,
-  isBrightDataPro,
   brightDataSearchDataset,
   brightDataGetPersonProfile,
 } from "../../services/brightdata.js";
@@ -427,6 +426,12 @@ export async function executeEnrichStage(
       if (experienceArray.length > 0)
         target.lead.experiences = experienceArray;
       if (aboutText) target.lead.about = aboutText;
+      if (hit.current_company_website) {
+        if (!target.lead.companyWebsite) target.lead.companyWebsite = hit.current_company_website;
+        if (!target.lead.website) target.lead.website = hit.current_company_website;
+        target.lead.contactDetails = target.lead.contactDetails || {};
+        if (!target.lead.contactDetails.website) target.lead.contactDetails.website = hit.current_company_website;
+      }
 
       upsertEnrichmentCacheEntry(
         {

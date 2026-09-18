@@ -175,15 +175,15 @@ const clampEnvInt = (
 // tunable; term-matching evidence is always preserved regardless of caps.
 const MAX_EVIDENCE_ITEMS = clampEnvInt(
   "FINALIST_JUDGE_MAX_EVIDENCE_ITEMS",
-  3,
+  5,
   1,
   8,
 );
 const EVIDENCE_CHARS = clampEnvInt(
   "FINALIST_JUDGE_EVIDENCE_CHARS",
-  500,
+  1200,
   200,
-  1600,
+  2400,
 );
 
 export function buildFinalistJudgePrompt(

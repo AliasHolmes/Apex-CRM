@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import {
   ApiKeyPool,
   KeyRotationError,
@@ -5,6 +6,7 @@ import {
   parseApiKeys,
 } from "./keyRotator.js";
 import { sendDirectLangfuseTrace } from "./langfuse.js";
+import { getLlmCacheEntry, upsertLlmCacheEntry } from "../db.js";
 
 export const Type = {
   STRING: "STRING",
@@ -362,11 +364,34 @@ export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Pr
 export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
 
 /**
- * Strict sequential execution queue for all LLM calls.
- * Guarantees that at most one outbound API call is active against the LLM model at any millisecond,
- * eliminating upstream thread contention, concurrent rate limits, and Cloudflare queue timeouts.
+ * Bounded concurrency execution queue for all LLM calls.
+ * Allows up to LLM_CONCURRENT_SLOTS (default: 1) active outbound calls.
+ * When a task is aborted while waiting, it removes itself from waitQueue cleanly
+ * to guarantee zero slot leakage or hung promises.
  */
-let globalLLMQueue: Promise<any> = Promise.resolve();
+function getMaxLlmConcurrency(): number {
+  const configured = Number(process.env.LLM_CONCURRENT_SLOTS);
+  return Number.isFinite(configured) && configured >= 1
+    ? Math.min(Math.floor(configured), 4)
+    : 1;
+}
+
+let activeLlmSlots = 0;
+const llmWaitQueue: Array<{
+  run: () => void;
+  onAbort: () => void;
+}> = [];
+
+function pumpLlmQueue() {
+  const maxSlots = getMaxLlmConcurrency();
+  while (activeLlmSlots < maxSlots && llmWaitQueue.length > 0) {
+    const next = llmWaitQueue.shift();
+    if (next) {
+      activeLlmSlots++;
+      next.run();
+    }
+  }
+}
 
 export function withSequentialLLMExecution<T>(
   task: () => Promise<T>,
@@ -378,34 +403,36 @@ export function withSequentialLLMExecution<T>(
     return Promise.reject(abortErr);
   }
 
-  const prev = globalLLMQueue;
-  let releaseSlot: () => void;
-  const slotPromise = new Promise<void>((r) => {
-    releaseSlot = r;
-  });
-  globalLLMQueue = slotPromise;
-
   return new Promise<T>((resolve, reject) => {
-    let abortedInQueue = false;
+    let settled = false;
+    let waitEntry: { run: () => void; onAbort: () => void } | null = null;
 
-    const onAbort = () => {
-      abortedInQueue = true;
+    const cleanupAbort = () => {
+      if (signal && waitEntry?.onAbort) {
+        signal.removeEventListener("abort", waitEntry.onAbort);
+      }
+    };
+
+    const handleAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanupAbort();
+      const idx = llmWaitQueue.findIndex((entry) => entry === waitEntry);
+      if (idx !== -1) {
+        llmWaitQueue.splice(idx, 1);
+      }
       const abortErr = new Error("LLM request was aborted by caller.");
       abortErr.name = "AbortError";
       reject(abortErr);
     };
 
-    if (signal) {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    prev.finally(async () => {
-      if (signal) {
-        signal.removeEventListener("abort", onAbort);
-      }
-      if (abortedInQueue || signal?.aborted) {
-        releaseSlot();
-        if (!abortedInQueue) {
+    const executeTask = async () => {
+      cleanupAbort();
+      if (settled || signal?.aborted) {
+        activeLlmSlots = Math.max(0, activeLlmSlots - 1);
+        pumpLlmQueue();
+        if (!settled) {
+          settled = true;
           const abortErr = new Error("LLM request was aborted by caller.");
           abortErr.name = "AbortError";
           reject(abortErr);
@@ -415,13 +442,33 @@ export function withSequentialLLMExecution<T>(
 
       try {
         const result = await task();
+        settled = true;
         resolve(result);
       } catch (err) {
+        settled = true;
         reject(err);
       } finally {
-        releaseSlot();
+        activeLlmSlots = Math.max(0, activeLlmSlots - 1);
+        pumpLlmQueue();
       }
-    });
+    };
+
+    waitEntry = {
+      run: executeTask,
+      onAbort: handleAbort,
+    };
+
+    if (signal) {
+      signal.addEventListener("abort", handleAbort, { once: true });
+    }
+
+    const maxSlots = getMaxLlmConcurrency();
+    if (activeLlmSlots < maxSlots) {
+      activeLlmSlots++;
+      executeTask();
+    } else {
+      llmWaitQueue.push(waitEntry);
+    }
   });
 }
 
@@ -1928,6 +1975,34 @@ export async function openAIStructured<T>(
     throw new Error(parseErrors[0] || "No schema-matching JSON block found");
   };
 
+  const cacheEnabled = process.env.LLM_COMPLETION_CACHE !== "false";
+  let promptHash: string | undefined;
+  if (cacheEnabled) {
+    try {
+      const hashContent = [
+        sysPrompt,
+        prompt,
+        JSON.stringify(normalizedSchema || {}),
+        options?.temperature ?? 0,
+      ].join("::");
+      promptHash = crypto.createHash("sha256").update(hashContent).digest("hex");
+      const cached = getLlmCacheEntry(promptHash);
+      if (cached?.response) {
+        try {
+          const parsed = parseStructuredText(cached.response);
+          if (parsed !== null) {
+            options?.onUsage?.(cached.usage);
+            return parsed;
+          }
+        } catch {
+          // Cached response invalid for current schema, proceed to fresh generation
+        }
+      }
+    } catch {
+      // Non-fatal cache lookup failure
+    }
+  }
+
   return withProviderFallback(async (provider, providerOpts) => {
     let text = "";
     const effectiveOptions = { ...options, ...providerOpts };
@@ -1960,7 +2035,19 @@ export async function openAIStructured<T>(
     }
 
     try {
-      return parseStructuredText(text);
+      const parsed = parseStructuredText(text);
+      if (cacheEnabled && promptHash) {
+        const ttlHours = options?.metadata?.stage === "strategist" ? 6 : 24;
+        upsertLlmCacheEntry(
+          promptHash,
+          provider.name,
+          provider.model,
+          text,
+          undefined,
+          ttlHours,
+        );
+      }
+      return parsed;
     } catch (firstParseError: any) {
       const shouldRetry = options?.retryOnParseFailure !== false;
       if (!shouldRetry) {
@@ -2000,7 +2087,19 @@ export async function openAIStructured<T>(
       });
 
       try {
-        return parseStructuredText(retryText);
+        const parsedRetry = parseStructuredText(retryText);
+        if (cacheEnabled && promptHash) {
+          const ttlHours = options?.metadata?.stage === "strategist" ? 6 : 24;
+          upsertLlmCacheEntry(
+            promptHash,
+            provider.name,
+            provider.model,
+            retryText,
+            undefined,
+            ttlHours,
+          );
+        }
+        return parsedRetry;
       } catch {
         throw buildParseFailureError(
           provider,

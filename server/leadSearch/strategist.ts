@@ -270,15 +270,50 @@ export function toDatasetFilter(
     "tel aviv",
     "singapore",
   ];
+  let matchedCity: string | undefined;
   for (const hub of techHubs) {
     const hubRegex = new RegExp(`\\b${hub}\\b`, "i");
     if (hubRegex.test(lowerQuery)) {
+      matchedCity = hub;
       const cityVal = hub
         .split(/\s+/)
         .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
         .join(" ");
       filters.push({ name: "city", operator: "includes", value: cityVal });
       break;
+    }
+  }
+
+  // 3.5. Elastic Domain / Industry keyword extraction
+  // Strips role, city, and search syntax to preserve targeted industry/agency terms
+  let domainQuery = lowerQuery
+    .replace(/site:\S+/gi, " ")
+    .replace(/["'()]/g, " ");
+
+  if (matchedRole) {
+    const roleRegex = new RegExp(`\\b${matchedRole.replace("-", "[- ]")}s?\\b`, "gi");
+    domainQuery = domainQuery.replace(roleRegex, " ");
+  }
+  if (matchedCity) {
+    const cityRegex = new RegExp(`\\b${matchedCity}\\b`, "gi");
+    domainQuery = domainQuery.replace(cityRegex, " ");
+  }
+
+  const genericStopwords = new Set([
+    "in", "at", "for", "the", "and", "or", "of", "with", "to", "by", "from",
+    "startup", "startups", "company", "companies", "business", "businesses",
+    "people", "profile", "profiles", "linkedin", "who", "are", "is", "a", "an"
+  ]);
+
+  const candidateDomainWords = domainQuery
+    .split(/[^a-z0-9+#.-]+/i)
+    .map((w) => w.trim().toLowerCase())
+    .filter((w) => w.length >= 2 && !genericStopwords.has(w));
+
+  if (candidateDomainWords.length > 0) {
+    const domainKeyword = candidateDomainWords.slice(0, 2).join(" ");
+    if (domainKeyword) {
+      filters.push({ name: "about", operator: "includes", value: domainKeyword });
     }
   }
 

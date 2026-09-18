@@ -412,6 +412,17 @@ function runMigrations(db: DatabaseSync) {
         CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
         CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
 
+        CREATE TABLE IF NOT EXISTS llm_completion_cache (
+          prompt_hash TEXT PRIMARY KEY,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          response TEXT NOT NULL,
+          usage_json TEXT,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_cache_expires ON llm_completion_cache(expires_at);
+
         CREATE TABLE IF NOT EXISTS search_logs (
           id TEXT PRIMARY KEY,
           timestamp TEXT NOT NULL,
@@ -1320,6 +1331,17 @@ export function getLeadsDb() {
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_username ON enrichment_cache(linkedin_username);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_person_company ON enrichment_cache(person_name, company_name);
       CREATE INDEX IF NOT EXISTS idx_enrichment_cache_expires ON enrichment_cache(expires_at);
+
+      CREATE TABLE IF NOT EXISTS llm_completion_cache (
+        prompt_hash TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        response TEXT NOT NULL,
+        usage_json TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_cache_expires ON llm_completion_cache(expires_at);
 
       INSERT OR IGNORE INTO enrichment_cache (
         id,
@@ -2506,6 +2528,92 @@ export function getIntentCacheEntriesBatch(
   return result;
 }
 
+export type LlmCacheEntry = {
+  response: string;
+  usage?: any;
+};
+
+export function getLlmCacheEntry(
+  promptHash: string,
+  now = new Date(),
+): LlmCacheEntry | null {
+  try {
+    const db = getLeadsDb();
+    const row = db
+      .prepare(
+        "SELECT response, usage_json, expires_at FROM llm_completion_cache WHERE prompt_hash = ?",
+      )
+      .get(promptHash) as
+      | { response: string; usage_json?: string; expires_at: string }
+      | undefined;
+    if (!row) return null;
+    if (new Date(row.expires_at).getTime() < now.getTime()) {
+      return null;
+    }
+    let usage: any = undefined;
+    if (row.usage_json) {
+      try {
+        usage = JSON.parse(row.usage_json);
+      } catch {}
+    }
+    return { response: row.response, usage };
+  } catch {
+    return null;
+  }
+}
+
+export function upsertLlmCacheEntry(
+  promptHash: string,
+  provider: string,
+  model: string,
+  response: string,
+  usage?: any,
+  ttlHours = 24,
+  now = new Date(),
+): void {
+  try {
+    const db = getLeadsDb();
+    const expiresAt = new Date(
+      now.getTime() + ttlHours * 3600 * 1000,
+    ).toISOString();
+    db.prepare(
+      `
+      INSERT INTO llm_completion_cache (prompt_hash, provider, model, response, usage_json, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(prompt_hash) DO UPDATE SET
+        provider = excluded.provider,
+        model = excluded.model,
+        response = excluded.response,
+        usage_json = excluded.usage_json,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+    `,
+    ).run(
+      promptHash,
+      provider,
+      model,
+      response,
+      usage ? JSON.stringify(usage) : null,
+      now.toISOString(),
+      expiresAt,
+    );
+  } catch {
+    // Non-fatal cache write failure
+  }
+}
+
+export function purgeLlmCacheExpired(now = new Date()): number {
+  try {
+    const db = getLeadsDb();
+    const result = db
+      .prepare("DELETE FROM llm_completion_cache WHERE expires_at < ?")
+      .run(now.toISOString());
+    return Number((result as any)?.changes || 0);
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Batch positive-cache lookup: one query for many targets. Returns a map
  * keyed by both normalized_url and linkedin_username forms pointing at the
@@ -3551,6 +3659,7 @@ export type MiningSessionCheckpoint = {
   debugLogsTail?: any[];
   signalStoreState?: any;
   recoveryAttempts?: number;
+  datasetSearchAfter?: any[];
   updatedAt: string;
 };
 

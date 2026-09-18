@@ -152,12 +152,12 @@ const evidenceBudgetFor = (lead: Record<string, any>, hardRequirementCount: numb
   const coverage = Number(lead.scout?.criteriaCoverageScore);
   const corroboration = Number(lead.scout?.corroborationScore);
   const baseBudget = coverage >= 8 && corroboration >= 7
-    ? 650
+    ? 1_100
     : coverage >= 5
-      ? 850
-      : 1_100;
+      ? 1_500
+      : 2_000;
   // Every hard requirement deserves room for at least one concise supporting passage.
-  return Math.min(1_400, Math.max(baseBudget, profileChars + hardRequirementCount * 130));
+  return Math.min(2_800, Math.max(baseBudget, profileChars + hardRequirementCount * 250));
 };
 
 export function selectEvidenceForFinalist(
@@ -218,7 +218,7 @@ export function selectEvidenceForFinalist(
 
   const append = (item: typeof scored[number], preferredTerms: string[] = []) => {
     if (selected.has(item.index) || remaining < 60) return false;
-    const line = crop(item.text, Math.min(280, remaining), preferredTerms);
+    const line = crop(item.text, Math.min(500, remaining), preferredTerms);
     if (line.length < 24) return false;
     selected.add(item.index);
     evidenceLines.push(line);

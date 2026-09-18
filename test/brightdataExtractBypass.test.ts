@@ -84,14 +84,12 @@ test("executeExtractStage produces complete CandidateLead for brightdata_dataset
   assert.ok(meta.evidenceBlock.includes("LINK: https://www.linkedin.com/in/janedoe"));
 
   // 4. Verify decision maker verification can reach confidence 9 with this evidence
-  const dmResult = verifyDecisionMakerFromEvidence(
-    {
-      currentTitle: lead.currentTitle,
-      currentCompany: lead.currentCompany,
-      evidenceText: meta.evidenceBlock,
-      experiences: lead.experiences,
-    },
-    "Find founders at cloud startups",
-  );
+  const dmResult = verifyDecisionMakerFromEvidence({
+    query: "Find founders at cloud startups",
+    currentTitle: lead.currentTitle,
+    currentCompany: lead.currentCompany,
+    evidenceText: meta.evidenceBlock,
+    experiences: lead.experiences,
+  });
   assert.ok(dmResult.confidence >= 9, `Expected confidence >= 9, got ${dmResult.confidence} (${dmResult.reason})`);
 });

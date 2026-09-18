@@ -786,10 +786,7 @@ export async function probeBrightDataRecovery(): Promise<boolean> {
   });
   try {
     const results = await Promise.race([
-      fetch("https://api.brightdata.com", {
-        method: "HEAD",
-        signal: AbortSignal.timeout(10_000),
-      }).then(res => res.ok ? [] : Promise.reject(new Error("HTTP " + res.status))).catch(() => brightDataSearch("example", { timeoutMs: 10_000 })),
+      brightDataSearch("brightdata recovery probe", { timeoutMs: 8_000 }),
       timeoutPromise,
     ]);
     if (Array.isArray(results)) {

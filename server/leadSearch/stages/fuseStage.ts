@@ -95,8 +95,7 @@ export async function executeFuseStage(
       url: item.url || "",
       content: item.content || item.raw_content || "",
       provider:
-        item.sourceProvider === "brightdata_search" ||
-        item.sourceProvider === "brightdata"
+        String(item.sourceProvider || "").startsWith("brightdata")
           ? "brightdata"
           : "tavily",
       query: item._sourceQuery || plan?.executableQuery || config.promptQuery || "",
@@ -265,10 +264,16 @@ export async function executeFuseStage(
     item.url = url;
     item.title = observation.title;
     item.content = observation.content;
-    item.sourceProvider = Array.isArray(observation.sourceProviders) &&
-      observation.sourceProviders.includes("brightdata")
-      ? "brightdata_search"
-      : "tavily";
+    const isDatasetItem =
+      item.sourceProvider === "brightdata_dataset" ||
+      observation.raw?.sourceProvider === "brightdata_dataset" ||
+      (observation.raw as any)?.raw?.sourceProvider === "brightdata_dataset";
+    item.sourceProvider = isDatasetItem
+      ? "brightdata_dataset"
+      : (Array.isArray(observation.sourceProviders) &&
+        observation.sourceProviders.includes("brightdata")
+          ? "brightdata_search"
+          : "tavily");
     item._normalizedUrl = normalizedUrl;
     item._linkedinUsername = username;
     item._sourceQuery = observation.query;

@@ -6,7 +6,7 @@ import {
 } from "./prospectContract.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import {
-  hasAutoPassStructuredMatch,
+  hasStrictStructuredMatch,
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
 import { rankLeadForFinalSelection } from "./scoring.js";
@@ -15,12 +15,14 @@ import {
   evaluateDecisionMakerGate,
 } from "./titleTriage.js";
 import {
-  candidateMatchesNonServicesVertical,
+  candidateMatchesWrongVertical,
   contractMentionsVertical,
   extractSocialProof,
+  getWrongVerticalRegexForCluster,
   isCompanyPageProfile,
   isGhostProfile,
 } from "./profileQuality.js";
+import { deriveDomainCluster } from "./adaptiveScheduler.js";
 
 export type RequirementStatus = "pass" | "fail" | "unknown";
 
@@ -780,7 +782,7 @@ export function partitionCandidatesByStrictEvidence(
       !hardRequirements.length ||
       Boolean(candidate.lead._ablatedRequirementId) ||
       !hardRequirements.every((requirement) =>
-        hasAutoPassStructuredMatch(candidate.lead, requirement),
+        hasStrictStructuredMatch(candidate.lead, requirement),
       )
     ) {
       needsJudge.push(candidate);
@@ -992,16 +994,24 @@ export function checkStrictContradiction(
   // insurance, cannabis retail, and travel agencies. Fail those unless the
   // contract names the vertical (a brief asking for real estate agencies
   // must still match). Mirrors the Big Tech pattern above.
-  if (isAgencyContractOrBrief) {
+  // 4b. Wrong-vertical check by cluster:
+  // Bare "agency" also matches real estate/insurance/cannabis, "coaching" matches therapy/fitness coach, etc.
+  // Fail those unless the contract names the vertical (a brief asking for real estate agencies must still match).
+  const domainCluster = deriveDomainCluster(contract.brief || "");
+  const targetCluster = domainCluster !== 'global' ? domainCluster : (isAgencyContractOrBrief ? 'b2b_agency' : '');
+  const wrongVerticalRegex = targetCluster ? getWrongVerticalRegexForCluster(targetCluster) : null;
+  if (wrongVerticalRegex) {
     const contractText = `${contract.brief || ""} ${(contract.requirements || [])
       .filter((r) => r.scope === "company_type" || r.scope === "company_industry")
       .map((r) => `${r.description} ${(r.acceptableTerms || []).join(" ")}`)
       .join(" ")}`;
-    if (!contractMentionsVertical(contractText)) {
-      const verticalHit = candidateMatchesNonServicesVertical(lead);
+    if (!contractMentionsVertical(contractText, wrongVerticalRegex)) {
+      const verticalHit = candidateMatchesWrongVertical(lead, wrongVerticalRegex);
       if (verticalHit) {
         return {
-          reason: `Candidate operates a non-services '${verticalHit}' agency, not a client-services firm`,
+          reason: targetCluster === 'b2b_agency'
+            ? `Candidate operates a non-services '${verticalHit}' agency, not a client-services firm`
+            : `Candidate operates in excluded vertical '${verticalHit}' for domain '${targetCluster}'`,
           requirementId: companyHardReq ? companyHardReq.id : "company_type",
         };
       }
@@ -1103,7 +1113,7 @@ export function triPartitionCandidatesByEvidence(
       hardRequirements.length > 0 &&
       !Boolean(lead._ablatedRequirementId) &&
       hardRequirements.every((requirement) =>
-        hasAutoPassStructuredMatch(lead, requirement),
+        hasStrictStructuredMatch(lead, requirement),
       );
 
     if (!matchesAllStructured) {

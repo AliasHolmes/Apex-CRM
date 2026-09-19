@@ -151,11 +151,30 @@ export function isCompanyPageProfile(input: {
 export const NON_SERVICES_AGENCY_REGEX =
   /\b(real estate|realty|realtors?|property management|brokers?|brokerages?|insurance|allstate|state farm|farmers insurance|geico|progressive|liberty mutual|aaa\b|aaa club|mortgage|title company|cannabis|dispensar(?:y|ies)|marijuana|weed|travel agency|travel agent|talent agency|modeling agency|casting agency|bail bonds?|auto (?:insurance|dealership|sales|club)|motor club|car dealership|used cars)\b/i;
 
-export function contractMentionsVertical(contractText: string): boolean {
-  return NON_SERVICES_AGENCY_REGEX.test(contractText || "");
+export const WRONG_VERTICALS_BY_CLUSTER: Record<string, RegExp> = {
+  b2b_agency: NON_SERVICES_AGENCY_REGEX,
+  executive_coaching: /\b(recruiter|recruiting|staffing|temp agency|therapy|therapist|psychologist|psychiatrist|counselor|counseling|life coach|fitness coach|personal trainer|health coach|wellness coach|nutritionist)\b/i,
+  ecommerce_retail: /\b(amazon employee|shopify employee|platform engineer|marketplace operator|wholesale distributor|dropshipping agent)\b/i,
+  healthcare_life_sciences: /\b(healthtech|health\s?tech|medical device sales|pharma rep|pharmaceutical sales|sales representative|account executive)\b/i,
+  professional_services: /\b(legaltech|legal\s?tech|paralegal|law clerk|law student|court reporter|legal assistant|bookkeeper)\b/i,
+  local_services: /\b(franchise corporate|national chain|marketplace|software platform|aggregator)\b/i,
+  manufacturing_industrial: /\b(retail|drop\s?ship|wholesale broker|warehouse only|e-commerce store)\b/i,
+  b2b_saas: /\b(agency|consulting|dev\s?shop|freelance|freelancer|contractor|marketing agency)\b/i,
+};
+
+export function getWrongVerticalRegexForCluster(cluster: string): RegExp | null {
+  return WRONG_VERTICALS_BY_CLUSTER[cluster] || null;
 }
 
-export function candidateMatchesNonServicesVertical(lead: Record<string, any>): string | null {
+export function contractMentionsVertical(contractText: string, customRegex?: RegExp): boolean {
+  const regex = customRegex || NON_SERVICES_AGENCY_REGEX;
+  return regex.test(contractText || "");
+}
+
+export function candidateMatchesWrongVertical(
+  lead: Record<string, any>,
+  wrongVerticalRegex: RegExp
+): string | null {
   const haystacks: Array<{ label: string; text: string }> = [
     { label: "industry", text: `${(lead as any)?.industry || ""} ${(lead as any)?.profile?.industry || ""}` },
     { label: "company", text: `${(lead as any)?.currentCompany || (lead as any)?.company || (lead as any)?.profile?.currentCompany || ""}` },
@@ -165,8 +184,12 @@ export function candidateMatchesNonServicesVertical(lead: Record<string, any>): 
     },
   ];
   for (const { text } of haystacks) {
-    const match = text.match(NON_SERVICES_AGENCY_REGEX);
+    const match = text.match(wrongVerticalRegex);
     if (match) return match[0].toLowerCase();
   }
   return null;
+}
+
+export function candidateMatchesNonServicesVertical(lead: Record<string, any>): string | null {
+  return candidateMatchesWrongVertical(lead, NON_SERVICES_AGENCY_REGEX);
 }

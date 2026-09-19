@@ -250,6 +250,28 @@ export const BUSINESS_ARCHETYPES: Record<string, BusinessArchetype> = {
     roleExpansions: ['plant manager', 'director of manufacturing', 'VP Operations', 'vice president operations', 'president & owner', 'president', 'owner', 'founder'],
     exclusions: ['software', 'saas', 'retail', 'warehouse', 'drop shipping'],
     seamDescription: 'physical manufacturing, fabrication, industrial production required'
+  },
+  executive_coaching: {
+    id: 'executive_coaching',
+    name: 'Executive Coaching & Advisory',
+    domainCluster: 'executive_coaching',
+    defaultRoles: ['coach', 'executive coach', 'founder', 'CEO', 'principal consultant', 'managing director', 'practice owner', 'advisor', 'mentor'],
+    mandatoryNegativeFilters: ['-recruiter', '-staffing', '-therapy', '-counselor'],
+    companyTypeExpansions: ['coaching practice', 'coaching firm', 'advisory firm', 'consultancy', 'executive coaching', 'leadership development', 'mastermind', 'mentorship program'],
+    roleExpansions: ['coach', 'executive coach', 'founder', 'CEO', 'principal consultant', 'managing director', 'practice owner', 'advisor', 'mentor'],
+    exclusions: ['recruiter', 'staffing', 'therapy', 'counselor', 'life coach', 'fitness coach', 'health coach'],
+    seamDescription: 'executive/business coaching required; therapy/life coaching fails'
+  },
+  ecommerce_retail: {
+    id: 'ecommerce_retail',
+    name: 'E-Commerce & Retail Brand',
+    domainCluster: 'ecommerce_retail',
+    defaultRoles: ['founder', 'CEO', 'owner', 'co-founder', 'brand owner', 'head of ecommerce', 'director of ecommerce', 'DTC founder'],
+    mandatoryNegativeFilters: ['-developer', '-agency', '-marketplace', '-amazon employee'],
+    companyTypeExpansions: ['ecommerce brand', 'DTC brand', 'Shopify store', 'online store', 'retail brand', 'consumer brand', 'e-commerce company', 'apparel brand'],
+    roleExpansions: ['founder', 'CEO', 'owner', 'co-founder', 'brand owner', 'head of ecommerce', 'director of ecommerce', 'DTC founder'],
+    exclusions: ['developer', 'agency', 'marketplace', 'Amazon employee', 'Shopify employee', 'platform engineer'],
+    seamDescription: 'brand/store owner required; platform employees/agencies fail'
   }
 };
 
@@ -261,6 +283,8 @@ export function resolveBusinessArchetype(briefOrQuery: string): BusinessArchetyp
   const text = String(briefOrQuery || '').toLowerCase();
   if (/\b(agency|agencies|consulting|studio|client\s+services)\b/i.test(text)) return BUSINESS_ARCHETYPES.b2b_agency;
   if (/\b(saas|software\s+company|platform)\b/i.test(text)) return BUSINESS_ARCHETYPES.b2b_saas;
+  if (/\b(coach|coaching|executive coach|mastermind|mentorship)\b/i.test(text)) return BUSINESS_ARCHETYPES.executive_coaching;
+  if (/\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store|brand)\b/i.test(text)) return BUSINESS_ARCHETYPES.ecommerce_retail;
   if (/\b(medical|clinic|doctor|physician|healthcare)\b/i.test(text)) return BUSINESS_ARCHETYPES.healthcare_life_sciences;
   if (/\b(law\s*firm|attorney|lawyer|cpa|accounting|accounting\s+firm)\b/i.test(text)) return BUSINESS_ARCHETYPES.professional_services;
   if (/\b(manufacturing|industrial|factory|fabrication)\b/i.test(text)) return BUSINESS_ARCHETYPES.manufacturing_industrial;
@@ -527,6 +551,28 @@ export function isAgencyContract(contractOrBrief: ProspectContract | string): bo
   return /\b(agenc(y|ies)?|consultan(cy|cies|t|ts)?|consulting|studios?|integrat(or|ors)?|client\s+services?|advisory\s+firm)\b/i.test(text);
 }
 
+export const TOOL_LEXICONS_BY_CLUSTER: Record<string, RegExp> = {
+  b2b_agency: /\b(n8n|zapier|make|hubspot|salesforce|supabase|airtable|notion|clickup|monday|asana|trello|slack|go\s?high\s?level|ghl|semrush|ahrefs|google\s?ads|meta\s?ads|mailchimp|activecampaign|klaviyo|figma|canva|webflow|wordpress)\b/i,
+  b2b_saas: /\b(react|python|aws|gcp|azure|docker|kubernetes|terraform|datadog|stripe|segment|amplitude|mixpanel|postman|github|gitlab|jira|confluence|vercel|netlify|supabase|firebase)\b/i,
+  executive_coaching: /\b(calendly|zoom|loom|kajabi|teachable|thinkific|circle|mighty\s?networks|convertkit|beehiiv|substack|notion|clickup)\b/i,
+  ecommerce_retail: /\b(shopify|woocommerce|magento|bigcommerce|klaviyo|attentive|gorgias|recharge|skio|stamped|yotpo|aftership|shipbob|deliverr|amazon\s?seller|google\s?merchant)\b/i,
+  healthcare_life_sciences: /\b(epic|cerner|athenahealth|drchrono|practice\s?fusion|kareo|nextgen|allscripts|meditech|veeva)\b/i,
+  professional_services: /\b(clio|mycase|smokeball|practice\s?panther|bill4time|timeslips|quickbooks|xero|sage|thomson\s?reuters|lexisnexis|westlaw)\b/i,
+  local_services: /\b(jobber|housecall\s?pro|servicetitan|fieldedge|successware|quickbooks|freshbooks|square|clover|yelp)\b/i,
+  manufacturing_industrial: /\b(sap|oracle|epicor|infor|netsuite|syspro|plex|procore|autodesk|solidworks|mastercam)\b/i,
+};
+
+export const UNIVERSAL_TOOLS_REGEX = /\b(n8n|zapier|make|hubspot|salesforce|airtable|notion|slack|google\s?sheets|excel|power\s?bi|tableau|chatgpt|openai|anthropic|claude|python|aws)\b/i;
+
+export function isRecognizedTool(term: string, cluster?: string): boolean {
+  if (UNIVERSAL_TOOLS_REGEX.test(term)) return true;
+  if (cluster && TOOL_LEXICONS_BY_CLUSTER[cluster]?.test(term)) return true;
+  for (const regex of Object.values(TOOL_LEXICONS_BY_CLUSTER)) {
+    if (regex.test(term)) return true;
+  }
+  return false;
+}
+
 /**
  * The fallback never adds an inferred audience. It keeps a search usable when
  * the contract compiler is unavailable, while still preserving supplied spec
@@ -728,6 +774,21 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   }
   add('signal', spec?.signals?.include || [], 'soft');
 
+  // Extract recognized tools from the brief into soft signal requirements
+  const detectedBriefTools: string[] = [];
+  const wordsInBrief = clean(brief).split(/[\s,()]+/).map(w => w.trim().toLowerCase()).filter(Boolean);
+  const clusterForTools = deriveDomainCluster(brief);
+  for (const w of wordsInBrief) {
+    if (isRecognizedTool(w, clusterForTools) && !detectedBriefTools.includes(w)) {
+      detectedBriefTools.push(w);
+    }
+  }
+  if (detectedBriefTools.length > 0) {
+    for (const tool of detectedBriefTools) {
+      addWithAlternatives('signal', tool, [tool], 'soft');
+    }
+  }
+
   // A brief with no editable spec still needs one non-invented hard target.
   if (!requirements.length && clean(brief)) {
     const reqClass = classifyRequirement('company_type', 'hard', clean(brief));
@@ -823,8 +884,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const intentRequirements = deduped.filter(r => r.scope === 'signal' || r.evidenceModality === 'open_web_signal');
   const intentTerms = intentRequirements.flatMap(r => r.acceptableTerms);
 
+  const domainCluster = deriveDomainCluster(brief);
   const intentSpec: IntentSpec = {
-    toolingKeywords: intentTerms.filter(t => /\b(n8n|zapier|make|hubspot|salesforce|supabase|airtable|react|python|aws)\b/i.test(t)),
+    toolingKeywords: intentTerms.filter(t => isRecognizedTool(t, domainCluster)),
     hiringSignals: intentTerms.filter(t => /\b(hiring|recruiting|role|specialist|developer|engineer|lead)\b/i.test(t)),
     painSignals: intentTerms.filter(t => /\b(manual|scaling|bottleneck|legacy|churn|slow)\b/i.test(t)),
     growthSignals: intentTerms.filter(t => /\b(funded|series|expanding|growing|launch)\b/i.test(t))
@@ -912,6 +974,37 @@ export function buildAtsLaneQueries(
     coveredRequirementIds: requirements.filter(r => r.scope === 'signal' || r.scope === 'person_role').map(r => r.id),
     topic: 'general' as const,
   }];
+}
+
+export const includesAny = (query: string, terms: string[]) => terms.some(term => lower(query).includes(lower(term)));
+
+export function computeCoveredRequirementIds(
+  query: string,
+  requirements: ProspectRequirement[],
+  isSignalLane: boolean = false
+): string[] {
+  if (isSignalLane) {
+    return requirements
+      .filter(r => (r.evidenceModality === 'open_web_signal' || r.scope === 'signal'))
+      .filter(r => includesAny(query, r.acceptableTerms) || r.importance === 'hard')
+      .map(r => r.id);
+  }
+
+  const queryLower = lower(query);
+  return requirements
+    .filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal')
+    .filter(req => {
+      if (includesAny(queryLower, req.acceptableTerms)) return true;
+      if (req.scope === 'person_location') {
+        for (const term of req.acceptableTerms) {
+          const cleanTerm = term.toLowerCase().trim();
+          const metros = COUNTRY_TO_METROS[cleanTerm];
+          if (metros && includesAny(queryLower, metros)) return true;
+        }
+      }
+      return false;
+    })
+    .map(req => req.id);
 }
 
 export function buildContractFallbackQueries(
@@ -1022,7 +1115,7 @@ export function buildContractFallbackQueries(
     lane: 'person' as const,
     providerPreference: index === 0 ? 'tavily' as const : 'corroborate' as const,
     searchDepth: 'basic' as const,
-    coveredRequirementIds: requirements.filter(item => item.importance === 'hard').map(item => item.id)
+    coveredRequirementIds: computeCoveredRequirementIds(query, requirements, false)
   }));
   const signalQueries = buildSignalLaneQueries(requirements, identitySpec);
   const hasHiringTrigger = /\b(hiring|jobs?|engineer|developer|recruit|growth|headcount|roles?|team|expanding)\b/i.test(brief) || requirements.some(r => r.scope === 'signal');
@@ -1114,7 +1207,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - Multiple requested roles (e.g. "founders, CEOs, or operations directors") MUST be unified into a single person_role requirement with matchRule: "any_of" and groupId: "person_role_group".
 - Headcount / employee size ranges (e.g. "with 2 to 15 employees" or "(3 to 20 employees)") MUST be extracted as a company_size requirement with evidenceModality: "inferred" and importance: "soft".
 - A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.
-- At most 4 hard requirements (e.g. person_role, company_type, person_location) and at most 5 soft requirements.
+- At most 4 hard requirements (e.g. person_role, company_type, person_location) and at most 7 soft requirements.
 - For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
 - acceptableTerms are short alternatives for the same stated requirement, never broader personas.
 - Strict single-role and single-geo query constraint: Each query in initialQueries must target EXACTLY ONE role (e.g. founder OR CEO OR owner) and at most ONE location/metro (e.g. Australia OR London). NEVER concatenate multiple synonym roles in a single query (e.g. FORBIDDEN: 'owner founder CEO managing director'). Distribute different roles and locations across distinct queries instead.
@@ -1279,10 +1372,28 @@ export function normalizeProspectContract(
     }
   }
 
-  // Step 4: Soft requirements (LLM primary, fallback supplement)
-  const soft: ProspectRequirement[] = [...modelSoft];
+  // Step 4: Soft requirements (LLM primary, fallback supplement) with theme-merge overflow
+  const soft: ProspectRequirement[] = [];
+  for (const req of modelSoft) {
+    if (soft.length < 7) {
+      soft.push(req);
+    } else {
+      // Merge overflow into existing requirement of the same scope
+      const match = soft.find(s => s.scope === req.scope);
+      if (match) {
+        match.acceptableTerms = unique([...match.acceptableTerms, ...req.acceptableTerms]);
+      }
+    }
+  }
+
   for (const fbSoft of fallbackSoft) {
-    if (soft.length >= 5) break;
+    if (soft.length >= 7) {
+      const match = soft.find(s => s.scope === fbSoft.scope);
+      if (match) {
+        match.acceptableTerms = unique([...match.acceptableTerms, ...fbSoft.acceptableTerms]);
+      }
+      continue;
+    }
     if (!soft.some(s => s.scope === fbSoft.scope)) {
       soft.push(fbSoft);
     }
@@ -1290,7 +1401,7 @@ export function normalizeProspectContract(
 
   // Deduplicate requirements so person_role and person_location are strictly unified
   const dedupedNormalized: ProspectRequirement[] = [];
-  for (const req of [...hard.slice(0, 4), ...soft.slice(0, 5)]) {
+  for (const req of [...hard.slice(0, 4), ...soft.slice(0, 7)]) {
     const existing = dedupedNormalized.find(
       item => item.scope === req.scope &&
         (req.scope === 'person_role' || req.scope === 'person_location' || lower(item.sourcePhrase) === lower(req.sourcePhrase))
@@ -1412,8 +1523,6 @@ export function normalizeProspectContract(
 }
 
 export const validateCompiledProspectContract = normalizeProspectContract;
-
-const includesAny = (query: string, terms: string[]) => terms.some(term => lower(query).includes(lower(term)));
 
 const queryHasPositiveExclusion = (query: string, exclusionTerms: string[]): boolean => {
   const queryWords = lower(query).split(/\s+/).filter(Boolean);
@@ -1599,9 +1708,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       lane: candidate.lane === 'account' || candidate.lane === 'signal' || candidate.lane === 'person' ? candidate.lane : 'person',
       providerPreference: ['tavily', 'brightdata', 'corroborate'].includes(candidate.providerPreference) ? candidate.providerPreference : 'tavily',
       searchDepth: ['basic', 'fast', 'ultra-fast', 'advanced'].includes(candidate.searchDepth) ? candidate.searchDepth : 'basic',
-      coveredRequirementIds: isSignalLane
-        ? contract.requirements.filter(r => r.importance === 'hard' && (r.evidenceModality === 'open_web_signal' || r.scope === 'signal')).map(r => r.id)
-        : hardRequirements.map(requirement => requirement.id)
+      coveredRequirementIds: computeCoveredRequirementIds(query, contract.requirements, isSignalLane)
     });
   }
   // Recovery models sometimes emit a single broad query. Fill that gap with
@@ -1610,12 +1717,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   if (normalized.length < 4) {
     for (const fallback of buildContractFallbackQueries(contract.brief, contract.requirements)) {
       if (normalized.length >= 4) break;
-      let qText = fallback.query;
-      const hasAgencyVert = /\b(agency|agencies|consult\w*|service\w*|solution\w*|studio\w*|firm\w*|integrat\w*|advisory|business|partner\w*)\b/i.test(qText);
-      if (hasAgencyVert) {
-        qText = qText.replace(/\s*-(?:software|platform|SaaS)\b/gi, '').trim();
-      }
-      const cleanedFallback = { ...fallback, query: qText };
+      const cleanedFallback = { ...fallback, query: fallback.query.trim() };
       const key = lower(cleanedFallback.query);
       if (seen.has(key)) continue;
       seen.add(key);

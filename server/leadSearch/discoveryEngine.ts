@@ -637,15 +637,15 @@ export async function executeDiscoverySession(
             prospectContractSchema,
             `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
             {
-              maxTokens: 1000,
+              maxTokens: 2500,
               temperature: 0,
               signal: sessionAbortController.signal,
               timeoutMs: Math.min(
                 Number(process.env.LLM_CONTRACT_TIMEOUT_MS || 90000),
                 115000,
               ),
-              maxRetries: 0,
-              retryOnParseFailure: false,
+              maxRetries: 1,
+              retryOnParseFailure: true,
               onProviderAttempt: (attempt) => contractAttempts.push(attempt),
               onUsage: (usage) => {
                 contractUsage = usage;

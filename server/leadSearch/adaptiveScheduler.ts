@@ -52,31 +52,29 @@ const finiteCount = (value: unknown) => {
 export function deriveDomainCluster(queryOrBrief: string): string {
   const text = String(queryOrBrief || '').toLowerCase();
   if (!text.trim()) return 'global';
-  if (/\b(agency|agencies|lead[-\s]?gen|seo|creative|copywriting|performance marketing|growth marketing|media buyer|advertising)\b/i.test(text)) {
-    return 'b2b_agency';
+
+  const clusters: Array<{ id: string; pattern: RegExp }> = [
+    { id: 'b2b_agency', pattern: /\b(agenc(?:y|ies)|lead[-\s]?gen|seo|creative|copywriting|performance marketing|growth marketing|media buyer(?:s)?|advertising)\b/gi },
+    { id: 'executive_coaching', pattern: /\b(coach(?:es|ing)?|executive coach(?:es)?|mastermind(?:s)?|mentor(?:s|ship)?|consultan(?:t|ts|cy|cies)|consulting|advisory)\b/gi },
+    { id: 'b2b_saas', pattern: /\b(saas|software|platform(?:s)?|cloud|api(?:s)?|fintech|edtech|healthtech|devops|cybersecurity)\b/gi },
+    { id: 'local_services', pattern: /\b(dental|dentist(?:s)?|clinic(?:s)?|doctor(?:s)?|plumbing|hvac|roofing|electrician(?:s)?|contractor(?:s)?|realtor(?:s)?|real estate)\b/gi },
+    { id: 'ecommerce_retail', pattern: /\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store(?:s)?|brand(?:s)?)\b/gi },
+    { id: 'healthcare_life_sciences', pattern: /\b(biotech|pharma|clinical|healthcare|hospital(?:s)?|medical)\b/gi },
+    { id: 'professional_services', pattern: /\b(legal|law firm(?:s)?|attorney(?:s)?|accounting|cpa(?:s)?|tax firm(?:s)?)\b/gi },
+    { id: 'manufacturing_industrial', pattern: /\b(manufacturing|industrial|factory|factories|fabrication|plant manager(?:s)?|industrial production)\b/gi },
+  ];
+
+  let bestCluster = 'global';
+  let bestScore = 0;
+  for (const { id, pattern } of clusters) {
+    const matches = text.match(pattern);
+    const score = matches ? matches.length : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestCluster = id;
+    }
   }
-  if (/\b(coach|coaching|executive coach|mastermind|mentorship|consultant|consulting|advisory)\b/i.test(text)) {
-    return 'executive_coaching';
-  }
-  if (/\b(saas|software|platform|cloud|api|fintech|edtech|healthtech|devops|cybersecurity)\b/i.test(text)) {
-    return 'b2b_saas';
-  }
-  if (/\b(dental|dentist|clinic|doctor|plumbing|hvac|roofing|electrician|contractor|realtor|real estate)\b/i.test(text)) {
-    return 'local_services';
-  }
-  if (/\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store|brand)\b/i.test(text)) {
-    return 'ecommerce_retail';
-  }
-  if (/\b(biotech|pharma|clinical|healthcare|hospital|medical)\b/i.test(text)) {
-    return 'healthcare_life_sciences';
-  }
-  if (/\b(legal|law firm|attorney|accounting|cpa|tax firm)\b/i.test(text)) {
-    return 'professional_services';
-  }
-  if (/\b(manufacturing|industrial|factory|fabrication|plant manager|industrial production)\b/i.test(text)) {
-    return 'manufacturing_industrial';
-  }
-  return 'global';
+  return bestCluster;
 }
 
 export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'> & { domainCluster?: string }) =>

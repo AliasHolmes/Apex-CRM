@@ -6,7 +6,7 @@ import {
 } from "./prospectContract.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import {
-  hasStrictStructuredMatch,
+  hasAutoPassStructuredMatch,
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
 import { rankLeadForFinalSelection } from "./scoring.js";
@@ -14,6 +14,13 @@ import {
   classifyTitle,
   evaluateDecisionMakerGate,
 } from "./titleTriage.js";
+import {
+  candidateMatchesNonServicesVertical,
+  contractMentionsVertical,
+  extractSocialProof,
+  isCompanyPageProfile,
+  isGhostProfile,
+} from "./profileQuality.js";
 
 export type RequirementStatus = "pass" | "fail" | "unknown";
 
@@ -773,7 +780,7 @@ export function partitionCandidatesByStrictEvidence(
       !hardRequirements.length ||
       Boolean(candidate.lead._ablatedRequirementId) ||
       !hardRequirements.every((requirement) =>
-        hasStrictStructuredMatch(candidate.lead, requirement),
+        hasAutoPassStructuredMatch(candidate.lead, requirement),
       )
     ) {
       needsJudge.push(candidate);
@@ -867,6 +874,22 @@ export function checkStrictContradiction(
     ) ||
     /\b(ceo|chief executive|proprietor|(?<!vice\s+|vice-)president)\b/i.test(contract.brief);
 
+  // 0. Company page saved as a person (dataset dossiers return company
+  // profiles with first_name/last_name reconstituting the brand, e.g.
+  // fullName "Verdeschi Realty" at company "Verdeschi Realty").
+  if (
+    isCompanyPageProfile({
+      fullName: lead.fullName || lead.profile?.fullName,
+      company:
+        lead.currentCompany || lead.company || lead.profile?.currentCompany,
+    })
+  ) {
+    return {
+      reason: `Company page saved as a person ('${clean(lead.fullName || lead.profile?.fullName || "", 100)}' equals the company name)`,
+      requirementId: "person_role",
+    };
+  }
+
   // 1. Explicit Exclusions Check
   const hasFounderOrOwnerLeadership = /\b(owners?|founders?|co-?founders?|ceo|chief executive|managing partner|proprietor|(?<!vice\s+|vice-)president)\b/i.test(
     clean(lead.currentTitle || lead.headline || "", 200),
@@ -906,6 +929,16 @@ export function checkStrictContradiction(
     if (!gate.pass) {
       return {
         reason: gate.reason || `Explicit non-decision maker or entry-level role: ${dm?.reason || "low authority"}`,
+        requirementId: "authority",
+      };
+    }
+    // Ghost-profile floor: an explicitly zero follower count on a tiny
+    // network is a brand-new, fake, or company-page profile. Unknown counts
+    // (null) never fail — only measured zeros do.
+    const socialProof = extractSocialProof(lead);
+    if (isGhostProfile(socialProof)) {
+      return {
+        reason: `Ghost profile: 0 followers with ${socialProof.connections ?? 0} connections`,
         requirementId: "authority",
       };
     }
@@ -952,6 +985,26 @@ export function checkStrictContradiction(
         reason: `Candidate is employed by non-agency tech enterprise: '${matchedBigTech}'`,
         requirementId: companyHardReq ? companyHardReq.id : "company_type",
       };
+    }
+  }
+
+  // 4b. Wrong-vertical agency check: bare "agency" also matches real estate,
+  // insurance, cannabis retail, and travel agencies. Fail those unless the
+  // contract names the vertical (a brief asking for real estate agencies
+  // must still match). Mirrors the Big Tech pattern above.
+  if (isAgencyContractOrBrief) {
+    const contractText = `${contract.brief || ""} ${(contract.requirements || [])
+      .filter((r) => r.scope === "company_type" || r.scope === "company_industry")
+      .map((r) => `${r.description} ${(r.acceptableTerms || []).join(" ")}`)
+      .join(" ")}`;
+    if (!contractMentionsVertical(contractText)) {
+      const verticalHit = candidateMatchesNonServicesVertical(lead);
+      if (verticalHit) {
+        return {
+          reason: `Candidate operates a non-services '${verticalHit}' agency, not a client-services firm`,
+          requirementId: companyHardReq ? companyHardReq.id : "company_type",
+        };
+      }
     }
   }
 
@@ -1050,7 +1103,7 @@ export function triPartitionCandidatesByEvidence(
       hardRequirements.length > 0 &&
       !Boolean(lead._ablatedRequirementId) &&
       hardRequirements.every((requirement) =>
-        hasStrictStructuredMatch(lead, requirement),
+        hasAutoPassStructuredMatch(lead, requirement),
       );
 
     if (!matchesAllStructured) {

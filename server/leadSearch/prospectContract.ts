@@ -1108,6 +1108,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - For dual_stream_intent briefs: decouple identitySpec (roles, locations, companyTypes, industries) from intentSpec (toolingKeywords, hiringSignals, painSignals, growthSignals).
 - In person-lane profile discovery queries, include ONLY identity terms (Role + Location + Company Type). NEVER include intent/hiring/tooling trigger words in person-lane queries.
 - For open_web_signal / intent requirements (e.g. hiring for n8n, Zapier, Make.com, AI agents, workflow automation), generate dedicated signal-lane queries searching the open web.
+- When the brief describes active behavior or buying triggers (posting on LinkedIn, seeking help, needing a hand, bottlenecks, evaluating tools, hiring), ALWAYS emit at least one soft requirement with scope 'signal' and evidenceModality 'open_web_signal' capturing those triggers. Never leave a dual_stream_intent brief with zero signal requirements.
 - Comma-or-conjunction separated company niches (e.g. "marketing, lead-generation, SEO, or creative agencies") MUST be unified under a single company_type requirement whose acceptableTerms list all distinct expanded forms (e.g. ["marketing agency", "lead-generation agency", "SEO agency", "creative agency"]).
 - When targeting agencies, consultancies, studios, or client services: enforce a strict hard seam against software products. Exclude non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI), individual contributor roles (Staff/Principal Engineer, Product Manager), and pure software products/SaaS/apps. Ensure company_type acceptableTerms specify client services firms.
 - Multiple requested roles (e.g. "founders, CEOs, or operations directors") MUST be unified into a single person_role requirement with matchRule: "any_of" and groupId: "person_role_group".
@@ -1358,6 +1359,42 @@ export function normalizeProspectContract(
   }
   
   const finalRequirements = normalizedRequirements.length ? normalizedRequirements : fallback.requirements;
+
+  // Backstop: a brief with buying-intent language but zero signal requirements
+  // would otherwise judge on identity alone and fill the target with
+  // intent-less leads. Synthesize one soft open_web_signal requirement from
+  // the merged intentSpec so the judge scores intent (qualified_partial +
+  // discount for uncorroborated signals) and signal-lane queries generate.
+  const hasSignalReq = finalRequirements.some(
+    (r) => r.scope === "signal" || r.evidenceModality === "open_web_signal",
+  );
+  const intentTerms = unique([
+    ...intentSpec.toolingKeywords,
+    ...intentSpec.hiringSignals,
+    ...intentSpec.painSignals,
+    ...intentSpec.growthSignals,
+  ])
+    .filter((t) => t && t.length <= 48)
+    .slice(0, 12);
+  if (!hasSignalReq && intentTerms.length > 0) {
+    const signalClass = classifyRequirement("signal", "soft", intentTerms[0]);
+    finalRequirements.push({
+      id: requirementId(
+        "signal",
+        finalRequirements.filter((r) => r.scope === "signal").length,
+      ),
+      scope: "signal",
+      importance: "soft",
+      requirementClass: signalClass,
+      queryHardness: assignQueryHardness(signalClass),
+      evidenceModality: "open_web_signal",
+      description: `shows active buying-intent signals (${intentTerms.slice(0, 4).join(", ")})`,
+      sourcePhrase: intentTerms[0],
+      acceptableTerms: expandAcceptableTerms("signal", intentTerms),
+      queryable: signalClass !== "system_invariant",
+      acceptableEvidenceSources: [],
+    });
+  }
 
   return {
     version: 1,

@@ -45,7 +45,12 @@ We introduce six coordinated architectural enhancements across data persistence,
 
 ### 6. Strict Sequential LLM Execution Invariant
 - Preserved and strictly enforced `withSequentialLLMExecution` in [`server/services/llm.ts`](../../server/services/llm.ts).
-- All completion calls across strategist, extraction, verification, and judging stages execute sequentially through a single queue, eliminating provider concurrency errors, thread contention, and 429/524 cascades.
+- All completion calls across strategist, extraction, verification, and judging stages execute sequentially through a single queue by default, eliminating provider concurrency errors, thread contention, and 429/524 cascades.
+
+### 7. Amendment (Intelligence Upgrade): Optional Stage-Lane Sharding
+- Behind `FEATURE_LLM_STAGE_QUEUES=true`, the queue shards into `strategist | extraction | judge | general` lanes (max 2 each, global cap 4, `LLM_LANE_SLOTS` / `LLM_GLOBAL_SLOTS` tunable) with `AsyncLocalStorage` lane context (`runWithLlmStageLane`). Default `false` preserves 100% legacy single-mutex behavior.
+- Per-provider 429/524 backoff, key rotation, 60s queue timeout, and abort propagation are preserved in every lane.
+- Role triage (`titleTriage.ts`) now expands acronyms (`MD`, `VP`, `CTO`, `CRO`) before matching so abbreviated executives are not mis-triaged.
 
 ## Consequences
 - **Positive**: CRM duplicate leads are intercepted before extraction or retrieval, preventing wasted LLM completions.

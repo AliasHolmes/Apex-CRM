@@ -65,8 +65,26 @@ A closed-loop query optimization mechanism that extracts existing company domain
 Target company website inspection is consolidated in `enrichStage` (following Pareto candidate selection) with normalized bare-host caching. In ~250ms per company, it fetches root page meta description or title to inject verified business context and commercial signals into candidate profiles without duplicate network calls.
 
 ### Deterministic Role Triage
-An instant 0ms pre-judge classification regex that identifies and discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) from finalist judging when the contract strictly demands executive, founder, or partner-level decision makers.
+An instant 0ms pre-judge classification that identifies and discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) from finalist judging when the contract strictly demands executive, founder, or partner-level decision makers. Title acronyms (`MD`, `VP`, `CTO`, `CRO`) are expanded to canonical forms before matching so abbreviated executive titles are not mis-triaged.
 
 ### Strict Sequential LLM Invariant (`withSequentialLLMExecution`)
-The core concurrency invariant governing all LLM interactions in the discovery engine. All completion calls across strategist, extraction, verification, and judging stages are serialized through a single execution queue to prevent rate limit collisions, gateway thread starvation, and upstream provider 429/524 errors.
+The core concurrency invariant governing all LLM interactions in the discovery engine. By default all completion calls across strategist, extraction, verification, and judging stages are serialized through a single execution queue to prevent rate limit collisions, gateway thread starvation, and upstream provider 429/524 errors. Behind `FEATURE_LLM_STAGE_QUEUES=true` the queue shards into independent stage lanes (`strategist | extraction | judge | general`, max 2 each, global cap 4) with per-provider 429/524 backoff preserved.
+
+### Query Understanding Layer (`queryUnderstanding.ts`)
+A deterministic complexity classifier that labels each brief `vague | standard | rich` with an ambiguity score and missing-slot list (`role`, `geo`, `industry`, `seniority`, `signal`). It drives vagueness-aware retrieval depth, task sizing, and the interactive (`needs_clarification`) vs headless (expander fallback) clarification gate. Long briefs are salience-compressed before prompt injection instead of mid-phrase truncation.
+
+### Zero Default-Invention Rule (`resolveGeo`)
+When a brief specifies no geography, the engine returns `geo=open_global` with no `countryAnchor` and no metro hubs. Fallback query builders (`searchSpec.ts`, `prospectContract.ts`, `planStage.ts`) emit global queries without synthetic `USA`/US-metro tokens.
+
+### Alias-First Matching (`aliasMap.ts`)
+A zero-network, synchronous normalization map (roles, ISO geographies/regions, company types, tools) used in hot loops (`fuseStage`, `evidenceSelection`, `finalistJudge`) and contract grounding (`sourceAppearsInBrief`). `MD` matches `managing director`, `US` matches `united states`, `VP` matches `vice president` with 0ms latency.
+
+### Complexity-Aware Query Rewriter (`queryRewriter.ts`)
+A bounded (max 3) zero-yield recovery policy that replaces single-retry ablation as the second chance: `vague` briefs broaden (drop 1 constraint + synonym swap), `rich` briefs relax the lowest-salience covered hard requirement. Coverage IDs are recomputed for the planner.
+
+### Quantized Semantic Centroids (MAB)
+The domain-clustered MAB pools Thompson-sampling priors by 24 persistent deterministic buckets (`centroid_<cluster>_<00-23>`, FNV-1a over the normalized brief) instead of raw embedding vectors, so repeated brief shapes converge instead of permanent cold-start. `contract_guard` selection is hard-capped at `maxTasks+2`.
+
+### Contract-Aware Ranking (`rankLeadForFinalSelection`)
+Final selection scoring takes the contract into account: hard-requirement coverage dominates with a `1.2x` spread and soft-signal coverage actively boosts (`0.4x`), replacing the previous hard-only rank where soft nuance was invisible.
 

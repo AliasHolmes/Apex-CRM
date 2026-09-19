@@ -69,15 +69,18 @@ server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,441)
   prospectContract.ts        brief -> contract compilation + validation (1,563)
   finalistJudge.ts           tri-partition, contradiction checks, score normalization (1,136)
-  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto (641)
-  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (MAB) · collectionCapacity.ts ·
-  constraintAblation.ts · evidenceSelection.ts · intentEnrichment.ts · companyIntent.ts ·
+  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, contract-aware rank (641)
+  queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo, salience compression (new)
+  aliasMap.ts                zero-network role/geo/company/tool alias normalization for hot loops (new)
+  queryRewriter.ts           bounded complexity-aware zero-yield rewriter (new)
+  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (quantized MAB) · collectionCapacity.ts ·
+  constraintAblation.ts · evidenceSelection.ts (alias-aware) · intentEnrichment.ts · companyIntent.ts ·
   linkedinPostIntent.ts · siteProbe.ts · signalStore.ts · telemetry.ts ·
   featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts · profileEnrichment.ts · rejections.ts ·
   roundDiagnostics.ts · scoutScoring.ts · targetFulfillment.ts · verification.ts ·
-  evidence.ts · llmBudget.ts · pipelineTypes.ts
-  stages/                    plan · retrieve · fuse · extract · verify · enrich · judge · select · persist
+  evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware)
+  stages/                    plan (resolveGeo, per-round cache refresh) · retrieve (vagueness-aware depth + rewriter) · fuse (alias-aware) · extract · verify · enrich · judge · select · persist
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 10 ui) · lib/ · utils/
 test/                        94 files, node:test runner via tsx
@@ -88,24 +91,35 @@ scripts/dev.ts               spawns Vite + Express
 
 Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
-1. **plan** — CRM negative-domain exclusion, metro-saturation avoidance, strategist query
-   generation (`planStage.ts`)
+1. **plan** — CRM negative-domain exclusion, metro-saturation avoidance, `resolveGeo`
+   (no `USA` invention for open-global briefs), strategist query generation,
+   per-round `query_performance` cache refresh (`planStage.ts`)
 2. **retrieve** — two-wave parallel Tavily + Bright Data lanes, conditional supplemental
-   fallback when Tavily yield is low (`retrieveStage.ts`)
-3. **fuse** — corroboration fusion, dedupe, ablation tagging (`fuseStage.ts`)
+   fallback when Tavily yield is low, vagueness-aware `maxResults`/depth
+   (`vague: 20`, `rich: precision-tuned`), bounded `queryRewriter` rescue after
+   ablation (`retrieveStage.ts`, `queryRewriter.ts`)
+3. **fuse** — corroboration fusion, dedupe, ablation tagging, alias-aware term
+   scoring (`MD` == `managing director`) (`fuseStage.ts`, `aliasMap.ts`)
 4. **extract** — token-dieted LLM extraction, chunked (`extractStage.ts`)
 5. **verify** — hard-requirement verification, borderline survival band (`verifyStage.ts`)
 6. **enrich** — consolidated site probing + TF-IDF company intent + LinkedIn post intent,
    runs **after** selection (`enrichStage.ts`)
-7. **judge** — pre-judge deterministic role triage, tri-partition by evidence, bounded
-   micro-batch LLM judging (`judgeStage.ts`)
+7. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded),
+   tri-partition by evidence, alias-aware quote checks, contract-aware ranking
+   (hard `1.2x` + soft `0.4x`) (`judgeStage.ts`, `titleTriage.ts`,
+   `finalistJudge.ts`, `scoring.ts`)
 8. **select** — Pareto skyline + MMR diversification (`selectStage.ts`)
 9. **persist** — identity-keyed upserts, FTS maintenance, exclude-list append (`persistStage.ts`)
 
 Cross-cutting invariants:
 
-- **`withSequentialLLMExecution`** (`llm.ts:357`) serializes every LLM call through one
-  queue to prevent provider 429/524 collisions.
+- **`withSequentialLLMExecution`** (`llm.ts`) serializes every LLM call through one
+  queue by default to prevent provider 429/524 collisions. Behind
+  `FEATURE_LLM_STAGE_QUEUES=true` it shards into `strategist | extraction |
+  judge | general` lanes (max 2 each, global cap 4) with backoff preserved.
+  `ExecuteDiscoveryOptions` supports `parentSessionId`/`deltaBrief` follow-ups
+  and `interactive=false` headless expander fallback. The MAB pools priors by
+  24 quantized brief centroids with `contract_guard` capped at `maxTasks+2`.
 - **Stage-boundary checkpoints** (`mining_sessions.checkpoint_json`, 512KB guard) power
   1-click resume; resume rebuilds `seenCandidateKeys` and _replaces_ checkpoint counters.
 - **Per-provider circuit breaker** with cooldown ladders and key rotation.

@@ -20,14 +20,17 @@ Apex CRM is a single-user, local-first application for finding relevant prospect
 
 Its primary workflow is intentionally practical:
 
-1. **Describe your search brief** in natural language.
-2. **Adaptive Prompt Intelligence** classifies your brief:
+1. **Describe your search brief** in natural language (2-word vague to 100-word rich, any vertical, any geography).
+2. **Query Understanding Layer** (`queryUnderstanding.ts`) classifies your brief:
+   - `vague | standard | rich` with ambiguity score and missing-slot detection (`role`, `geo`, `industry`, `seniority`, `signal`).
+   - **Zero default-invention**: briefs with no geography search globally — no synthetic `USA`/US-metro tokens are injected.
    - Simple persona briefs run direct high-recall discovery with zero LLM overhead.
    - Long-shot intent briefs decouple into **Stream A (Identity)** for 100% SERP recall and **Stream B (Intent Triggers)** for multi-channel open-web research.
 3. **Stage-Pipelined High-Efficiency Engine**:
-   - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously.
+   - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`) and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
-   - Strictly enforces **Sequential LLM Execution** (`withSequentialLLMExecution`) to eliminate concurrency errors and provider 429/524 timeouts.
+   - Enforces **Sequential LLM Execution** (`withSequentialLLMExecution`) by default to eliminate concurrency errors and provider 429/524 timeouts; optionally shards into stage lanes (`strategist | extraction | judge`, max 2 each, global cap 4) behind `FEATURE_LLM_STAGE_QUEUES=true`.
+   - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
 5. **Multi-Source Intent Enrichment**: Analyzes company websites (**TF-IDF Intent**) and public prospect activity (**LinkedIn Post SERP Intent with Temporal Freshness Decay**).
 6. **Durable Checkpoints & Resiliency**: Saves stage-boundary SQLite snapshots (`checkpoint_json`), allowing any interrupted search to be resumed with 1 click.
@@ -131,9 +134,11 @@ flowchart TD
 
 - **Stage 2.5 Fast Deterministic Pre-Filter Gate**: Immediately filters out known CRM duplicate leads using SQLite identity keys (`readExistingIdentityKeys`) in 0ms before extraction tokens are spent. Enforces personal LinkedIn anchors when the brief requires people, and strips ~65% of noise (HTML tags, cookie banners, navigation boilerplate) from snippets. If all retrieved candidates are duplicates or non-compliant, extraction exits in 0ms without invoking the LLM.
 - **Upstream CRM Feedback & Metro Saturation**: Reads existing company domains and metro saturation counts from the CRM database. Passes known domains directly into Tavily's `exclude_domains` parameter and directs the query strategist to pivot away from saturated hubs ($\ge 15$ leads) with negative search operators.
-- **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles.
+- **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles. Acronyms (`MD`, `VP`, `CTO`, `CRO`) are expanded before matching.
 - **Pre-Judge Context Grounding**: Executes a lightweight, non-LLM site probe (~250ms) to fetch the root `<meta name="description">` or `<title>` for ambiguous accounts, appending verified business context before semantic evaluation.
-- **Strict Sequential LLM Invariant**: All LLM calls across all stages are strictly serialized via `withSequentialLLMExecution`, eliminating concurrency errors, rate-limit storms, and gateway timeouts.
+- **Strict Sequential LLM Invariant**: All LLM calls are serialized via `withSequentialLLMExecution` by default, eliminating concurrency errors, rate-limit storms, and gateway timeouts. Stage-lane sharding (`FEATURE_LLM_STAGE_QUEUES=true`) allows bounded concurrency with per-provider backoff preserved.
+- **Contract-Aware Calibrated Judging**: `rankLeadForFinalSelection` weights hard-requirement coverage (`1.2x` spread) with active soft-signal boost (`0.4x`); evidence quote checks are alias-aware (`MD` == `managing director`).
+- **Quantized Adaptive Controller**: MAB priors pool by 24 deterministic brief centroids (`centroid_<cluster>_<00-23>`) with `contract_guard` capped at `maxTasks+2`; `requirement_fail_digest` aggregates across sessions and the plan cache refreshes every round.
 
 ---
 
@@ -304,7 +309,7 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite (120 test files, run via `tsx --test`):
+Apex CRM maintains an extensive test suite (127 test files, run via `tsx --test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30 gold briefs) and stage-queue concurrency tests (`test/llmStageQueue.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
@@ -365,15 +370,18 @@ server/
     sessionStreamHub.ts      Fan-out hub for SSE session streams
   leadSearch/
     stages/                  Decoupled 7-stage pipeline engine
-      planStage.ts           Adaptive planner task derivation & query planning
-      retrieveStage.ts       Two-Wave parallel retrieval execution
-      fuseStage.ts           Observation normalizer & corroboration fusion
+      planStage.ts           Adaptive planner task derivation & query planning (resolveGeo, per-round cache refresh)
+      retrieveStage.ts       Two-Wave parallel retrieval execution (vagueness-aware depth + queryRewriter rescue)
+      fuseStage.ts           Observation normalizer & corroboration fusion (alias-aware scoring)
       extractStage.ts        Budget-capped LLM extraction & profile parsing
       verifyStage.ts         Deterministic requirement verification
       enrichStage.ts         TF-IDF company intent & LinkedIn post research
       judgeStage.ts          3-Tier Finalist Judge & Pareto skyline
-    discoveryEngine.ts       Discovery Session Engine orchestrator & stage pipelining
-    prospectContract.ts      Contract schema, prompt intelligence & decomposition
+    discoveryEngine.ts       Discovery Session Engine orchestrator & stage pipelining (parentSessionId/deltaBrief/interactive)
+    prospectContract.ts      Contract schema, prompt intelligence & decomposition (alias-aware grounding, no geo invention)
+    queryUnderstanding.ts    Complexity classifier (vague/standard/rich), resolveGeo, salience compression
+    aliasMap.ts              Zero-network role/geo/company/tool alias normalization for hot loops
+    queryRewriter.ts         Bounded complexity-aware zero-yield rewriter (broaden/relax, max 3)
     intentSignals.ts         Dynamic signal compiler, categories & freshness decay
     companyIntent.ts         Phase 4 company website TF-IDF intent scoring
     linkedinPostIntent.ts    Phase 5 LinkedIn post SERP intent research

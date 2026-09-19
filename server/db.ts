@@ -3936,8 +3936,11 @@ export function enforceCheckpointByteBudget(
   if (cp.queryRunsDelta && cp.queryRunsDelta.length > 10) {
     cp.queryRunsDelta = cp.queryRunsDelta.slice(-10);
   }
-  if (cp.debugLogsTail && cp.debugLogsTail.length > 20) {
-    cp.debugLogsTail = cp.debugLogsTail.slice(-20);
+  if (cp.debugLogsTail && cp.debugLogsTail.length > 0) {
+    // Truncate each log entry string to 250 characters and keep at most 10
+    cp.debugLogsTail = cp.debugLogsTail
+      .slice(-10)
+      .map((item) => (typeof item === "string" ? item.slice(0, 250) : item));
   }
   if (Array.isArray(cp.seenCandidateKeys) && cp.seenCandidateKeys.length > 2000) {
     cp.seenCandidateKeys = cp.seenCandidateKeys.slice(-2000);
@@ -3945,14 +3948,18 @@ export function enforceCheckpointByteBudget(
   cp.signalStoreState = undefined;
   payload = JSON.stringify(cp);
   if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+
+  // Step 2.5: Drop debugLogsTail and leadQueryRunMap entirely if still exceeding budget
+  cp.debugLogsTail = undefined;
+  cp.leadQueryRunMap = undefined;
   if (Array.isArray(cp.seenCandidateKeys) && cp.seenCandidateKeys.length > 500) {
     cp.seenCandidateKeys = cp.seenCandidateKeys.slice(-500);
-    payload = JSON.stringify(cp);
-    if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
   }
+  payload = JSON.stringify(cp);
+  if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
 
-  // Step 3: Progressively clamp candidate lists (1600 -> 800 -> 400 -> 200 -> 100 -> 50)
-  const candidateLimits = [800, 400, 200, 100, 50];
+  // Step 3: Progressively clamp candidate lists (800 -> 400 -> 200 -> 100 -> 50 -> 25 -> 10)
+  const candidateLimits = [800, 400, 200, 100, 50, 25, 10];
   for (const limit of candidateLimits) {
     if (Array.isArray(cp.acceptedLeads) && cp.acceptedLeads.length > limit) {
       cp.acceptedLeads = cp.acceptedLeads.slice(0, limit);
@@ -3979,20 +3986,47 @@ export function enforceCheckpointByteBudget(
     if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
   }
 
-  // Step 4: If still >512KB at 50 candidates, drop bulky string fields
+  // Step 4: Drop bulky candidate fields (evidence, scout, audit, rawExperience, searchHistory)
   const stripBulkyFields = (lead: any) => {
     if (!lead || typeof lead !== "object") return lead;
-    const { error, summary, headline, rawDescription, whyThisLead, ...rest } = lead;
+    const {
+      error,
+      summary,
+      headline,
+      rawDescription,
+      whyThisLead,
+      evidence,
+      evidenceList,
+      scout,
+      audit,
+      rawExperience,
+      searchHistory,
+      sourcePayload,
+      qualification,
+      ...rest
+    } = lead;
     return rest;
   };
   if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.map(stripBulkyFields);
   if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.map(stripBulkyFields);
   if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.map(stripBulkyFields);
+  if (Array.isArray((cp as any).finalistPool)) (cp as any).finalistPool = (cp as any).finalistPool.map(stripBulkyFields);
+  if (Array.isArray((cp as any).rescuedLeads)) (cp as any).rescuedLeads = (cp as any).rescuedLeads.map(stripBulkyFields);
   payload = JSON.stringify(cp);
-  const currentBytes = Buffer.byteLength(payload, "utf8");
+  let currentBytes = Buffer.byteLength(payload, "utf8");
   if (currentBytes <= maxBytes) return cp;
 
-  // Step 5: Throw typed error if still exceeding maxBytes
+  // Step 5: If still > maxBytes, clamp candidate lists down to 5 and drop remaining non-essential keys
+  cp.seenCandidateKeys = undefined;
+  cp.queryRunsDelta = undefined;
+  if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.slice(0, 5);
+  if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.slice(0, 5);
+  if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.slice(0, 5);
+  payload = JSON.stringify(cp);
+  currentBytes = Buffer.byteLength(payload, "utf8");
+  if (currentBytes <= maxBytes) return cp;
+
+  // Step 6: Throw typed error only if budget is impossible to satisfy (e.g. maxBytes is trivially small)
   throw new CheckpointBudgetExceededError(currentBytes, maxBytes);
 }
 
@@ -4000,19 +4034,26 @@ export function saveMiningSessionCheckpoint(
   sessionId: string,
   checkpoint: MiningSessionCheckpoint,
 ) {
-  const db = getLeadsDb();
-  const budgetedCheckpoint = enforceCheckpointByteBudget(checkpoint);
-  const now = budgetedCheckpoint.updatedAt || new Date().toISOString();
-  const payload = JSON.stringify(budgetedCheckpoint);
+  try {
+    const db = getLeadsDb();
+    const budgetedCheckpoint = enforceCheckpointByteBudget(checkpoint);
+    const now = budgetedCheckpoint.updatedAt || new Date().toISOString();
+    const payload = JSON.stringify(budgetedCheckpoint);
 
-  db.prepare(
-    `
-    UPDATE mining_sessions
-    SET checkpoint_json = ?,
-        updated_at = ?
-    WHERE id = ?
-  `,
-  ).run(payload, now, sessionId);
+    db.prepare(
+      `
+      UPDATE mining_sessions
+      SET checkpoint_json = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    ).run(payload, now, sessionId);
+  } catch (checkpointError) {
+    console.warn(
+      `[checkpoint] ${sessionId}: non-fatal checkpoint persistence warning:`,
+      checkpointError instanceof Error ? checkpointError.message : checkpointError,
+    );
+  }
 }
 
 export type EngineMetrics = {
@@ -4139,14 +4180,31 @@ export function upsertMiningSession(
     errorMessage: update.errorMessage ?? existing?.errorMessage,
     stats: update.stats ?? existing?.stats,
     traceSummary: update.traceSummary ?? existing?.traceSummary,
-    checkpoint: (update.checkpoint ? enforceCheckpointByteBudget(update.checkpoint) : update.checkpoint) ?? existing?.checkpoint,
+    checkpoint: update.checkpoint ?? existing?.checkpoint,
     updatedAt: now,
   };
 
   const hasCheckpointUpdate = update.checkpoint !== undefined ? 1 : 0;
-  const budgetedCheckpoint = update.checkpoint
-    ? enforceCheckpointByteBudget(update.checkpoint)
-    : update.checkpoint;
+  let budgetedCheckpoint = update.checkpoint;
+  if (update.checkpoint) {
+    try {
+      budgetedCheckpoint = enforceCheckpointByteBudget(update.checkpoint);
+    } catch (budgetError) {
+      console.warn(
+        `[upsertMiningSession] ${update.id}: non-fatal checkpoint budget warning:`,
+        budgetError instanceof Error ? budgetError.message : budgetError,
+      );
+      budgetedCheckpoint = {
+        ...update.checkpoint,
+        evidenceByUrl: {},
+        debugLogsTail: [],
+        leadQueryRunMap: {},
+        acceptedLeads: (update.checkpoint.acceptedLeads || []).slice(0, 5),
+        qualifiedLeads: (update.checkpoint.qualifiedLeads || []).slice(0, 5),
+      };
+    }
+  }
+  record.checkpoint = budgetedCheckpoint ?? existing?.checkpoint;
   const checkpointJsonParam =
     update.checkpoint !== undefined
       ? (budgetedCheckpoint ? JSON.stringify(budgetedCheckpoint) : null)

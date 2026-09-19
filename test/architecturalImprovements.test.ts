@@ -197,7 +197,7 @@ test("Component 6: Early shortlist termination logic calculates unique company d
   assert.ok(uniqueCompanies >= minCompanyDiversity); // 9 >= 8 -> triggers early stop!
 });
 
-test("Component 3: selectStage bypasses Phase 4 and Phase 5 on candidate shortfall (qualifiedLeads <= targetLimit)", async () => {
+test("Component 3: selectStage bypasses Phase 4 and Phase 5 on candidate shortfall (qualifiedLeads < targetLimit)", async () => {
   const { executeSelectStage } = await import("../server/leadSearch/stages/selectStage.js");
   const { buildFallbackSearchSpec } = await import("../server/leadSearch/searchSpec.js");
   const { buildDeterministicProspectContract } = await import("../server/leadSearch/prospectContract.js");
@@ -250,7 +250,7 @@ test("Component 3: selectStage bypasses Phase 4 and Phase 5 on candidate shortfa
     // Phase 4 companyIntent stats should not be populated due to shortfall bypass
     assert.equal(statsObj.companyIntent, undefined);
     assert.equal(statsObj.linkedinPostIntent, undefined);
-    assert.ok(logs.some(l => l.includes("Shortfall detected (2 <= 5)")));
+    assert.ok(logs.some(l => l.includes("Shortfall detected (2 < 5)")));
 
     // When forced via ENRICH_SHORTFALL_LEADS=true, it should run
     process.env.ENRICH_SHORTFALL_LEADS = "true";

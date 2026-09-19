@@ -29,6 +29,7 @@ import {
   parseSiteSignalsFromEvidenceBlock,
 } from "../siteProbe.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
+import { evaluateDecisionMakerGate } from "../titleTriage.js";
 import { createLeadEvidence } from "../evidence.js";
 import { computeScoreBreakdown } from "../scoring.js";
 import { incrementRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
@@ -1042,7 +1043,13 @@ export async function executeEnrichStage(
         evidenceText: lead.evidence?.snippets?.join(" ") || "",
       });
     lead.decisionMakerVerification = finalDecisionMaker;
-    if (finalDecisionMaker.ignoredTitle || finalDecisionMaker.confidence < 5) {
+    const dmGate = evaluateDecisionMakerGate({
+      ignoredTitle: finalDecisionMaker.ignoredTitle,
+      confidence: finalDecisionMaker.confidence,
+      effectiveScore: sharedEffectiveScore(lead),
+      minScore: minScore || 5,
+    });
+    if (!dmGate.pass) {
       noteRejection("not_decision_maker", queryRun);
       continue;
     }

@@ -26,6 +26,13 @@ export type SelectStageOutput = {
   leadsFound: number;
 };
 
+export function determineSelectionShortfall(
+  qualifiedCount: number,
+  targetLimit: number,
+): boolean {
+  return qualifiedCount < targetLimit;
+}
+
 export async function executeSelectStage(
   ctx: SessionContext,
   input: SelectStageInput
@@ -45,13 +52,13 @@ export async function executeSelectStage(
   const { qualifiedLeads } = state;
   const { targetLimit, maxRounds, linkedinPostIntentEnabled } = config;
 
-  const isShortfall = qualifiedLeads.length <= targetLimit;
+  const isShortfall = determineSelectionShortfall(qualifiedLeads.length, targetLimit);
   const forceShortfallEnrichment = process.env.ENRICH_SHORTFALL_LEADS === "true";
   const shouldRunIntent = !isShortfall || forceShortfallEnrichment;
 
   if (isShortfall && !forceShortfallEnrichment) {
     logEvent(
-      `Shortfall detected (${qualifiedLeads.length} <= ${targetLimit}): all candidates guaranteed selection; bypassing external post-intent scraping.`,
+      `Shortfall detected (${qualifiedLeads.length} < ${targetLimit}): all candidates guaranteed selection; bypassing external post-intent scraping.`,
     );
   }
 

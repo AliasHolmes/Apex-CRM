@@ -10,6 +10,10 @@ import {
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
 import { rankLeadForFinalSelection } from "./scoring.js";
+import {
+  classifyTitle,
+  evaluateDecisionMakerGate,
+} from "./titleTriage.js";
 
 export type RequirementStatus = "pass" | "fail" | "unknown";
 
@@ -49,6 +53,7 @@ export type Qualification = {
   semanticFit: number;
   evidenceConfidence: number;
   authorityFit: number;
+  scoresOmitted?: boolean;
 };
 
 const clean = (value: unknown, max = 900) =>
@@ -56,7 +61,7 @@ const clean = (value: unknown, max = 900) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
-const normalizeScoreTo10 = (value: unknown, defaultVal = 7): number => {
+const normalizeScoreTo10 = (value: unknown, defaultVal = 5): number => {
   const num = Number(value);
   if (!Number.isFinite(num)) return defaultVal;
   // If the score was returned on a 0.0 - 1.0 probability/unit scale, scale it to 0 - 10
@@ -568,11 +573,19 @@ export function validateFinalistJudgments(
       if (req?.status === 'pass') signalPasses++;
     }
 
-    const semanticFit = normalizeScoreTo10(judgment.semanticFit, 7);
-    const authorityFit = normalizeScoreTo10(judgment.authorityFit, 7);
+    const rawSemantic = Number(judgment.semanticFit);
+    const rawAuthority = Number(judgment.authorityFit);
+    const rawEvidence = Number(judgment.evidenceConfidence);
+    const scoresOmitted =
+      !Number.isFinite(rawSemantic) ||
+      !Number.isFinite(rawAuthority) ||
+      !Number.isFinite(rawEvidence);
+
+    const semanticFit = normalizeScoreTo10(judgment.semanticFit, 5);
+    const authorityFit = normalizeScoreTo10(judgment.authorityFit, 5);
     const evidenceConfidence = normalizeScoreTo10(
       judgment.evidenceConfidence,
-      7,
+      5,
     );
     const reason =
       clean(judgment.reason, 500) ||
@@ -646,7 +659,9 @@ export function validateFinalistJudgments(
         semanticFit,
         evidenceConfidence,
         authorityFit,
+        scoresOmitted,
       };
+      candidate.lead.scoresOmitted = scoresOmitted;
       qualifications.set(candidate.candidateId, qual);
       outcomes.set(candidate.candidateId, {
         candidateId,
@@ -776,15 +791,15 @@ export function partitionCandidatesByStrictEvidence(
       ? normalizeScoreTo10(
           candidate.lead.decisionMakerVerification?.confidence ??
             candidate.lead.audit?.authorityConfidence ??
-            7,
-          7,
+            5,
+          5,
         )
       : 0;
     const evidenceConfidence = normalizeScoreTo10(
       candidate.lead.scout?.evidenceCoverageScore ??
         candidate.lead.scoreBreakdown?.evidenceQualityScore ??
-        7,
-      7,
+        5,
+      5,
     );
     autoQualified.push({
       candidate,
@@ -883,9 +898,14 @@ export function checkStrictContradiction(
   // 2. Strict Negative Seniority Check (when authorityRequired = true)
   if (contract.authorityRequired) {
     const dm = lead.decisionMakerVerification;
-    if (dm?.ignoredTitle === true && dm.confidence !== undefined && dm.confidence <= 2) {
+    const gate = evaluateDecisionMakerGate({
+      ignoredTitle: dm?.ignoredTitle,
+      confidence: dm?.confidence,
+      authorityRequired: true,
+    });
+    if (!gate.pass) {
       return {
-        reason: `Explicit non-decision maker or entry-level role: ${dm.reason || "low authority"}`,
+        reason: gate.reason || `Explicit non-decision maker or entry-level role: ${dm?.reason || "low authority"}`,
         requirementId: "authority",
       };
     }
@@ -937,15 +957,10 @@ export function checkStrictContradiction(
 
   // 5. Deterministic Anti-Personas: IC Roles (Staff/Principal Engineer, Product Manager)
   if (isOwnerOrFounderQuery) {
-    const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200).toLowerCase();
-    const IC_ROLE_REGEX =
-      /\b(staff\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+product\s+manager|principal\s+architect|principal\s+scientist|senior\s+software\s+engineer|software\s+engineer(?:\s+ii|\s+iii|\s+iv)?|research\s+scientist|applied\s+scientist|product\s+manager)\b/i;
-    const hasExecutiveTitle =
-      /\b(owners?|founders?|co-?founders?|ceo|chief executive|managing partner|proprietor|president)\b/i.test(
-        rawTitle,
-      );
+    const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200);
+    const classification = classifyTitle(rawTitle);
 
-    if (IC_ROLE_REGEX.test(rawTitle) && !hasExecutiveTitle) {
+    if (classification.isIC) {
       return {
         reason: `Individual contributor role ('${lead.currentTitle || lead.headline}') contradicts required owner/founder leadership`,
         requirementId: "authority",
@@ -1103,15 +1118,15 @@ export function triPartitionCandidatesByEvidence(
       ? normalizeScoreTo10(
           lead.decisionMakerVerification?.confidence ??
             lead.audit?.authorityConfidence ??
-            7,
-          7,
+            5,
+          5,
         )
       : 0;
     const evidenceConfidence = normalizeScoreTo10(
       lead.scout?.evidenceCoverageScore ??
         lead.scoreBreakdown?.evidenceQualityScore ??
-        7,
-      7,
+        5,
+      5,
     );
     autoQualified.push({
       candidate,

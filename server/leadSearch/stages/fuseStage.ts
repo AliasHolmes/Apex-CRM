@@ -10,7 +10,7 @@ import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
 } from "../../services/linkedinEvidence.js";
-import { unwrapRedirectUrl } from "../../../src/utils/leadDedupe.js";
+import { unwrapRedirectUrl, normalizeDedupeValue } from "../../../src/utils/leadDedupe.js";
 import { extractLinkedInProfileUrlFromResult } from "../../services/brightdata.js";
 import { incrementRejection, type RejectionReason } from "../rejections.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -235,14 +235,20 @@ export async function executeFuseStage(
       continue;
     }
 
+    const obsEmail = normalizeDedupeValue(observation.raw?.contactDetails?.email || observation.raw?.email);
+    const obsName = normalizeDedupeValue(observation.raw?.fullName || observation.raw?.name);
+    const obsComp = normalizeDedupeValue(observation.raw?.currentCompany || observation.raw?.company);
+
     const candidateKeys = [
       observation.identityKey,
       `linkedin:${username}`,
       username,
       `linkedin:${normalizedUrl}`,
       `url:${normalizedUrl}`,
-      normalizedUrl
-    ].filter(Boolean);
+      normalizedUrl,
+      obsEmail ? `email:${obsEmail}` : undefined,
+      obsName && obsComp ? `name_company:${obsName}::${obsComp}` : undefined,
+    ].filter((k): k is string => Boolean(k));
 
     // 1. Check against existing CRM leads in SQLite
     if (candidateKeys.some(k => existingKeys.has(k))) {

@@ -138,7 +138,14 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
       ? normalized_score
       : rawScores[i] || 5;
     const finalSelectionScore = applySigmoidScaling(baseScore);
-    return { ...c, finalSelectionScore };
+    const updated: any = { ...c, finalSelectionScore, sigmoidApplied: true };
+    if (updated.scoreBreakdown) {
+      updated.scoreBreakdown = {
+        ...updated.scoreBreakdown,
+        finalScore: finalSelectionScore,
+      };
+    }
+    return updated;
   }) as T[];
 
   // --- Step 1: Pareto Skyline Optimization ---

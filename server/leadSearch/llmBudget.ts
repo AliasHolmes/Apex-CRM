@@ -45,12 +45,17 @@ export function fitOutputTokenBudget(options: {
   const configuredMax = Math.max(1, Math.floor(options.configuredMaxTokens));
   const totalBudget = Math.max(1, Math.floor(options.totalTokenBudget));
   const safetyTokens = Math.max(0, Math.floor(options.safetyTokens ?? 400));
-  const minimumOutput = Math.max(1, Math.floor(options.minimumOutputTokens ?? 800));
+  const minimumOutput = Math.max(200, Math.floor(options.minimumOutputTokens ?? 800));
   const available = totalBudget - Math.max(0, Math.ceil(options.estimatedInputTokens)) - safetyTokens;
 
-  // The caller sizes evidence chunks to leave at least minimumOutput available.
-  // If unexpected schema growth consumes that reserve, never exceed the total
-  // provider budget just to preserve the preferred minimum.
-  if (available < minimumOutput) return Math.max(1, Math.min(configuredMax, available));
+  if (available < 200) {
+    throw new Error(
+      `Insufficient LLM token budget: available tokens (${available}) below minimum viable output threshold (200).`,
+    );
+  }
+
+  if (available < minimumOutput) {
+    return Math.max(200, Math.min(configuredMax, available));
+  }
   return Math.min(configuredMax, available);
 }

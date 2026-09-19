@@ -37,6 +37,7 @@ import {
   scrapeAsMarkdown,
   scrapeBatchAsMarkdown,
   brightDataSearch,
+  brightDataSearchDataset,
   type BrightDataSearchOptions,
   type BrightDataSearchResult,
   shouldAttemptBrightData,
@@ -168,6 +169,14 @@ export interface DiscoveryResult {
   cancelled?: boolean;
 }
 
+export function normalizeCandidateKey(key: string): string {
+  if (key.startsWith("text:") && key.includes("@")) {
+    const [name, comp] = key.slice(5).split("@");
+    if (name && comp) return `name_company:${name}::${comp}`;
+  }
+  return key;
+}
+
 export function candidateStableId(
   lead: Record<string, any>,
   rawUrl?: string,
@@ -185,12 +194,16 @@ export function candidateStableId(
   const normalizedUrl = normalizeLinkedInUrl(url);
   if (normalizedUrl && normalizedUrl.includes("linkedin.com/in/"))
     return `url:${normalizedUrl.toLowerCase()}`;
+  const email = normalizeDedupeValue(
+    lead.contactDetails?.email || lead.email || lead.profile?.contactDetails?.email,
+  );
+  if (email) return `email:${email}`;
   const name = normalizeDedupeValue(lead.fullName || lead.profile?.fullName);
   const company = normalizeDedupeValue(
     lead.currentCompany || lead.company || lead.profile?.currentCompany,
   );
-  if (name && company) return `text:${name}@${company}`;
-  if (name) return `text:${name}`;
+  if (name && company) return `name_company:${name}::${company}`;
+  if (name) return `name:${name}`;
   return `id:${crypto.randomUUID()}`;
 }
 
@@ -853,16 +866,20 @@ export async function executeDiscoverySession(
         const email = normalized.slice("email:".length);
         if (email) excludedValues.add(email);
       } else {
-        existingKeys.add(`email:${normalized}`);
-        if (normalized.includes("linkedin.com/in/")) {
+        if (normalized.includes("@")) {
+          existingKeys.add(`email:${normalized}`);
+          excludedValues.add(normalized);
+        } else if (normalized.includes("linkedin.com/in/")) {
           const user = extractLinkedInUsername(normalized);
           if (user) {
             existingKeys.add(`linkedin:${user}`);
             excludedValues.add(`linkedin:${user}`);
             excludedValues.add(user);
           }
+        } else {
+          existingKeys.add(`name:${normalized}`);
+          excludedValues.add(normalized);
         }
-        existingKeys.add(`name:${normalized}`);
       }
     }
 
@@ -1008,6 +1025,8 @@ export async function executeDiscoverySession(
     const pipelinePorts: PipelinePorts = {
       brightDataSearch: (q, opts, label) =>
         trackableBrightDataSearch(q, opts, label),
+      brightDataSearchDataset: (datasetId, filter, size, sort, searchAfter, timeoutMs) =>
+        brightDataSearchDataset(datasetId, filter, size, sort, searchAfter, timeoutMs),
       tavilySearch: (q, opts) => tavilySearch(q, opts),
       // Thread the session abort signal through so cancelling stops paid Bright Data work
       // instead of letting in-flight and queued scrapes run to completion.
@@ -1075,9 +1094,12 @@ export async function executeDiscoverySession(
       if (Array.isArray(cp.acceptedLeads)) {
         for (const lead of cp.acceptedLeads) {
           acceptedLeads.push(lead);
-          buildProfileDedupeKeys(lead).forEach((k) => existingKeys.add(k));
-          // Tier-B rebuild (ADR-0002): re-seed seen-candidate keys so resumed
-          // rounds cannot re-extract candidates already collected pre-crash.
+          buildProfileDedupeKeys(lead).forEach((k) => {
+            existingKeys.add(k);
+            seenCandidateKeys.add(k);
+          });
+          const stableId = candidateStableId(lead);
+          if (stableId) seenCandidateKeys.add(stableId);
           const linkedinUrl =
             lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "";
           const username = extractLinkedInUsername(linkedinUrl);
@@ -1086,12 +1108,27 @@ export async function executeDiscoverySession(
             seenCandidateKeys.add(username);
           }
           const normalized = normalizeLinkedInUrl(linkedinUrl);
-          if (normalized) seenCandidateKeys.add(normalized);
+          if (normalized) {
+            seenCandidateKeys.add(normalized);
+            seenCandidateKeys.add(`linkedin:${normalized}`);
+            seenCandidateKeys.add(`url:${normalized}`);
+          }
         }
       }
       if (Array.isArray(cp.qualifiedLeads)) {
         for (const lead of cp.qualifiedLeads) {
           tryAddQualifiedLead(lead);
+          buildProfileDedupeKeys(lead).forEach((k) => {
+            existingKeys.add(k);
+            seenCandidateKeys.add(k);
+          });
+          const stableId = candidateStableId(lead);
+          if (stableId) seenCandidateKeys.add(stableId);
+        }
+      }
+      if (Array.isArray((cp as any).seenCandidateKeys)) {
+        for (const k of (cp as any).seenCandidateKeys) {
+          if (typeof k === "string" && k) seenCandidateKeys.add(k);
         }
       }
       if (cp.evidenceByUrl && typeof cp.evidenceByUrl === "object") {
@@ -1873,6 +1910,7 @@ export async function executeDiscoverySession(
           signalStoreState: sessionState.signalStore?.toJSON(),
           recoveryAttempts: sessionState.recoveryAttempts,
           datasetSearchAfter: sessionState.datasetSearchAfter,
+          seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
           updatedAt: new Date().toISOString(),
         });
         checkpointedQueryRunCount = stats.queryRuns.length;
@@ -2068,6 +2106,7 @@ export async function executeDiscoverySession(
       signalStoreState: sessionState.signalStore?.toJSON(),
       recoveryAttempts: sessionState.recoveryAttempts,
       datasetSearchAfter: sessionState.datasetSearchAfter,
+      seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
       updatedAt: new Date().toISOString(),
     });
     checkpointedQueryRunCount = stats.queryRuns.length;

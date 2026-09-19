@@ -23,10 +23,12 @@ import {
 // The distinction matters below: test isolation must not override an explicit choice.
 const explicitDbPath = process.env.APEX_DB_PATH;
 
-dotenv.config();
+if (!process.env.NODE_TEST_CONTEXT) {
+  dotenv.config();
+}
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 21;
+const LATEST_SCHEMA_VERSION = 22;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -310,12 +312,19 @@ function backupDatabaseBeforeMigration(previousVersion: number) {
       vacuumError,
     );
     fs.copyFileSync(LEADS_DB_PATH, backupPath);
+    const walFile = LEADS_DB_PATH + "-wal";
+    const shmFile = LEADS_DB_PATH + "-shm";
+    if (fs.existsSync(walFile)) fs.copyFileSync(walFile, backupPath + "-wal");
+    if (fs.existsSync(shmFile)) fs.copyFileSync(shmFile, backupPath + "-shm");
     console.log(
       `(Fallback) Database backup created before migration: ${backupPath}`,
     );
   }
+}
 
+export function pruneOldBackups(backupDir: string, maxToKeep = 3) {
   try {
+    if (!fs.existsSync(backupDir)) return;
     const files = fs
       .readdirSync(backupDir)
       .filter((f) => f.startsWith("apex-crm.pre-migration-") && f.endsWith(".sqlite"))
@@ -325,10 +334,12 @@ function backupDatabaseBeforeMigration(previousVersion: number) {
         mtime: fs.statSync(path.join(backupDir, f)).mtimeMs,
       }))
       .sort((a, b) => b.mtime - a.mtime);
-    const toDelete = files.slice(3);
+    const toDelete = files.slice(maxToKeep);
     for (const file of toDelete) {
       try {
         fs.unlinkSync(file.fullPath);
+        if (fs.existsSync(file.fullPath + "-wal")) fs.unlinkSync(file.fullPath + "-wal");
+        if (fs.existsSync(file.fullPath + "-shm")) fs.unlinkSync(file.fullPath + "-shm");
         console.log(`Pruned old database backup: ${file.name}`);
       } catch {}
     }
@@ -1131,6 +1142,81 @@ function runMigrations(db: DatabaseSync) {
       }
     }
 
+    if (currentVersion < 22) {
+      db.exec("CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company);");
+
+      const ftsExists = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'leads_fts'",
+        )
+        .get();
+      if (ftsExists) {
+        db.exec(`
+          DROP TRIGGER IF EXISTS leads_ai;
+          DROP TRIGGER IF EXISTS leads_ad;
+          DROP TRIGGER IF EXISTS leads_au;
+
+          DELETE FROM leads_fts;
+          DELETE FROM leads_fts_map;
+
+          INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+            SELECT id, COALESCE(full_name,''), COALESCE(company,''), COALESCE(title,''), COALESCE(email,''),
+                   COALESCE(json_extract(payload, '$.notes'), ''), COALESCE(json_extract(payload, '$.tags'), '')
+            FROM leads;
+
+          INSERT OR REPLACE INTO leads_fts_map(id, fts_rowid)
+            SELECT id, rowid FROM leads_fts WHERE id IS NOT NULL;
+
+          CREATE TRIGGER leads_ai AFTER INSERT ON leads BEGIN
+            INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+            VALUES (
+              new.id,
+              COALESCE(new.full_name, ''),
+              COALESCE(new.company, ''),
+              COALESCE(new.title, ''),
+              COALESCE(new.email, ''),
+              COALESCE(json_extract(new.payload, '$.notes'), ''),
+              COALESCE(json_extract(new.payload, '$.tags'), '')
+            );
+            INSERT INTO leads_fts_map(id, fts_rowid)
+              VALUES (new.id, last_insert_rowid())
+            ON CONFLICT(id) DO UPDATE SET fts_rowid = excluded.fts_rowid;
+          END;
+
+          CREATE TRIGGER leads_ad AFTER DELETE ON leads BEGIN
+            DELETE FROM leads_fts WHERE rowid = (SELECT fts_rowid FROM leads_fts_map WHERE id = old.id);
+            DELETE FROM leads_fts_map WHERE id = old.id;
+            DELETE FROM leads_fts WHERE id = old.id;
+          END;
+
+          CREATE TRIGGER leads_au AFTER UPDATE ON leads
+          WHEN new.full_name IS NOT old.full_name
+            OR new.company IS NOT old.company
+            OR new.title IS NOT old.title
+            OR new.email IS NOT old.email
+            OR COALESCE(json_extract(new.payload, '$.notes'), '') IS NOT COALESCE(json_extract(old.payload, '$.notes'), '')
+            OR COALESCE(json_extract(new.payload, '$.tags'), '') IS NOT COALESCE(json_extract(old.payload, '$.tags'), '')
+          BEGIN
+            DELETE FROM leads_fts WHERE rowid = (SELECT fts_rowid FROM leads_fts_map WHERE id = old.id);
+            DELETE FROM leads_fts WHERE id = old.id;
+            INSERT INTO leads_fts(id, full_name, company, title, email, notes, tags)
+            VALUES (
+              new.id,
+              COALESCE(new.full_name, ''),
+              COALESCE(new.company, ''),
+              COALESCE(new.title, ''),
+              COALESCE(new.email, ''),
+              COALESCE(json_extract(new.payload, '$.notes'), ''),
+              COALESCE(json_extract(new.payload, '$.tags'), '')
+            );
+            INSERT INTO leads_fts_map(id, fts_rowid)
+              VALUES (new.id, last_insert_rowid())
+            ON CONFLICT(id) DO UPDATE SET fts_rowid = excluded.fts_rowid;
+          END;
+        `);
+      }
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1265,15 +1351,23 @@ export type EnrichmentCacheLookup = {
 export function getLeadsDb() {
   if (!leadsDb) {
     fs.mkdirSync(path.dirname(LEADS_DB_PATH), { recursive: true });
+    if (fs.existsSync(LEADS_DB_PATH)) {
+      try {
+        const probeDb = new DatabaseSync(LEADS_DB_PATH);
+        const currentVersion = Number(
+          (
+            probeDb.prepare("PRAGMA user_version").get() as {
+              user_version?: number;
+            }
+          ).user_version || 0,
+        );
+        probeDb.close();
+        backupDatabaseBeforeMigration(currentVersion);
+      } catch {
+        // Fallback: if probe fails, proceed to open database normally
+      }
+    }
     leadsDb = new DatabaseSync(LEADS_DB_PATH);
-    const currentVersion = Number(
-      (
-        leadsDb.prepare("PRAGMA user_version").get() as {
-          user_version?: number;
-        }
-      ).user_version || 0,
-    );
-    backupDatabaseBeforeMigration(currentVersion);
     leadsDb.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
@@ -1428,6 +1522,7 @@ export function getLeadsDb() {
         ON prospect_contract_cache(expires_at);
     `);
     runMigrations(leadsDb);
+    pruneOldBackups(path.join(path.dirname(LEADS_DB_PATH), "backups"));
     if (getTableColumns(leadsDb, "leads").has("stage")) {
       leadsDb.exec(
         "CREATE INDEX IF NOT EXISTS idx_leads_stage_created ON leads(stage, created_at DESC);",
@@ -1548,7 +1643,8 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
   const ftsQuery = search && search.trim() ? sanitizeFtsQuery(search) : null;
   if (search && search.trim()) {
     if (ftsQuery) {
-      fromClause = "FROM leads JOIN leads_fts ON leads.id = leads_fts.id";
+      fromClause =
+        "FROM leads JOIN leads_fts_map ON leads.id = leads_fts_map.id JOIN leads_fts ON leads_fts.rowid = leads_fts_map.fts_rowid";
       conditions.push("leads_fts MATCH ?");
       params.push(ftsQuery);
     } else {
@@ -1849,6 +1945,7 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare("DELETE FROM leads").run();
+    db.prepare("DELETE FROM lead_identities").run();
     db.prepare("DELETE FROM lead_identity_conflicts").run();
 
     const claimIdentity = db.prepare(`
@@ -1889,18 +1986,19 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
         cols.score,
         cols.email,
       );
-      const identityKey = leadIdentityKey(storedLead);
-      if (identityKey) {
-        claimIdentity.run(
-          identityKey,
-          storedLead.id,
-          typeof storedLead.createdAt === "string" ? storedLead.createdAt : now,
-        );
+      const identityKeys = buildLeadIdentityKeys(storedLead);
+      for (const identityKey of identityKeys) {
         const mapped = findIdentity.get(identityKey) as
           | { lead_id?: string }
           | undefined;
         if (mapped?.lead_id && mapped.lead_id !== storedLead.id) {
           recordConflict.run(identityKey, mapped.lead_id, storedLead.id, now);
+        } else {
+          claimIdentity.run(
+            identityKey,
+            storedLead.id,
+            typeof storedLead.createdAt === "string" ? storedLead.createdAt : now,
+          );
         }
       }
     }
@@ -1941,7 +2039,7 @@ export class LeadNotFoundError extends Error {
   }
 }
 
-export type LeadWriteDisposition = "created" | "updated" | "duplicate";
+export type LeadWriteDisposition = "created" | "updated" | "duplicate" | "conflict";
 
 export type LeadWriteResult = {
   disposition: LeadWriteDisposition;
@@ -1950,15 +2048,43 @@ export type LeadWriteResult = {
   identityKey?: string;
 };
 
-type LeadWriteOptions = { requireExisting?: boolean };
+export type LeadWriteOptions = {
+  requireExisting?: boolean;
+  perItemConflict?: boolean;
+};
 
-const leadIdentityKey = (lead: Record<string, any>) =>
-  canonicalLinkedInIdentity(
+export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
+  const keys = new Set<string>();
+  const rawUrl =
     lead?.profile?.contactDetails?.linkedinUrl ||
-      lead?.contactDetails?.linkedinUrl ||
-      lead?.linkedinUrl ||
-      lead?.sourceUrl,
+    lead?.contactDetails?.linkedinUrl ||
+    lead?.linkedinUrl ||
+    lead?.sourceUrl ||
+    lead?.url;
+  const linkedinIdentity = canonicalLinkedInIdentity(rawUrl);
+  if (linkedinIdentity) keys.add(linkedinIdentity);
+
+  const email = normalizeDedupeValue(
+    lead?.profile?.contactDetails?.email ||
+    lead?.contactDetails?.email ||
+    lead?.email
   );
+  if (email) keys.add(`email:${email}`);
+
+  const name = normalizeDedupeValue(lead?.profile?.fullName || lead?.fullName);
+  const company = normalizeDedupeValue(
+    lead?.profile?.currentCompany || lead?.currentCompany || lead?.company
+  );
+  if (name && company) {
+    keys.add(`name_company:${name}::${company}`);
+  }
+  return keys;
+}
+
+export const leadIdentityKey = (lead: Record<string, any>): string | undefined => {
+  const keys = buildLeadIdentityKeys(lead);
+  return keys.values().next().value;
+};
 
 const readLeadFromRow = (
   row: { payload: string; revision: number } | undefined,
@@ -1995,8 +2121,8 @@ export function upsertLeadInExistingTransaction(
     throw new LeadNotFoundError(incomingLeadId);
   }
 
-  const identityKey = leadIdentityKey(lead);
-  if (identityKey) {
+  const identityKeys = buildLeadIdentityKeys(lead);
+  for (const identityKey of identityKeys) {
     const identity = getCachedStatement(
       db,
       "SELECT lead_id FROM lead_identities WHERE identity_key = ?",
@@ -2086,19 +2212,27 @@ export function upsertLeadInExistingTransaction(
     cols.email,
   );
 
-  getCachedStatement(
-    db,
-    "DELETE FROM lead_identities WHERE lead_id = ? AND identity_key <> ?",
-  ).run(storedLead.id, identityKey || "");
-  if (identityKey) {
+  const storedKeys = Array.from(buildLeadIdentityKeys(storedLead));
+  if (storedKeys.length > 0) {
+    const placeholders = storedKeys.map(() => "?").join(",");
+    db.prepare(
+      `DELETE FROM lead_identities WHERE lead_id = ? AND identity_key NOT IN (${placeholders})`,
+    ).run(storedLead.id, ...storedKeys);
+    for (const key of storedKeys) {
+      getCachedStatement(
+        db,
+        `
+        INSERT INTO lead_identities (identity_key, lead_id, created_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(identity_key) DO UPDATE SET lead_id = excluded.lead_id
+      `,
+      ).run(key, storedLead.id, now);
+    }
+  } else {
     getCachedStatement(
       db,
-      `
-      INSERT INTO lead_identities (identity_key, lead_id, created_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(identity_key) DO UPDATE SET lead_id = excluded.lead_id
-    `,
-    ).run(identityKey, storedLead.id, now);
+      "DELETE FROM lead_identities WHERE lead_id = ?",
+    ).run(storedLead.id);
   }
 
   if (!leadsInitializedCached) {
@@ -2117,7 +2251,7 @@ export function upsertLeadInExistingTransaction(
     disposition: existing ? "updated" : "created",
     lead: storedLead,
     incomingLeadId,
-    identityKey: identityKey || undefined,
+    identityKey: storedKeys[0],
   };
 }
 
@@ -2160,6 +2294,10 @@ export function deleteLeadInExistingTransaction(
   getCachedStatement(
     db,
     "DELETE FROM outreach_drafts WHERE lead_id = ?",
+  ).run(id);
+  getCachedStatement(
+    db,
+    "DELETE FROM lead_identities WHERE lead_id = ?",
   ).run(id);
   getCachedStatement(
     db,
@@ -2227,7 +2365,19 @@ export function upsertLeadsWithIdentity(
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const lead of leads) {
-      results.push(upsertLeadInExistingTransaction(db, lead, options));
+      try {
+        results.push(upsertLeadInExistingTransaction(db, lead, options));
+      } catch (err) {
+        if (options.perItemConflict && err instanceof LeadRevisionConflictError) {
+          results.push({
+            disposition: "conflict",
+            lead: err.currentLead,
+            incomingLeadId: String(lead.id || ""),
+          });
+        } else {
+          throw err;
+        }
+      }
     }
     db.exec("COMMIT");
     invalidateLeadsStatsCache();
@@ -3420,15 +3570,15 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       extracted_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.extracted_candidates * 0.95 + excluded.extracted_candidates) AS INTEGER) ELSE query_performance.extracted_candidates END,
       accepted_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.accepted_candidates * 0.95 + excluded.accepted_candidates) AS INTEGER) ELSE query_performance.accepted_candidates END,
       duplicate_candidates = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.duplicate_candidates * 0.95 + excluded.duplicate_candidates) AS INTEGER) ELSE query_performance.duplicate_candidates END,
-      outcome_runs = CAST(ROUND(query_performance.outcome_runs * 0.95 + excluded.outcome_runs) AS INTEGER),
-      qualified_candidates = CAST(ROUND(query_performance.qualified_candidates * 0.95 + excluded.qualified_candidates) AS INTEGER),
-      rescued_candidates = CAST(ROUND(query_performance.rescued_candidates * 0.95 + excluded.rescued_candidates) AS INTEGER),
-      returned_candidates = CAST(ROUND(query_performance.returned_candidates * 0.95 + excluded.returned_candidates) AS INTEGER),
+      outcome_runs = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.outcome_runs * 0.95 + excluded.outcome_runs) AS INTEGER) ELSE query_performance.outcome_runs END,
+      qualified_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.qualified_candidates * 0.95 + excluded.qualified_candidates) AS INTEGER) ELSE query_performance.qualified_candidates END,
+      rescued_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.rescued_candidates * 0.95 + excluded.rescued_candidates) AS INTEGER) ELSE query_performance.rescued_candidates END,
+      returned_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.returned_candidates * 0.95 + excluded.returned_candidates) AS INTEGER) ELSE query_performance.returned_candidates END,
       search_latency_ms = CASE WHEN excluded.search_latency_ms > 0 THEN CAST(ROUND(query_performance.search_latency_ms * 0.95 + excluded.search_latency_ms) AS INTEGER) ELSE query_performance.search_latency_ms END,
       provider_units = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.provider_units * 0.95 + excluded.provider_units) AS INTEGER) ELSE query_performance.provider_units END,
-      judged_candidates = CAST(ROUND(query_performance.judged_candidates * 0.95 + excluded.judged_candidates) AS INTEGER),
-      hard_failed_candidates = CAST(ROUND(query_performance.hard_failed_candidates * 0.95 + excluded.hard_failed_candidates) AS INTEGER),
-      unknown_candidates = CAST(ROUND(query_performance.unknown_candidates * 0.95 + excluded.unknown_candidates) AS INTEGER),
+      judged_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.judged_candidates * 0.95 + excluded.judged_candidates) AS INTEGER) ELSE query_performance.judged_candidates END,
+      hard_failed_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.hard_failed_candidates * 0.95 + excluded.hard_failed_candidates) AS INTEGER) ELSE query_performance.hard_failed_candidates END,
+      unknown_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.unknown_candidates * 0.95 + excluded.unknown_candidates) AS INTEGER) ELSE query_performance.unknown_candidates END,
       requirement_fail_digest = COALESCE(excluded.requirement_fail_digest, query_performance.requirement_fail_digest),
       updated_at = excluded.updated_at
   `,
@@ -3660,6 +3810,8 @@ export type MiningSessionCheckpoint = {
   signalStoreState?: any;
   recoveryAttempts?: number;
   datasetSearchAfter?: any[];
+  /** Capped seen-key snapshot so resumed rounds skip already-rejected profiles. */
+  seenCandidateKeys?: string[];
   updatedAt: string;
 };
 
@@ -3756,25 +3908,103 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
   });
 }
 
+export class CheckpointBudgetExceededError extends Error {
+  constructor(size: number, limit: number) {
+    super(
+      `Checkpoint size ${size} bytes exceeds budget limit of ${limit} bytes even after maximum progressive trimming.`,
+    );
+    this.name = "CheckpointBudgetExceededError";
+  }
+}
+
+export function enforceCheckpointByteBudget(
+  checkpoint: MiningSessionCheckpoint,
+  maxBytes = 512_000,
+): MiningSessionCheckpoint {
+  let cp = { ...checkpoint };
+  let payload = JSON.stringify(cp);
+  if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+
+  // Step 1: Strip evidenceByUrl
+  if (cp.evidenceByUrl && Object.keys(cp.evidenceByUrl).length > 0) {
+    cp.evidenceByUrl = {};
+    payload = JSON.stringify(cp);
+    if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  }
+
+  // Step 2: Trim queryRunsDelta, debugLogsTail, signalStoreState, seen keys
+  if (cp.queryRunsDelta && cp.queryRunsDelta.length > 10) {
+    cp.queryRunsDelta = cp.queryRunsDelta.slice(-10);
+  }
+  if (cp.debugLogsTail && cp.debugLogsTail.length > 20) {
+    cp.debugLogsTail = cp.debugLogsTail.slice(-20);
+  }
+  if (Array.isArray(cp.seenCandidateKeys) && cp.seenCandidateKeys.length > 2000) {
+    cp.seenCandidateKeys = cp.seenCandidateKeys.slice(-2000);
+  }
+  cp.signalStoreState = undefined;
+  payload = JSON.stringify(cp);
+  if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  if (Array.isArray(cp.seenCandidateKeys) && cp.seenCandidateKeys.length > 500) {
+    cp.seenCandidateKeys = cp.seenCandidateKeys.slice(-500);
+    payload = JSON.stringify(cp);
+    if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  }
+
+  // Step 3: Progressively clamp candidate lists (1600 -> 800 -> 400 -> 200 -> 100 -> 50)
+  const candidateLimits = [800, 400, 200, 100, 50];
+  for (const limit of candidateLimits) {
+    if (Array.isArray(cp.acceptedLeads) && cp.acceptedLeads.length > limit) {
+      cp.acceptedLeads = cp.acceptedLeads.slice(0, limit);
+    }
+    if (Array.isArray(cp.qualifiedLeads) && cp.qualifiedLeads.length > limit) {
+      cp.qualifiedLeads = cp.qualifiedLeads.slice(0, limit);
+    }
+    if (Array.isArray(cp.finalLeads) && cp.finalLeads.length > limit) {
+      cp.finalLeads = cp.finalLeads.slice(0, limit);
+    }
+    if (Array.isArray((cp as any).provisionalLeads) && (cp as any).provisionalLeads.length > limit) {
+      (cp as any).provisionalLeads = (cp as any).provisionalLeads.slice(0, limit);
+    }
+    if (Array.isArray((cp as any).finalistPool) && (cp as any).finalistPool.length > limit) {
+      (cp as any).finalistPool = (cp as any).finalistPool.slice(0, limit);
+    }
+    if (Array.isArray((cp as any).rescuedLeads) && (cp as any).rescuedLeads.length > limit) {
+      (cp as any).rescuedLeads = (cp as any).rescuedLeads.slice(0, limit);
+    }
+    if (Array.isArray((cp as any).candidatePool) && (cp as any).candidatePool.length > limit) {
+      (cp as any).candidatePool = (cp as any).candidatePool.slice(0, limit);
+    }
+    payload = JSON.stringify(cp);
+    if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  }
+
+  // Step 4: If still >512KB at 50 candidates, drop bulky string fields
+  const stripBulkyFields = (lead: any) => {
+    if (!lead || typeof lead !== "object") return lead;
+    const { error, summary, headline, rawDescription, whyThisLead, ...rest } = lead;
+    return rest;
+  };
+  if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.map(stripBulkyFields);
+  if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.map(stripBulkyFields);
+  if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.map(stripBulkyFields);
+  payload = JSON.stringify(cp);
+  const currentBytes = Buffer.byteLength(payload, "utf8");
+  if (currentBytes <= maxBytes) return cp;
+
+  // Step 5: Throw typed error if still exceeding maxBytes
+  throw new CheckpointBudgetExceededError(currentBytes, maxBytes);
+}
+
 export function saveMiningSessionCheckpoint(
   sessionId: string,
   checkpoint: MiningSessionCheckpoint,
 ) {
   const db = getLeadsDb();
-  const now = checkpoint.updatedAt || new Date().toISOString();
-  let payload = JSON.stringify(checkpoint);
-  // Size guard: evidence blocks dominate checkpoint weight. If the serialized
-  // snapshot exceeds ~512KB, degrade to metadata-only evidence (the resume
-  // path's fallback-evidence builder tolerates missing entries gracefully).
-  const evidenceCount = checkpoint.evidenceByUrl
-    ? Object.keys(checkpoint.evidenceByUrl).length
-    : 0;
-  if (payload.length > 512_000 && evidenceCount > 0) {
-    payload = JSON.stringify({ ...checkpoint, evidenceByUrl: {} });
-    console.warn(
-      `[checkpoint] ${sessionId}: exceeded 512KB; stripped evidenceByUrl (${evidenceCount} entries).`,
-    );
-  }
+  const budgetedCheckpoint = enforceCheckpointByteBudget(checkpoint);
+  const now = budgetedCheckpoint.updatedAt || new Date().toISOString();
+  const payload = JSON.stringify(budgetedCheckpoint);
+
   db.prepare(
     `
     UPDATE mining_sessions
@@ -3909,14 +4139,17 @@ export function upsertMiningSession(
     errorMessage: update.errorMessage ?? existing?.errorMessage,
     stats: update.stats ?? existing?.stats,
     traceSummary: update.traceSummary ?? existing?.traceSummary,
-    checkpoint: update.checkpoint ?? existing?.checkpoint,
+    checkpoint: (update.checkpoint ? enforceCheckpointByteBudget(update.checkpoint) : update.checkpoint) ?? existing?.checkpoint,
     updatedAt: now,
   };
 
   const hasCheckpointUpdate = update.checkpoint !== undefined ? 1 : 0;
+  const budgetedCheckpoint = update.checkpoint
+    ? enforceCheckpointByteBudget(update.checkpoint)
+    : update.checkpoint;
   const checkpointJsonParam =
     update.checkpoint !== undefined
-      ? (update.checkpoint ? JSON.stringify(update.checkpoint) : null)
+      ? (budgetedCheckpoint ? JSON.stringify(budgetedCheckpoint) : null)
       : null;
 
   db.prepare(

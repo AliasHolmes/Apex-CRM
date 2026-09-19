@@ -11,8 +11,8 @@ const { enrichLeadProfile } = await import('../server/leadSearch/profileEnrichme
 describe('enrichment cache', () => {
   it('initializes a versioned database schema', () => {
     const version = db.getLeadsDb().prepare('PRAGMA user_version').get() as { user_version: number };
-    // Bumped to 21 by the FTS rowid-map migration (O(N) -> O(1) FTS maintenance).
-    assert.equal(version.user_version, 21);
+    // Bumped to 22 by schema v22 (sidecar WAL backups + decoupled triggers).
+    assert.equal(version.user_version, 22);
     const companiesTable = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'discovered_companies'").get();
     assert.ok(companiesTable);
     const emailCache = db.getLeadsDb().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'email_discovery_cache'").get();

@@ -975,8 +975,23 @@ export function buildContractFallbackQueries(
 
   // Extract core vertical / company type term (e.g. "AI agency")
   const compReq = requirements.find(r => r.scope === 'company_type' || r.scope === 'company_industry');
-  const rawVertical = compReq?.acceptableTerms?.[0] || compReq?.sourcePhrase || (isAgencyBrief ? 'AI agency' : clean(brief));
-  const vertical = rawVertical.includes(' ') && !rawVertical.startsWith('"')
+  let rawVertical = compReq?.acceptableTerms?.[0] || compReq?.sourcePhrase;
+  if (!rawVertical) {
+    if (isAgencyBrief) {
+      rawVertical = 'AI agency';
+    } else {
+      const cleanedBrief = clean(brief)
+        .replace(/^(?:find|search|get|locate|look\s+for|target|identify|seek|discover|show\s+me|give\s+me|i\s+want(?:\s+to)?|i\s+need(?:\s+to)?)\s+/i, '')
+        .replace(/\b(?:with\s+)?(?:valid\s+)?(?:linkedin\s+)?(?:profile\s+)?urls?\b/gi, '')
+        .replace(/\b(?:duplicate|profile\s+validity)\b/gi, '')
+        .replace(/\b(owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/gi, '')
+        .replace(/\b(?:with|in|at|of|for|from|to|near)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      rawVertical = cleanedBrief || '';
+    }
+  }
+  const vertical = rawVertical && rawVertical.includes(' ') && !rawVertical.startsWith('"')
     ? `"${rawVertical}"`
     : rawVertical;
 
@@ -988,8 +1003,7 @@ export function buildContractFallbackQueries(
     const loc = locations[i % locations.length];
     const parts = [vertical, role, loc].filter(Boolean);
     let baseQuery = parts.join(' ');
-    const hasExplicitVertical = /\b(agency|agencies|consult\w*|service\w*|solution\w*|studio\w*|firm\w*|integrat\w*|advisory|business|partner\w*)\b/i.test(baseQuery);
-    if (isAgencyBrief && agencyDisambiguation && !hasExplicitVertical) {
+    if (isAgencyBrief && agencyDisambiguation) {
       if ((baseQuery + ' ' + agencyDisambiguation).length <= 240) {
         baseQuery = `${baseQuery} ${agencyDisambiguation}`;
       }
@@ -1559,10 +1573,16 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
   if (normalized.length < 4) {
     for (const fallback of buildContractFallbackQueries(contract.brief, contract.requirements)) {
       if (normalized.length >= 4) break;
-      const key = lower(fallback.query);
+      let qText = fallback.query;
+      const hasAgencyVert = /\b(agency|agencies|consult\w*|service\w*|solution\w*|studio\w*|firm\w*|integrat\w*|advisory|business|partner\w*)\b/i.test(qText);
+      if (hasAgencyVert) {
+        qText = qText.replace(/\s*-(?:software|platform|SaaS)\b/gi, '').trim();
+      }
+      const cleanedFallback = { ...fallback, query: qText };
+      const key = lower(cleanedFallback.query);
       if (seen.has(key)) continue;
       seen.add(key);
-      normalized.push(fallback);
+      normalized.push(cleanedFallback);
     }
   }
   // Also guarantee any hard open_web_signal requirements have their signal queries present

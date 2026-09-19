@@ -42,8 +42,8 @@ describe('Target Fulfillment Engine Mechanics', () => {
 
     assert.equal(candidateStableId(lead1), 'linkedin:john-doe-123');
     assert.equal(candidateStableId(lead2), 'linkedin:john-doe-123');
-    assert.equal(candidateStableId(lead3), 'text:jane smith@beta llc');
-    assert.equal(candidateStableId(lead4), 'text:john doe@acme corp');
+    assert.equal(candidateStableId(lead3), 'name_company:jane smith::beta llc');
+    assert.equal(candidateStableId(lead4), 'name_company:john doe::acme corp');
   });
 
   it('prevents rescued promotions when candidates fail hard requirements', () => {

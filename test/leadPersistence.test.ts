@@ -36,7 +36,7 @@ const createLead = (id: string, linkedinUrl?: string) => ({
   id,
   profile: {
     id: `profile-${id}`,
-    fullName: 'Persistence Test',
+    fullName: `Persistence Test ${id}`,
     currentTitle: 'Founder',
     currentCompany: 'Acme',
     contactDetails: linkedinUrl ? { linkedinUrl } : {},

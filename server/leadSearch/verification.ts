@@ -1,3 +1,8 @@
+import {
+  EXECUTIVE_OVERRIDE_REGEX,
+  classifyTitle,
+} from './titleTriage.js';
+
 export type DecisionMakerVerification = {
   titleMatched: boolean;
   companyMatched: boolean;
@@ -26,7 +31,8 @@ const POSITIVE_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
 ];
 
 const POSITIVE_SENIORITY_PATTERNS = [
-  /\b(c[-\s]?suite|executive|founder|owner|partner|vp|vice president|head|director|fractional|interim)\b/
+  /\b(c[-\s]?suite|executive|founder|owner|partner|vp|vice president|head|director|fractional|interim)\b/,
+  EXECUTIVE_OVERRIDE_REGEX,
 ];
 
 const WEAK_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
@@ -151,8 +157,8 @@ export function verifyDecisionMakerFromEvidence(input: {
   });
   const hasStudentOrgConflict = /\b(student|campus|university|college)\s+(club|organization|society|association)\b/.test(profileIdentityText);
   const hasAssistantAuthorityConflict = /\bassistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)\b/.test(profileIdentityText);
-
-  const hasPositiveTitle = positiveMatches.length > 0 || seniorityPositive;
+  const classification = classifyTitle(profileIdentityText);
+  const hasPositiveTitle = positiveMatches.length > 0 || seniorityPositive || classification.isExecutive;
   const hasWeakTitle = weakMatches.length > 0;
   const weakConflictOverridesPositive = hasStudentOrgConflict || hasAssistantAuthorityConflict;
   const ignoredTitle = !isWeakTitleRequested && hasWeakTitle && (!hasPositiveTitle || weakConflictOverridesPositive);

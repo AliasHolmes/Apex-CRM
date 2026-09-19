@@ -227,9 +227,14 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
   for (const entry of enrichedEntries) {
     const { group, intentData, websiteUrl, cacheAgeDays, isLive } = entry;
     if (Array.isArray(intentData.buyingSignals) && intentData.buyingSignals.length > 0) {
+      const signalCounts = new Map<string, number>();
+      for (const sig of intentData.buyingSignals) {
+        const lower = String(sig).toLowerCase();
+        signalCounts.set(lower, (signalCounts.get(lower) ?? 0) + 1);
+      }
       const { tfidfWeightedScore, quality } = computeTfidfScore(
         intentData.buyingSignals,
-        new Map(),
+        signalCounts,
         contract.intentSignals,
         signalCorpus,
       );

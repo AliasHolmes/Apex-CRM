@@ -8,6 +8,9 @@ test("selectEvidenceForFinalist allows sentences up to 500 chars and higher budg
     version: 1,
     policyVersion: "evidence-contract-v8",
     brief: "AI founders",
+    authorityRequired: false,
+    exclusions: [],
+    initialQueries: [],
     requirements: [
       {
         id: "req_role",

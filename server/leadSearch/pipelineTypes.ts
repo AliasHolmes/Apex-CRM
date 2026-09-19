@@ -49,6 +49,14 @@ export type PipelinePorts = {
     options?: BrightDataSearchOptions,
     phaseLabel?: string,
   ) => Promise<BrightDataSearchResult[]>;
+  brightDataSearchDataset?: (
+    datasetId: string,
+    filter: any,
+    size?: number,
+    sort?: "default" | "random" | Array<Record<string, "asc" | "desc">>,
+    searchAfter?: any[],
+    timeoutMs?: number,
+  ) => Promise<any>;
   tavilySearch: (
     query: string,
     options?: Record<string, any>,
@@ -123,6 +131,8 @@ export type MiningSessionCheckpoint = {
   signalStoreState?: SignalStoreData;
   recoveryAttempts?: number;
   datasetSearchAfter?: any[];
+  /** Capped seen-key snapshot so resumed rounds skip already-rejected profiles. */
+  seenCandidateKeys?: string[];
   updatedAt: string;
 };
 

@@ -208,10 +208,13 @@ class LeadDeletedConflictError extends Error {
 }
 
 async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<{ lead: Lead; disposition?: string }> {
+  const leadToSend = !allowCreate && !Number.isInteger(lead.revision)
+    ? { ...lead, revision: 1 }
+    : lead;
   const response = await fetch(`/api/leads/${lead.id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead, allowCreate }),
+    body: JSON.stringify({ lead: leadToSend, allowCreate }),
   });
   const data = await response.json().catch(() => ({}));
   if (response.status === 409 && data.lead) {
@@ -265,6 +268,7 @@ interface LeadContextType {
     localLead: Lead,
     serverLead: Lead,
     onResolve: (resolvedLead: Lead) => void,
+    baseLead?: Lead | null,
   ) => void;
 }
 
@@ -294,17 +298,20 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     open: boolean;
     localLead: Lead | null;
     serverLead: Lead | null;
+    baseLead?: Lead | null;
     onResolve?: (resolvedLead: Lead) => void;
   }>({
     open: false,
     localLead: null,
-    serverLead: null
+    serverLead: null,
+    baseLead: null,
   });
 
   const openConflictDialog = useCallback((
     localLead: Lead,
     serverLead: Lead,
-    onResolve: (resolvedLead: Lead) => void
+    onResolve: (resolvedLead: Lead) => void,
+    baseLead?: Lead | null,
   ) => {
     setConflictModal((prev) => {
       if (prev.open && prev.onResolve && prev.serverLead) {
@@ -320,6 +327,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         open: true,
         localLead,
         serverLead,
+        baseLead: baseLead ?? null,
         onResolve
       };
     });
@@ -510,7 +518,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           const resolvedLead = await new Promise<Lead | null>((resolve) => {
             openConflictDialog(lead, error.currentLead, (userChoice) => {
               resolve(userChoice);
-            });
+            }, rollbackLead);
           });
 
           if (!resolvedLead) {
@@ -1113,7 +1121,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           const response = await fetch('/api/leads/bulk', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ leads: batch, requireExisting: true })
+            body: JSON.stringify({ leads: batch, requireExisting: true, perItemConflict: true })
           });
           const data = await response.json().catch(() => ({}));
           return { response, data };
@@ -1142,6 +1150,29 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         }
         const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
         const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
+
+        if (Array.isArray(data.conflicts) && data.conflicts.length > 0) {
+          const rollbackById = new Map(rollbackLeads.map(lead => [lead.id, lead]));
+          const conflictingLeadsToRebase = data.conflicts
+            .map((conflict: { incomingId?: string; lead: Lead }) => {
+              const leadId = conflict.incomingId || conflict.lead?.id;
+              const localLead = leadsToPersist.find(l => l.id === leadId);
+              if (!localLead || !conflict.lead) return null;
+              const baseLead = rollbackById.get(leadId) ?? null;
+              return rebaseLeadChanges(conflict.lead, localLead, baseLead);
+            })
+            .filter((l: Lead | null): l is Lead => Boolean(l));
+
+          if (conflictingLeadsToRebase.length > 0) {
+            rebasedCount += conflictingLeadsToRebase.length;
+            const retryRes = await persistStageBatch(conflictingLeadsToRebase);
+            if (retryRes.data?.leads && Array.isArray(retryRes.data.leads)) {
+              for (const cl of retryRes.data.leads as Lead[]) {
+                returnedById.set(cl.id, cl);
+              }
+            }
+          }
+        }
         const canonicalLeads = leadsToPersist.map(
           lead => returnedById.get(lead.id) ?? lead,
         );
@@ -1253,6 +1284,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         onOpenChange={(open) => setConflictModal(prev => ({ ...prev, open }))}
         localLead={conflictModal.localLead}
         serverLead={conflictModal.serverLead}
+        baseLead={conflictModal.baseLead}
         onResolve={(resolved) => {
           if (conflictModal.onResolve) {
             conflictModal.onResolve(resolved);

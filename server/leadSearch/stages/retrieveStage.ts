@@ -68,6 +68,7 @@ export async function executeRetrieveStage(
   const { config, state, ports, logEvent, recordTrace } = ctx;
   const { freeTierBudget } = state;
   const { creditReservationEnabled } = config;
+  const isTavilyConfigured = Boolean(ports?.tavilySearch) || Boolean(tavilyCapabilities?.configured) || hasTavilyKey();
 
   const getTraceBrightDataStatus = () => {
     const status = getBrightDataStatus();
@@ -220,6 +221,18 @@ export async function executeRetrieveStage(
                 });
 
                 try {
+                  if (creditReservationEnabled) {
+                    const monthlyReservation = reserveProviderUsage("tavily", 1);
+                    if (!monthlyReservation.allowed) {
+                      logEvent(
+                        `Round ${round}: skipped ablated Tavily task after local monthly reservation.`,
+                      );
+                      return;
+                    }
+                  } else {
+                    recordProviderUsage("tavily", 1);
+                  }
+                  queryRuns[index].providerUnits += 1;
                   const ablatedRes = await ports.tavilySearch(ablated.ablatedQuery, {
                     ...tavilyOptions,
                     signal: signal || state.abortController.signal,
@@ -525,12 +538,21 @@ export async function executeRetrieveStage(
               `[Search Fallback] Bright Data search challenged or unavailable (${classified.reasonCode}) after ${physicalAttempts} attempt(s); gracefully using fallback.`,
             );
 
-            if (hasTavilyKey()) {
+            if (isTavilyConfigured) {
               try {
                 const fallbackStarted = Date.now();
-                logEvent(
-                  `Round ${round}: falling back to Tavily for query "${plan.executableQuery}".`,
-                );
+                if (creditReservationEnabled) {
+                  const monthlyReservation = reserveProviderUsage("tavily", 1);
+                  if (!monthlyReservation.allowed) {
+                    logEvent(
+                      `Round ${round}: skipped Tavily fallback task after local monthly reservation.`,
+                    );
+                    return;
+                  }
+                } else {
+                  recordProviderUsage("tavily", 1);
+                }
+                queryRuns[index].providerUnits += 1;
                 const tavilyOptions = plan.item.tavily;
                 const res = await ports.tavilySearch(plan.executableQuery, {
                   ...tavilyOptions,
@@ -636,8 +658,11 @@ export async function executeRetrieveStage(
         metadata: { filter: JSON.stringify(filter) },
       });
 
+      const datasetSearchFn = ports?.brightDataSearchDataset || (!ports ? brightDataSearchDataset : undefined);
+      if (!datasetSearchFn) return;
+
       try {
-        const datasetResult = await brightDataSearchDataset(
+        const datasetResult = await datasetSearchFn(
           "gd_l1viktl72bvl7bjuj0",
           filter,
           10,
@@ -732,7 +757,7 @@ export async function executeRetrieveStage(
   const tavilyPlans = roundPlans
     .map((plan, index) => ({ plan, index }))
     .filter(({ plan }) =>
-      shouldRunTavilyForTask(plan.item, discoveryProviderMode, hasTavilyKey()),
+      shouldRunTavilyForTask(plan.item, discoveryProviderMode, isTavilyConfigured),
     );
 
   const unconditionalBdPlans = canAttemptBD
@@ -767,7 +792,7 @@ export async function executeRetrieveStage(
       : [];
 
   // Run Wave 1 (Tavily || Unconditional Bright Data || Bright Data Dataset) concurrently in parallel
-  await Promise.all([
+  await Promise.allSettled([
     executeTavilyLane(tavilyPlans),
     executeBrightDataLane(unconditionalBdPlans, "Wave 1 parallel"),
     executeBrightDataDatasetLane(datasetPlans),

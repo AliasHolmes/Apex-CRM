@@ -13,6 +13,7 @@ import apiRouter from "./server/routes/api.js";
 import {
   getLeadsDb,
   pruneExpiredEnrichmentCache,
+  purgeLlmCacheExpired,
   reconcileOrphanedMiningSessions,
 } from "./server/db.js";
 import { validateEngineConfig } from "./server/configValidation.js";
@@ -284,6 +285,11 @@ async function startServer() {
       if (pruned > 0)
         console.log(
           `[Maintenance] Pruned ${pruned} expired enrichment cache records.`,
+        );
+      const purgedLlm = purgeLlmCacheExpired();
+      if (purgedLlm > 0)
+        console.log(
+          `[Maintenance] Purged ${purgedLlm} expired LLM cache records.`,
         );
       db.exec("PRAGMA optimize;");
     } catch (err) {

@@ -15,7 +15,37 @@ import {
 import { isFlagEnabled } from './featureFlags.js';
 import { isPrivateOrInternalHost } from '../services/privateHosts.js';
 export { isPrivateOrInternalHost };
+import { Agent, buildConnector } from 'undici';
+import dns from 'node:dns';
 import type { EnrichmentTarget } from './stages/enrichStage.js';
+
+const ssrfConnector = buildConnector({
+  lookup: (hostname, _options, callback) => {
+    dns.lookup(hostname, { all: true }, (err, addresses) => {
+      if (err) return (callback as any)(err, addresses);
+      const addrs = Array.isArray(addresses) ? addresses : [{ address: (addresses as any)?.address || addresses, family: 4 }];
+      for (const addr of addrs) {
+        if (addr?.address && isPrivateOrInternalHost(addr.address)) {
+          return (callback as any)(
+            new Error(`SSRF blocked: ${hostname} resolved to internal/private IP ${addr.address}`),
+            [],
+          );
+        }
+      }
+      (callback as any)(null, addresses);
+    });
+  },
+});
+
+export const ssrfSafeDispatcher = new Agent({
+  connect: (opts: any, cb: any) => {
+    const target = opts.hostname || opts.host;
+    if (target && isPrivateOrInternalHost(target)) {
+      return cb(new Error(`SSRF blocked: ${target} is an internal/private host`), null);
+    }
+    return ssrfConnector(opts, cb);
+  },
+});
 
 const GENERIC_SHORT_SLUGS = new Set([
   'apex', 'river', 'peak', 'nova', 'matrix', 'delta', 'echo', 'orbit', 'pulse',
@@ -386,7 +416,7 @@ export async function probeCompanySites(
 
   const rootBatchPromises = rootBatches.map(async (batchUrls) => {
     if (options.abortSignal?.aborted) return [];
-    options.onProviderUsage?.(1);
+    options.onProviderUsage?.(batchUrls.length);
     return tavilyExtract(batchUrls, 'company location team size services about us', {
       signal: options.abortSignal,
     });
@@ -436,7 +466,7 @@ export async function probeCompanySites(
     }
     const subBatchPromises = subBatches.map(async (batchUrls) => {
       if (options.abortSignal?.aborted) return [];
-      options.onProviderUsage?.(1);
+      options.onProviderUsage?.(batchUrls.length);
       return tavilyExtract(batchUrls, 'company location team size services about us', {
         signal: options.abortSignal,
       });
@@ -615,7 +645,7 @@ export async function groundCandidateWithSiteProbe(
       }
       return siteEvidence;
     }
-    const negative = getNegativeEnrichmentCacheEntry({ normalizedUrl: host });
+    const negative = getNegativeEnrichmentCacheEntry({ normalizedUrl: host }, new Date(), 'site_probe');
     if (negative) return null;
   } catch {}
 
@@ -647,7 +677,8 @@ export async function groundCandidateWithSiteProbe(
           },
           signal: controller.signal,
           redirect: 'manual',
-        });
+          dispatcher: ssrfSafeDispatcher,
+        } as any);
 
         if (resp.status >= 300 && resp.status < 400) {
           const location = resp.headers.get('location');

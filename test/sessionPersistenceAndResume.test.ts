@@ -401,11 +401,11 @@ test('GET /api/mining-sessions/active returns false when no session active, and 
   app.use(express.json());
   app.use('/api', apiRouter);
 
-  let server: import('node:http').Server;
+  let server: import('node:http').Server | undefined;
   let baseUrl = '';
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
+      const addr = server?.address();
       if (typeof addr === 'object' && addr !== null) {
         baseUrl = `http://127.0.0.1:${addr.port}`;
       }
@@ -439,7 +439,8 @@ test('GET /api/mining-sessions/active returns false when no session active, and 
       discoveryEngine['activeSessions'].delete(testId);
     }
   } finally {
-    server!.close();
+    server?.closeAllConnections?.();
+    server?.close();
   }
 });
 

@@ -4,11 +4,11 @@
 
   <p>
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
-    <img src="https://img.shields.io/badge/Vite-6.0-646CFF?logo=vite&logoColor=white" alt="Vite" />
+    <img src="https://img.shields.io/badge/Vite-8.2-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v21-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v21" />
-    <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-689_Tests_Passing-10B981" alt="Lead Engine Tests" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v22-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v22" />
+    <img src="https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+    <img src="https://img.shields.io/badge/Lead_Engine-Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 
@@ -249,32 +249,41 @@ All API routes are mounted under `/api`:
 |                     | `POST /scrape-url`                        | Scrape public web page markdown                                                                |
 |                     | `POST /scrape-pasted`                     | Parse raw pasted text into prospect leads                                                      |
 | **Mining Sessions** | `GET /mining-sessions`                    | List historical mining sessions                                                                |
+|                     | `GET /mining-sessions/active`             | Get currently active mining session details                                                    |
 |                     | `GET /mining-sessions/resumable`          | List interrupted sessions available for 1-click resumption                                     |
+|                     | `DELETE /mining-sessions/resumable`       | Clear all interrupted resumable session checkpoints                                            |
 |                     | `GET /mining-sessions/:sessionId`         | Get specific mining session details                                                            |
+|                     | `DELETE /mining-sessions/:sessionId`      | Delete mining session record                                                                   |
 |                     | `GET /mining-sessions/:sessionId/stream`  | High-frequency SSE execution trace and logs                                                    |
+|                     | `GET /mining-sessions/:sessionId/trace`   | Telemetry trace events for session                                                             |
+|                     | `GET /mining-sessions/:sessionId/token-stats` | Aggregate token consumption and costs                                                       |
 |                     | `POST /mining-sessions/:sessionId/resume` | Resume interrupted mining session from checkpoint                                              |
 |                     | `POST /mining-sessions/:sessionId/cancel` | Cancel active mining run                                                                       |
-|                     | `POST /mining-sessions/clear-resumable`   | Clear all interrupted resumable session checkpoints                                            |
 | **Search Logs**     | `GET /search-logs`                        | Query performance and cost summaries                                                           |
+|                     | `GET /search-logs/:id`                    | Retrieve individual search log by ID                                                           |
 |                     | `GET /search-logs/:id/live`               | Live log stream for active search                                                              |
-| **Prospects & CRM** | `GET /leads`                              | List stored prospects with filtering                                                           |
-|                     | `POST /leads/bulk`                        | Bulk insert or update prospect records                                                         |
-|                     | `PATCH /leads/:id`                        | Update lead stage, review status, or notes (returns 409 with server lead on revision conflict) |
+| **Prospects & CRM** | `GET /leads`                              | List stored prospects with filtering, pagination, and fast summary path                        |
+|                     | `GET /leads/stats`                        | Total lead counts and stage distribution metrics                                               |
+|                     | `PUT /leads`                              | Atomic replacement of stored leads collection                                                  |
+|                     | `POST /leads/bulk`                        | Bulk insert or update prospect records with per-item revision conflict detection               |
+|                     | `PATCH /leads/:id`                        | Update lead stage, review status, or notes (requires revision integer; returns 409 on conflict) |
 |                     | `DELETE /leads/:id`                       | Soft-delete or archive prospect                                                                |
+|                     | `DELETE /leads`                           | Clear all stored leads and identities                                                          |
 |                     | `POST /leads/:id/merge`                   | Merge duplicate prospect into primary lead with conflict resolution and relation reassignment  |
-|                     | `POST /leads/:id/enrich`                  | Enrich specific lead via Bright Data                                                           |
-|                     | `GET /leads/export`                       | Export stored prospects to CSV or JSON                                                         |
+|                     | `POST /leads/:id/enrich-profile`          | Enrich specific lead via Bright Data profile unlock                                            |
 |                     | `GET /leads/:id/activities`               | Audit trail activities for prospect                                                            |
 | **Saved Searches**  | `GET /saved-searches`                     | List saved search specifications                                                               |
 |                     | `POST /saved-searches`                    | Create or update saved search                                                                  |
 |                     | `DELETE /saved-searches/:id`              | Delete saved search                                                                            |
-| **Outreach**        | `POST /generate-outbound`                 | Generate contextual outreach message                                                           |
-|                     | `POST /leads/:id/drafts`                  | Create and store outreach draft for prospect                                                   |
+| **Outreach**        | `GET /outreach-drafts`                    | List stored outreach drafts                                                                    |
+|                     | `POST /outreach-drafts`                   | Create or update outreach draft                                                                |
+|                     | `DELETE /outreach-drafts/:id`             | Delete outreach draft                                                                          |
+|                     | `POST /generate-outbound`                 | Generate contextual outreach message                                                           |
 |                     | `POST /chat`                              | CRM conversational assistant                                                                   |
 
 ---
 
-## Database & Schema (v21)
+## Database & Schema (v22)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
@@ -295,13 +304,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite (689 tests across 157 suites in 95 files):
+Apex CRM maintains an extensive test suite (120 test files, run via `tsx --test`):
 
 ```bash
 # Typecheck (0 errors)
 npm run lint
 
-# Full test suite (689 tests, 100% pass)
+# Full test suite (100% pass)
 npm test
 
 # Full Lead Engine Suite (293 tests across 32 suites)
@@ -371,8 +380,8 @@ server/
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
     scoring.ts               Composite scoring, freshness decay & MMR diversity
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v21 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
-test/                        Automated unit, integration, and replay test suites (689 tests across 95 files)
+  db.ts                      SQLite v22 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
+test/                        Automated unit, integration, and replay test suites (120 test files via tsx --test)
 scripts/                     Dev orchestrator and server runners
 .env.example                 Configuration variables and default settings
 ```

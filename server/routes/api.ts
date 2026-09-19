@@ -302,8 +302,19 @@ router.patch("/leads/:id", (req, res): any => {
     const previousLead = readStoredLeadById(req.params.id);
     const previousStage = previousLead?.stage;
 
+    const allowCreate = req.body?.allowCreate === true;
+    if (previousLead && !allowCreate) {
+      if (!Number.isInteger(lead.revision)) {
+        return res.status(400).json({
+          apiVersion: 1,
+          error: "Integer revision is required when updating an existing lead.",
+          code: "REVISION_REQUIRED",
+        });
+      }
+    }
+
     const writeResult = upsertLeadWithIdentity(lead, {
-      requireExisting: req.body?.allowCreate !== true,
+      requireExisting: !allowCreate,
     });
     const storedLead = writeResult.lead;
 
@@ -626,9 +637,17 @@ router.post("/leads/bulk", (req, res): any => {
         .status(400)
         .json({ error: "Expected up to 1,000 valid lead records." });
     }
+    const perItemConflict = req.body?.perItemConflict !== false;
     const writeResults = upsertLeadsWithIdentity(leads, {
       requireExisting: req.body?.requireExisting === true,
+      perItemConflict,
     });
+    const conflicts = writeResults
+      .filter((result) => result.disposition === "conflict")
+      .map((result) => ({
+        incomingId: result.incomingLeadId,
+        lead: result.lead,
+      }));
     const duplicates = writeResults
       .filter((result) => result.disposition === "duplicate")
       .map((result) => ({
@@ -643,15 +662,20 @@ router.post("/leads/bulk", (req, res): any => {
     const updatedCount = writeResults.filter(
       (result) => result.disposition === "updated",
     ).length;
+    const committedLeads = writeResults
+      .filter((result) => result.disposition === "created" || result.disposition === "updated")
+      .map((result) => result.lead);
     res.json({
       apiVersion: 1,
       success: true,
       count: writeResults.length,
-      leads: writeResults.map((result) => result.lead),
+      leads: committedLeads,
       createdCount,
       updatedCount,
       duplicateCount: duplicates.length,
       duplicates,
+      conflictCount: conflicts.length,
+      conflicts,
     });
   } catch (error: any) {
     if (error instanceof LeadNotFoundError) {
@@ -1052,10 +1076,45 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   req.on("error", suppressDisconnectError);
   req.socket?.on("error", suppressDisconnectError);
 
+  const writeBuffer: string[] = [];
+  let isDraining = false;
+
+  const flushBuffer = () => {
+    while (writeBuffer.length > 0) {
+      if (res.writableEnded || res.closed || res.destroyed || !res.socket?.writable) {
+        writeBuffer.length = 0;
+        return;
+      }
+      const nextChunk = writeBuffer.shift()!;
+      try {
+        const ok = res.write(nextChunk);
+        if (!ok) {
+          res.once("drain", flushBuffer);
+          return;
+        }
+      } catch {
+        writeBuffer.length = 0;
+        return;
+      }
+    }
+    isDraining = false;
+  };
+
   const safeWrite = (chunk: string): boolean => {
     if (res.writableEnded || res.closed || res.destroyed || !res.socket?.writable) return false;
     try {
-      return res.write(chunk);
+      if (isDraining) {
+        if (writeBuffer.length < 200) {
+          writeBuffer.push(chunk);
+        }
+        return false;
+      }
+      const ok = res.write(chunk);
+      if (!ok) {
+        isDraining = true;
+        res.once("drain", flushBuffer);
+      }
+      return ok;
     } catch {
       return false;
     }
@@ -1073,6 +1132,7 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   const doUnsubscribe = () => {
     if (unsubscribed) return;
     unsubscribed = true;
+    writeBuffer.length = 0;
     if (unsubscribe) unsubscribe();
   };
 

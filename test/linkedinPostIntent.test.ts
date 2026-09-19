@@ -9,7 +9,8 @@ const {
   buildLinkedInPostSearchQuery,
   extractPostSnippets,
   computePostIntentQuality,
-  runLinkedInPostIntentEnrichment
+  runLinkedInPostIntentEnrichment,
+  classifyLinkedInPostIntentBatch
 } = await import('../server/leadSearch/linkedinPostIntent.js');
 
 import {
@@ -586,5 +587,63 @@ test('runLinkedInPostIntentEnrichment falls back to Tavily search when Bright Da
   assert.strictEqual(stats.attempted, 1);
 });
 
+test('classifyLinkedInPostIntentBatch classifies multiple candidates in single batch call', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'mock-test-key';
+  try {
+    globalThis.fetch = async () => {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  results: [
+                    {
+                      candidateId: 'cand-1',
+                      intentCategory: 'hiring',
+                      confidenceScore: 0.9,
+                      keywords: ['hiring', 'engineer'],
+                      reason: 'Hiring engineers.'
+                    },
+                    {
+                      candidateId: 'cand-2',
+                      intentCategory: 'pain_signal',
+                      confidenceScore: 0.6,
+                      keywords: ['manual', 'slow'],
+                      reason: 'Scaling pain.'
+                    }
+                  ]
+                }),
+              },
+            },
+          ],
+        }),
+        text: async () => '',
+      } as any;
+    };
 
+    const candidates = [
+      { candidateId: 'cand-1', postContext: 'Looking to hire senior engineers.', lead: { fullName: 'Candidate One' } },
+      { candidateId: 'cand-2', postContext: 'Our processes are too manual.', lead: { fullName: 'Candidate Two' } },
+    ];
 
+    const results = await classifyLinkedInPostIntentBatch(candidates, 'B2B automation');
+    assert.strictEqual(results.size, 2);
+    assert.strictEqual(results.get('cand-1')?.intentCategory, 'hiring');
+    assert.strictEqual(results.get('cand-1')?.quality, 'strong');
+    assert.strictEqual(results.get('cand-2')?.intentCategory, 'pain_signal');
+    assert.strictEqual(results.get('cand-2')?.quality, 'moderate');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalKey;
+    }
+  }
+});

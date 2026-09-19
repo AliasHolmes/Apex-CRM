@@ -3,6 +3,7 @@ import {
   normalizeLinkedInUrl,
 } from "../../services/linkedinEvidence.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
+import { evaluateDecisionMakerGate } from "../titleTriage.js";
 import { createLeadEvidence } from "../evidence.js";
 import { buildScoutEvidence } from "../scoutScoring.js";
 import { computeScoreBreakdown } from "../scoring.js";
@@ -268,11 +269,13 @@ export async function executeVerifyStage(
       20,
     );
 
-    if (
-      dmVerification.ignoredTitle &&
-      dmVerification.confidence < 4 &&
-      effectiveScore(lead) < minScore
-    ) {
+    const dmGate = evaluateDecisionMakerGate({
+      ignoredTitle: dmVerification.ignoredTitle,
+      confidence: dmVerification.confidence,
+      effectiveScore: effectiveScore(lead),
+      minScore,
+    });
+    if (!dmGate.pass) {
       noteRejection("not_decision_maker", queryRun);
       continue;
     }

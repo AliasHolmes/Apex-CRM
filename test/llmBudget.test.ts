@@ -38,14 +38,16 @@ describe('LLM extraction budgets', () => {
   });
 
   it('does not exceed the provider budget when schema overhead consumes the preferred reserve', () => {
-    const output = fitOutputTokenBudget({
-      configuredMaxTokens: 3000,
-      estimatedInputTokens: 6900,
-      totalTokenBudget: 7200,
-      safetyTokens: 400,
-      minimumOutputTokens: 800,
-    });
-
-    assert.equal(output, 1);
+    assert.throws(
+      () =>
+        fitOutputTokenBudget({
+          configuredMaxTokens: 3000,
+          estimatedInputTokens: 6900,
+          totalTokenBudget: 7200,
+          safetyTokens: 400,
+          minimumOutputTokens: 800,
+        }),
+      /below minimum viable output threshold/,
+    );
   });
 });

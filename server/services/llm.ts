@@ -142,7 +142,7 @@ const DEFAULT_TOKEN_HARBOR_MODEL = "deepseek-v4.1-flash:free";
 // as a source literal - it was never read, but it remains in git history and must be rotated.
 // Auto-reverts after exactly 7 days from configuration (Sep 19, 2026 00:00:00 +06:00)
 const DEFAULT_TOKEN_HARBOR_EXPIRATION_MS = new Date(
-  "2026-09-19T00:00:00+06:00",
+  "2026-10-19T00:00:00+06:00",
 ).getTime();
 
 let tokenHarborRetiredEarly = false;
@@ -406,14 +406,23 @@ export function withSequentialLLMExecution<T>(
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     let waitEntry: { run: () => void; onAbort: () => void } | null = null;
+    const queueTimeoutMs = Number(process.env.LLM_QUEUE_TIMEOUT_MS) || 60_000;
+    let queueTimer: NodeJS.Timeout | null = setTimeout(() => {
+      if (settled) return;
+      handleAbort("LLM request timed out waiting in execution queue.");
+    }, queueTimeoutMs);
 
     const cleanupAbort = () => {
+      if (queueTimer) {
+        clearTimeout(queueTimer);
+        queueTimer = null;
+      }
       if (signal && waitEntry?.onAbort) {
         signal.removeEventListener("abort", waitEntry.onAbort);
       }
     };
 
-    const handleAbort = () => {
+    const handleAbort = (reason?: unknown) => {
       if (settled) return;
       settled = true;
       cleanupAbort();
@@ -421,8 +430,9 @@ export function withSequentialLLMExecution<T>(
       if (idx !== -1) {
         llmWaitQueue.splice(idx, 1);
       }
-      const abortErr = new Error("LLM request was aborted by caller.");
-      abortErr.name = "AbortError";
+      const msg = typeof reason === "string" ? reason : "LLM request was aborted by caller.";
+      const abortErr = new Error(msg);
+      abortErr.name = msg.includes("timed out") ? "TimeoutError" : "AbortError";
       reject(abortErr);
     };
 
@@ -480,7 +490,7 @@ async function fetchWithRetry(
   url: string,
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
-  maxRetries = Number(process.env.LLM_MAX_RETRIES || 1),
+  maxRetries = 1,
   isAtria = false,
 ): Promise<Response> {
   const atriaConfiguredBase = process.env.ATRIA_BASE
@@ -490,15 +500,18 @@ async function fetchWithRetry(
     isAtria ||
     /atria-asi\.ai|atria/i.test(url) ||
     (atriaConfiguredBase ? url.startsWith(atriaConfiguredBase) : false);
-  const effectiveTimeoutMs = isAtriaUrl
-    ? Number(timeoutMs || process.env.LLM_TIMEOUT_MS || 120_000)
-    : Math.min(
-        Number(timeoutMs || CLOUDFLARE_MAX_TIMEOUT_MS),
-        CLOUDFLARE_MAX_TIMEOUT_MS,
-      );
+
+  const rawRetries = Number(process.env.LLM_MAX_RETRIES ?? maxRetries);
+  const effectiveMaxRetries =
+    Number.isFinite(rawRetries) && rawRetries >= 0 ? Math.floor(rawRetries) : 1;
+
+  const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS);
+  const effectiveTimeoutMs = Math.min(
+    Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
+    CLOUDFLARE_MAX_TIMEOUT_MS,
+  );
   const retry429 =
-    process.env.LLM_RETRY_429 !== "false" && maxRetries > 0;
-  const effectiveMaxRetries = maxRetries;
+    process.env.LLM_RETRY_429 !== "false" && effectiveMaxRetries > 0;
 
   const headers = {
     "User-Agent":
@@ -572,7 +585,7 @@ async function fetchWithRetry(
         !isExhaustedQuota &&
         ((res.status >= 500 && res.status <= 599) || (is429 && retry429));
 
-      const statusMaxRetries = maxRetries;
+      const statusMaxRetries = effectiveMaxRetries;
       if (isRetryableStatus && attempt < statusMaxRetries) {
         const retryAfter = res.headers.get("retry-after");
         const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
@@ -1117,7 +1130,7 @@ async function sendChatCompletion(
     const stage = String(options?.metadata?.stage || "").toLowerCase();
     const isExtraction = stage === "extraction" || /extract/i.test(stage);
 
-    // Compute dynamic adaptive timeout for Atria (120s–180s for heavy chunks)
+    // Compute dynamic adaptive timeout for Atria (120s-180s for heavy chunks)
     const minAtriaTimeout = 120_000;
     const maxAtriaTimeout = 180_000;
     let adaptiveTimeout = minAtriaTimeout;
@@ -1819,6 +1832,9 @@ function repairTruncatedJSON(str: string): string | null {
   }
 
   if (sub.startsWith("[") && lastCompleteItemIndex > 0) {
+    console.warn(
+      `[repairTruncatedJSON] Truncated JSON array repaired to last complete element (index: ${lastCompleteItemIndex}).`,
+    );
     return sub.slice(0, lastCompleteItemIndex + 1) + "]";
   }
 
@@ -1868,7 +1884,7 @@ export async function openAIStructured<T>(
     retryOnParseFailure?: boolean;
   } & LLMExecutionOptions,
 ): Promise<T> {
-  const jsonMode = process.env.LLM_JSON_MODE || "off";
+  const jsonMode = process.env.LLM_JSON_MODE || "auto";
   const useJsonMode = jsonMode === "on" || jsonMode === "auto";
   const normalizedSchema = normalizeSchema(schema);
   const schemaIsArray = normalizedSchema?.type === "array";
@@ -1976,39 +1992,57 @@ export async function openAIStructured<T>(
   };
 
   const cacheEnabled = process.env.LLM_COMPLETION_CACHE !== "false";
-  let promptHash: string | undefined;
-  if (cacheEnabled) {
-    try {
-      const hashContent = [
+  // Base content is provider-agnostic; the per-provider hash is derived inside
+  // the fallback operation so a Byesu response is never reused for Groq/Atria.
+  const cacheBaseContent = cacheEnabled
+    ? [
         sysPrompt,
         prompt,
         JSON.stringify(normalizedSchema || {}),
         options?.temperature ?? 0,
-      ].join("::");
-      promptHash = crypto.createHash("sha256").update(hashContent).digest("hex");
-      const cached = getLlmCacheEntry(promptHash);
-      if (cached?.response) {
-        try {
-          const parsed = parseStructuredText(cached.response);
-          if (parsed !== null) {
-            options?.onUsage?.(cached.usage);
-            return parsed;
-          }
-        } catch {
-          // Cached response invalid for current schema, proceed to fresh generation
-        }
-      }
-    } catch {
-      // Non-fatal cache lookup failure
-    }
-  }
+        options?.maxTokens ?? 0,
+        useJsonMode ? "json" : "text",
+      ].join("::")
+    : "";
+  const buildPromptHash = (providerName: string, providerModel: string, maxTokens?: number) => {
+    const fullContent = [cacheBaseContent, providerName, providerModel, maxTokens ?? 0].join("::");
+    return crypto.createHash("sha256").update(fullContent).digest("hex");
+  };
 
   return withProviderFallback(async (provider, providerOpts) => {
     let text = "";
-    const effectiveOptions = { ...options, ...providerOpts };
+    const effectiveOptions: any = { ...options, ...providerOpts };
+    let promptHash: string | undefined;
+    let liveUsage: LLMUsage | undefined;
+    const cacheWrappedOptions: any = {
+      ...effectiveOptions,
+      onUsage: (usage: LLMUsage) => {
+        liveUsage = usage;
+        (effectiveOptions as any).onUsage?.(usage);
+      },
+    };
+    if (cacheEnabled) {
+      try {
+        promptHash = buildPromptHash(provider.name, provider.model, effectiveOptions.maxTokens);
+        const cached = getLlmCacheEntry(promptHash);
+        if (cached?.response) {
+          try {
+            const parsed = parseStructuredText(cached.response);
+            if (parsed !== null) {
+              if (cached.usage) effectiveOptions.onUsage?.(cached.usage as LLMUsage);
+              return parsed;
+            }
+          } catch {
+            // Cached response invalid for current schema, proceed to fresh generation
+          }
+        }
+      } catch {
+        // Non-fatal cache lookup failure
+      }
+    }
     try {
       text = await sendChatCompletion(provider, messages, {
-        ...effectiveOptions,
+        ...cacheWrappedOptions,
         ...(useJsonMode
           ? { responseFormat: { type: "json_object" as const } }
           : {}),
@@ -2028,7 +2062,7 @@ export async function openAIStructured<T>(
         console.warn(
           `[llm] Structured output call failed for ${provider.name} with schema validation error. Retrying without response_format...`,
         );
-        text = await sendChatCompletion(provider, messages, effectiveOptions);
+        text = await sendChatCompletion(provider, messages, cacheWrappedOptions);
       } else {
         throw error;
       }
@@ -2043,7 +2077,15 @@ export async function openAIStructured<T>(
           provider.name,
           provider.model,
           text,
-          undefined,
+          liveUsage
+            ? {
+                input_tokens: liveUsage.inputTokens,
+                output_tokens: liveUsage.outputTokens,
+                total_tokens: liveUsage.totalTokens,
+                provider: liveUsage.provider,
+                model: liveUsage.model,
+              }
+            : undefined,
           ttlHours,
         );
       }
@@ -2077,10 +2119,16 @@ export async function openAIStructured<T>(
             : prompt,
         },
       ];
+      let retryUsage: LLMUsage | undefined;
       const retryText = await sendChatCompletion(provider, retryMessages, {
-        ...effectiveOptions,
+        ...cacheWrappedOptions,
         maxTokens: retryMaxTokens,
         temperature: 0,
+        onUsage: (usage: LLMUsage) => {
+          retryUsage = usage;
+          liveUsage = usage;
+          (effectiveOptions as any).onUsage?.(usage);
+        },
         ...(useJsonMode
           ? { responseFormat: { type: "json_object" as const } }
           : {}),
@@ -2090,12 +2138,21 @@ export async function openAIStructured<T>(
         const parsedRetry = parseStructuredText(retryText);
         if (cacheEnabled && promptHash) {
           const ttlHours = options?.metadata?.stage === "strategist" ? 6 : 24;
+          const usageToStore = retryUsage ?? liveUsage;
           upsertLlmCacheEntry(
             promptHash,
             provider.name,
             provider.model,
             retryText,
-            undefined,
+            usageToStore
+              ? {
+                  input_tokens: usageToStore.inputTokens,
+                  output_tokens: usageToStore.outputTokens,
+                  total_tokens: usageToStore.totalTokens,
+                  provider: usageToStore.provider,
+                  model: usageToStore.model,
+                }
+              : undefined,
             ttlHours,
           );
         }

@@ -32,7 +32,7 @@ import {
   type DashboardTab,
 } from './lib/navigation';
 import { DEFAULT_MANUAL_INDUSTRY, MANUAL_PROSPECT_INDUSTRIES } from './lib/ui';
-import { canonicalLinkedInIdentity } from './utils/leadDedupe';
+import { buildProfileDedupeKeys } from './utils/leadDedupe';
 
 // Large workspaces load only when the user opens their tab.
 const ScrapeWorkspace = lazy(() => import('./components/ScrapeWorkspace'));
@@ -63,9 +63,6 @@ const NAV_ITEMS: readonly NavigationItem[] = DASHBOARD_NAV_ITEMS.map(item => ({
   icon: NAV_ICONS[item.id],
 }));
 
-function normalizeComparable(value?: string) {
-  return (value ?? '').trim().toLowerCase();
-}
 
 class AppErrorBoundary extends React.Component<
   React.PropsWithChildren,
@@ -232,22 +229,22 @@ function Dashboard() {
     const fullName = manualName.trim();
     if (!fullName || isSavingManualLead) return;
 
-    const emailKey = normalizeComparable(manualEmail);
-    const profileIdentity = canonicalLinkedInIdentity(manualUrl);
     const companyName = manualCompany.trim() || 'Independent';
-    const nameKey = normalizeComparable(fullName);
-    const companyKey = normalizeComparable(companyName);
+    const candidateKeys = buildProfileDedupeKeys({
+      fullName,
+      currentCompany: companyName,
+      contactDetails: {
+        email: manualEmail,
+        linkedinUrl: manualUrl,
+      },
+    });
+
     const duplicateLead = leads.find(lead => {
-      const leadEmail = normalizeComparable(lead.profile.contactDetails?.email);
-      const leadIdentity = canonicalLinkedInIdentity(lead.profile.contactDetails?.linkedinUrl);
-      const samePersonAndCompany = !profileIdentity && !leadIdentity
-        && normalizeComparable(lead.profile.fullName) === nameKey
-        && normalizeComparable(lead.profile.currentCompany) === companyKey;
-      return Boolean(
-        (emailKey && leadEmail === emailKey)
-        || (profileIdentity && leadIdentity === profileIdentity)
-        || samePersonAndCompany
-      );
+      const leadKeys = buildProfileDedupeKeys(lead.profile || lead);
+      for (const k of candidateKeys) {
+        if (leadKeys.has(k)) return true;
+      }
+      return false;
     });
 
     if (duplicateLead) {

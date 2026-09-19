@@ -58,7 +58,10 @@ test.before(async () => {
 });
 
 after(() => {
-  if (server) server.close();
+  if (server) {
+    server.closeAllConnections?.();
+    server.close();
+  }
   try {
     getLeadsDb().close();
   } catch {}

@@ -826,7 +826,7 @@ Evidence:
       const chunkChars = chunk.length;
       let extractionTimeoutMs: number;
       if (isAtria) {
-        // Atria: reasoning model requiring 120s–180s for heavy evidence chunks
+        // Atria: reasoning model requiring 120s-180s for heavy evidence chunks
         const scale = Math.min(1, Math.max(0, (chunkChars - 2000) / 6000));
         const dynamicTimeout = Math.round(120_000 + scale * 60_000); // 120s to 180s
         const configuredTimeout = Number(
@@ -960,6 +960,7 @@ Evidence:
       });
       if (extractedLeads.length === 0) {
         noteRejection("llm_extraction_empty");
+        extractionFailuresThisRound++;
       }
       return extractedLeads;
     } catch (e: any) {
@@ -1036,7 +1037,7 @@ Evidence:
 
   if (chunks.length > 0 && extractionFailuresThisRound === chunks.length) {
     consecutiveFailedExtractionRounds++;
-  } else {
+  } else if (chunks.length > 0 && extractionFailuresThisRound < chunks.length) {
     consecutiveFailedExtractionRounds = 0;
   }
 

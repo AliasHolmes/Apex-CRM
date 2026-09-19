@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useLeads, notifyLeadsUpdated } from '../context/LeadContext';
 import { isDiscoveryProviderConfigured } from '@/lib/ui';
-import { canonicalLinkedInIdentity } from '@/utils/leadDedupe';
+import { buildProfileDedupeKeys, hasDuplicateProfile } from '@/utils/leadDedupe';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 import { 
   Globe, 
@@ -664,23 +664,20 @@ export default function ScrapeWorkspace() {
     setSelectedSavedSearchId('');
   };
 
-  // Helper system to check if user has already scraped are added a prospect
+  // Helper system to check if user has already scraped or added a prospect
   const checkIsDuplicate = (input: string) => {
     if (!input || !leads) return false;
-    const cleanInput = input.trim().toLowerCase();
-    const inputIdentity = canonicalLinkedInIdentity(input);
-
-    return leads.some(lead => {
-      const email = lead.profile.contactDetails?.email?.toLowerCase() || '';
-      const linkedinIdentity = canonicalLinkedInIdentity(lead.profile.contactDetails?.linkedinUrl);
-      const name = (lead.profile.fullName || '').toLowerCase();
-
-      return (
-        (email && email === cleanInput) ||
-        (inputIdentity && linkedinIdentity === inputIdentity) ||
-        (!inputIdentity && name === cleanInput)
-      );
-    });
+    const cleanInput = input.trim();
+    const candidate = cleanInput.includes('@')
+      ? { contactDetails: { email: cleanInput } }
+      : cleanInput.includes('linkedin.com')
+        ? { contactDetails: { linkedinUrl: cleanInput } }
+        : { fullName: cleanInput };
+    const existingKeys = new Set<string>();
+    for (const lead of leads) {
+      buildProfileDedupeKeys(lead.profile || lead).forEach(k => existingKeys.add(k));
+    }
+    return hasDuplicateProfile(candidate, existingKeys);
   };
 
   const handleUrlScrape = async (e: React.FormEvent) => {

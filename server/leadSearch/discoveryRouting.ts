@@ -32,7 +32,7 @@ export function resolveDiscoveryProviderMode(options: {
 }): DiscoveryProviderMode {
   const explicit = asMode(options.envMode ?? process.env.DISCOVERY_PROVIDER_MODE);
   if (explicit) {
-    if (explicit === 'bd_primary' && !options.brightDataConfigured) return 'tavily_primary';
+    if ((explicit === 'bd_primary' || explicit === 'hybrid') && !options.brightDataConfigured) return 'tavily_primary';
     return explicit;
   }
   if (options.brightDataConfigured) return 'hybrid';

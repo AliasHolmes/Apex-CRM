@@ -22,6 +22,7 @@ export type BrightDataReasonCode =
   | "target_blocked"
   | "request_invalid"
   | "transport_transient"
+  | "empty_body_transient"
   | "provider_auth"
   | "provider_quota"
   | "provider_rate_limit"
@@ -229,9 +230,15 @@ export function normalizeBrightDataUrl(url: string) {
         ? value
         : "https://" + value,
     );
-    if (!parsed.hostname) throw new Error("missing hostname");
+    if (!parsed.hostname || isPrivateOrInternalHost(parsed.hostname)) {
+      throw new BrightDataError(
+        "Bright Data URL targets private or internal host: " + value,
+        { reasonCode: "request_invalid" },
+      );
+    }
     return parsed.toString();
-  } catch {
+  } catch (err: any) {
+    if (err instanceof BrightDataError) throw err;
     throw new BrightDataError("Bright Data URL is invalid: " + value, {
       reasonCode: "request_invalid",
     });
@@ -2155,7 +2162,10 @@ export async function brightDataSearch(
         try {
           parsed = JSON.parse(textResult);
         } catch {
-          return [];
+          throw new BrightDataError(
+            `Unexpected non-JSON response from Bright Data search_engine (${activeEngine}): ${textResult.slice(0, 200)}`,
+            { reasonCode: "empty_body_transient", retryable: false },
+          );
         }
 
         const items = Array.isArray(parsed)

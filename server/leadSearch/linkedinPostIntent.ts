@@ -93,6 +93,56 @@ Categorize into one of:
 
 Respond strictly in JSON matching the provided schema. Keep reason concise (1 sentence).`;
 
+export const postIntentBatchSchema = {
+  type: Type.OBJECT,
+  properties: {
+    results: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          candidateId: {
+            type: Type.STRING,
+            description: "The unique identifier of the candidate being classified",
+          },
+          intentCategory: {
+            type: Type.STRING,
+            enum: ['hiring', 'evaluating_tools', 'pain_signal', 'growth_signal', 'general', 'none']
+          },
+          confidenceScore: {
+            type: Type.NUMBER,
+            description: 'Confidence score from 0.0 to 1.0 indicating buying, tooling, or hiring intent'
+          },
+          keywords: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+            description: 'Specific keywords matched in post text (e.g. n8n, zapier, hiring, scale, automate)'
+          },
+          reason: {
+            type: Type.STRING,
+            description: 'One sentence explanation of the detected intent signal or why none was found'
+          }
+        },
+        required: ['candidateId', 'intentCategory', 'confidenceScore', 'keywords', 'reason']
+      }
+    }
+  },
+  required: ['results']
+};
+
+export const POST_INTENT_BATCH_SYSTEM_PROMPT = `You are a specialized B2B sales intelligence analyst.
+Your task is to analyze Google SERP snippets from multiple prospects' recent LinkedIn posts and classify any buying, tooling, pain, or hiring intent signals for EACH candidate individually.
+
+For each candidate, categorize into one of:
+- "hiring": Actively hiring or looking for contractors/specialists/engineers.
+- "evaluating_tools": Mentioning exploring, comparing, testing, or adopting specific tools/platforms (e.g., n8n, Zapier, Make, AI workflows).
+- "pain_signal": Describing operational bottlenecks, manual workload, scaling challenges, or system breakages.
+- "growth_signal": Company expansion, funding, new product launches, scaling teams.
+- "general": Generic thought leadership, life updates, or industry commentary without explicit buying/hiring intent.
+- "none": No meaningful signal or unrelated person.
+
+Respond strictly in JSON matching the provided schema with an entry in results for every candidate. Keep reasons concise (1 sentence).`;
+
 export function buildLinkedInPostSearchQuery(lead: Record<string, any>): string {
   const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || lead.profile?.contactDetails?.linkedinUrl;
   const handle = extractLinkedInUsername(url);
@@ -272,6 +322,127 @@ Analyze the snippets and classify the prospect's intent:`;
   }
 }
 
+export async function classifyLinkedInPostIntentBatch(
+  candidates: Array<{ candidateId: string; postContext: string; lead: Record<string, any> }>,
+  brief: string,
+  logEvent?: (msg: string) => void,
+  recordTrace?: (event: any) => void,
+): Promise<Map<string, { intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }>> {
+  const resultMap = new Map<string, { intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }>();
+  if (!candidates.length) return resultMap;
+
+  if (candidates.length === 1) {
+    const single = candidates[0];
+    const res = await classifyLinkedInPostIntent(single.postContext, brief, single.lead, logEvent, recordTrace);
+    resultMap.set(single.candidateId, res);
+    return resultMap;
+  }
+
+  const promptSections = candidates.map((c, i) => {
+    const name = c.lead.fullName || c.lead.profile?.fullName || `Candidate-${i + 1}`;
+    const title = c.lead.currentTitle || c.lead.profile?.currentTitle || '';
+    const company = c.lead.currentCompany || c.lead.company || c.lead.profile?.currentCompany || '';
+    return `### Candidate ID: "${c.candidateId}"
+Name: ${name} (${title} at ${company})
+Recent Post Snippets:
+${c.postContext}`;
+  }).join('\n\n');
+
+  const userPrompt = `Our Offer/Context: ${brief || 'B2B automation, operations, and software systems'}
+
+Analyze the following candidates and return an intent classification for each one:
+
+${promptSections}`;
+
+  const startedAt = Date.now();
+  const attempts: LLMProviderAttempt[] = [];
+  let usage: LLMUsage | undefined;
+  try {
+    const response = await openAIStructured<{
+      results?: Array<{
+        candidateId?: string;
+        intentCategory?: string;
+        confidenceScore?: number;
+        keywords?: string[];
+        reason?: string;
+      }>;
+    }>(userPrompt, postIntentBatchSchema, POST_INTENT_BATCH_SYSTEM_PROMPT, {
+      maxTokens: Math.min(2500, Math.max(800, candidates.length * 350)),
+      temperature: 0,
+      onProviderAttempt: (attempt) => attempts.push(attempt),
+      onUsage: (u) => {
+        usage = u;
+      },
+    });
+
+    const validCategories: PostIntentCategory[] = ['hiring', 'evaluating_tools', 'pain_signal', 'growth_signal', 'general', 'none'];
+    const returnedResults = response.results || [];
+    for (const r of returnedResults) {
+      if (!r.candidateId) continue;
+      const rawCat = String(r.intentCategory || 'none').toLowerCase() as PostIntentCategory;
+      const category = validCategories.includes(rawCat) ? rawCat : 'none';
+      const confidence = Math.min(1, Math.max(0, Number(r.confidenceScore) || 0));
+      const keywords = Array.isArray(r.keywords) ? r.keywords.map(k => String(k).trim()).filter(Boolean) : [];
+      const reason = String(r.reason || 'Analyzed recent post activity.').trim();
+      const quality = computePostIntentQuality(category, confidence);
+      resultMap.set(r.candidateId, {
+        intentCategory: category,
+        confidenceScore: confidence,
+        keywords,
+        reason,
+        quality,
+      });
+    }
+
+    for (const c of candidates) {
+      if (!resultMap.has(c.candidateId)) {
+        const fallbackRes = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace);
+        resultMap.set(c.candidateId, fallbackRes);
+      }
+    }
+
+    const successfulAttempt = attempts.find((a) => a.status === "success");
+    const resolvedModel =
+      usage?.model ||
+      successfulAttempt?.actualModel ||
+      successfulAttempt?.model ||
+      process.env.OPENAI_MODEL ||
+      DEFAULT_PRIMARY_MODEL;
+    const latency = Date.now() - startedAt;
+    const tokens = usage?.totalTokens;
+    logEvent?.(
+      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent Batch: ${candidates.length} candidates]`,
+    );
+
+    recordTrace?.({
+      phase: "select",
+      operation: "post_intent_classify_batch",
+      provider: "llm",
+      query: `post_intent_batch:${candidates.length}`,
+      status: "success",
+      latencyMs: latency,
+      model: resolvedModel,
+      llm: {
+        route: successfulAttempt?.provider || "llm",
+        model: resolvedModel,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+      },
+    });
+
+    return resultMap;
+  } catch (err: any) {
+    logEvent?.(
+      `[LLM WARN] LinkedIn Post Intent batch classification failed (${Date.now() - startedAt}ms), falling back to individual calls: ${err.message || String(err)}`,
+    );
+    for (const c of candidates) {
+      const single = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace);
+      resultMap.set(c.candidateId, single);
+    }
+    return resultMap;
+  }
+}
+
 export async function runLinkedInPostIntentEnrichment(
   options: LinkedInPostIntentOptions
 ): Promise<LinkedInPostIntentStats> {
@@ -281,7 +452,7 @@ export async function runLinkedInPostIntentEnrichment(
     brightDataSearch,
     tavilySearchFallback,
     targetLimit,
-    maxLeads = 20,
+    maxLeads = 10,
     concurrency = 2,
     ttlDays = 7,
     sessionAbortSignal,
@@ -360,6 +531,18 @@ export async function runLinkedInPostIntentEnrichment(
     leadsToProcess = sortedLeads.slice(0, Math.min(maxLeads, 3));
     logEvent(`Phase 5: evaluating LinkedIn post intent for top ${leadsToProcess.length} prospects (from ${allLeads.length} candidates).`);
   }
+
+  interface CandidateNeedingLlm {
+    lead: any;
+    name: string;
+    handle: string;
+    cacheKey: string;
+    activeProvider: 'brightdata' | 'tavily';
+    postContext: string;
+    snippets: string[];
+    firstUrl?: string;
+  }
+  const pendingLlm: CandidateNeedingLlm[] = [];
 
   const tasks: ProviderQueueTask<void>[] = leadsToProcess.map((lead, index) => {
     const name = lead.fullName || lead.profile?.fullName || `Lead-${index}`;
@@ -492,44 +675,17 @@ export async function runLinkedInPostIntentEnrichment(
             return;
           }
 
-          // 3. Classify intent with LLM
-          const classification = await classifyLinkedInPostIntent(postContext, contract.brief, lead, logEvent, recordTrace);
-          const postEvidence: PostIntentEvidence = {
-            queriedAt: new Date().toISOString(),
-            postSnippets: snippets,
-            intentKeywords: classification.keywords,
-            intentCategory: classification.intentCategory,
-            confidenceScore: classification.confidenceScore,
-            quality: classification.quality,
-            llmReason: classification.reason,
-            sourceUrl: firstUrl
-          };
-
-          lead.postIntentEvidence = postEvidence;
-          lead.intentEnrichmentState = (postEvidence.quality !== 'none') ? 'enriched_signal' : 'enriched_none';
-          const newScore = applyPostIntentDelta(lead);
-          lead.finalSelectionScore = newScore;
-          if (lead.qualification) lead.qualification.finalScore = newScore;
-
-          if (postEvidence.quality === 'strong' || postEvidence.quality === 'moderate') {
-            if (!Array.isArray(lead.tags)) lead.tags = [];
-            const postTag = `LinkedIn Post: ${postEvidence.intentCategory.replace('_', ' ')}`;
-            if (!lead.tags.includes(postTag)) lead.tags.push(postTag);
-          }
-
-          upsertIntentCacheEntry({
-            normalizedUrl: cacheKey,
-            companyName: lead.currentCompany || lead.company || name,
-            personName: name,
-            linkedinUsername: handle,
-            evidenceBlock: JSON.stringify(postEvidence),
-            scrapeQuality: postEvidence.quality === 'strong' ? 'good' : postEvidence.quality === 'moderate' ? 'partial' : 'weak',
-            sourceProvider: activeProvider,
-            intentFingerprint: INTENT_FINGERPRINT
-          }, ttlDays);
-
-          stats.succeeded++;
-          logEvent(`[Phase 5 Enriched] ${name}: category=${postEvidence.intentCategory}, quality=${postEvidence.quality}, confidence=${postEvidence.confidenceScore.toFixed(2)} -> updated score=${newScore.toFixed(2)}`);
+          // Stage for batched LLM classification
+          pendingLlm.push({
+            lead,
+            name,
+            handle,
+            cacheKey,
+            activeProvider,
+            postContext,
+            snippets,
+            firstUrl
+          });
         } catch (err: any) {
           stats.failed++;
           if (!lead.intentEnrichmentState) {
@@ -545,6 +701,88 @@ export async function runLinkedInPostIntentEnrichment(
     concurrency,
     signal: sessionAbortSignal
   });
+
+  if (sessionAbortSignal?.aborted) {
+    return stats;
+  }
+
+  // Phase B: Batched LLM classification (chunks of up to 5)
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < pendingLlm.length; i += BATCH_SIZE) {
+    if (sessionAbortSignal?.aborted) break;
+    const batch = pendingLlm.slice(i, i + BATCH_SIZE);
+    const candidateInputs = batch.map((item, idx) => ({
+      candidateId: String(item.lead.id || `${item.handle}-${i + idx}`),
+      postContext: item.postContext,
+      lead: item.lead,
+    }));
+
+    try {
+      const classifications = await classifyLinkedInPostIntentBatch(
+        candidateInputs,
+        contract.brief,
+        logEvent,
+        recordTrace
+      );
+
+      for (let j = 0; j < batch.length; j++) {
+        const item = batch[j];
+        const cid = candidateInputs[j].candidateId;
+        const classification = classifications.get(cid) || {
+          intentCategory: 'none' as PostIntentCategory,
+          confidenceScore: 0,
+          keywords: [] as string[],
+          reason: 'No classification returned from batch.',
+          quality: 'none' as PostIntentQuality,
+        };
+
+        const postEvidence: PostIntentEvidence = {
+          queriedAt: new Date().toISOString(),
+          postSnippets: item.snippets,
+          intentKeywords: classification.keywords,
+          intentCategory: classification.intentCategory,
+          confidenceScore: classification.confidenceScore,
+          quality: classification.quality,
+          llmReason: classification.reason,
+          sourceUrl: item.firstUrl
+        };
+
+        item.lead.postIntentEvidence = postEvidence;
+        item.lead.intentEnrichmentState = (postEvidence.quality !== 'none') ? 'enriched_signal' : 'enriched_none';
+        const newScore = applyPostIntentDelta(item.lead);
+        item.lead.finalSelectionScore = newScore;
+        if (item.lead.qualification) item.lead.qualification.finalScore = newScore;
+
+        if (postEvidence.quality === 'strong' || postEvidence.quality === 'moderate') {
+          if (!Array.isArray(item.lead.tags)) item.lead.tags = [];
+          const postTag = `LinkedIn Post: ${postEvidence.intentCategory.replace('_', ' ')}`;
+          if (!item.lead.tags.includes(postTag)) item.lead.tags.push(postTag);
+        }
+
+        upsertIntentCacheEntry({
+          normalizedUrl: item.cacheKey,
+          companyName: item.lead.currentCompany || item.lead.company || item.name,
+          personName: item.name,
+          linkedinUsername: item.handle,
+          evidenceBlock: JSON.stringify(postEvidence),
+          scrapeQuality: postEvidence.quality === 'strong' ? 'good' : postEvidence.quality === 'moderate' ? 'partial' : 'weak',
+          sourceProvider: item.activeProvider,
+          intentFingerprint: INTENT_FINGERPRINT
+        }, ttlDays);
+
+        stats.succeeded++;
+        logEvent(`[Phase 5 Enriched] ${item.name}: category=${postEvidence.intentCategory}, quality=${postEvidence.quality}, confidence=${postEvidence.confidenceScore.toFixed(2)} -> updated score=${newScore.toFixed(2)}`);
+      }
+    } catch (err: any) {
+      logEvent(`[Phase 5 WARN] LinkedIn post intent batch failed: ${err.message || String(err)}`);
+      for (const item of batch) {
+        stats.failed++;
+        if (!item.lead.intentEnrichmentState) {
+          item.lead.intentEnrichmentState = 'enriched_none';
+        }
+      }
+    }
+  }
 
   recordTrace({
     phase: 'candidate_processing',

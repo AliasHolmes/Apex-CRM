@@ -21,6 +21,12 @@ import { effectiveScore as sharedEffectiveScore } from "../sessionHelpers.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { ProspectContract } from "../prospectContract.js";
 import type { QueryRunStats } from "../strategist.js";
+import {
+  NON_DECISION_MAKER_REGEX,
+  EXECUTIVE_OVERRIDE_REGEX as OWNER_TERMS_REGEX,
+  classifyTitle,
+} from "../titleTriage.js";
+export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(batchLength: number): number {
   return Math.min(950, Math.max(500, batchLength * 350));
@@ -123,11 +129,6 @@ export function promoteSafetyNetCandidates(args: {
   return { promoted: promoted.length, considered: safetyNetCandidates.length };
 }
 
-export const NON_DECISION_MAKER_REGEX =
-  /\b(intern|internship|student|junior|staff engineer|software engineer|swe|ml engineer|machine learning engineer|data scientist|ai researcher|postdoc|phd candidate|recruiter|talent acquisition|account executive|sdr|bdr)\b/i;
-export const OWNER_TERMS_REGEX =
-  /\b(owner|founder|co-founder|chief|ceo|cto|cmo|coo|president|principal|partner|managing director|director|head|vp|vice president)\b/i;
-
 export function filterNonDecisionMakers(
   candidates: FinalistCandidate[],
   contract: ProspectContract,
@@ -158,10 +159,8 @@ export function filterNonDecisionMakers(
         candidate.lead.headline ||
         "",
     );
-    if (
-      NON_DECISION_MAKER_REGEX.test(title) &&
-      !OWNER_TERMS_REGEX.test(title)
-    ) {
+    const classification = classifyTitle(title);
+    if (classification.isIC) {
       rejected.push(candidate);
     } else {
       admitted.push(candidate);
@@ -282,8 +281,17 @@ export async function evaluateIncrementalJudgeBatches(
     reasonMsg: string,
   ): any[] => {
     return candidatesToFallback.map((candidate) => {
-      const finalScore = Math.round(
-        candidate.lead.finalSelectionScore ?? candidate.lead.score ?? 0,
+      const existingScore = sharedEffectiveScore(candidate.lead);
+      const finalScore = Math.min(
+        10,
+        Math.max(
+          1,
+          Math.round(
+            candidate.lead.finalSelectionScore ??
+              candidate.lead.score ??
+              (existingScore > 0 ? existingScore : 5),
+          ),
+        ),
       );
       const fallbackQualification: Qualification = {
         policyVersion: contract.policyVersion,
@@ -295,9 +303,9 @@ export async function evaluateIncrementalJudgeBatches(
           status: "unknown",
         })),
         reason: `Not LLM-judged (model unavailable): ${reasonMsg}. Treated as unverified.`,
-        semanticFit: 0,
-        evidenceConfidence: 0,
-        authorityFit: 0,
+        semanticFit: finalScore,
+        evidenceConfidence: 5,
+        authorityFit: finalScore,
       };
       candidate.lead.qualification = fallbackQualification;
       candidate.lead.whyThisLead = fallbackQualification.reason;

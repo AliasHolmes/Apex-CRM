@@ -23,6 +23,7 @@ const MANAGED_KEYS = [
   'LLM_TIMEOUT_MS',
   'LLM_PROVIDER_COOLDOWN_MS',
   'BYESU_API_KEY',
+  'LLM_COMPLETION_CACHE',
 ] as const;
 
 const envSnapshot: Record<string, string | undefined> = {};
@@ -54,6 +55,7 @@ describe('LLM failure classification ignores untrusted model text', () => {
     }
     process.env.LLM_GATEWAY_MODE = 'direct';
     process.env.LLM_MAX_RETRIES = '0';
+    process.env.LLM_COMPLETION_CACHE = 'false';
   });
 
   afterEach(() => {

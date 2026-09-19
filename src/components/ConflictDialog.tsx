@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import type { Lead } from '@/types';
 import { AlertTriangle, Check, RefreshCw, GitMerge } from 'lucide-react';
+import { rebaseLeadChanges } from '@/lib/leadMutations';
 
 export type ConflictResolutionStrategy = 'keep_local' | 'keep_server' | 'merge';
 
@@ -18,6 +19,7 @@ export interface ConflictDialogProps {
   onOpenChange: (open: boolean) => void;
   localLead: Lead | null;
   serverLead: Lead | null;
+  baseLead?: Lead | null;
   onResolve: (resolvedLead: Lead, strategy: ConflictResolutionStrategy) => void;
 }
 
@@ -26,6 +28,7 @@ export function ConflictDialog({
   onOpenChange,
   localLead,
   serverLead,
+  baseLead,
   onResolve,
 }: ConflictDialogProps) {
   if (!localLead || !serverLead) return null;
@@ -70,19 +73,9 @@ export function ConflictDialog({
   };
 
   const handleMerge = () => {
+    const rebased = rebaseLeadChanges(serverLead, localLead, baseLead ?? null);
     const resolved: Lead = {
-      ...serverLead,
-      ...localLead,
-      revision: serverLead.revision,
-      profile: {
-        ...serverLead.profile,
-        ...localLead.profile,
-        contactDetails: {
-          ...serverLead.profile?.contactDetails,
-          ...localLead.profile?.contactDetails,
-        },
-      },
-      notes: localLead.notes || serverLead.notes || '',
+      ...rebased,
       tags: Array.from(new Set([...(serverLead.tags || []), ...(localLead.tags || [])])),
     };
     onResolve(resolved, 'merge');

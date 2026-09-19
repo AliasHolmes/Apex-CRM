@@ -38,7 +38,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Backend engine (`server/leadSearch/`)                            | ~18,577 lines: 33 modules + 9 `stages/`                                    |
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v21**, WAL |
+| SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v22**, WAL |
 | Test suite                                                       | 95 files, 689 tests / 157 suites, all passing                              |
 | Total first-party LOC                                            | ~60,100                                                                    |
 | Working tree                                                     | clean (all fixes committed through `15beacf`)                              |

@@ -5,6 +5,8 @@ import { executePlanStage } from '../server/leadSearch/stages/planStage.js';
 import { buildCollectionCapacity } from '../server/leadSearch/collectionCapacity.js';
 import type { SessionContext } from '../server/leadSearch/pipelineTypes.js';
 
+import { closeBrightDataClient } from '../server/services/brightdata.js';
+
 function createMockContext(overrides: Partial<SessionContext> = {}): SessionContext {
   const logs: string[] = [];
   const traceEvents: any[] = [];
@@ -72,6 +74,7 @@ function createMockContext(overrides: Partial<SessionContext> = {}): SessionCont
     },
     ports: {
       brightDataSearch: async () => [],
+      brightDataSearchDataset: async () => ({ hits: [], search_after: undefined }),
       tavilySearch: async () => ({ text: '', sources: [], items: [] }),
       scrapeMarkdown: async () => '',
       scrapeBatchMarkdown: async () => []
@@ -438,4 +441,8 @@ test('executeFuseStage does not emit session-killing stopReason on zero unique c
   assert.equal(fusedOutput.candidateItems.length, 0);
   assert.equal(fusedOutput.uniqueRoundItemsCount, 0);
   assert.equal(fusedOutput.stopReason, undefined, 'Zero-yield round must not return stopReason: exhausted');
+});
+
+test.after(async () => {
+  await closeBrightDataClient();
 });

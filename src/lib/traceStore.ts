@@ -31,10 +31,12 @@ class MiningTraceStore {
   private connectionCounts = new Map<string, number>();
   private seenEventIds = new Map<string, Set<string>>();
 
+  private static readonly MAX_SESSIONS = 30;
+
   private trimSessions() {
-    if (this.sessions.size <= 20) return;
+    if (this.sessions.size < MiningTraceStore.MAX_SESSIONS) return;
     for (const [key, state] of this.sessions.entries()) {
-      if (this.sessions.size <= 20) break;
+      if (this.sessions.size < MiningTraceStore.MAX_SESSIONS) break;
       if (
         !this.activeEventSources.has(key) &&
         state.status !== 'running' &&
@@ -43,6 +45,16 @@ class MiningTraceStore {
         this.sessions.delete(key);
         this.seenEventIds.delete(key);
         this.connectionCounts.delete(key);
+      }
+    }
+    if (this.sessions.size >= MiningTraceStore.MAX_SESSIONS) {
+      for (const [key] of this.sessions.entries()) {
+        if (this.sessions.size < MiningTraceStore.MAX_SESSIONS) break;
+        if (!this.activeEventSources.has(key)) {
+          this.sessions.delete(key);
+          this.seenEventIds.delete(key);
+          this.connectionCounts.delete(key);
+        }
       }
     }
   }

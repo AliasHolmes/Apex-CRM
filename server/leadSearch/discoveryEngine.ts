@@ -273,6 +273,11 @@ export type ExecuteDiscoveryOptions = {
   savedSearchId?: string;
   initialCheckpoint?: MiningSessionCheckpoint;
   listener?: DiscoveryEventListener;
+  /** Phase 5: multi-turn follow-ups. When set, deltaBrief is applied on top of the parent contract. */
+  parentSessionId?: string;
+  deltaBrief?: string;
+  /** Phase 1/5: when false (cron/API), run expander instead of needs_clarification abort. */
+  interactive?: boolean;
 };
 
 export async function executeDiscoverySession(

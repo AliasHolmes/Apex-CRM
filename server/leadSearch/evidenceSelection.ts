@@ -1,5 +1,6 @@
 import type { ProspectContract, ProspectRequirement } from './prospectContract.js';
 import { isFlagEnabled } from './featureFlags.js';
+import { aliasIncludes } from './aliasMap.js';
 
 export type SelectedEvidence = {
   evidence: Array<{ id: string; text: string }>;
@@ -17,7 +18,9 @@ const CLIENT_SERVICE_STEM_REGEX = /\b(clients?|client[-\s]services?|partner(?:s|
 const hasWholeTerm = (text: string, term: string) => {
   const normalizedText = ` ${normalize(text)} `;
   const normalizedTerm = normalize(term);
-  return Boolean(normalizedTerm && normalizedText.includes(` ${normalizedTerm} `));
+  if (Boolean(normalizedTerm && normalizedText.includes(` ${normalizedTerm} `))) return true;
+  // Alias-aware fallback (MD<->managing director, US<->united states, VP<->vice president)
+  return aliasIncludes(text, term);
 };
 
 export function matchingTerms(text: string, requirement: ProspectRequirement): string[] {

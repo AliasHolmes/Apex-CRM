@@ -83,6 +83,36 @@ export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | '
     .join('|')
     .toLowerCase();
 
+/**
+ * Phase 3: Quantized semantic centroids for cross-session MAB pooling.
+ * Raw embedding vectors never repeat; 24 stable buckets (domainCluster x tier)
+ * let Thompson priors converge instead of permanent cold-start.
+ * Hash is deterministic FNV-1a over normalized brief (no network).
+ */
+export const CENTROID_COUNT = 24;
+
+export function quantizeBriefToCentroid(brief: unknown): string {
+  const text = String(brief || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return 'centroid_global_00';
+  const cluster = deriveDomainCluster(text);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const bucket = String(hash % CENTROID_COUNT).padStart(2, '0');
+  return `centroid_${cluster}_${bucket}`;
+}
+
+export const centroidScopeKey = (
+  task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'>,
+  centroid: string,
+) =>
+  [centroid, task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily']
+    .filter(Boolean)
+    .join('|')
+    .toLowerCase();
+
 const rowScopeKey = (row: AdaptivePerformanceRow & { domain_cluster?: string; domainCluster?: string }) => {
   const cluster = row.domain_cluster || row.domainCluster || '';
   return [cluster !== 'global' ? cluster : '', row.family || 'general', row.lane || 'person', row.provider || 'tavily']
@@ -281,6 +311,15 @@ export function scheduleAdaptiveRetrievalTasks(
   for (const item of ranked) {
     if (selected.length >= maxTasks) break;
     addSelected(item);
+  }
+  // Phase 3 bound: contract_guard correctness wins, but never exceed maxTasks+2.
+  // Previously unbounded (rich briefs could emit 10+ tasks); trim lowest-score guards.
+  const hardCap = maxTasks + 2;
+  if (selected.length > hardCap) {
+    selected.sort((a, b) => b.score - a.score);
+    selected.length = hardCap;
+    selectedIndexes.clear();
+    for (const s of selected) selectedIndexes.add(s.originalIndex);
   }
 
   const explorationFloorEvery = Math.max(0, Math.floor(options.explorationFloorEvery ?? 3));

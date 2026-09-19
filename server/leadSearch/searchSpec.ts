@@ -338,9 +338,10 @@ export const buildRetrievalTasks = (
     });
 };
 
-import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, type ProspectContract } from "./prospectContract.js";
+import { COUNTRY_CANONICAL_MAP, type ProspectContract } from "./prospectContract.js";
 import { looksLikeCompanyHint } from "./observations.js";
 import { normalizeTavilyCountry } from "../services/llm.js";
+import { resolveGeo } from "./queryUnderstanding.js";
 
 export const COUNTRY_TO_TAVILY_CODE: Record<string, string> = {
   UK: "united kingdom",
@@ -365,43 +366,24 @@ export const buildFallbackQueryPlan = (
   spec?: SearchSpec,
 ): SearchQueryPlanItem[] => {
   const base = clean(query);
-  const lower = base.toLowerCase();
   const effectiveSpec = spec || buildFallbackSearchSpec(query);
   const titles = effectiveSpec.person.includeTitles.length
     ? effectiveSpec.person.includeTitles
     : ["founder", "owner", "CEO", "managing partner"];
   const signal = effectiveSpec.signals.include[0] || "growth hiring";
 
-  // Detect geography and retrieve relevant metro hubs
-  let metros: string[] = ["New York", "San Francisco", "Austin", "Los Angeles"];
-  let countryAnchor = "USA";
-
-  for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
-    const regex = new RegExp(`\\b${cKey}\\b`, "i");
-    if (regex.test(lower)) {
-      countryAnchor = cName;
-      const cMetros = COUNTRY_TO_METROS[cKey] || COUNTRY_TO_METROS[cName.toLowerCase()];
-      if (cMetros && cMetros.length > 0) {
-        metros = cMetros;
-      }
-      break;
-    }
-  }
-
-  if (countryAnchor === "USA") {
-    if (lower.includes("uk") || lower.includes("united kingdom") || lower.includes("london")) {
-      metros = METRO_HUBS_BY_COUNTRY.uk;
-      countryAnchor = "UK";
-    } else if (lower.includes("canada") || lower.includes("toronto")) {
-      metros = METRO_HUBS_BY_COUNTRY.canada;
-      countryAnchor = "Canada";
-    } else if (lower.includes("australia") || lower.includes("sydney")) {
-      metros = METRO_HUBS_BY_COUNTRY.australia;
-      countryAnchor = "Australia";
-    } else if (METRO_HUBS_BY_COUNTRY.usa) {
-      metros = METRO_HUBS_BY_COUNTRY.usa;
-      countryAnchor = "USA";
-    }
+  // Detect geography via unified resolver. Zero default-invention:
+  // open_global briefs get NO countryAnchor/metros (search globally).
+  const geoRes = resolveGeo(base);
+  let metros: string[] = [...geoRes.metros];
+  let countryAnchor: string | null = geoRes.countryAnchor;
+  if (countryAnchor && metros.length === 0) {
+    // Fallback to legacy hub table for explicitly detected countries
+    const hubKey = countryAnchor.toLowerCase() === 'united states' || countryAnchor === 'USA' ? 'usa'
+      : countryAnchor.toLowerCase() === 'united kingdom' || countryAnchor === 'UK' ? 'uk'
+      : countryAnchor.toLowerCase();
+    const hubs = (METRO_HUBS_BY_COUNTRY as Record<string, string[]>)[hubKey];
+    if (hubs && hubs.length > 0) metros = [...hubs];
   }
 
   // Extract core company topic/vertical from query
@@ -412,16 +394,18 @@ export const buildFallbackQueryPlan = (
     .replace(/\s+/g, " ")
     .trim() || base.trim() || "B2B company";
 
-  const metro0 = countryAnchor && countryAnchor !== "USA" && !metros[0]?.toLowerCase().includes(countryAnchor.toLowerCase())
-    ? `${metros[0]} ${countryAnchor}`
-    : (metros[0] || "New York");
-  const metro1 = countryAnchor && countryAnchor !== "USA" && !metros[1]?.toLowerCase().includes(countryAnchor.toLowerCase())
-    ? `${metros[1]} ${countryAnchor}`
-    : (metros[1] || "San Francisco");
+  // Zero default-invention: when geo is open_global, emit global queries with no location tokens.
+  const geoSuffix = countryAnchor ? ` ${countryAnchor}` : '';
+  const metro0 = countryAnchor && metros[0]
+    ? (!metros[0].toLowerCase().includes(countryAnchor.toLowerCase()) ? `${metros[0]} ${countryAnchor}` : metros[0])
+    : (countryAnchor ? countryAnchor : '');
+  const metro1 = countryAnchor && metros[1]
+    ? (!metros[1].toLowerCase().includes(countryAnchor.toLowerCase()) ? `${metros[1]} ${countryAnchor}` : metros[1])
+    : (countryAnchor ? countryAnchor : '');
 
   const plans: SearchQueryPlanItem[] = [
     {
-      query: `${cleanTopic} ${titles[0] || "founder"} ${countryAnchor}`.trim(),
+      query: `${cleanTopic} ${titles[0] || "founder"}${geoSuffix}`.trim(),
       family: "persona_title",
       intent: "find_decision_makers",
       expectedSignal: "Decision-maker profiles",
@@ -431,7 +415,7 @@ export const buildFallbackQueryPlan = (
       searchDepth: "basic",
     },
     {
-      query: `${cleanTopic} ${titles[1] || "owner"} ${metro0}`.trim(),
+      query: (metro0 ? `${cleanTopic} ${titles[1] || "owner"} ${metro0}` : `${cleanTopic} ${titles[1] || "owner"}`).trim(),
       family: "persona_title",
       intent: "find_decision_makers",
       expectedSignal: "Decision-maker profiles in top metro",
@@ -441,7 +425,7 @@ export const buildFallbackQueryPlan = (
       searchDepth: "basic",
     },
     {
-      query: `${cleanTopic} ${titles[2] || "CEO"} ${metro1}`.trim(),
+      query: (metro1 ? `${cleanTopic} ${titles[2] || "CEO"} ${metro1}` : `${cleanTopic} ${titles[2] || "CEO"}`).trim(),
       family: "company_type",
       intent: "expand_surface_area",
       expectedSignal: "Leadership evidence in tech metro",
@@ -451,7 +435,7 @@ export const buildFallbackQueryPlan = (
       searchDepth: "basic",
     },
     {
-      query: `${cleanTopic} ${signal} ${countryAnchor}`.trim(),
+      query: `${cleanTopic} ${signal}${geoSuffix}`.trim(),
       family: "growth_signal",
       intent: "find_buying_signal",
       expectedSignal: "Recent public business signals",

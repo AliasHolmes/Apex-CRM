@@ -13,6 +13,7 @@ import {
 import { unwrapRedirectUrl, normalizeDedupeValue } from "../../../src/utils/leadDedupe.js";
 import { extractLinkedInProfileUrlFromResult } from "../../services/brightdata.js";
 import { incrementRejection, type RejectionReason } from "../rejections.js";
+import { aliasIncludes } from "../aliasMap.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { ExecutableQueryPlan } from "./planStage.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -335,10 +336,10 @@ export async function executeFuseStage(
     const overCapPenalty = companyCount >= maxPerCompany ? -500 : 0;
     const text = `${item.title || ""} ${item.content || ""}`.toLowerCase();
     
-    // Intent density: matched contract terms
+    // Intent density: matched contract terms (alias-aware, zero-network)
     let termMatches = 0;
     for (const term of contractTerms) {
-      if (term.length > 2 && text.includes(term)) termMatches++;
+      if (term.length > 2 && aliasIncludes(text, term)) termMatches++;
     }
 
     // Executive / Decision-maker role authority in title

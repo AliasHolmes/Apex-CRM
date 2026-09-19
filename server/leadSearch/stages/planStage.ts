@@ -95,14 +95,14 @@ export async function executePlanStage(
   const { config, state, logEvent, recordTrace } = ctx;
 
   const domainCluster = deriveDomainCluster(config.contract?.brief || config.promptQuery || "");
-  if (!(state as any)._planStageCache) {
-    (state as any)._planStageCache = {
-      historicalPerformance: readQueryPerformance(100, domainCluster),
-      crmCompanies: readStoredCompanyNames(100),
-      crmDomains: readStoredCompanyDomains(50),
-      metroSaturation: readStoredMetroSaturation(),
-    };
-  }
+  // Phase 3: refresh intra-session so selectStage writes inform next-round planning.
+  // Refresh every round (cheap SQLite reads, LIMIT 100) instead of once-per-session.
+  (state as any)._planStageCache = {
+    historicalPerformance: readQueryPerformance(100, domainCluster),
+    crmCompanies: readStoredCompanyNames(100),
+    crmDomains: readStoredCompanyDomains(50),
+    metroSaturation: readStoredMetroSaturation(),
+  };
   const { historicalPerformance, crmCompanies, crmDomains, metroSaturation } = (state as any)._planStageCache;
   const historicalYield = Object.fromEntries(
     historicalPerformance.slice(0, 30).map((row: any) => [
@@ -414,7 +414,7 @@ export async function executePlanStage(
     const roles = config.contract.identitySpec?.roles || ['founder', 'owner', 'CEO', 'managing partner', 'director'];
     const rawLocations = (config.contract.identitySpec?.locations || []).length > 0
       ? config.contract.identitySpec!.locations!
-      : ['United States', 'United Kingdom', 'Canada', 'Australia'];
+      : [];
     const companyTypes = (config.contract.identitySpec?.companyTypes || []).length > 0
       ? config.contract.identitySpec!.companyTypes!
       : ['agency', 'consultancy', 'firm', 'studio'];
@@ -452,9 +452,10 @@ export async function executePlanStage(
     });
 
     const candidateVariants: string[] = [];
+    const locPool = locations.length > 0 ? locations : [''];
     for (const role of roles) {
       for (const comp of companyTypes) {
-        for (const loc of locations) {
+        for (const loc of locPool) {
           candidateVariants.push(`${role} ${comp} ${loc}`.trim());
           if (tooling.length > 0) {
             candidateVariants.push(`${role} ${comp} ${tooling[0]} ${loc}`.trim());

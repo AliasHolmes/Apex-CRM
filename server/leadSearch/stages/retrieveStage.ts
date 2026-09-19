@@ -21,6 +21,8 @@ import type { SessionContext } from "../pipelineTypes.js";
 import type { ExecutableQueryPlan } from "./planStage.js";
 import type { QueryRunStats } from "../strategist.js";
 import { ablateQueryTask, createAblationTracker } from "../constraintAblation.js";
+import { classifyQueryComplexity } from "../queryUnderstanding.js";
+import { rewriteZeroYieldQuery } from "../queryRewriter.js";
 
 export type RetrieveStageInput = {
   round: number;
@@ -94,13 +96,22 @@ export async function executeRetrieveStage(
     duplicateCollisionRate >= 0.2 ||
     (stats.rejectionReasons?.duplicate_existing_lead || 0) >= 3 ||
     (stats.existingCrmLeadsSkipped || 0) >= 3;
+  // Complexity-aware recall policy: vague needs recall (20), rich needs precision (10).
+  const briefTier = (() => {
+    try {
+      return classifyQueryComplexity((config as any)?.contract?.brief || '').tier;
+    } catch {
+      return 'standard' as const;
+    }
+  })();
+  const baseMaxResults = Math.min(
+    Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1),
+    20,
+  );
   const dynamicTavilyMaxResults =
-    round > 1 || isHighDuplication
-      ? 20
-      : Math.min(
-          Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1),
-          20,
-        );
+    briefTier === 'vague' ? 20
+      : briefTier === 'rich' ? Math.min(baseMaxResults, 12)
+        : (round > 1 || isHighDuplication ? 20 : baseMaxResults);
 
   const executeTavilyLane = async (
     plans: { plan: (typeof roundPlans)[0]; index: number }[],
@@ -263,6 +274,52 @@ export async function executeRetrieveStage(
                     `[Constraint Ablation] Ablated query attempt failed: ${ablationErr.message}`,
                   );
                 }
+              }
+            }
+
+            // Phase 2 rewriter: second-chance complexity-aware rewrite when still zero-yield.
+            // Bounded to 1 attempt per query (ablation max 2 + rewrite 1 = 3 total).
+            if (
+              resultsCount <= 1 &&
+              config.contract &&
+              !ablationTracker.ablatedTasks.has(`${plan.executableQuery}:rewrite`) &&
+              plan.item.lane !== 'signal'
+            ) {
+              try {
+                const rewritten = rewriteZeroYieldQuery(plan.executableQuery, config.contract, 1);
+                if (rewritten.strategy !== 'none' && rewritten.query && rewritten.query !== plan.executableQuery) {
+                  ablationTracker.ablatedTasks.add(`${plan.executableQuery}:rewrite`);
+                  if (creditReservationEnabled) {
+                    const r = reserveProviderUsage('tavily', 1);
+                    if (!r.allowed) {
+                      logEvent(`Round ${round}: skipped rewritten Tavily task after reservation.`);
+                    } else {
+                      queryRuns[index].providerUnits += 1;
+                      const rwRes = await ports.tavilySearch(rewritten.query, {
+                        ...tavilyOptions,
+                        signal: signal || state.abortController.signal,
+                      });
+                      const rwCount = rwRes.items?.length || 0;
+                      if (rwCount > 0) {
+                        const existingUrls = new Set((res.items || []).map((it: any) => it.url));
+                        const newItems = rwRes.items.filter((it: any) => !existingUrls.has(it.url));
+                        res.items = [...(res.items || []), ...newItems];
+                        resultsCount = res.items.length;
+                        if (rwRes.text) res.text = (res.text ? res.text + '\n\n' : '') + rwRes.text;
+                        if (rwRes.sources) res.sources = [...(res.sources || []), ...rwRes.sources];
+                        stats.ablationRescues = (stats.ablationRescues || 0) + newItems.length;
+                        logEvent(`[QueryRewriter] Rescued ${newItems.length} via ${rewritten.strategy} rewrite "${rewritten.query}".`);
+                        recordTrace({
+                          phase: 'search', operation: 'query_rewrite_rescue', status: 'started',
+                          provider: 'tavily', round, query: rewritten.query,
+                          metadata: { originalQuery: plan.executableQuery, ...rewritten },
+                        });
+                      }
+                    }
+                  }
+                }
+              } catch (rwErr: any) {
+                logEvent(`[QueryRewriter] Rewrite attempt failed: ${rwErr.message}`);
               }
             }
 

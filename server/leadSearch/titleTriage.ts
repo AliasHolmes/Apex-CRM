@@ -33,7 +33,16 @@ export function classifyTitle(title: string): TitleClassification {
     return { isIC: false, isExecutive: false, confidence: 5 };
   }
 
-  const isExecutive = EXECUTIVE_OVERRIDE_REGEX.test(cleanTitle);
+  // Phase 4: alias-aware normalization -- expand standalone acronyms (MD, VP)
+  // so "MD at Acme" matches managing-director executive patterns.
+  const expandedTitle = cleanTitle
+    .replace(/\bMD\b/g, 'Managing Director')
+    .replace(/\bVP\b/g, 'Vice President')
+    .replace(/\bCEO\b/gi, 'CEO')
+    .replace(/\bCTO\b/g, 'Chief Technology Officer')
+    .replace(/\bCRO\b/g, 'Chief Revenue Officer');
+
+  const isExecutive = EXECUTIVE_OVERRIDE_REGEX.test(expandedTitle) || EXECUTIVE_OVERRIDE_REGEX.test(cleanTitle);
   if (isExecutive) {
     return { isIC: false, isExecutive: true, confidence: 9 };
   }

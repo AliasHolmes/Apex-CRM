@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   ApiKeyPool,
   KeyRotationError,
@@ -368,7 +369,19 @@ export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
  * Allows up to LLM_CONCURRENT_SLOTS (default: 1) active outbound calls.
  * When a task is aborted while waiting, it removes itself from waitQueue cleanly
  * to guarantee zero slot leakage or hung promises.
+ *
+ * Phase 1.5: optional stage-lane sharding behind FEATURE_LLM_STAGE_QUEUES.
+ * When enabled, strategist/extraction/judge run on independent FIFO lanes
+ * (max 2 each, global cap 4) so new intelligence calls cannot stall the pipeline.
+ * Per-provider 429/524 backoff and key rotation are preserved in fetchWithRetry.
  */
+export type LLMStageLane = 'strategist' | 'extraction' | 'judge' | 'general';
+
+function isStageQueuesEnabled(): boolean {
+  const raw = String(process.env.FEATURE_LLM_STAGE_QUEUES || '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(raw);
+}
+
 function getMaxLlmConcurrency(): number {
   const configured = Number(process.env.LLM_CONCURRENT_SLOTS);
   return Number.isFinite(configured) && configured >= 1
@@ -376,11 +389,47 @@ function getMaxLlmConcurrency(): number {
     : 1;
 }
 
+function getLaneConcurrency(): number {
+  const configured = Number(process.env.LLM_LANE_SLOTS);
+  return Number.isFinite(configured) && configured >= 1
+    ? Math.min(Math.floor(configured), 2)
+    : 2;
+}
+
+function getGlobalShardedCap(): number {
+  const configured = Number(process.env.LLM_GLOBAL_SLOTS);
+  return Number.isFinite(configured) && configured >= 1
+    ? Math.min(Math.floor(configured), 4)
+    : 4;
+}
+
+// AsyncLocalStorage lane context (falls back to 'general' outside a lane scope)
+const laneStorage = new AsyncLocalStorage<LLMStageLane>();
+
+export function runWithLlmStageLane<T>(lane: LLMStageLane, fn: () => Promise<T>): Promise<T> {
+  return laneStorage.run(lane, fn);
+}
+
+function currentLane(): LLMStageLane {
+  try {
+    return laneStorage.getStore() || 'general';
+  } catch {
+    return 'general';
+  }
+}
+
 let activeLlmSlots = 0;
 const llmWaitQueue: Array<{
   run: () => void;
   onAbort: () => void;
 }> = [];
+
+// Sharded lane state (only used when FEATURE_LLM_STAGE_QUEUES=true)
+const laneActive: Record<LLMStageLane, number> = { strategist: 0, extraction: 0, judge: 0, general: 0 };
+const laneQueues: Record<LLMStageLane, Array<{ run: () => void; onAbort: () => void }>> = {
+  strategist: [], extraction: [], judge: [], general: [],
+};
+let shardedGlobalActive = 0;
 
 function pumpLlmQueue() {
   const maxSlots = getMaxLlmConcurrency();
@@ -393,14 +442,46 @@ function pumpLlmQueue() {
   }
 }
 
+function pumpShardedQueues() {
+  const laneCap = getLaneConcurrency();
+  const globalCap = getGlobalShardedCap();
+  const lanes: LLMStageLane[] = ['strategist', 'extraction', 'judge', 'general'];
+  let progressed = true;
+  while (progressed && shardedGlobalActive < globalCap) {
+    progressed = false;
+    for (const lane of lanes) {
+      if (shardedGlobalActive >= globalCap) break;
+      if (laneActive[lane] >= laneCap) continue;
+      const next = laneQueues[lane].shift();
+      if (next) {
+        laneActive[lane]++;
+        shardedGlobalActive++;
+        progressed = true;
+        next.run();
+      }
+    }
+  }
+}
+
+function releaseShardedSlot(lane: LLMStageLane) {
+  laneActive[lane] = Math.max(0, laneActive[lane] - 1);
+  shardedGlobalActive = Math.max(0, shardedGlobalActive - 1);
+  pumpShardedQueues();
+}
+
 export function withSequentialLLMExecution<T>(
   task: () => Promise<T>,
   signal?: AbortSignal | null,
+  laneOverride?: LLMStageLane,
 ): Promise<T> {
   if (signal?.aborted) {
     const abortErr = new Error("LLM request was aborted by caller.");
     abortErr.name = "AbortError";
     return Promise.reject(abortErr);
+  }
+  // Sharded path behind feature flag; default preserves 100% legacy single-mutex behavior.
+  if (isStageQueuesEnabled()) {
+    return withShardedLLMExecution(task, signal, laneOverride || currentLane());
   }
 
   return new Promise<T>((resolve, reject) => {
@@ -478,6 +559,81 @@ export function withSequentialLLMExecution<T>(
       executeTask();
     } else {
       llmWaitQueue.push(waitEntry);
+    }
+  });
+}
+
+function withShardedLLMExecution<T>(
+  task: () => Promise<T>,
+  signal?: AbortSignal | null,
+  lane: LLMStageLane = 'general',
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let waitEntry: { run: () => void; onAbort: () => void } | null = null;
+    const queueTimeoutMs = Number(process.env.LLM_QUEUE_TIMEOUT_MS) || 60_000;
+    let queueTimer: NodeJS.Timeout | null = setTimeout(() => {
+      if (settled) return;
+      handleAbort("LLM request timed out waiting in execution queue.");
+    }, queueTimeoutMs);
+
+    const cleanupAbort = () => {
+      if (queueTimer) {
+        clearTimeout(queueTimer);
+        queueTimer = null;
+      }
+      if (signal && waitEntry?.onAbort) {
+        signal.removeEventListener("abort", waitEntry.onAbort);
+      }
+    };
+
+    const handleAbort = (reason?: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanupAbort();
+      const idx = laneQueues[lane].findIndex((entry) => entry === waitEntry);
+      if (idx !== -1) laneQueues[lane].splice(idx, 1);
+      const msg = typeof reason === "string" ? reason : "LLM request was aborted by caller.";
+      const abortErr = new Error(msg);
+      abortErr.name = msg.includes("timed out") ? "TimeoutError" : "AbortError";
+      reject(abortErr);
+    };
+
+    const executeTask = async () => {
+      cleanupAbort();
+      if (settled || signal?.aborted) {
+        releaseShardedSlot(lane);
+        if (!settled) {
+          settled = true;
+          const abortErr = new Error("LLM request was aborted by caller.");
+          abortErr.name = "AbortError";
+          reject(abortErr);
+        }
+        return;
+      }
+      try {
+        const result = await task();
+        settled = true;
+        resolve(result);
+      } catch (err) {
+        settled = true;
+        reject(err);
+      } finally {
+        releaseShardedSlot(lane);
+      }
+    };
+
+    waitEntry = { run: executeTask, onAbort: handleAbort };
+    if (signal) signal.addEventListener("abort", handleAbort, { once: true });
+
+    const laneCap = getLaneConcurrency();
+    const globalCap = getGlobalShardedCap();
+    if (laneActive[lane] < laneCap && shardedGlobalActive < globalCap) {
+      laneActive[lane]++;
+      shardedGlobalActive++;
+      executeTask();
+    } else {
+      laneQueues[lane].push(waitEntry);
     }
   });
 }

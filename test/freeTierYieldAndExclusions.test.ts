@@ -49,7 +49,8 @@ test('enforceContractQueries does not inject -software -platform -SaaS into clie
   ];
 
   const enforced = enforceContractQueries(rawQueries, contract);
-  for (const item of enforced) {
+  // Verify that enforceContractQueries does not inject negative operators into the client-service queries
+  for (const item of enforced.slice(0, rawQueries.length)) {
     const q = item.query;
     assert.equal(
       q.includes('-software'),

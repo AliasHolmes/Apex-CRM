@@ -103,5 +103,11 @@ export const isFlagEnabled = {
    * PIQ-BOS: Progressive Interleaved Qualification with Bounded Multi-Objective Selection
    * Interleaves two-way triage and micro-batch qualification into the discovery loop.
    */
-  progressiveQualification: () => readFlag('PROGRESSIVE_QUALIFICATION_ENABLED')
+  progressiveQualification: () => readFlag('PROGRESSIVE_QUALIFICATION_ENABLED'),
+
+  /**
+   * Phase 1.5: Sharded LLM stage queues (strategist|extraction|judge).
+   * Default OFF for 100% backwards compatibility; enable via FEATURE_LLM_STAGE_QUEUES=true.
+   */
+  llmStageQueues: () => readFlag('FEATURE_LLM_STAGE_QUEUES', false)
 };

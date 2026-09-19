@@ -75,7 +75,7 @@ export function extractSocialProof(lead: Record<string, any> | null | undefined)
 
 /**
  * Ghost-profile signature: an explicitly zero follower count on a tiny
- * network. Unknown counts (null) never fail — only measured zeros do.
+ * network. Unknown counts (null) never fail -- only measured zeros do.
  */
 export function isGhostProfile(proof: SocialProof, maxConnections = 50): boolean {
   return proof.followers === 0 && (proof.connections ?? 0) < maxConnections && !proof.influencer;
@@ -86,7 +86,7 @@ const LEGAL_SUFFIX_PATTERN = /\b(inc|llc|ltd|limited|corp|corporation|company|co
 export const normalizeCompanyNameForCompare = (value: unknown): string =>
   String(value || "")
     .toLowerCase()
-    .replace(/[.,&'’"()|-]/g, " ")
+    .replace(/[.,&'"()|-]|\u2019/g, " ")
     .replace(/\s+/g, " ")
     .replace(LEGAL_SUFFIX_PATTERN, "")
     .trim();

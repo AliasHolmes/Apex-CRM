@@ -3579,7 +3579,13 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       judged_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.judged_candidates * 0.95 + excluded.judged_candidates) AS INTEGER) ELSE query_performance.judged_candidates END,
       hard_failed_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.hard_failed_candidates * 0.95 + excluded.hard_failed_candidates) AS INTEGER) ELSE query_performance.hard_failed_candidates END,
       unknown_candidates = CASE WHEN (excluded.runs > 0 OR excluded.outcome_runs > 0) THEN CAST(ROUND(query_performance.unknown_candidates * 0.95 + excluded.unknown_candidates) AS INTEGER) ELSE query_performance.unknown_candidates END,
-      requirement_fail_digest = COALESCE(excluded.requirement_fail_digest, query_performance.requirement_fail_digest),
+      requirement_fail_digest = CASE
+        WHEN excluded.requirement_fail_digest IS NOT NULL AND excluded.requirement_fail_digest != ''
+         AND query_performance.requirement_fail_digest IS NOT NULL AND query_performance.requirement_fail_digest != ''
+         AND instr(query_performance.requirement_fail_digest, excluded.requirement_fail_digest) = 0
+          THEN substr(query_performance.requirement_fail_digest || '; ' || excluded.requirement_fail_digest, 1, 2000)
+        ELSE COALESCE(excluded.requirement_fail_digest, query_performance.requirement_fail_digest)
+      END,
       updated_at = excluded.updated_at
   `,
     )

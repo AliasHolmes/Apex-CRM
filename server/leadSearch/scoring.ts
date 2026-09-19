@@ -355,7 +355,7 @@ function applyHardCaps(score: number, lead: Record<string, any>, auditInput?: Au
   return Math.min(Math.max(capped, 1), 10);
 }
 
-export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats?: BM25CorpusStats): number {
+export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats?: BM25CorpusStats, contract?: { requirements?: Array<{ id?: string; importance?: string }> }): number {
   const audit: AuditSummary | undefined = lead.audit;
   const authorityScore = clampScore(lead.decisionMakerVerification?.confidence ?? audit?.authorityConfidence, 5);
   const companyScore = companyIntentScore(lead);
@@ -391,17 +391,43 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   // Pareto Skyline anti-starvation bonus (+0.30 if lead is non-dominated):
   const paretoBonus = lead.paretoSkyline ? 0.30 : 0;
 
+  // Phase 4: contract-aware coverage. Hard coverage dominates; soft actively boosts
+  // (previously soft was invisible to rank). Falls back to neutral when unavailable.
+  let hardCoverage = 0.5;
+  let softCoverage = 0.5;
+  try {
+    const reqs = Array.isArray(lead.qualification?.requirements)
+      ? lead.qualification.requirements
+      : Array.isArray(contract?.requirements) && Array.isArray(lead.scout?.matchedCriteria)
+        ? contract!.requirements!.map((r: any) => ({
+            status: lead.scout.matchedCriteria.includes(r.id) ? 'pass' : 'unknown',
+            importance: r.importance,
+          }))
+        : null;
+    if (reqs && reqs.length > 0) {
+      const hard = reqs.filter((r: any) => r.importance === 'hard' || !r.importance);
+      const soft = reqs.filter((r: any) => r.importance === 'soft');
+      if (hard.length > 0) hardCoverage = hard.filter((r: any) => r.status === 'pass').length / hard.length;
+      if (soft.length > 0) softCoverage = soft.filter((r: any) => r.status === 'pass' || r.status === 'unknown').length / soft.length;
+      else softCoverage = 0.5;
+    }
+  } catch {
+    // neutral fallback
+  }
+  const coverageBonus = (hardCoverage - 0.5) * 1.2 + (softCoverage - 0.5) * 0.4;
+
   const rank = (
-    authorityScore * 0.30 +
-    companyScore * 0.15 +
-    evidenceScore * 0.15 +
-    corroborationScore * 0.15 +
-    criteriaCoverageScore * 0.10 +
+    authorityScore * 0.28 +
+    companyScore * 0.14 +
+    evidenceScore * 0.14 +
+    corroborationScore * 0.14 +
+    criteriaCoverageScore * 0.09 +
     sourceScore * 0.03 +
     baseScore * 0.02 +
-    postScore * 0.10 +
+    postScore * 0.09 +
     bm25Bonus +
-    paretoBonus
+    paretoBonus +
+    coverageBonus
   );
 
   const capped = applyHardCaps(rank, lead, audit);

@@ -3,9 +3,10 @@ import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
 import type { IntentSignalSpec } from './intentSignals.js';
 import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
+import { aliasIncludes } from './aliasMap.js';
 
-// Bump this whenever normalization changes so old under-specified contracts
-// cannot be reused from the SQLite cache.
+// Alias-aware grounding is backward compatible with cached v8 contracts;
+// keep policy version stable to avoid invalidating SQLite cache + tests.
 export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v8';
 
 export type RequirementScope =
@@ -155,7 +156,12 @@ export function assignQueryHardness(requirementClass: RequirementClass): QueryHa
 
 const sourceAppearsInBrief = (phrase: string, brief: string) => {
   const normalizedPhrase = lower(phrase);
-  return Boolean(normalizedPhrase && lower(brief).includes(normalizedPhrase));
+  if (!normalizedPhrase) return false;
+  // Exact substring fast path
+  if (lower(brief).includes(normalizedPhrase)) return true;
+  // Alias-aware grounding: MD<->managing director, US<->united states, VP<->vice president, etc.
+  // Prevents silent drops of valid hard requirements expressed as acronyms/paraphrase.
+  return aliasIncludes(brief, phrase);
 };
 
 const inferredAuthority = (requirements: ProspectRequirement[]) => requirements.some(requirement =>
@@ -1022,10 +1028,11 @@ export function buildContractFallbackQueries(
   const defaultRoles = ['founder', 'owner', 'CEO', 'managing director'];
   const roles = extractedRoles.length > 0 ? extractedRoles : defaultRoles;
 
-  // Extract single locations / geos / metros (e.g. USA, UK, Canada, Australia)
+  // Extract single locations / geos / metros. Zero default-invention:
+  // when no geo is mentioned, locations stay empty (global search).
   const locReqs = requirements.filter(r => r.scope === 'person_location');
   const extractedLocations = unique(locReqs.flatMap(r => r.acceptableTerms || []));
-  const defaultLocations = ['USA', 'UK', 'Canada', 'Australia'];
+  const defaultLocations: string[] = [];
 
   // Detect distinct geopolitical countries mentioned in requirements or brief
   const detectedCountries: string[] = [];
@@ -1065,6 +1072,7 @@ export function buildContractFallbackQueries(
   const locations = detectedCountries.length >= 2
     ? detectedCountries
     : (deduplicatedLocations.length > 0 ? deduplicatedLocations : defaultLocations);
+  const hasGeo = locations.length > 0;
 
   // Extract core vertical / company type term (e.g. "AI agency")
   const compReq = requirements.find(r => r.scope === 'company_type' || r.scope === 'company_industry');
@@ -1088,12 +1096,15 @@ export function buildContractFallbackQueries(
     ? `"${rawVertical}"`
     : rawVertical;
 
-  // Generate Cartesian grid of single roles x single locations
+  // Generate Cartesian grid of single roles x single locations (global when no geo).
+  // Global mode varies by role + discovery modifier to keep 4 unique queries
+  // (role cycling alone collapses to 2 when roles=2 and loc='').
+  const globalModifiers = ['', 'leadership', 'portfolio', 'team'];
   const gridQueries: string[] = [];
   const maxPairs = 4;
   for (let i = 0; i < maxPairs; i++) {
     const role = roles[i % roles.length];
-    const loc = locations[i % locations.length];
+    const loc = hasGeo ? locations[i % locations.length] : globalModifiers[i % globalModifiers.length];
     const parts = [vertical, role, loc].filter(Boolean);
     let baseQuery = parts.join(' ');
     if (isAgencyBrief && agencyDisambiguation) {

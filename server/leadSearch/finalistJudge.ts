@@ -10,6 +10,7 @@ import {
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
 import { rankLeadForFinalSelection } from "./scoring.js";
+import { aliasIncludes, normalizeAliasTerm } from "./aliasMap.js";
 import {
   classifyTitle,
   evaluateDecisionMakerGate,
@@ -304,8 +305,9 @@ export function verifyEvidencePassage(
     return { valid: true, similarity: 1.0 };
   }
 
-  const quoteTokens = normQuote.split(' ').filter(Boolean);
-  const evidenceTokens = normEvidence.split(' ').filter(Boolean);
+  // Phase 4: alias-aware token comparison (MD==managing director, US==united states)
+  const quoteTokens = normQuote.split(' ').filter(Boolean).map(t => normalizeAliasTerm(t) || t);
+  const evidenceTokens = normEvidence.split(' ').filter(Boolean).map(t => normalizeAliasTerm(t) || t);
 
   if (quoteTokens.length === 0) return { valid: true, similarity: 1.0 };
   if (evidenceTokens.length === 0) return { valid: false, similarity: 0.0 };
@@ -936,7 +938,7 @@ export function checkStrictContradiction(
     }
     // Ghost-profile floor: an explicitly zero follower count on a tiny
     // network is a brand-new, fake, or company-page profile. Unknown counts
-    // (null) never fail — only measured zeros do.
+    // (null) never fail -- only measured zeros do.
     const socialProof = extractSocialProof(lead);
     if (isGhostProfile(socialProof)) {
       return {
@@ -1145,7 +1147,7 @@ export function triPartitionCandidatesByEvidence(
       );
       hasSignalCorroboration = signalReqs.every((sReq) =>
         (sReq.acceptableTerms || []).some((term) =>
-          signalTexts.includes(String(term).toLowerCase()),
+          aliasIncludes(signalTexts, term),
         ),
       );
     }

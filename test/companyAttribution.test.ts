@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extractCompanySourceText,
+  sanitizeDomainGuess,
   runGatedCompanyAttribution,
 } from '../server/leadSearch/companyAttribution.js';
 import type { FinalistCandidate } from '../server/leadSearch/finalistJudge.js';
@@ -12,6 +13,19 @@ describe('Gated Company Attribution Module', () => {
     'Agency owners in North America actively posting about custom n8n workflows and delivery bottlenecks',
     {},
   );
+
+  describe('sanitizeDomainGuess', () => {
+    it('cleans company name, strips spaces and entity suffixes into valid hostname', () => {
+      const domain = sanitizeDomainGuess('Austin Artificial Intelligence, Inc.');
+      assert.equal(domain, 'austinartificialintelligence.com');
+      assert.ok(!domain.includes(' '), 'Guessed domain must never contain spaces');
+    });
+
+    it('handles international entities and punctuation', () => {
+      const domain = sanitizeDomainGuess('Mueller & Schmidt Consulting GmbH');
+      assert.equal(domain, 'muellerschmidt.com');
+    });
+  });
 
   describe('extractCompanySourceText', () => {
     it('extracts domain and site evidence from candidate', () => {
@@ -56,7 +70,7 @@ describe('Gated Company Attribution Module', () => {
         evidence: [
           {
             id: 'e2',
-            text: 'Nexus Digital is an elite client services agency building custom cloud and automation infrastructure.',
+            text: 'Nexus Digital is an elite client services agency building custom cloud and automation infrastructure for modern enterprises.',
           },
         ],
       };
@@ -65,6 +79,28 @@ describe('Gated Company Attribution Module', () => {
       assert.equal(extracted.companyName, 'Nexus Digital');
       assert.equal(extracted.domain, 'nexusdigital.io');
       assert.ok(extracted.sourceText.includes('Nexus Digital is an elite client services agency'));
+    });
+
+    it('guards Fallback-3 by rejecting person-bio and LinkedIn resume snippets', () => {
+      const candidate: FinalistCandidate = {
+        candidateId: 'cand-bio',
+        lead: {
+          id: 'lead-bio',
+          fullName: 'John Miller',
+          currentTitle: 'CEO',
+          company: 'Acme Cloud Solutions',
+        },
+        evidence: [
+          {
+            id: 'e0',
+            text: '[PROFILE: linkedin.com/in/johnmiller] John Miller is the CEO at Acme Cloud Solutions. Passionate about sales leadership, coaching, and team development.',
+          },
+        ],
+      };
+
+      const extracted = extractCompanySourceText(candidate);
+      assert.equal(extracted.companyName, 'Acme Cloud Solutions');
+      assert.equal(extracted.sourceText, '', 'Person profile text must be excluded from company source text');
     });
   });
 
@@ -107,7 +143,6 @@ describe('Gated Company Attribution Module', () => {
               companyKey: 'automationsmith.com',
               businessModel: 'client_services_agency',
               primaryOffering: 'Full-service automation consultancy for B2B agencies using n8n.',
-              employmentLink: 'current_leadership',
               queryAlignment: 'matches_brief',
               verbatimEvidenceQuote:
                 'Automation Smith is a full-service automation consultancy helping B2B agencies streamline fulfillment with n8n.',
@@ -172,7 +207,6 @@ describe('Gated Company Attribution Module', () => {
               companyKey: 'quickreach.io',
               businessModel: 'client_services_agency',
               primaryOffering: 'We are a premier agency doing custom workflow design.',
-              employmentLink: 'current_leadership',
               queryAlignment: 'matches_brief',
               // Fabricated quote not in sourceSnippet!
               verbatimEvidenceQuote: 'We are a premier agency doing custom workflow design and n8n consulting.',
@@ -220,7 +254,6 @@ describe('Gated Company Attribution Module', () => {
               companyKey: 'travisinvestigations.com',
               businessModel: 'other_services',
               primaryOffering: 'Private investigation, surveillance, and background checks.',
-              employmentLink: 'current_leadership',
               queryAlignment: 'contradicts',
               verbatimEvidenceQuote:
                 'Travis Investigations is a licensed private detective agency specializing in background checks',
@@ -269,7 +302,6 @@ describe('Gated Company Attribution Module', () => {
           companyKey: domain,
           businessModel: 'client_services_agency',
           primaryOffering: `Consultancy ${idx}`,
-          employmentLink: 'current_leadership',
           queryAlignment: 'matches_brief',
           verbatimEvidenceQuote: `Company ${idx} provides full service digital consultancy and automation.`,
           verdict: 'verified_fit',

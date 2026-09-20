@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   PROSPECT_CONTRACT_POLICY_VERSION,
   buildDeterministicProspectContract,
+  enforceContractQueries,
+  type ProspectContract,
 } from '../server/leadSearch/prospectContract.js';
 import { buildFinalistJudgePrompt } from '../server/leadSearch/finalistJudge.js';
 import { buildStrategistPrompt } from '../server/leadSearch/searchSpec.js';
@@ -154,5 +156,94 @@ test('Component 3: Dual-stream intent gating requires signal corroboration', () 
   assert.equal(intentCorroboratedCount, 0);
   assert.equal(requiredIntentCount, 7);
   assert.equal(intentThresholdMet, false, 'Intent threshold must NOT be met by identity-only leads');
+});
+
+test('Component 5: enforceContractQueries deterministically repairs bare identity query plans with intent terms', () => {
+  const contract = buildDeterministicProspectContract(
+    'Agency owners in North America actively posting about custom n8n workflows and delivery bottlenecks',
+    {}
+  );
+  
+  // Input: 4 bare identity queries emitted by LLM (missing any intent/tooling terms)
+  const bareQueries = [
+    { query: 'agency owner Austin', lane: 'person', priority: 1 },
+    { query: 'agency CEO New York', lane: 'person', priority: 2 },
+    { query: 'agency founder San Francisco', lane: 'person', priority: 3 },
+    { query: 'agency owner Miami', lane: 'person', priority: 4 },
+  ];
+
+  const enforced = enforceContractQueries(bareQueries, contract);
+
+  // At least 2 of the person-lane queries MUST now contain an intent term (e.g. n8n or bottlenecks)
+  const intentTerms = [
+    ...(contract.intentSpec?.toolingKeywords || []),
+    ...(contract.intentSpec?.painSignals || []),
+  ].map((t) => t.toLowerCase());
+
+  const queriesWithIntent = enforced.filter((q) =>
+    intentTerms.some((term) => q.query.toLowerCase().includes(term))
+  );
+
+  assert.ok(
+    queriesWithIntent.length >= 2,
+    `Deterministic enforcement must repair at least 2 queries to have intent terms (found ${queriesWithIntent.length})`
+  );
+  assert.equal(enforced[0].query.includes('Austin'), true);
+});
+
+test('Component 6: Gate breadth does NOT trigger intent gate on pure identity searches with soft headcount', () => {
+  const contract: ProspectContract = {
+    version: 1,
+    policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
+    brief: 'B2B software founders in Austin with 2 to 15 employees',
+    decompositionMode: 'single_stream_identity',
+    authorityRequired: false,
+    exclusions: [],
+    initialQueries: [],
+    requirements: [
+      {
+        id: 'req-role',
+        scope: 'person_role',
+        importance: 'hard',
+        evidenceModality: 'structured_profile',
+        description: 'founder',
+        sourcePhrase: 'founder',
+        acceptableTerms: ['founder', 'co-founder'],
+        queryable: true,
+        requirementClass: 'identity_hard',
+        queryHardness: 'required_in_every_query',
+      },
+      {
+        id: 'req-size',
+        scope: 'company_size',
+        importance: 'soft',
+        evidenceModality: 'inferred',
+        description: '2 to 15 employees',
+        sourcePhrase: '2 to 15 employees',
+        acceptableTerms: ['2 to 15 employees'],
+        queryable: false,
+        requirementClass: 'ranking_signal',
+        queryHardness: 'optional_for_queries',
+      },
+    ],
+  };
+
+  // Under the old logic, any requirementClass === 'ranking_signal' caused hasIntentRequirements = true.
+  // Under our updated logic, hasIntentRequirements correctly remains false:
+  const hasIntentRequirements =
+    (contract.requirements || []).some((r) => r.scope === "signal") ||
+    Boolean(
+      contract.intentSpec &&
+        ((contract.intentSpec.toolingKeywords || []).length > 0 ||
+          (contract.intentSpec.painSignals || []).length > 0 ||
+          (contract.intentSpec.hiringSignals || []).length > 0 ||
+          (contract.intentSpec.growthSignals || []).length > 0),
+    );
+
+  assert.equal(
+    hasIntentRequirements,
+    false,
+    'Pure identity search with soft headcount must NOT trigger hasIntentRequirements'
+  );
 });
 

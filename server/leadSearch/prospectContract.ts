@@ -1209,7 +1209,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - Understand natural conversational phrasing: The brief may start with conversational command phrases like "Find", "Show me", "Search for", "Get me", "Look for", "Bring up", "Give me", "Target", "I want". These are conversational instructions and are NEVER a company name, company type, or requirement source phrase. Ignore them completely.
 - Classify decompositionMode as 'single_stream_identity' (for short/simple persona briefs without explicit buying triggers) or 'dual_stream_intent' (for briefs with hiring, tooling, pain, or expansion triggers).
 - For dual_stream_intent briefs: decouple identitySpec (roles, locations, companyTypes, industries) from intentSpec (toolingKeywords, hiringSignals, painSignals, growthSignals).
-- In person-lane profile discovery queries, include ONLY identity terms (Role + Location + Company Type). NEVER include intent/hiring/tooling trigger words in person-lane queries.
+- In initialQueries, for dual_stream_intent briefs, ensure at least 2 queries combine identity with intent/tooling qualifiers (e.g. "agency owner n8n"), while maintaining person-lane queries for core role/location coverage.
 - For open_web_signal / intent requirements (e.g. hiring for n8n, Zapier, Make.com, AI agents, workflow automation), generate dedicated signal-lane queries searching the open web.
 - When the brief describes active behavior or buying triggers (posting on LinkedIn, seeking help, needing a hand, bottlenecks, evaluating tools, hiring), ALWAYS emit at least one soft requirement with scope 'signal' and evidenceModality 'open_web_signal' capturing those triggers. Never leave a dual_stream_intent brief with zero signal requirements.
 - Comma-or-conjunction separated company niches (e.g. "marketing, lead-generation, SEO, or creative agencies") MUST be unified under a single company_type requirement whose acceptableTerms list all distinct expanded forms (e.g. ["marketing agency", "lead-generation agency", "SEO agency", "creative agency"]).
@@ -1743,6 +1743,41 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       normalized.push(sigFallback);
     }
   }
+
+  // Intent Retention Enforcement: when the contract specifies intent/tooling qualifiers
+  // and the query plan lacks intent coverage (< 2 signal or intent-qualified queries),
+  // deterministically repair at least 2 person-lane queries to include a tooling/intent qualifier.
+  // This deterministically guarantees that an LLM cannot emit 4 bare identity queries without repair.
+  const toolingQualifiers = [
+    ...(contract.intentSpec?.toolingKeywords || []),
+    ...(contract.intentSpec?.painSignals || []),
+  ]
+    .filter(t => Boolean(t) && t.split(/\s+/).length <= 3)
+    .map(lower);
+
+  const signalQueries = normalized.filter(q => q.lane === 'signal');
+  if (toolingQualifiers.length > 0 && signalQueries.length < 2) {
+    const personQueries = normalized.filter(q => q.lane === 'person');
+    const personWithIntent = personQueries.filter(q =>
+      toolingQualifiers.some(term => lower(q.query).includes(term))
+    );
+    const totalIntentCoverage = signalQueries.length + personWithIntent.length;
+    const deficit = Math.max(0, 2 - totalIntentCoverage);
+    if (deficit > 0) {
+      const bareIdentityQueries = personQueries
+        .filter(q => !toolingQualifiers.some(term => lower(q.query).includes(term)))
+        .sort((a, b) => (b.priority || 99) - (a.priority || 99));
+      for (let j = 0; j < Math.min(deficit, bareIdentityQueries.length); j++) {
+        const target = bareIdentityQueries[j];
+        const bestTerm = toolingQualifiers[j % toolingQualifiers.length];
+        if ((target.query + ' ' + bestTerm).length <= 240) {
+          target.query = `${target.query} ${bestTerm}`.trim();
+          target.coveredRequirementIds = computeCoveredRequirementIds(target.query, contract.requirements, false);
+        }
+      }
+    }
+  }
+
   return normalized;
 }
 

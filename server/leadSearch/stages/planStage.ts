@@ -138,8 +138,13 @@ export async function executePlanStage(
       Array.isArray((state.previousRoundSummary as any)?.missingHardRequirementIds)
         ? (state.previousRoundSummary as any).missingHardRequirementIds
         : [];
+    const missingSoftSignals =
+      Array.isArray((state.previousRoundSummary as any)?.missingSoftSignalIds)
+        ? (state.previousRoundSummary as any).missingSoftSignalIds
+        : [];
+    const allMissing = [...missingHardReqs, ...missingSoftSignals];
     logEvent(
-      `Round ${round}: executing recovery query planning (attempt ${currentRecoveryAttempt}/2) with Scout Strategist for missing criteria: [${missingHardReqs.join(", ")}].`,
+      `Round ${round}: executing recovery query planning (attempt ${currentRecoveryAttempt}/2) with Scout Strategist for missing criteria: [${allMissing.join(", ")}].`,
     );
   }
 

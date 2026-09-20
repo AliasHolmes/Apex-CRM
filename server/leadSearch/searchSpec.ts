@@ -620,6 +620,16 @@ Prior rounds had low yield or missed specific criteria.
       .join('; ');
     summaryBullets.push(`Missing requirements: ${missingDesc}`);
   }
+  if (Array.isArray(roundSummaryRaw.missingSoftSignalIds) && roundSummaryRaw.missingSoftSignalIds.length > 0) {
+    const missingSignalDesc = roundSummaryRaw.missingSoftSignalIds
+      .map((id: string) => {
+        const req = (params.contract?.requirements || []).find((r: any) => r.id === id);
+        return req ? `${req.description || id}` : id;
+      })
+      .slice(0, 4)
+      .join('; ');
+    summaryBullets.push(`Missing intent signals (corroboration recovery): ${missingSignalDesc}`);
+  }
   if (roundSummaryRaw.observedNonMatchingAttributes?.locations?.length) {
     summaryBullets.push(`Observed non-matching locations: ${roundSummaryRaw.observedNonMatchingAttributes.locations.slice(0, 5).join(', ')}`);
   }

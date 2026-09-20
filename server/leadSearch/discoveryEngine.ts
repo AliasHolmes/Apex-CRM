@@ -1950,17 +1950,32 @@ export async function executeDiscoverySession(
         ).size;
         const minCompanyDiversity = Math.ceil(targetLimit * 0.8);
 
+        // Gate breadth: only apply intent gating when there are actual signal-scope requirements
+        // or populated intent/tooling triggers in the contract. Never fire solely on soft headcount/identity attributes.
         const hasIntentRequirements =
-          contract.decompositionMode === "dual_stream_intent" ||
-          (contract.requirements || []).some(
-            (r) => r.scope === "signal" || r.requirementClass === "ranking_signal",
-          ) ||
+          (contract.requirements || []).some((r) => r.scope === "signal") ||
           Boolean(
             contract.intentSpec &&
               ((contract.intentSpec.toolingKeywords || []).length > 0 ||
                 (contract.intentSpec.painSignals || []).length > 0 ||
-                (contract.intentSpec.hiringSignals || []).length > 0),
+                (contract.intentSpec.hiringSignals || []).length > 0 ||
+                (contract.intentSpec.growthSignals || []).length > 0),
           );
+
+        // Build dynamic intent pattern from contract intentSpec instead of hardcoded keywords
+        const contractIntentTerms = [
+          ...(contract.intentSpec?.toolingKeywords || []),
+          ...(contract.intentSpec?.painSignals || []),
+          ...(contract.intentSpec?.hiringSignals || []),
+          ...(contract.intentSpec?.growthSignals || []),
+        ].filter((t) => typeof t === "string" && t.trim().length >= 2);
+        const dynamicIntentRegex =
+          contractIntentTerms.length > 0
+            ? new RegExp(
+                `\\b(?:${contractIntentTerms.map((t) => t.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+                "i",
+              )
+            : null;
 
         // In dual-stream intent mode, verify intent corroboration among qualified leads
         const intentCorroboratedCount = qualifiedLeads.filter((lead) => {
@@ -1978,7 +1993,7 @@ export async function executeDiscoverySession(
                 (r.requirementId?.startsWith("signal") ||
                   r.requirementId?.startsWith("pain") ||
                   r.requirementId?.startsWith("tool") ||
-                  r.requirementClass === "ranking_signal"),
+                  r.scope === "signal"),
             );
           const hasIntentSignals = Boolean(
             (lead.signals && lead.signals.length > 0) ||
@@ -1986,10 +2001,9 @@ export async function executeDiscoverySession(
               lead.companyIntentEvidence ||
               lead.linkedinPostIntentEvidence ||
               lead.scout?.hasBuyingSignal ||
-              (lead.match_reasons &&
-                /\b(?:n8n|api|workflow|bottleneck|hiring|automation|integrations?)\b/i.test(
-                  lead.match_reasons,
-                )),
+              (dynamicIntentRegex &&
+                lead.match_reasons &&
+                dynamicIntentRegex.test(lead.match_reasons)),
           );
           return hasPassedSignalReq || hasIntentSignals;
         }).length;
@@ -2009,15 +2023,11 @@ export async function executeDiscoverySession(
           );
           previousRoundSummary.shouldRecover = true;
           const intentReqIds = (contract.requirements || [])
-            .filter(
-              (r) =>
-                r.scope === "signal" ||
-                r.requirementClass === "ranking_signal",
-            )
+            .filter((r) => r.scope === "signal")
             .map((r) => r.id);
-          previousRoundSummary.missingHardRequirementIds = Array.from(
+          previousRoundSummary.missingSoftSignalIds = Array.from(
             new Set([
-              ...(previousRoundSummary.missingHardRequirementIds || []),
+              ...(previousRoundSummary.missingSoftSignalIds || []),
               ...intentReqIds,
             ]),
           );

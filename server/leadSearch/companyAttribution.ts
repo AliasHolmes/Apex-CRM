@@ -29,7 +29,6 @@ export type CompanyAttributionResult = {
   companyName: string;
   businessModel: CompanyBusinessModel;
   primaryOffering: string;
-  employmentLink: "current_leadership" | "employee" | "advisor_or_past" | "unverified";
   queryAlignment: "matches_brief" | "adjacent" | "contradicts";
   verbatimEvidenceQuote: string;
   verdict: CompanyAttributionVerdict;
@@ -57,10 +56,6 @@ export const bulkCompanyAttributionSchema = {
           primaryOffering: {
             type: Type.STRING,
             description: "Core service or product offering in 1-2 concise sentences",
-          },
-          employmentLink: {
-            type: Type.STRING,
-            description: "current_leadership, employee, advisor_or_past, or unverified",
           },
           queryAlignment: {
             type: Type.STRING,
@@ -103,10 +98,13 @@ RULES:
    - "unrelated": Non-commercial entity, personal portfolio, or unrelated directory.
 
 2. CONTRADICTION DETECTION:
-   - When the user brief specifically seeks agencies, consultancies, or client services:
-     * If the company is confirmed to be an investigation firm, translation service, packaging manufacturer, or consumer shop, assign verdict: "disqualifying_contradiction".
-     * If the company is confirmed to be a client-services agency or consultancy matching the brief, assign verdict: "verified_fit".
-     * If the source text is too sparse, generic, or parked, assign verdict: "unverified".
+   - Read the user search brief to understand what business model is required:
+     * When brief seeks digital agencies or consultancies, but company is an investigation firm, translation service, packaging manufacturer, or consumer shop -> assign verdict: "disqualifying_contradiction".
+     * When brief seeks software/SaaS, but company is a physical service or client-services agency -> assign verdict: "disqualifying_contradiction".
+     * When brief seeks eCommerce/retail, but company is a consultancy or law firm -> assign verdict: "disqualifying_contradiction".
+     * In general: if the company's confirmed business model directly contradicts what the search brief requested, assign verdict: "disqualifying_contradiction".
+   - If the company's business model matches or is strongly adjacent to the brief's target, assign verdict: "verified_fit".
+   - If the source text is too sparse, generic, parked, or inconclusive, assign verdict: "unverified".
 
 3. QUOTE CITATION:
    - verbatimEvidenceQuote MUST be an EXACT literal substring from the provided company source text. Do NOT paraphrase or invent quotes. If no clear quote exists, leave it empty.
@@ -163,12 +161,19 @@ export function extractCompanySourceText(candidate: FinalistCandidate): {
   }
 
   // 3. Fallback to general evidence snippet if it mentions the company
+  //    GUARD: Exclude evidence that is clearly person-bio (LinkedIn profile,
+  //    candidate summary, resume) rather than company-sourced content, and require
+  //    meaningful text length (>80) and company name length (>=4) to prevent false substring collisions.
   if (!sourceText && Array.isArray(candidate.evidence)) {
+    const personBioTags = ["[PROFILE", "[LINKEDIN", "[CANDIDATE", "[RESUME"];
     const matchingSnippets = candidate.evidence.filter((item) =>
       item &&
       typeof item.text === "string" &&
+      item.text.length > 80 &&
       companyName &&
-      item.text.toLowerCase().includes(companyName.toLowerCase()),
+      companyName.length >= 4 &&
+      item.text.toLowerCase().includes(companyName.toLowerCase()) &&
+      !personBioTags.some((tag) => item.text.includes(tag)),
     );
     if (matchingSnippets.length > 0) {
       sourceText = matchingSnippets.map((item) => item.text).join("\n");
@@ -177,9 +182,17 @@ export function extractCompanySourceText(candidate: FinalistCandidate): {
 
   return {
     companyName,
-    domain: domain || (companyName ? `${cleanCompanyForDomainSearch(companyName)}.com` : ""),
+    domain: domain || sanitizeDomainGuess(companyName),
     sourceText: sourceText.trim(),
   };
+}
+
+export function sanitizeDomainGuess(companyName: string): string {
+  const cleaned = cleanCompanyForDomainSearch(companyName)
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9-]/g, "");
+  return cleaned ? `${cleaned}.com` : "";
 }
 
 export type GatedCompanyAttributionOptions = {
@@ -340,7 +353,6 @@ export async function runGatedCompanyAttribution(
           companyName: first.companyName,
           businessModel: attr.businessModel || "unrelated",
           primaryOffering: String(attr.primaryOffering || "").trim(),
-          employmentLink: attr.employmentLink || "unverified",
           queryAlignment: attr.queryAlignment || "adjacent",
           verbatimEvidenceQuote: quoteValid ? citedQuote : "",
           verdict,

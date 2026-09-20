@@ -357,12 +357,16 @@ export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Pr
   });
 }
 
-/**
- * Cloudflare cuts HTTP proxy connections between 100s and 120s (HTTP 524).
- * All outbound LLM requests must be bounded strictly within this window (115s)
- * to prevent gateway timeouts, connection drops, and orphan TCP sockets.
- */
 export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
+
+/**
+ * Atria (api.atria-asi.ai) is a self-hosted vLLM deployment behind an Aliyun ALB
+ * (Singapore ap-southeast-1), NOT behind Cloudflare (verified in docs/ATRIA-ENDPOINT-PROBE-2026-09-16.md).
+ * The 115s CLOUDFLARE_MAX_TIMEOUT_MS therefore does not apply to Atria traffic.
+ * Outbound reasoning requests are bounded at 150s to allow heavy chain-of-thought
+ * without unbounded socket lifetimes.
+ */
+export const ATRIA_MAX_TIMEOUT_MS = 150_000;
 
 /**
  * Bounded concurrency execution queue for all LLM calls.
@@ -664,8 +668,8 @@ async function fetchWithRetry(
   const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS);
   const effectiveTimeoutMs = isAtriaUrl
     ? Math.min(
-        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 180_000,
-        180_000,
+        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : ATRIA_MAX_TIMEOUT_MS,
+        ATRIA_MAX_TIMEOUT_MS,
       )
     : Math.min(
         Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
@@ -1291,9 +1295,9 @@ async function sendChatCompletion(
     const stage = String(options?.metadata?.stage || "").toLowerCase();
     const isExtraction = stage === "extraction" || /extract/i.test(stage);
 
-    // Compute dynamic adaptive timeout for Atria (120s-180s for heavy chunks)
+    // Compute dynamic adaptive timeout for Atria (120s-150s for heavy chunks)
     const minAtriaTimeout = 120_000;
-    const maxAtriaTimeout = 180_000;
+    const maxAtriaTimeout = ATRIA_MAX_TIMEOUT_MS;
     let adaptiveTimeout = minAtriaTimeout;
     if (isExtraction || effectiveChars > 3000) {
       const scale = Math.min(1, Math.max(0, (effectiveChars - 2000) / 6000));

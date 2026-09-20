@@ -26,6 +26,7 @@ import {
   EXECUTIVE_OVERRIDE_REGEX as OWNER_TERMS_REGEX,
   classifyTitle,
 } from "../titleTriage.js";
+import { runGatedCompanyAttribution } from "../companyAttribution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(batchLength: number): number {
@@ -253,6 +254,55 @@ export async function evaluateIncrementalJudgeBatches(
     );
   }
 
+  // Gated Company Attribution Step: evaluate ambiguous companies against brief
+  const companyAttributionEnabled =
+    process.env.LEAD_COMPANY_ATTRIBUTION_ENABLED !== "false";
+  if (companyAttributionEnabled && vettedCandidates.length > 0) {
+    const attrSummary = await runGatedCompanyAttribution(
+      vettedCandidates,
+      contract,
+      {
+        signal: state.abortController?.signal,
+        logEvent,
+      },
+    );
+    if (attrSummary.attributedCount > 0) {
+      logEvent(
+        `Round ${round} Company Attribution: evaluated ${attrSummary.attributedCount} candidates (${attrSummary.verifiedCount} verified fit, ${attrSummary.contradictionCount} disqualifying contradictions).`,
+      );
+    }
+  }
+
+  // Filter out any candidate whose company attribution proved a disqualifying contradiction
+  const candidatesToJudge: FinalistCandidate[] = [];
+  for (const candidate of vettedCandidates) {
+    if (candidate.lead._autoFailed && candidate.lead._contradictionReason) {
+      const contradictionInsight = {
+        status: "hard_fail" as FinalistOutcomeStatus,
+        score: -100,
+        reason: candidate.lead._contradictionReason,
+      };
+      judgmentInsights.set(candidate.candidateId, contradictionInsight);
+      candidate.lead.judgmentInsight = contradictionInsight;
+      candidate.lead.qualification = {
+        policyVersion: contract.policyVersion,
+        verdict: "hard_fail",
+        qualificationSource: "deterministic",
+        finalScore: 0,
+        requirements: contract.requirements.map((r) => ({
+          requirementId: r.id,
+          status:
+            r.scope === "company_type" || r.scope === "company_industry"
+              ? "fail"
+              : "unknown",
+        })),
+        reason: candidate.lead._contradictionReason,
+      };
+    } else {
+      candidatesToJudge.push(candidate);
+    }
+  }
+
   // Micro-batch size: 6 candidates per batch for optimal context utilization on modern LLMs
   const microBatchSize = Math.max(
     1,
@@ -264,8 +314,8 @@ export async function evaluateIncrementalJudgeBatches(
   );
 
   const microBatches: FinalistCandidate[][] = [];
-  for (let i = 0; i < vettedCandidates.length; i += microBatchSize) {
-    microBatches.push(vettedCandidates.slice(i, i + microBatchSize));
+  for (let i = 0; i < candidatesToJudge.length; i += microBatchSize) {
+    microBatches.push(candidatesToJudge.slice(i, i + microBatchSize));
   }
 
   // Chunk micro-batches into waves according to concurrency

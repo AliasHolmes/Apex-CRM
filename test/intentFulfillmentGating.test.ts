@@ -69,7 +69,8 @@ test('Component 4: buildStrategistPrompt enforces Intent Retention Rule for inte
     remaining: 20,
     contract: contract as any,
     spec: {} as any,
-    historicalPerformance: {},
+    previousQueries: [],
+    queryPerformance: {},
     previousRoundSummary: {},
   });
 

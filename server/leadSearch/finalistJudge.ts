@@ -234,7 +234,10 @@ export function buildFinalistJudgePrompt(
           continue;
         }
         const text = String(item.text || "").toLowerCase();
-        if (allTerms.some((term) => term && text.includes(term)))
+        if (
+          item.id === "e_company_attr" ||
+          allTerms.some((term) => term && text.includes(term))
+        )
           selected.push(item);
       }
       for (const item of candEvidence) {

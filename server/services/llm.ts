@@ -662,10 +662,15 @@ async function fetchWithRetry(
     Number.isFinite(rawRetries) && rawRetries >= 0 ? Math.floor(rawRetries) : 1;
 
   const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS);
-  const effectiveTimeoutMs = Math.min(
-    Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
-    CLOUDFLARE_MAX_TIMEOUT_MS,
-  );
+  const effectiveTimeoutMs = isAtriaUrl
+    ? Math.min(
+        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 180_000,
+        180_000,
+      )
+    : Math.min(
+        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
+        CLOUDFLARE_MAX_TIMEOUT_MS,
+      );
   const retry429 =
     process.env.LLM_RETRY_429 !== "false" && effectiveMaxRetries > 0;
 

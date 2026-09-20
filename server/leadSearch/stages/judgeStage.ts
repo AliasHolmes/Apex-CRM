@@ -253,10 +253,10 @@ export async function evaluateIncrementalJudgeBatches(
     );
   }
 
-  // Micro-batch size: 4 candidates per batch for optimal latency on reasoning models
+  // Micro-batch size: 6 candidates per batch for optimal context utilization on modern LLMs
   const microBatchSize = Math.max(
     1,
-    Math.min(6, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 4)),
+    Math.min(8, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 6)),
   );
   const judgeConcurrency = Math.max(
     1,

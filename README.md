@@ -23,7 +23,7 @@ Its primary workflow is intentionally practical:
 1. **Describe your search brief** in natural language (2-word vague to 100-word rich, any vertical, any geography).
 2. **Query Understanding Layer** (`queryUnderstanding.ts`) classifies your brief:
    - `vague | standard | rich` with ambiguity score and missing-slot detection (`role`, `geo`, `industry`, `seniority`, `signal`).
-   - **Zero default-invention**: briefs with no geography search globally — no synthetic `USA`/US-metro tokens are injected.
+   - **Zero default-invention**: briefs with no geography search globally -- no synthetic `USA`/US-metro tokens are injected.
    - Simple persona briefs run direct high-recall discovery with zero LLM overhead.
    - Long-shot intent briefs decouple into **Stream A (Identity)** for 100% SERP recall and **Stream B (Intent Triggers)** for multi-channel open-web research.
 3. **Stage-Pipelined High-Efficiency Engine**:

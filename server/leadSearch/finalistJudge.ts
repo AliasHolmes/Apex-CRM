@@ -170,8 +170,12 @@ CORE RULES:
    - "unknown" is used when evidence is insufficient or ambiguous.
    - "fail" is used when evidence explicitly contradicts a hard requirement.
 6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
-7. SIGNAL REQUIREMENTS: If a requirement represents a dynamic buying signal (e.g. hiring triggers, funding events, tooling/tech stack signals), assign status "unknown" -- never "fail" -- when the candidate's evidence packet lacks job postings or open-web signal snippets. Only assign "fail" if the evidence explicitly contradicts the requirement (e.g. business is defunct). Never reject a verified decision-maker solely because an open-web signal could not be corroborated from their profile bio.
-8. SCORING SCALE: For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).
+7. SIGNAL & SOFT REQUIREMENTS:
+   - For soft/ranking signal requirements (e.g. specific tooling like n8n, hiring triggers, client delivery bottlenecks): assign status "pass" if evidence demonstrates or mentions it, "fail" if explicitly contradicted, or "unknown" if evidence lacks mention.
+   - Failing or unknown soft requirements do NOT trigger hard_fail.
+8. SCORING SCALE & INTENT CALIBRATION:
+   - For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).
+   - When soft/intent requirements (e.g. tooling, specific pain points) are present in the contract, a candidate who satisfies identity (e.g. agency owner) but has ZERO evidence for the soft/intent requirements MUST be rated moderate (semanticFit 4-6), NOT high (8-10). Reserve 8-10 for candidates who demonstrate both identity AND intent/tooling alignment.
 9. CONCISE OUTPUT FORMAT: Keep any internal reasoning concise (under 60 words total) and immediately emit the JSON judgment block. Do not write lengthy essays or chain-of-thought disclaimers.`;
 
 const clampEnvInt = (
@@ -196,16 +200,16 @@ const MAX_EVIDENCE_ITEMS = clampEnvInt(
 );
 const EVIDENCE_CHARS = clampEnvInt(
   "FINALIST_JUDGE_EVIDENCE_CHARS",
-  1200,
+  1800,
   200,
-  2400,
+  3600,
 );
 
 export function buildFinalistJudgePrompt(
   contract: ProspectContract,
   candidates: FinalistCandidate[],
 ) {
-  const activeRequirements = contract.requirements.filter((r) => r.importance === "hard");
+  const activeRequirements = contract.requirements;
   const requirementText = activeRequirements
     .map(
       (requirement) =>

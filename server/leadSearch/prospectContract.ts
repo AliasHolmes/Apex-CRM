@@ -5,9 +5,8 @@ import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
 import { aliasIncludes } from './aliasMap.js';
 
-// Alias-aware grounding is backward compatible with cached v8 contracts;
-// keep policy version stable to avoid invalidating SQLite cache + tests.
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v8';
+// Bumped to v9 to invalidate pre-upgrade cached contracts and enforce fresh intelligence compilation
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v9';
 
 export type RequirementScope =
   | 'person_role'
@@ -76,7 +75,7 @@ export type IntentSpec = {
 
 export type ProspectContract = {
   version: 1;
-  policyVersion: typeof PROSPECT_CONTRACT_POLICY_VERSION;
+  policyVersion: typeof PROSPECT_CONTRACT_POLICY_VERSION | 'evidence-contract-v8' | string;
   brief: string;
   decompositionMode?: DecompositionMode;
   identitySpec?: IdentitySpec;

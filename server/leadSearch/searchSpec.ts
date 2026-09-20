@@ -472,9 +472,10 @@ export const buildStrategistPrompt = (params: {
 }) => {
   // Token diet: by late rounds the full query history dominates the prompt.
   // Send only the most recent queries plus a compact family-coverage digest.
-  const recentQueries = params.previousQueries.slice(-5);
+  const prevQueries = Array.isArray(params.previousQueries) ? params.previousQueries : [];
+  const recentQueries = prevQueries.slice(-5);
   const familyCounts: Record<string, number> = {};
-  for (const q of params.previousQueries) {
+  for (const q of prevQueries) {
     const family = q.split(" ").slice(0, 3).join(" ").toLowerCase();
     familyCounts[family] = (familyCounts[family] || 0) + 1;
   }
@@ -483,8 +484,8 @@ export const buildStrategistPrompt = (params: {
     .slice(0, 5)
     .map(([family, count]) => `${family} x${count}`)
     .join("; ");
-  const previousNote = params.previousQueries.length
-    ? `Avoid repeats. Explored ${params.previousQueries.length} queries; recent: ${recentQueries.join(" | ")}. Top prefixes: ${topFamilies || "none"}.`
+  const previousNote = prevQueries.length
+    ? `Avoid repeats. Explored ${prevQueries.length} queries; recent: ${recentQueries.join(" | ")}. Top prefixes: ${topFamilies || "none"}.`
     : "No previous queries.";
   const discoveryMode = params.discoveryMode || "hybrid";
 
@@ -500,7 +501,7 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
 
   // Extract all metros from METRO_HUBS_BY_COUNTRY that appeared in previousQueries
   const allKnownMetros = Object.values(METRO_HUBS_BY_COUNTRY).flat();
-  const lowerQueries = params.previousQueries.map((q) => q.toLowerCase());
+  const lowerQueries = prevQueries.map((q) => q.toLowerCase());
   const exploredMetros = allKnownMetros.filter((metro) =>
     lowerQueries.some((q) => q.includes(metro.toLowerCase())),
   );
@@ -514,10 +515,13 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
 
   // Determine target countries from brief or contract
   const briefLower = (params.contract?.brief || params.query || "").toLowerCase();
+  const isNorthAmerica = /\bnorth\s+america\b/i.test(briefLower);
+  const isSouthOrLatinAmerica = /\b(?:south|latin)\s+america\b/i.test(briefLower);
   const relevantCountries = Object.keys(METRO_HUBS_BY_COUNTRY).filter((c) => {
     if (briefLower.includes(c)) return true;
-    if (c === "usa" && (briefLower.includes("united states") || briefLower.includes("us") || briefLower.includes("america"))) return true;
-    if (c === "uk" && (briefLower.includes("united kingdom") || briefLower.includes("britain") || briefLower.includes("england"))) return true;
+    if (isNorthAmerica && (c === "usa" || c === "canada")) return true;
+    if (c === "usa" && !isNorthAmerica && !isSouthOrLatinAmerica && /\b(?:united states|us|usa|u\.s\.a?|america)\b/i.test(briefLower)) return true;
+    if (c === "uk" && /\b(?:united kingdom|uk|britain|england|scotland)\b/i.test(briefLower)) return true;
     return false;
   });
   const countryPool = relevantCountries.length > 0 ? relevantCountries : Object.keys(METRO_HUBS_BY_COUNTRY);
@@ -540,7 +544,7 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
     ? `\nALREADY EXPLORED METROS IN THIS SESSION (DO NOT query these again): [${exploredMetros.join(", ")}]`
     : "";
   const unvisitedNote = unvisitedMetros.length > 0
-    ? `\nRECOMMENDED UNVISITED METROS TO TARGET NEXT: [${unvisitedMetros.slice(0, 12).join(", ")}]`
+    ? `\nRECOMMENDED UNVISITED METROS TO TARGET NEXT (optional geographic variety, max 2 queries should use metros): [${unvisitedMetros.slice(0, 6).join(", ")}]`
     : "";
 
   const metroDirectives = `${saturatedNote}${exploredNote}${unvisitedNote}`.trim()
@@ -651,7 +655,7 @@ Prior rounds had low yield or missed specific criteria.
     }))
     .filter((entry) => entry.runs > 0)
     .sort((a, b) => b.accepted / b.runs - a.accepted / a.runs)
-    .slice(0, 8);
+    .slice(0, 4);
   const performanceStr = performanceEntries.length
     ? performanceEntries
         .map(
@@ -716,8 +720,11 @@ Historical family/provider yield: ${performanceStr}
 
 Rules:
 - Query syntax: 3 to 6 words. NEVER use boolean words (AND, OR, NOT), site:, or "LinkedIn". Quotes ONLY for multi-word phrases (e.g. "AI agency"). Negative keywords allowed (-saas, -recruiter).
-- Geographies & Titles: When a country/region is targeted, distribute queries across distinct major metro hubs and rotate executive variants (founder, CEO, owner, managing partner).
-- Lanes: Use "person" (Roles + Company Types + Locations), "account" (company leadership), or "signal" (for open_web_signal requirements e.g. hiring/tooling, use lane: "signal" and search open web). Use >=2 lanes when brief allows. Keep person queries clean without trigger keywords.
+- Geographies & Titles: Rotate executive variants (founder, CEO, owner, managing partner) and use metro hubs sparingly (max 2 queries should include city names). Never let city names push out core technical or intent terms.
+- Lanes & Intent Retention Rule:
+  * When the brief or contract specifies explicit intent, tooling, or pain signals (e.g. toolingKeywords like n8n/APIs or painSignals like delivery bottlenecks): at least 2 of the 4 queries MUST combine identity/role terms with an intent or tooling qualifier (e.g. "agency owner n8n", "agency CEO API integrations").
+  * NEVER generate 100% bare identity-only queries across all 4 tasks (e.g. do NOT output 4 generic queries like "agency owner Austin").
+  * Use lane "person" for identity+intent queries, "account" for company exploration, or "signal" (for open_web_signal requirements e.g. hiring/tooling, use lane: "signal" and search open web). Use >=2 lanes when brief allows.
 - Providers: "tavily" (precision person), "brightdata" (volume Google SERP), "corroborate" (both). In hybrid mode, assign >=2 brightdata or corroborate tasks.
 - Depth: Default to "basic". Never assume Pro-only datasets or browser automation.
 - History: Favor families that produced qualified/returned finalists; avoid duplicate-heavy or slow query patterns.

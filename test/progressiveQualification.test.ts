@@ -193,8 +193,8 @@ describe('PIQ-BOS: Progressive Interleaved Qualification', () => {
     });
   });
 
-  describe('Prompt Diet++ (Pruning Soft Requirements)', () => {
-    it('prunes soft requirements from prompt as permanent PIQ-BOS standard', () => {
+  describe('Prompt Intent Awareness (Including Soft Requirements)', () => {
+    it('includes soft requirements in prompt so judge can evaluate intent fit', () => {
       const candidate: FinalistCandidate = {
         candidateId: 'c1',
         lead: { fullName: 'Test', currentTitle: 'CEO', location: 'USA' },
@@ -203,7 +203,7 @@ describe('PIQ-BOS: Progressive Interleaved Qualification', () => {
       const prompt = buildFinalistJudgePrompt(sampleContract, [candidate]);
       assert.match(prompt, /req-role/);
       assert.match(prompt, /req-loc/);
-      assert.doesNotMatch(prompt, /req-soft/);
+      assert.match(prompt, /req-soft/);
     });
   });
 

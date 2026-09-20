@@ -1950,18 +1950,89 @@ export async function executeDiscoverySession(
         ).size;
         const minCompanyDiversity = Math.ceil(targetLimit * 0.8);
 
+        const hasIntentRequirements =
+          contract.decompositionMode === "dual_stream_intent" ||
+          (contract.requirements || []).some(
+            (r) => r.scope === "signal" || r.requirementClass === "ranking_signal",
+          ) ||
+          Boolean(
+            contract.intentSpec &&
+              ((contract.intentSpec.toolingKeywords || []).length > 0 ||
+                (contract.intentSpec.painSignals || []).length > 0 ||
+                (contract.intentSpec.hiringSignals || []).length > 0),
+          );
+
+        // In dual-stream intent mode, verify intent corroboration among qualified leads
+        const intentCorroboratedCount = qualifiedLeads.filter((lead) => {
+          if (
+            lead.qualification?.verdict !== "qualified" &&
+            lead.qualification?.verdict !== "qualified_partial"
+          ) {
+            return false;
+          }
+          const hasPassedSignalReq =
+            Array.isArray(lead.qualification?.requirements) &&
+            lead.qualification.requirements.some(
+              (r: any) =>
+                r.status === "pass" &&
+                (r.requirementId?.startsWith("signal") ||
+                  r.requirementId?.startsWith("pain") ||
+                  r.requirementId?.startsWith("tool") ||
+                  r.requirementClass === "ranking_signal"),
+            );
+          const hasIntentSignals = Boolean(
+            (lead.signals && lead.signals.length > 0) ||
+              lead.intent_evidence ||
+              lead.companyIntentEvidence ||
+              lead.linkedinPostIntentEvidence ||
+              lead.scout?.hasBuyingSignal ||
+              (lead.match_reasons &&
+                /\b(?:n8n|api|workflow|bottleneck|hiring|automation|integrations?)\b/i.test(
+                  lead.match_reasons,
+                )),
+          );
+          return hasPassedSignalReq || hasIntentSignals;
+        }).length;
+
+        const minIntentRequiredRatio = 0.35;
+        const requiredIntentCount = Math.ceil(targetLimit * minIntentRequiredRatio);
+        const intentThresholdMet =
+          !hasIntentRequirements || intentCorroboratedCount >= requiredIntentCount;
+
         if (
+          !intentThresholdMet &&
+          round < maxRounds &&
+          acceptedLeads.length < collectionCapacity.candidateCeiling
+        ) {
+          logEvent(
+            `Round ${round}: Candidate target reached (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit}), but intent threshold unmet (${intentCorroboratedCount}/${targetLimit} leads with signal corroboration < ${requiredIntentCount} needed). Continuing to Round ${round + 1} for intent recovery.`,
+          );
+          previousRoundSummary.shouldRecover = true;
+          const intentReqIds = (contract.requirements || [])
+            .filter(
+              (r) =>
+                r.scope === "signal" ||
+                r.requirementClass === "ranking_signal",
+            )
+            .map((r) => r.id);
+          previousRoundSummary.missingHardRequirementIds = Array.from(
+            new Set([
+              ...(previousRoundSummary.missingHardRequirementIds || []),
+              ...intentReqIds,
+            ]),
+          );
+        } else if (
           roundEndEffectiveQualified >= targetLimit &&
           uniqueCompanies >= minCompanyDiversity
         ) {
           logEvent(
-            `Round ${round}: Target fulfilled early with high diversity (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit} effective qualified, ${uniqueCompanies} unique companies >= ${minCompanyDiversity}). Stopping discovery loop early.`,
+            `Round ${round}: Target fulfilled early with high diversity (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit} effective qualified, ${uniqueCompanies} unique companies >= ${minCompanyDiversity}${hasIntentRequirements ? `, ${intentCorroboratedCount} intent-corroborated` : ""}). Stopping discovery loop early.`,
           );
           stats.stopReason = "target_fulfilled_early";
           break;
         } else if (roundEndEffectiveQualified >= qualifiedTargetWithCushion) {
           logEvent(
-            `Round ${round}: Verified judge target reached (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion} effective qualified leads with ${cushionMultiplier}x cushion). Stopping discovery loop early.`,
+            `Round ${round}: Verified judge target reached (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion} effective qualified leads with ${cushionMultiplier}x cushion${hasIntentRequirements ? `, ${intentCorroboratedCount} intent-corroborated` : ""}). Stopping discovery loop early.`,
           );
           stats.stopReason = "target_fulfilled_early";
           break;

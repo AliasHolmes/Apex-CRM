@@ -422,7 +422,7 @@ describe('Phase 1: Requirement Taxonomy', () => {
 
   describe('Policy version consistency', () => {
     it('PROSPECT_CONTRACT_POLICY_VERSION constant is defined and matches current version', () => {
-      assert.equal(PROSPECT_CONTRACT_POLICY_VERSION, 'evidence-contract-v8');
+      assert.equal(PROSPECT_CONTRACT_POLICY_VERSION, 'evidence-contract-v9');
     });
 
     it('buildDeterministicProspectContract uses current policy version', () => {

@@ -105,6 +105,13 @@ export function structuredFieldsForRequirement(
 }
 
 export function hasStrictStructuredMatch(lead: Record<string, any>, requirement: ProspectRequirement): boolean {
+  // G2: company-derived location is judge-visible context, never an auto-pass.
+  // Mirrors the includeQueryFallback:false precedent -- a company HQ filling a
+  // person's location has not demonstrated the person is there.
+  if (requirement.scope === 'person_location') {
+    const provenance = (lead as any)?._locationProvenance || (lead as any)?.profile?._locationProvenance;
+    if (provenance === 'company_site') return false;
+  }
   if (requirement.scope === 'company_type' || requirement.scope === 'company_industry') {
     const hasCompany = Boolean(clean(lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || ''));
     const isEntityVerified = Boolean(lead.companyEntityResolution?.verified && lead.companyEntityResolution?.companyName);

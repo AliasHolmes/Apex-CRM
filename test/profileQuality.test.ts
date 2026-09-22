@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   candidateMatchesNonServicesVertical,
+  candidateMatchesWrongVertical,
   contractMentionsVertical,
   extractSocialProof,
+  getWrongVerticalRegexForCluster,
   isCompanyPageProfile,
   isGhostProfile,
   parseSocialProofFromDossier,
@@ -355,5 +357,17 @@ test("intent backstop synthesis", async (t) => {
       ).length,
       1,
     );
+  });
+
+  await t.test("G10: b2b_saas guard ignores consulting in summary, keeps company hits", () => {
+    const regex = getWrongVerticalRegexForCluster('b2b_saas');
+    assert.ok(regex);
+    const pastCareer = {
+      currentCompany: "Acme SaaS", currentTitle: "Founder",
+      summary: "Previously led a consulting practice",
+    };
+    assert.equal(candidateMatchesWrongVertical(pastCareer, regex!, 'b2b_saas'), null);
+    const consultingFirm = { currentCompany: "Smith Consulting Group", industry: "consulting", currentTitle: "Partner" };
+    assert.ok(candidateMatchesWrongVertical(consultingFirm, regex!, 'b2b_saas'));
   });
 });

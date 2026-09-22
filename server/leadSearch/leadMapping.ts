@@ -95,7 +95,10 @@ export function mapCandidateToPersistedLead(
     decisionMakerVerification: p.decisionMakerVerification,
     scout: p.scout,
     finalSelectionScore: p.finalSelectionScore,
-    discoveryLane: p.discoveryLane,
+    // G5: persist the producing arm at the top level so CRM feedback
+    // (api.ts PATCH) can attribute outcomes to the scheduler scope key.
+    discoveryFamily: p.discoveryFamily || p.scout?.family || p.evidence?.discoveryFamily || "general",
+    discoveryLane: p.discoveryLane || p.scout?.lane || p.evidence?.discoveryLane || "person",
     sourceProvider: p.sourceProvider || "tavily",
     evidenceReasons: p.evidenceReasons,
     evidence: p.evidence,

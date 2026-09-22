@@ -118,6 +118,69 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
       assert.equal(outcome?.status, 'unknown', 'Legacy mode marks quote as fabricated because of smart quotes');
     });
 
+    it('G1 strict: person_role pass with empty quote degrades to unknown', () => {
+      process.env.FUZZY_QUOTE_GROUNDING_ENABLED = 'true';
+      delete process.env.EVIDENCE_GROUNDING_MODE;
+      const judgments = [
+        {
+          candidateId: 'cand-1',
+          requirements: [{ requirementId: 'req-founder', status: 'pass', evidenceId: 'e1', evidenceQuote: '' }],
+          semanticFit: 9, authorityFit: 9, evidenceConfidence: 9, verdict: 'qualified', reason: 'Matches'
+        }
+      ];
+      const { outcomes } = validateFinalistJudgments({ judgments }, contract, [candidate]);
+      assert.equal(outcomes.get('cand-1')?.status, 'unknown');
+    });
+
+    it('G1 legacy: empty quote preserves historical pass', () => {
+      process.env.FUZZY_QUOTE_GROUNDING_ENABLED = 'true';
+      process.env.EVIDENCE_GROUNDING_MODE = 'legacy';
+      try {
+        const judgments = [
+          {
+            candidateId: 'cand-1',
+            requirements: [{ requirementId: 'req-founder', status: 'pass', evidenceId: 'e1', evidenceQuote: '' }],
+            semanticFit: 9, authorityFit: 9, evidenceConfidence: 9, verdict: 'qualified', reason: 'Matches'
+          }
+        ];
+        const { outcomes } = validateFinalistJudgments({ judgments }, contract, [candidate]);
+        assert.equal(outcomes.get('cand-1')?.status, 'qualified');
+      } finally {
+        delete process.env.EVIDENCE_GROUNDING_MODE;
+      }
+    });
+
+    it('G1 strict: quote matching no evidence item is rejected', () => {
+      delete process.env.EVIDENCE_GROUNDING_MODE;
+      const result = verifyEvidencePassage(baseEvidence, 'completely unrelated hallucinated claim about Mars');
+      assert.equal(result.valid, false);
+    });
+
+    it('G9: negated evidence rejects the affirmative quote', () => {
+      const result = verifyEvidencePassage('Acme is not hiring developers', 'Acme is hiring developers');
+      assert.equal(result.valid, false);
+    });
+
+    it('G9: negated quote against negated evidence passes (no false rejection)', () => {
+      const result = verifyEvidencePassage('Acme is not hiring right now', 'not hiring');
+      assert.equal(result.valid, true);
+    });
+
+    it('G9: paraphrased quote with reordered words still passes', () => {
+      const result = verifyEvidencePassage(
+        'Alex River is the Founder and CEO at Apex Studio in Austin',
+        'CEO and Founder Apex Studio'
+      );
+      assert.equal(result.valid, true);
+    });
+
+    it('G4: aliasIncludes grounds acronyms symmetrically', async () => {
+      const { aliasIncludes } = await import('../server/leadSearch/aliasMap.js');
+      assert.equal(aliasIncludes('US SaaS founder', 'United States'), true);
+      assert.equal(aliasIncludes('... CEO', 'Chief Executive Officer'), true);
+      assert.equal(aliasIncludes('UK founders', 'United Kingdom'), true);
+    });
+
     it('qualifies candidate when fuzzy quote grounding is enabled', () => {
       process.env.FUZZY_QUOTE_GROUNDING_ENABLED = 'true';
       const judgments = [

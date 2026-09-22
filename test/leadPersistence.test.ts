@@ -502,3 +502,45 @@ test('readResumableMiningSessions returns both interrupted and error sessions wi
   assert.ok(!ids.includes('not-resumable-completed'), 'Should not include completed session');
 });
 
+test('G15: same-id upsert preserves CRM-owned workflow fields across engine re-scrapes', () => {
+  const initial = upsertLeadWithIdentity({
+    id: 'g15-workflow-lead',
+    fullName: 'Jane Doe',
+    company: 'Alpha Corp',
+    title: 'CTO',
+    stage: 'CONVERTED',
+    reviewStatus: 'KEEP',
+    nextAction: 'MESSAGE',
+    notes: 'Important customer contact',
+    profile: { location: 'Seattle' },
+  });
+  assert.equal(initial.disposition, 'created');
+
+  // Engine re-persist with default SCRAPED / UNREVIEWED / NONE mapping
+  const rePersist = upsertLeadWithIdentity({
+    id: 'g15-workflow-lead',
+    fullName: 'Jane Doe',
+    company: 'Alpha Corp',
+    title: 'Chief Technology Officer',
+    stage: 'SCRAPED',
+    reviewStatus: 'UNREVIEWED',
+    nextAction: 'NONE',
+    score: 9.5,
+    profile: { location: 'Seattle, WA', score: 9.5 },
+  });
+  assert.equal(rePersist.disposition, 'updated');
+
+  const loaded = readStoredLeadById('g15-workflow-lead');
+  assert.ok(loaded);
+  // CRM-owned fields preserved
+  assert.equal(loaded?.stage, 'CONVERTED');
+  assert.equal(loaded?.reviewStatus, 'KEEP');
+  assert.equal(loaded?.nextAction, 'MESSAGE');
+  assert.equal(loaded?.notes, 'Important customer contact');
+  // Engine-owned fields updated
+  assert.equal(loaded?.title, 'Chief Technology Officer');
+  assert.equal(loaded?.score, 9.5);
+  assert.equal(loaded?.revision, 2);
+});
+
+

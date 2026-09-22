@@ -289,33 +289,48 @@ export async function executeRetrieveStage(
                 const rewritten = rewriteZeroYieldQuery(plan.executableQuery, config.contract, 1);
                 if (rewritten.strategy !== 'none' && rewritten.query && rewritten.query !== plan.executableQuery) {
                   ablationTracker.ablatedTasks.add(`${plan.executableQuery}:rewrite`);
+                  // G7: dispatch the rewrite on BOTH paths. Previously the
+                  // non-reservation path (shipped default) silently dropped it.
+                  const runRewriteSearch = async () => {
+                    if (!creditReservationEnabled) recordProviderUsage('tavily', 1);
+                    queryRuns[index].providerUnits += 1;
+                    const rwRes = await ports.tavilySearch(rewritten.query, {
+                      ...tavilyOptions,
+                      signal: signal || state.abortController.signal,
+                    });
+                    const rwCount = rwRes.items?.length || 0;
+                    if (rwCount > 0) {
+                      // G7: thread the demoted requirement into coverage tracking.
+                      if (rewritten.demotedRequirementId) {
+                        for (const it of rwRes.items) {
+                          (it as any).ablatedRequirementId = rewritten.demotedRequirementId;
+                          (it as any).ablatedTerm = rewritten.droppedTerm;
+                        }
+                      }
+                      const existingUrls = new Set((res.items || []).map((it: any) => it.url));
+                      const newItems = rwRes.items.filter((it: any) => !existingUrls.has(it.url));
+                      res.items = [...(res.items || []), ...newItems];
+                      resultsCount = res.items.length;
+                      if (rwRes.text) res.text = (res.text ? res.text + '\n\n' : '') + rwRes.text;
+                      if (rwRes.sources) res.sources = [...(res.sources || []), ...rwRes.sources];
+                      stats.ablationRescues = (stats.ablationRescues || 0) + newItems.length;
+                      logEvent(`[QueryRewriter] Rescued ${newItems.length} via ${rewritten.strategy} rewrite "${rewritten.query}".`);
+                      recordTrace({
+                        phase: 'search', operation: 'query_rewrite_rescue', status: 'started',
+                        provider: 'tavily', round, query: rewritten.query,
+                        metadata: { originalQuery: plan.executableQuery, ...rewritten },
+                      });
+                    }
+                  };
                   if (creditReservationEnabled) {
                     const r = reserveProviderUsage('tavily', 1);
                     if (!r.allowed) {
                       logEvent(`Round ${round}: skipped rewritten Tavily task after reservation.`);
                     } else {
-                      queryRuns[index].providerUnits += 1;
-                      const rwRes = await ports.tavilySearch(rewritten.query, {
-                        ...tavilyOptions,
-                        signal: signal || state.abortController.signal,
-                      });
-                      const rwCount = rwRes.items?.length || 0;
-                      if (rwCount > 0) {
-                        const existingUrls = new Set((res.items || []).map((it: any) => it.url));
-                        const newItems = rwRes.items.filter((it: any) => !existingUrls.has(it.url));
-                        res.items = [...(res.items || []), ...newItems];
-                        resultsCount = res.items.length;
-                        if (rwRes.text) res.text = (res.text ? res.text + '\n\n' : '') + rwRes.text;
-                        if (rwRes.sources) res.sources = [...(res.sources || []), ...rwRes.sources];
-                        stats.ablationRescues = (stats.ablationRescues || 0) + newItems.length;
-                        logEvent(`[QueryRewriter] Rescued ${newItems.length} via ${rewritten.strategy} rewrite "${rewritten.query}".`);
-                        recordTrace({
-                          phase: 'search', operation: 'query_rewrite_rescue', status: 'started',
-                          provider: 'tavily', round, query: rewritten.query,
-                          metadata: { originalQuery: plan.executableQuery, ...rewritten },
-                        });
-                      }
+                      await runRewriteSearch();
                     }
+                  } else {
+                    await runRewriteSearch();
                   }
                 }
               } catch (rwErr: any) {

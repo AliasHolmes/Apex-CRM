@@ -47,6 +47,7 @@ import {
   upsertSavedSearch,
   deleteSavedSearch,
   recordQueryPerformance,
+  recordLeadOutcome,
   readProviderUsage,
   readEngineMetrics,
 } from "../db.js";
@@ -87,6 +88,7 @@ import {
   resolveBrightDataSearchMode,
 } from "../leadSearch/discoveryRouting.js";
 import { enrichLeadProfile } from "../leadSearch/profileEnrichment.js";
+import { deriveDomainCluster } from "../leadSearch/adaptiveScheduler.js";
 import {
   discoveryEngine,
   SessionAlreadyActiveError,
@@ -335,25 +337,51 @@ router.patch("/leads/:id", (req, res): any => {
     }
 
     const previousReviewStatus = previousLead?.reviewStatus;
+    // G17: REPLIED transitions now produce a positive outcome signal
+    // (previously silent). Binary {positive, negative} + detail stage.
+    const isNewReply =
+      ((storedLead.stage === "REPLIED" || (storedLead as any)?.reviewStatus === "REPLIED") &&
+        previousStage !== "REPLIED" && previousReviewStatus !== "REPLIED");
     const isNewRejection =
       ((storedLead.reviewStatus === "REJECT" || storedLead.reviewStatus === "REJECTED") &&
         previousReviewStatus !== "REJECT" && previousReviewStatus !== "REJECTED") ||
       ((storedLead.stage === "LOST" || storedLead.stage === "UNQUALIFIED") &&
         previousStage !== "LOST" && previousStage !== "UNQUALIFIED");
-    const isNewVerification =
+    const isNewDirectVerification =
       ((storedLead.reviewStatus === "KEEP" || storedLead.reviewStatus === "VERIFIED") &&
         previousReviewStatus !== "KEEP" && previousReviewStatus !== "VERIFIED") ||
       ((storedLead.stage === "CONVERTED" || storedLead.stage === "CLOSED_WON") &&
         previousStage !== "CONVERTED" && previousStage !== "CLOSED_WON") ||
       ((storedLead.stage === "MEETING BOOKED" || storedLead.stage === "MEETING_SCHEDULED") &&
         previousStage !== "MEETING BOOKED" && previousStage !== "MEETING_SCHEDULED");
+    const isNewVerification = isNewDirectVerification || isNewReply;
+
+    // G17: every stage/review transition writes a binary outcome row.
+    if (previousStage !== storedLead.stage || previousReviewStatus !== storedLead.reviewStatus) {
+      try {
+        if (isNewReply) {
+          recordLeadOutcome(storedLead.id, "positive", "REPLIED");
+        } else if (isNewDirectVerification) {
+          recordLeadOutcome(storedLead.id, "positive", String(storedLead.stage || storedLead.reviewStatus));
+        } else if (isNewRejection) {
+          recordLeadOutcome(storedLead.id, "negative", String(storedLead.stage || storedLead.reviewStatus));
+        }
+      } catch (err) {
+        console.warn("[lead-outcomes] Failed to record lead outcome:", err);
+      }
+    }
 
     if (isNewRejection || isNewVerification) {
-      const family = storedLead.evidence?.discoveryFamily || storedLead.scout?.family || "general";
-      const lane = storedLead.evidence?.discoveryLane || storedLead.scout?.lane || "person";
+      // G5: read the producing arm from top-level fields (written by
+      // leadMapping) with evidence/scout fallbacks, and pass domainCluster
+      // so the feedback scope key matches the scheduler retrieval key.
+      const family = storedLead.discoveryFamily || storedLead.evidence?.discoveryFamily || storedLead.scout?.family || "general";
+      const lane = storedLead.discoveryLane || storedLead.evidence?.discoveryLane || storedLead.scout?.lane || "person";
       const provider = storedLead.evidence?.sourceProvider || storedLead.source || "tavily";
       try {
+        const briefText = `${storedLead.profile?.currentTitle || storedLead.title || ""} ${storedLead.profile?.currentCompany || storedLead.company || ""} ${storedLead.profile?.industry || ""}`;
         recordQueryPerformance({
+          domainCluster: deriveDomainCluster(briefText),
           family,
           lane,
           provider,

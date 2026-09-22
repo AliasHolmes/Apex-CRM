@@ -171,22 +171,32 @@ export function contractMentionsVertical(contractText: string, customRegex?: Reg
   return regex.test(contractText || "");
 }
 
+/**
+ * G10: the b2b_saas wrong-vertical guard (agency/consulting/contractor) is a
+ * COMPANY-vertical signal. Scoping it to company/industry fields keeps the
+ * guard for actual consulting firms while past-career mentions in
+ * summary/about/headline ("previously led a consulting practice") no longer
+ * auto-fail. Non-company clusters keep the wider scope.
+ */
+const COMPANY_SCOPED_CLUSTERS = new Set(['b2b_saas']);
+
 export function candidateMatchesWrongVertical(
   lead: Record<string, any>,
-  wrongVerticalRegex: RegExp
+  wrongVerticalRegex: RegExp,
+  cluster?: string
 ): string | null {
-  const haystacks: Array<{ label: string; text: string }> = [
+  const companyHaystacks: Array<{ label: string; text: string }> = [
     { label: "industry", text: `${(lead as any)?.industry || ""} ${(lead as any)?.profile?.industry || ""}` },
     { label: "company", text: `${(lead as any)?.currentCompany || (lead as any)?.company || (lead as any)?.profile?.currentCompany || ""}` },
-    {
-      label: "profile",
-      text: `${(lead as any)?.currentTitle || ""} ${(lead as any)?.headline || ""} ${(lead as any)?.summary || ""} ${(lead as any)?.about || ""}`,
-    },
   ];
-  for (const { text } of haystacks) {
+  for (const { text } of companyHaystacks) {
     const match = text.match(wrongVerticalRegex);
     if (match) return match[0].toLowerCase();
   }
+  if (cluster && COMPANY_SCOPED_CLUSTERS.has(cluster)) return null;
+  const profileText = `${(lead as any)?.currentTitle || ""} ${(lead as any)?.headline || ""} ${(lead as any)?.summary || ""} ${(lead as any)?.about || ""}`;
+  const match = profileText.match(wrongVerticalRegex);
+  if (match) return match[0].toLowerCase();
   return null;
 }
 

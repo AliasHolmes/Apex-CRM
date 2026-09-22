@@ -28,7 +28,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 22;
+const LATEST_SCHEMA_VERSION = 23;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1217,6 +1217,25 @@ function runMigrations(db: DatabaseSync) {
       }
     }
 
+    // G17 (v23): binary outcome feedback. Starts with {positive, negative}
+    // + outcome_detail (the stage: KEEP/MEETING/CONVERTED/REJECT/LOST/REPLIED);
+    // graduates to graded weights once >=100 feedback events calibrate them.
+    if (currentVersion < 23) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS lead_outcomes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          lead_id TEXT NOT NULL,
+          outcome_type TEXT NOT NULL,
+          outcome_detail TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lead_outcomes_lead_id
+          ON lead_outcomes(lead_id);
+        CREATE INDEX IF NOT EXISTS idx_lead_outcomes_type
+          ON lead_outcomes(outcome_type);
+      `);
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -2051,6 +2070,7 @@ export type LeadWriteResult = {
 export type LeadWriteOptions = {
   requireExisting?: boolean;
   perItemConflict?: boolean;
+  forceOverwrite?: boolean;
 };
 
 export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
@@ -2168,11 +2188,28 @@ export function upsertLeadInExistingTransaction(
     );
   }
 
+  const existingLead = existing ? readLeadFromRow(existing) : undefined;
   const revision = existing ? Number(existing.revision || 1) + 1 : 1;
   const storedLead: Record<string, any> = {
     ...normalizeStoredLead(lead),
     revision,
   };
+  // G15: On same-id update, preserve CRM-owned workflow fields unless explicit forceOverwrite is set.
+  // Prevents engine resumptions or re-scrapes from wiping human stage, review status, next action, or notes.
+  if (existingLead && !options.forceOverwrite) {
+    if (existingLead.stage && existingLead.stage !== "SCRAPED" && (!lead.stage || lead.stage === "SCRAPED")) {
+      storedLead.stage = existingLead.stage;
+    }
+    if (existingLead.reviewStatus && existingLead.reviewStatus !== "UNREVIEWED" && (!lead.reviewStatus || lead.reviewStatus === "UNREVIEWED")) {
+      storedLead.reviewStatus = existingLead.reviewStatus;
+    }
+    if (existingLead.nextAction && existingLead.nextAction !== "NONE" && (!lead.nextAction || lead.nextAction === "NONE")) {
+      storedLead.nextAction = existingLead.nextAction;
+    }
+    if (existingLead.notes && !lead.notes) {
+      storedLead.notes = existingLead.notes;
+    }
+  }
   const cols = extractPromotedLeadColumns(storedLead);
 
   getCachedStatement(
@@ -3635,6 +3672,41 @@ export function readQueryPerformance(limit = 100, domainCluster?: string) {
     .all(safeLimit) as any[];
 }
 
+/**
+ * G17: binary outcome feedback ({positive, negative} + detail stage).
+ * Written on every PATCH stage/review transition (api.ts), including REPLIED
+ * which previously produced no signal.
+ */
+export type LeadOutcomeType = 'positive' | 'negative';
+
+export function recordLeadOutcome(leadId: string, outcomeType: LeadOutcomeType, outcomeDetail: string) {
+  try {
+    getLeadsDb().prepare(
+      `INSERT INTO lead_outcomes (lead_id, outcome_type, outcome_detail, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(String(leadId), outcomeType, String(outcomeDetail || '').slice(0, 80), new Date().toISOString());
+  } catch (err) {
+    console.warn('[lead-outcomes] Failed to record outcome:', err);
+  }
+}
+
+export function readOutcomeRate(): { positive: number; total: number; rate: number } {
+  try {
+    const rows = getLeadsDb().prepare(
+      `SELECT outcome_type, COUNT(*) AS n FROM lead_outcomes GROUP BY outcome_type`
+    ).all() as { outcome_type?: string; n?: number }[];
+    let positive = 0, total = 0;
+    for (const r of rows) {
+      const n = Number(r.n || 0);
+      total += n;
+      if (String(r.outcome_type) === 'positive') positive += n;
+    }
+    return { positive, total, rate: total > 0 ? positive / total : 0 };
+  } catch {
+    return { positive: 0, total: 0, rate: 0 };
+  }
+}
+
 const usagePeriod = (date = new Date()) => date.toISOString().slice(0, 7);
 
 export function readProviderUsage(provider?: string, period = usagePeriod()) {
@@ -4682,11 +4754,16 @@ export function readStoredCompanyDomains(limit = 100): string[] {
 export function readStoredMetroSaturation(): Record<string, number> {
   try {
     const db = getLeadsDb();
+    // G13: engine-persisted leads store location under profile.*, so the
+    // WHERE clause must match those paths too -- otherwise the
+    // profile.location branch in the loop below is unreachable for them.
     const rows = db.prepare(`
       SELECT payload
       FROM leads
       WHERE json_extract(payload, '$.location') IS NOT NULL
          OR json_extract(payload, '$.city') IS NOT NULL
+         OR json_extract(payload, '$.profile.location') IS NOT NULL
+         OR json_extract(payload, '$.profile.city') IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 1000
     `).all() as { payload: string }[];

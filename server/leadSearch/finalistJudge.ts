@@ -53,6 +53,21 @@ export type FinalistCandidate = {
   evidence: Array<{ id: string; text: string }>;
 };
 
+/**
+ * Phase 0 baseline telemetry (non-behavioral counters, G1/G2 observability).
+ * Incremented on every judge path; no behavior change. Lets the eval harness
+ * prove uncited passes -> ~0 after Phase 1.
+ */
+export const judgeEvidenceTelemetry = {
+  uncitedPasses: 0,
+  companyDerivedLocationAutoPasses: 0,
+};
+
+export function resetJudgeEvidenceTelemetry() {
+  judgeEvidenceTelemetry.uncitedPasses = 0;
+  judgeEvidenceTelemetry.companyDerivedLocationAutoPasses = 0;
+}
+
 export type Qualification = {
   policyVersion: string;
   verdict: "qualified" | "qualified_partial" | "unverified";
@@ -293,12 +308,23 @@ const normalizePassage = (text: string): string =>
     .trim()
     .toLowerCase();
 
+/** G1: explicit grounding mode. strict (default) requires a resolvable citation; legacy replays historical behavior. */
+export function evidenceGroundingMode(): 'strict' | 'legacy' {
+  const raw = String(process.env.EVIDENCE_GROUNDING_MODE || '').trim().toLowerCase();
+  if (raw === 'legacy') return 'legacy';
+  return 'strict';
+}
+
 export function verifyEvidencePassage(
   evidenceText: string,
   citedQuote: string,
   threshold = 0.70
 ): { valid: boolean; similarity: number } {
-  if (!citedQuote || !citedQuote.trim()) return { valid: true, similarity: 1.0 };
+  if (!citedQuote || !citedQuote.trim()) {
+    // G1 strict: an empty citation proves nothing.
+    if (evidenceGroundingMode() === 'strict') return { valid: false, similarity: 0.0 };
+    return { valid: true, similarity: 1.0 };
+  }
   if (!evidenceText || !evidenceText.trim()) return { valid: false, similarity: 0.0 };
 
   if (evidenceText.includes(citedQuote)) {
@@ -316,7 +342,10 @@ export function verifyEvidencePassage(
   const quoteTokens = normQuote.split(' ').filter(Boolean).map(t => normalizeAliasTerm(t) || t);
   const evidenceTokens = normEvidence.split(' ').filter(Boolean).map(t => normalizeAliasTerm(t) || t);
 
-  if (quoteTokens.length === 0) return { valid: true, similarity: 1.0 };
+  if (quoteTokens.length === 0) {
+    if (evidenceGroundingMode() === 'strict') return { valid: false, similarity: 0.0 };
+    return { valid: true, similarity: 1.0 };
+  }
   if (evidenceTokens.length === 0) return { valid: false, similarity: 0.0 };
 
   // Set-based token containment
@@ -361,7 +390,30 @@ export function verifyEvidencePassage(
     if (maxSimilarity >= 1.0) break;
   }
 
-  const finalSim = Math.max(setOverlap, maxSimilarity);
+  // G9: ordered sliding-window is the primary signal (0.7), set overlap
+  // secondary (0.3) so paraphrases with reordered words still pass but
+  // order-blind containment alone cannot dominate.
+  const finalSim = maxSimilarity * 0.7 + setOverlap * 0.3;
+
+  // G9 negation-polarity guard: a negator adjacent to the matched span in
+  // evidence that is absent from the quote rejects regardless of overlap.
+  const NEGATORS = new Set(['not', 'no', 'isnt', 'isn', 'without', 'stopped', 'never', 'dont', 'doesnt', 'hasnt', 'wont', 'cannot', 'cant', 'nope', 'none']);
+  const normNeg = (t: string) => t.toLowerCase().replace(/[^a-z]/g, '');
+  const quoteNeg = new Set(quoteTokens.map(normNeg).filter(t => NEGATORS.has(t)));
+  let windowHasStrayNegator = false;
+  const wSize = Math.min(windowSize, evidenceTokens.length);
+  outer: for (let i = 0; i <= evidenceTokens.length - wSize; i++) {
+    const slice = evidenceTokens.slice(i, i + wSize);
+    for (let j = 0; j < slice.length; j++) {
+      if (NEGATORS.has(normNeg(slice[j])) && !quoteNeg.has(normNeg(slice[j]))) {
+        windowHasStrayNegator = true;
+        break outer;
+      }
+    }
+  }
+  if (windowHasStrayNegator) {
+    return { valid: false, similarity: Number(Math.min(finalSim, 0.49).toFixed(2)) };
+  }
 
   return {
     valid: finalSim >= threshold,
@@ -392,7 +444,14 @@ const normalizeAssessment = (
   if (status !== 'pass') {
     quoteValid = true;
   } else if (!evidenceQuote) {
-    quoteValid = !process.env.ENFORCE_CITATION_QUOTES;
+    // G1: strict (default) degrades uncited passes to unknown; legacy preserves replay.
+    if (evidenceGroundingMode() === 'legacy') {
+      quoteValid = !process.env.ENFORCE_CITATION_QUOTES;
+    } else {
+      quoteValid = false;
+    }
+    // Phase 0 counter (telemetry only): count passes that would be uncited.
+    if (status === 'pass') judgeEvidenceTelemetry.uncitedPasses++;
   } else if (!isFlagEnabled.fuzzyQuoteGrounding()) {
     quoteValid = Boolean(evidence && evidence.text.includes(evidenceQuote));
   } else if (evidence && verifyEvidencePassage(evidence.text, evidenceQuote).valid) {
@@ -622,15 +681,15 @@ export function validateFinalistJudgments(
       semanticFit >= 6.5 && authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
 
     let status: FinalistOutcomeStatus = "unknown";
-    if (fabricatedHardPass) {
+    if (identityFails > 0 || contextFails > 0) {
+      // Any failed hard requirement (identity, company type, location, or industry) is a hard fail.
+      status = "hard_fail";
+      counts.hardFail++;
+    } else if (fabricatedHardPass) {
       // A "pass" whose cited quote does not exist in the evidence packet is a
       // fabrication signal; it blocks qualification entirely.
       status = "unknown";
       counts.unknown++;
-    } else if (identityFails > 0 || contextFails > 0) {
-      // Any failed hard requirement (identity, company type, location, or industry) is a hard fail.
-      status = "hard_fail";
-      counts.hardFail++;
     } else if (identityVerified && contextVerified && signalsSatisfied) {
       status = "qualified";
       counts.qualified++;
@@ -1015,7 +1074,8 @@ export function checkStrictContradiction(
       .map((r) => `${r.description} ${(r.acceptableTerms || []).join(" ")}`)
       .join(" ")}`;
     if (!contractMentionsVertical(contractText, wrongVerticalRegex)) {
-      const verticalHit = candidateMatchesWrongVertical(lead, wrongVerticalRegex);
+      // G10: company-scoped for b2b_saas so past-career prose never auto-fails.
+      const verticalHit = candidateMatchesWrongVertical(lead, wrongVerticalRegex, targetCluster);
       if (verticalHit) {
         return {
           reason: targetCluster === 'b2b_agency'
@@ -1126,6 +1186,11 @@ export function triPartitionCandidatesByEvidence(
       );
 
     if (!matchesAllStructured) {
+      // G2 telemetry: routed to judge because location is company-derived.
+      const prov = (lead as any)?._locationProvenance || (lead as any)?.profile?._locationProvenance;
+      if (prov === 'company_site' && hardRequirements.some(r => r.scope === 'person_location')) {
+        judgeEvidenceTelemetry.companyDerivedLocationAutoPasses++;
+      }
       needsJudge.push(candidate);
       continue;
     }

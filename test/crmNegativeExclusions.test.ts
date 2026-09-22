@@ -1,7 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractValidCompanyDomain } from "../server/db.js";
+import { extractValidCompanyDomain, upsertLeadWithIdentity, readStoredMetroSaturation, deleteLead } from "../server/db.js";
 import { buildStrategistPrompt } from "../server/leadSearch/searchSpec.js";
+
+test("G13: readStoredMetroSaturation counts profile.location engine leads", () => {
+  const ids: string[] = [];
+  try {
+    for (let i = 0; i < 2; i++) {
+      const id = `g13-test-lead-${Date.now()}-${i}`;
+      ids.push(id);
+      upsertLeadWithIdentity({ id, profile: { location: "London" }, fullName: `G13 Test ${i}` } as any);
+    }
+    assert.ok((readStoredMetroSaturation()["london"] || 0) >= 2);
+  } finally {
+    for (const id of ids) { try { deleteLead(id); } catch {} }
+  }
+});
 
 test("CRM Negative Exclusions: extracts and normalizes valid company domains", () => {
   assert.equal(extractValidCompanyDomain("https://www.cognition-ai.co.uk/services"), "cognition-ai.co.uk");

@@ -142,7 +142,13 @@ export async function executePersistStage(
     );
   }
 
-  telemetry.finish("success", stats);
+  // G16: derive log/session status from persistence reality instead of
+  // hardcoding success -- a failed persist must not read as a clean session.
+  const derivedStatus: "success" | "partial_success" | "error" =
+    persistenceStatus === "complete" ? "success"
+    : persistenceStatus === "partial" ? "partial_success" : "error";
+  const telemetryStatus = derivedStatus === "partial_success" ? "success" : derivedStatus;
+  telemetry.finish(telemetryStatus, stats);
   const traceSummary = telemetry.getSummary();
   const detailedLogsText = `${sessionLogs.join("\n")}\n\nSTATS_SUMMARY:\n${JSON.stringify(stats, null, 2)}`;
   safeInsertSearchLog({
@@ -150,8 +156,8 @@ export async function executePersistStage(
     timestamp: new Date().toISOString(),
     prompt: promptQuery,
     generatedQueries,
-    status: "success",
-    errorMessage: "",
+    status: derivedStatus as any,
+    errorMessage: derivedStatus === "success" ? "" : `persistence ${persistenceStatus}`,
     rawResultsCount,
     leadsFound,
     detailedLogs: detailedLogsText,
@@ -164,7 +170,7 @@ export async function executePersistStage(
 
   upsertMiningSession({
     id: sessionId,
-    status: "success",
+    status: derivedStatus as any,
     completedAt: new Date().toISOString(),
     stats: { ...stats, persistedCount, persistenceStatus },
     traceSummary,

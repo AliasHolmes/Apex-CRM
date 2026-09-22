@@ -14,6 +14,7 @@
         "typecheck": "tsc --noEmit",
         "test": "tsx --test \"test/*.test.ts\"",
         "test:all": "tsx --test \"test/*.test.ts\"",
+        "test:eval": "tsx --test test/queryIntelligence.eval.ts",
         "test:enrichment": "tsx --test test/enrichmentCache.test.ts test/linkedinEvidence.test.ts test/linkedinPostIntent.test.ts",
         "test:lead-search": "tsx --test test/leadSearchHelpers.test.ts",
         "test:prospect-quality": "tsx --test test/prospectQuality.test.ts test/contractShape.test.ts",

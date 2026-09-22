@@ -42,6 +42,7 @@ export type AdaptiveSchedulerOptions = {
   explorationStrength?: number;
   round?: number;
   explorationFloorEvery?: number;
+  outcomeRate?: number;
 };
 
 const finiteCount = (value: unknown) => {
@@ -122,11 +123,32 @@ const rowScopeKey = (row: AdaptivePerformanceRow & { domain_cluster?: string; do
 };
 
 /**
+ * G6: seedable RNG for deterministic scheduling in tests. Production uses
+ * Math.random; tests call seedAdaptiveRandom(n) for identical selections.
+ */
+let adaptiveRandomSource: () => number = Math.random;
+export function setAdaptiveRandomSource(fn: () => number) {
+  adaptiveRandomSource = fn;
+}
+export function seedAdaptiveRandom(seed: number) {
+  let s = seed >>> 0;
+  adaptiveRandomSource = () => {
+    s = (Math.imul(s ^ (s >>> 16), 0x45d9f3b) + 0x45d9f3b) | 0;
+    s = (Math.imul(s ^ (s >>> 16), 0x45d9f3b) + 0x45d9f3b) | 0;
+    s ^= s >>> 16;
+    return (s >>> 0) / 4294967296;
+  };
+}
+export function resetAdaptiveRandomSource() {
+  adaptiveRandomSource = Math.random;
+}
+
+/**
  * Marsaglia and Tsang method for generating standard Gamma(alpha, 1) variates.
  */
 export function sampleGamma(alpha: number): number {
   if (alpha < 1) {
-    const u = Math.random();
+    const u = adaptiveRandomSource();
     return sampleGamma(1 + alpha) * Math.pow(Math.max(u, 1e-10), 1 / alpha);
   }
   const d = alpha - 1 / 3;
@@ -135,13 +157,13 @@ export function sampleGamma(alpha: number): number {
     let z = 0;
     let v = 0;
     do {
-      const u1 = Math.random();
-      const u2 = Math.random();
+      const u1 = adaptiveRandomSource();
+      const u2 = adaptiveRandomSource();
       z = Math.sqrt(-2.0 * Math.log(u1 || 1e-10)) * Math.cos(2.0 * Math.PI * u2);
       v = 1 + c * z;
     } while (v <= 0);
     v = v * v * v;
-    const u = Math.random();
+    const u = adaptiveRandomSource();
     if (u < 1 - 0.0331 * z * z * z * z) return d * v;
     if (Math.log(u || 1e-10) < 0.5 * z * z + d * (1 - v + Math.log(v))) return d * v;
   }
@@ -164,7 +186,11 @@ export function scoreAdaptiveArm(
   row: AdaptivePerformanceRow | undefined,
   totalOutcomeRuns: number,
   explorationStrength = 1.25,
-  useThompsonSampling = true
+  useThompsonSampling = true,
+  // G17: binary outcome rate (positive/total from lead_outcomes). Global until
+  // outcomes are arm-attributed; weighted above retrieval-count proxies.
+  // Callers pass it in so this function stays pure (no SQLite reads here).
+  outcomeRate = 0
 ) {
   const outcomeRuns = finiteCount(row?.outcome_runs);
   if (outcomeRuns === 0) {
@@ -185,6 +211,8 @@ export function scoreAdaptiveArm(
   const duplicates = finiteCount(row?.duplicate_candidates) / safeOutcomeRuns;
   const providerUnits = finiteCount(row?.provider_units) / safeOutcomeRuns;
   const latencySeconds = (finiteCount(row?.search_latency_ms) / 1_000) / safeOutcomeRuns;
+  // G17: hard fails were stored but never read -- penalize harder than rescues.
+  const hardFailed = finiteCount((row as any)?.hard_failed_candidates) / safeOutcomeRuns;
 
   let classBonus = 0;
   if (isFlagEnabled.classAwareScheduler()) {
@@ -195,19 +223,22 @@ export function scoreAdaptiveArm(
   }
 
   // Beta-Bernoulli conjugate posteriors:
-  // Successes (alpha): Qualified finalists, returned list members, unique discoveries
-  // Failures (beta): Rescued low-tier candidates, duplicates, provider burn, latency
+  // Successes (alpha): Qualified finalists, returned list members, unique discoveries, binary outcomes
+  // Failures (beta): Hard fails, rescued low-tier candidates, duplicates, provider burn, latency
   const alphaPrior = 1.0;
   const betaPrior = 1.0;
-  const alphaPost = alphaPrior + qualified * 3.5 + returned * 2.5 + unique * 0.1 + (classBonus > 0 ? classBonus * 0.5 : 0);
-  const betaPost = betaPrior + rescued * 1.25 + duplicates * 1.5 + providerUnits * 0.12 + latencySeconds * 0.002;
+  const outcomeBoost = Math.max(0, Math.min(1, Number(outcomeRate) || 0)) * 4.0;
+  const alphaPost = alphaPrior + qualified * 3.5 + returned * 2.5 + unique * 0.1 + outcomeBoost + (classBonus > 0 ? classBonus * 0.5 : 0);
+  const betaPost = betaPrior + hardFailed * 2.0 + rescued * 1.25 + duplicates * 1.5 + providerUnits * 0.12 + latencySeconds * 0.002;
   const thompsonSample = sampleBeta(alphaPost, betaPost);
 
   // Finalist quality and actual returned-list contribution dominate.
   const meanReward = (
     qualified * 3.5 +
     returned * 2.5 +
-    unique * 0.1 -
+    unique * 0.1 +
+    outcomeBoost -
+    hardFailed * 2.0 -
     rescued * 1.25 -
     duplicates * 1.2 -
     providerUnits * 0.12 -
@@ -272,7 +303,7 @@ export function scheduleAdaptiveRetrievalTasks(
     const scopeKey = adaptiveScopeKey(task);
     const globalScopeKey = [task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily'].filter(Boolean).join('|').toLowerCase();
     const row = rowsByScope.get(scopeKey) || rowsByScope.get(globalScopeKey);
-    const arm = scoreAdaptiveArm(row, totalOutcomeRuns, explorationStrength);
+    const arm = scoreAdaptiveArm(row, totalOutcomeRuns, explorationStrength, true, options.outcomeRate ?? 0);
     return { task, originalIndex, scopeKey, ...arm };
   }).sort((a, b) => b.score - a.score || a.task.priority - b.task.priority || a.originalIndex - b.originalIndex);
 
@@ -312,12 +343,18 @@ export function scheduleAdaptiveRetrievalTasks(
     if (selected.length >= maxTasks) break;
     addSelected(item);
   }
-  // Phase 3 bound: contract_guard correctness wins, but never exceed maxTasks+2.
-  // Previously unbounded (rich briefs could emit 10+ tasks); trim lowest-score guards.
+  // G6: contract_guard entries are correctness constraints, not optional
+  // arms -- only trim non-guard entries. If everything is a guard, correctness
+  // wins over pruning and the cap is exceeded.
   const hardCap = maxTasks + 2;
   if (selected.length > hardCap) {
-    selected.sort((a, b) => b.score - a.score);
-    selected.length = hardCap;
+    const guards = selected.filter(s => guardedReasons.get(s.originalIndex) === 'contract_guard');
+    const others = selected.filter(s => guardedReasons.get(s.originalIndex) !== 'contract_guard')
+      .sort((a, b) => b.score - a.score);
+    const room = Math.max(0, hardCap - guards.length);
+    const kept = [...guards, ...others.slice(0, room)];
+    selected.length = 0;
+    selected.push(...kept);
     selectedIndexes.clear();
     for (const s of selected) selectedIndexes.add(s.originalIndex);
   }

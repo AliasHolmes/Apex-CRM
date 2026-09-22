@@ -132,6 +132,11 @@ test('parseSnippetFreshnessDays and computeFreshnessMultiplier calculate recency
   // Older signals (months)
   assert.equal(parseSnippetFreshnessDays(['4 months ago - announcement']), 120);
   assert.ok(computeFreshnessMultiplier(120) >= 0.20 && computeFreshnessMultiplier(120) <= 0.30);
+
+  // G11: undated snippets are neutral (45d, multiplier strictly < 1.0), never "best"
+  assert.equal(parseSnippetFreshnessDays(['Scaling workflow bottlenecks at Acme']), 45);
+  assert.ok(computeFreshnessMultiplier(45) < 1.0);
+  assert.ok(computeFreshnessMultiplier(45) > 0.30 && computeFreshnessMultiplier(45) < 0.50);
 });
 
 test('applyPostIntentDelta scales boost with temporal freshness', () => {

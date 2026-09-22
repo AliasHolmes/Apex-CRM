@@ -163,12 +163,35 @@ export function deriveCompanyDomainWithProvenance(lead: Record<string, any>): De
     lead.sourceUrl || ''
   ];
 
+  // G3: evidence_url provenance is untrusted prose -- require the URL host to
+  // share a meaningful token with the company name (after stripping
+  // TLD/suffixes), otherwise a press link (e.g. techcrunch.com) would be
+  // probed as the company's own site.
+  const rawCompanyForUrlGuard =
+    lead.currentCompany || lead.company || lead.profile?.currentCompany || '';
+  const companyTokensForUrlGuard = String(rawCompanyForUrlGuard)
+    .toLowerCase()
+    .replace(/\b(?:inc|llc|ltd|corp|corporation|gmbh|co|company|group|holdings|services|solutions|agency|consulting|studio|srl|sas|sl|ag|pty|sdn|bhd|aps)\b/gi, '')
+    .split(/[^a-z0-9]+/)
+    .filter(t => t.length >= 4);
+  const urlHostSharesCompanyToken = (normalized: string): boolean => {
+    if (companyTokensForUrlGuard.length === 0) return false;
+    const host = (() => { try { return new URL(normalized).hostname.toLowerCase(); } catch { return ''; } })();
+    const hostParts = host.split('.').slice(0, -1).join(' ').split(/[^a-z0-9]+/).filter(t => t.length >= 3);
+    const hostJoined = hostParts.join('');
+    return companyTokensForUrlGuard.some(tok =>
+      hostJoined.includes(tok) || hostParts.some(h => h.includes(tok) || tok.includes(h)));
+  };
+
   const urlRegex = /\bhttps?:\/\/[^\s"'<>()[\]]+/gi;
   for (const text of candidateTexts) {
     const matches = text.match(urlRegex) || [];
     for (const match of matches) {
       const normalized = normalizeDomainUrl(match);
-      if (normalized) return { domain: normalized, provenance: 'evidence_url' };
+      if (!normalized) continue;
+      // G3 identity guard for untrusted evidence prose.
+      if (!urlHostSharesCompanyToken(normalized)) continue;
+      return { domain: normalized, provenance: 'evidence_url' };
     }
   }
 
@@ -523,8 +546,10 @@ export async function probeCompanySites(
     const companyName = domainCompanyMap.get(domain);
     const lead = domainLeadMap.get(domain);
 
-    // Hardening: Slug-guessed domains require company token match in page content
-    if (provenance === 'slug_guess' && !matchesCompanyIdentity(companyName, combinedMarkdown, lead, provenance)) {
+    // Hardening (G3): slug_guess AND evidence_url domains require company
+    // token match in page content. explicit (website field) stays trusted.
+    if ((provenance === 'slug_guess' || provenance === 'evidence_url') &&
+        !matchesCompanyIdentity(companyName, combinedMarkdown, lead, provenance)) {
       continue;
     }
 
@@ -549,10 +574,13 @@ export function applySiteProbe(
   lead.profile = lead.profile || {};
   lead.companyAccount = lead.companyAccount || {};
 
-  // 1. Populate empty location
+  // 1. Populate empty location (G2: tag provenance so the judge can
+  // distinguish person-stated location from company-HQ-derived location)
   if (!lead.location && !lead.profile.location && signals.location) {
     lead.location = signals.location;
     lead.profile.location = signals.location;
+    lead._locationProvenance = 'company_site';
+    lead.profile._locationProvenance = 'company_site';
   }
 
   // 2. Populate empty headcount / company size

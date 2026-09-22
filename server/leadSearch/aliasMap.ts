@@ -17,8 +17,11 @@ const ROLE_ALIASES: Record<string, string> = {
   'vps': 'vice president',
   'vice presidents': 'vice president',
   'ceo': 'ceo',
+  'ceos': 'ceo',
   'chief executive': 'ceo',
   'chief executive officer': 'ceo',
+  'chief executive officers': 'ceo',
+  'presidents': 'president',
   'cto': 'cto',
   'chief technology officer': 'cto',
   'cmo': 'cmo',
@@ -124,15 +127,37 @@ export function normalizeAliasText(text: unknown): string {
 
 /** True if haystack contains needle under alias normalization. */
 export function aliasIncludes(haystack: unknown, needle: unknown): boolean {
-  const hay = ` ${normalizeAliasText(haystack)} `;
+  // G4: token-normalize the haystack (not just the needle) so "US" in the
+  // haystack matches "United States" needle and vice versa. Keeps the exact
+  // fast path first for performance.
+  const rawHay = ` ${lower(haystack)} `;
   const ndl = normalizeAliasTerm(needle);
   if (!ndl) return false;
-  if (hay.includes(` ${ndl} `)) return true;
-  // Also try raw needle for multi-word phrases not in alias table
+  if (rawHay.includes(` ${ndl} `)) return true;
   const raw = lower(needle);
-  if (raw !== ndl && hay.includes(` ${raw} `)) return true;
+  if (raw !== ndl && rawHay.includes(` ${raw} `)) return true;
+  // Token-normalized haystack: map each word through the alias table so
+  // "US SaaS founder" normalizes "us" -> "united states" before matching.
+  // Multi-word aliases ("chief executive officer" -> "ceo") are replaced at
+  // phrase level first (longest-key-first) so abbreviated titles match.
+  let phraseHay = ` ${lower(haystack)} `;
+  const phraseKeys = Object.keys(ALL_ALIASES).filter(k => k.includes(' ')).sort((a, b) => b.length - a.length);
+  for (const key of phraseKeys) {
+    const escaped = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    phraseHay = phraseHay.replace(new RegExp(` ${escaped} `, 'g'), ` ${ALL_ALIASES[key]} `);
+  }
+  const hayTokens = phraseHay.split(/[^a-z0-9]+/).filter(Boolean);
+  const normHayTokens = hayTokens.map(t => normalizeAliasTerm(t) || t);
+  const normHay = ` ${normHayTokens.join(' ')} `;
+  const combinedHay = `${rawHay} ${phraseHay} ${normHay} `;
+  // Whole-phrase alias: normalize the full needle phrase too
+  const normPhrase = normalizeAliasText(raw);
+  if (normPhrase && normPhrase !== raw && combinedHay.includes(` ${normPhrase} `)) return true;
+  if (combinedHay.includes(` ${ndl} `)) return true;
+  if (raw !== ndl && combinedHay.includes(` ${raw} `)) return true;
   // Fallback substring for long phrases (e.g. "manual outbound")
-  if (raw.length > 8 && hay.includes(raw)) return true;
+  if (raw.length > 8 && combinedHay.includes(raw)) return true;
+  if (ndl.length > 8 && combinedHay.includes(ndl)) return true;
   return false;
 }
 

@@ -325,9 +325,9 @@ describe('evidence-grounded prospect quality', () => {
       verdict: 'qualified',
       reason: 'Owner of verified AI agency in New York.',
       requirements: [
-        { requirementId: 'role', status: 'pass', evidenceId: 'e0' },
-        { requirementId: 'company', status: 'pass', evidenceId: 'e0' },
-        { requirementId: 'location', status: 'pass', evidenceId: 'e0' },
+        { requirementId: 'role', status: 'pass', evidenceId: 'e0', evidenceQuote: 'Owner' },
+        { requirementId: 'company', status: 'pass', evidenceId: 'e0', evidenceQuote: 'AI agency' },
+        { requirementId: 'location', status: 'pass', evidenceId: 'e0', evidenceQuote: 'New York' },
         { requirementId: 'signal', status: 'unknown' }
       ]
     }];

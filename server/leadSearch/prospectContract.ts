@@ -635,8 +635,10 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     });
   };
 
-  const roleHints = ['owner', 'owners', 'founder', 'founders', 'co-founder', 'ceo', 'chief executive officer', 'president', 'partner', 'partners', 'vp', 'vice president', 'head of', 'director', 'directors'];
-  const hintedRoles = roleHints.filter(term => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i').test(brief));
+  // G22: plural-tolerant role matchers -- "CEOs", "Presidents", "VPs",
+  // "co-founders" must resolve to person_role, never leak to company_type.
+  const roleHints = ['owner', 'owners', 'founder', 'founders', 'co-founder', 'co-founders', 'cofounder', 'cofounders', 'ceo', 'ceos', 'chief executive officer', 'chief executive officers', 'president', 'presidents', 'partner', 'partners', 'vp', 'vps', 'vice president', 'vice presidents', 'head of', 'director', 'directors'];
+  const hintedRoles = roleHints.filter(term => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}(?:s|es)?\\b`, 'i').test(brief));
 
   // Guard rails: free-text briefs routinely contain buying-signal timeframes
   // ("from the last 45 days seeking...") and role modifiers ("Managing
@@ -649,7 +651,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     return v.length > 1 && v.length <= 48 && !JUNK_TERM_PATTERN.test(v);
   };
 
-  const ROLE_WORDS_PATTERN = /\b(owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i;
+  // G22: plural-tolerant role guard so a bare role ("CEOs") can never be
+  // emitted as company_type by the comma/conjunction loop below.
+  const ROLE_WORDS_PATTERN = /\b(owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|vice\s+presidents?|chief\s+executives?(?:\s+officers?)?|heads?)\b/i;
   const CONJUNCTION_STOP_PATTERN = /^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\b|\b(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i;
   const COMPANY_TITLE_PREFIX_PATTERN = /^(?:managing|senior|junior|lead|principal|chief|executive|vp|vice|deputy|head|director|directors|founder|owner|ceo|president)\b/i;
 
@@ -672,11 +676,12 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
 
   // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
   // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
-  const prepCompanyMatch = clean(brief).match(/\b(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b\s+(?:of|at|in|for)\s+(?:an?\s+)?([^,.]+?)(?=\s+(?:with|in|near|from|located|who|having|\d+|,|\.|$))/i)?.[1]?.trim() || '';
+  const ROLE_ALT = 'owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|heads?';
+  const prepCompanyMatch = clean(brief).match(new RegExp(`\\b(?:${ROLE_ALT})\\b\\s+(?:of|at|in|for)\\s+(?:an?\\s+)?([^,.]+?)(?=\\s+(?:with|in|near|from|located|who|having|\\d+|,|\\.|$))`, 'i'))?.[1]?.trim() || '';
 
   // Pattern B: Direct Prefix "[Company Type] [Role]"
   // e.g. "AI agency owner" -> "AI agency"
-  const rawPrefixMatch = clean(brief).match(/\b([^,.]+?)\s+(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i)?.[1]?.trim() || '';
+  const rawPrefixMatch = clean(brief).match(new RegExp(`\\b([^,.]+?)\\s+(?:${ROLE_ALT})\\b`, 'i'))?.[1]?.trim() || '';
   const prefixCompanyMatch = rawPrefixMatch.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
 
   // Pattern C: Headcount / Employee size
@@ -749,10 +754,10 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     addCompanyType(firmMatch.replace(/lawyer firm/i, 'law firm'));
   }
 
-  const roleStopRegex = /\b(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i;
+  const roleStopRegex = /\b(?:owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|vice\s+presidents?|heads?)\b/i;
   for (const segment of clean(brief).split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
     if (!segment) continue;
-    const rawPrefix = segment.match(/\b([^,.]+?)\s+(?:owner|owners|founder|founders|co-founder|cofounder|ceo|president|partner|partners|director|directors|executive|executives|vp|head)\b/i)?.[1]?.trim();
+    const rawPrefix = segment.match(new RegExp(`\\b([^,.]+?)\\s+(?:${ROLE_ALT})\\b`, 'i'))?.[1]?.trim();
     const prefix = rawPrefix ? rawPrefix.replace(ACTION_VERB_PREFIX_PATTERN, '').trim() : '';
     const cleanSegment = segment.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
     if (prefix) {
@@ -1090,6 +1095,21 @@ export function buildContractFallbackQueries(
         .trim();
       rawVertical = cleanedBrief || '';
     }
+  }
+  // G24: never use a term that resolves to a location as the vertical
+  // ("founders in Berlin" must not emit vertical "Berlin"). Fall back to
+  // identitySpec.companyTypes[0] or omit the vertical token.
+  const verticalResolvesToLocation = (term: string): boolean => {
+    const l = String(term || '').trim().toLowerCase().replace(/^"|"$/g, '');
+    if (!l) return false;
+    if (COUNTRY_CANONICAL_MAP[l]) return true;
+    for (const metroList of Object.values(COUNTRY_TO_METROS)) {
+      if (metroList.some(m => m.toLowerCase() === l)) return true;
+    }
+    return false;
+  };
+  if (rawVertical && verticalResolvesToLocation(rawVertical)) {
+    rawVertical = identitySpec?.companyTypes?.[0] || '';
   }
   const vertical = rawVertical && rawVertical.includes(' ') && !rawVertical.startsWith('"')
     ? `"${rawVertical}"`

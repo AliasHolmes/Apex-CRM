@@ -16,6 +16,16 @@ const VAGUE_BRIEFS = [
   'SaaS founders',
   'ecommerce brands',
   'clinics',
+  // G21 pronoun-collision regression briefs (must stay open_global, never US-anchored)
+  'help us find agency owners',
+  'find agencies that can help us scale',
+];
+
+const PLURAL_PERSONA_BRIEFS = [
+  'Presidents in Berlin',
+  'CEOs in London',
+  'VPs in Austin',
+  'co-founders in Toronto',
 ];
 
 const STANDARD_BRIEFS = [
@@ -120,6 +130,55 @@ describe('Phase 0: Query Intelligence Eval Harness (30 gold briefs)', () => {
     assert.equal(normalizeAliasTerm('VP'), 'vice president');
     assert.equal(normalizeAliasTerm('US'), 'united states');
     assert.equal(normalizeAliasTerm('UK'), 'united kingdom');
+  });
+
+  it('G21 pronoun briefs never resolve to US geo', () => {
+    for (const brief of ['help us find agency owners', 'find agencies that can help us scale']) {
+      const geo = resolveGeo(brief);
+      assert.equal(geo.geo, 'open_global', `pronoun brief must not anchor geo: ${brief}`);
+      assert.equal(geo.countryAnchor, null);
+    }
+  });
+
+  it('G22 plural-persona briefs emit person_role (never company_type role leak)', () => {
+    for (const brief of PLURAL_PERSONA_BRIEFS) {
+      const contract = buildDeterministicProspectContract(brief);
+      const roles = contract.requirements.filter(r => r.scope === 'person_role');
+      assert.ok(roles.length >= 1, `must emit person_role for: ${brief}`);
+      const leakedCompanyType = contract.requirements.filter(r =>
+        r.scope === 'company_type' && /ceos?|presidents?|vps?|co-founders?/i.test(r.sourcePhrase || r.description || ''));
+      assert.equal(leakedCompanyType.length, 0, `role must not leak to company_type for: ${brief}`);
+    }
+    const london = buildDeterministicProspectContract('CEOs in London');
+    const roleTerms = london.requirements.filter(r => r.scope === 'person_role').flatMap(r => r.acceptableTerms || []);
+    assert.ok(roleTerms.some(t => /ceo/i.test(t)), 'CEOs in London must keep ceo term');
+  });
+
+  it('G24: city-only geos anchor queries; vertical never equals the location', async () => {
+    const londonPlans = buildFallbackQueryPlan('CEOs in London');
+    assert.ok(londonPlans.some(p => /london/i.test(p.query)), 'at least one query must include London');
+    for (const p of londonPlans) assert.ok(p.query.length <= 240);
+    const { buildContractFallbackQueries } = await import('../server/leadSearch/prospectContract.js');
+    const berlin = buildDeterministicProspectContract('founders in Berlin');
+    const fallbacks = buildContractFallbackQueries('founders in Berlin', berlin.requirements, (berlin as any).identitySpec);
+    for (const q of fallbacks) {
+      // No query may consist of role+location only with location as vertical is covered
+      // by the vertical-equals-location ban: vertical slot must not be the location.
+      assert.ok(!/^berlin\s/i.test(String(q.query)) || /founder|owner|ceo/i.test(String(q.query)));
+    }
+  });
+
+  it('golden-set qualified-yield baseline (fixture, deterministic)', () => {
+    // Baseline artifact: contract fidelity across all brief tiers.
+    // Recorded so later precision fixes (G1/G2) show yield movement, not silent drift.
+    const all = [...VAGUE_BRIEFS, ...STANDARD_BRIEFS, ...RICH_BRIEFS, ...PLURAL_PERSONA_BRIEFS];
+    let withRole = 0;
+    for (const brief of all) {
+      const contract = buildDeterministicProspectContract(brief);
+      if (contract.requirements.some(r => r.scope === 'person_role')) withRole++;
+    }
+    const yieldRate = withRole / all.length;
+    assert.ok(yieldRate >= 0.5, `person_role yield baseline >= 0.5, got ${yieldRate}`);
   });
 
   it('decomposition does not misroute intent-rich short briefs', () => {

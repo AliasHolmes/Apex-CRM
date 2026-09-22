@@ -3,6 +3,8 @@ import {
   readStoredCompanyNames,
   readStoredCompanyDomains,
   readStoredMetroSaturation,
+  readDiscoveredCompanyNames,
+  readOutcomeRate,
 } from "../../db.js";
 import {
   openAIStructured,
@@ -104,9 +106,12 @@ export async function executePlanStage(
     metroSaturation: readStoredMetroSaturation(),
   };
   const { historicalPerformance, crmCompanies, crmDomains, metroSaturation } = (state as any)._planStageCache;
+  // G5: key by domain_cluster|family|lane|provider so cluster rows and
+  // CRM feedback rows no longer collide on one key and overwrite each other.
   const historicalYield = Object.fromEntries(
     historicalPerformance.slice(0, 30).map((row: any) => [
-      [row.family || "general", row.lane || "person", row.provider || "tavily"]
+      [row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster !== "global" ? domainCluster : "", row.family || "general", row.lane || "person", row.provider || "tavily"]
+        .filter(Boolean)
         .join("|")
         .toLowerCase(),
       {
@@ -160,8 +165,11 @@ export async function executePlanStage(
     ).slice(0, 30);
   }
 
+  // G14: merge cross-session discovered companies so earlier discoveries
+  // inform the strategist prompt instead of being write-only.
+  const discoveredCompanies = readDiscoveredCompanyNames(25);
   const knownCompanyEntities = Array.from(
-    new Set([...crmCompanies, ...signalCompanies]),
+    new Set([...crmCompanies, ...signalCompanies, ...discoveredCompanies]),
   );
 
   const strategistPrompt = buildScoutStrategistPrompt({
@@ -363,6 +371,7 @@ export async function executePlanStage(
         0,
         10,
       ),
+      outcomeRate: readOutcomeRate().rate,
     },
   );
 

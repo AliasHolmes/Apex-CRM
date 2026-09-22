@@ -338,7 +338,7 @@ export const buildRetrievalTasks = (
     });
 };
 
-import { COUNTRY_CANONICAL_MAP, type ProspectContract } from "./prospectContract.js";
+import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, type ProspectContract } from "./prospectContract.js";
 import { looksLikeCompanyHint } from "./observations.js";
 import { normalizeTavilyCountry } from "../services/llm.js";
 import { resolveGeo } from "./queryUnderstanding.js";
@@ -370,13 +370,34 @@ export const buildFallbackQueryPlan = (
   const titles = effectiveSpec.person.includeTitles.length
     ? effectiveSpec.person.includeTitles
     : ["founder", "owner", "CEO", "managing partner"];
-  const signal = effectiveSpec.signals.include[0] || "growth hiring";
+  // G24: derive the signal term from intentSpec/signal requirements, not the
+  // whole brief (which duplicates the brief into the query and blows the bound).
+  const specSignal = (effectiveSpec.signals.include || []).find(s => s && s.trim().length >= 2 && s.trim().length <= 40)
+    || effectiveSpec.signals.include[0]
+    || "growth hiring";
+  const signal = specSignal.length <= 60 ? specSignal : "growth hiring";
 
   // Detect geography via unified resolver. Zero default-invention:
   // open_global briefs get NO countryAnchor/metros (search globally).
   const geoRes = resolveGeo(base);
   let metros: string[] = [...geoRes.metros];
   let countryAnchor: string | null = geoRes.countryAnchor;
+  // G24: recognize metros/cities as location anchors for city-only geos
+  // ("CEOs in London") by scanning COUNTRY_TO_METROS values.
+  if (!countryAnchor) {
+    const baseLower = base.toLowerCase();
+    outer: for (const [key, metroList] of Object.entries(COUNTRY_TO_METROS)) {
+      for (const metro of metroList) {
+        const escaped = metro.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+        if (new RegExp(`\\b${escaped}\\b`, 'i').test(baseLower)) {
+          const canonical = COUNTRY_CANONICAL_MAP[key] || COUNTRY_CANONICAL_MAP[key.toLowerCase()];
+          countryAnchor = canonical || null;
+          metros = [metro];
+          break outer;
+        }
+      }
+    }
+  }
   if (countryAnchor && metros.length === 0) {
     // Fallback to legacy hub table for explicitly detected countries
     const hubKey = countryAnchor.toLowerCase() === 'united states' || countryAnchor === 'USA' ? 'usa'

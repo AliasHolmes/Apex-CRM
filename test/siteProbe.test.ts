@@ -218,8 +218,48 @@ Ray ID: 123456789.
 
       assert.equal(lead.location, 'Denver, CO');
       assert.equal(lead.profile.location, 'Denver, CO');
+      // G2: company-derived location carries provenance (judge-visible, never auto-pass)
+      assert.equal(lead._locationProvenance, 'company_site');
+      assert.equal(lead.profile._locationProvenance, 'company_site');
       assert.equal(lead.companySizeEst, '8');
       assert.match(target.evidenceMeta.evidenceBlock, /\[COMPANY SITE \(name-match\): https:\/\/cloudagency\.co\]/);
+    });
+
+    it('G2: company-derived location never auto-passes person_location', async () => {
+      const { hasStrictStructuredMatch } = await import('../server/leadSearch/evidenceSelection.js');
+      const lead: Record<string, any> = {
+        fullName: 'Bob Smith', currentTitle: 'CEO', currentCompany: 'Cloud Agency',
+        location: 'Denver, CO', profile: { location: 'Denver, CO' },
+        _locationProvenance: 'company_site',
+      };
+      const req: any = { id: 'r1', scope: 'person_location', importance: 'hard', acceptableTerms: ['Denver'] };
+      assert.equal(hasStrictStructuredMatch(lead, req), false);
+      const profileLead: Record<string, any> = {
+        fullName: 'Bob Smith', location: 'Denver, CO', profile: { location: 'Denver, CO' },
+      };
+      assert.equal(hasStrictStructuredMatch(profileLead, req), true);
+    });
+
+    it('G3: evidence block with only a press URL yields no company domain', async () => {
+      const { deriveCompanyDomainWithProvenance } = await import('../server/leadSearch/siteProbe.js');
+      const pressLead: Record<string, any> = {
+        currentCompany: 'FlowOps Studio',
+        evidence: { evidenceBlock: 'Read more at https://techcrunch.com/2024/01/01/flowops-raises-seed for details' },
+      };
+      const pressDerived = deriveCompanyDomainWithProvenance(pressLead);
+      assert.notEqual(pressDerived?.provenance, 'evidence_url');
+      assert.ok(!pressDerived?.domain.includes('techcrunch.com'));
+      const noCompanyPressLead: Record<string, any> = {
+        evidence: { evidenceBlock: 'Read more at https://techcrunch.com/2024/01/01/flowops-raises-seed for details' },
+      };
+      assert.equal(deriveCompanyDomainWithProvenance(noCompanyPressLead), null);
+      const ownLead: Record<string, any> = {
+        currentCompany: 'FlowOps Studio',
+        evidence: { evidenceBlock: 'Homepage https://flowops.io/about has pricing' },
+      };
+      const derived = deriveCompanyDomainWithProvenance(ownLead);
+      assert.ok(derived && derived.domain.includes('flowops.io'));
+      assert.equal(derived?.provenance, 'evidence_url');
     });
   });
 });

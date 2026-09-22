@@ -47,6 +47,8 @@ describe('Target Fulfillment Replay Simulation', () => {
         requirements: contract.requirements.filter(r => r.importance === 'hard').map(r => ({
           requirementId: r.id,
           status: 'pass',
+          evidenceId: c.evidence[0]?.id || 'e0',
+          evidenceQuote: r.scope === 'person_role' ? 'Co-Founder & CEO' : r.scope === 'person_location' ? 'New York' : 'AI Company',
           reason: 'Verified'
         })),
         semanticFit: 9,

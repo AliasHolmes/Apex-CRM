@@ -75,6 +75,46 @@ describe('adaptive retrieval scheduler', () => {
     assert.equal(result.decisions.find(item => item.query === 'founders')?.reason, 'person_lane_guard');
   });
 
+  it('G5: cluster-scoped feedback routes to the matching cluster arm', () => {
+    const clustered = task('saas founders', 'persona_title', 'person', 'tavily', 1);
+    (clustered as any).domainCluster = 'b2b_saas';
+    const result = scheduleAdaptiveRetrievalTasks([clustered], [
+      { family: 'persona_title', lane: 'person', provider: 'tavily', outcome_runs: 10, qualified_candidates: 10, domainCluster: 'b2b_saas' } as any,
+      { family: 'persona_title', lane: 'person', provider: 'tavily', outcome_runs: 10, qualified_candidates: 0, rescued_candidates: 8, domainCluster: 'global' } as any,
+    ], { maxTasks: 1, minOutcomeRuns: 4, explorationStrength: 0 });
+    // Cluster row (qualified) must win over the colliding global row (rescue-heavy).
+    assert.equal(result.decisions[0]?.outcomeRuns, 10);
+    const good = scoreAdaptiveArm({ outcome_runs: 10, qualified_candidates: 10 } as any, 20, 0);
+    const bad = scoreAdaptiveArm({ outcome_runs: 10, rescued_candidates: 8 } as any, 20, 0);
+    assert.ok(good.score > bad.score);
+  });
+
+  it('G6: contract_guard entries are never trimmed by the hard cap', () => {
+    const many = [1, 2, 3, 4].map(i => ({
+      ...task(`q${i}`, 'persona_title', 'person', 'tavily', i),
+      coveredRequirementIds: [`hard-${i}`],
+    }));
+    const result = scheduleAdaptiveRetrievalTasks(many, [], { maxTasks: 1, minOutcomeRuns: 100 });
+    // Cold start (no history): all four coverage ids survive.
+    assert.deepEqual(new Set(result.tasks.flatMap(t => (t as any).coveredRequirementIds || [])), new Set(['hard-1', 'hard-2', 'hard-3', 'hard-4']));
+  });
+
+  it('G6: seeded RNG produces identical selections across runs', async () => {
+    const { seedAdaptiveRandom, resetAdaptiveRandomSource } = await import('../server/leadSearch/adaptiveScheduler.ts');
+    const rows = [
+      { family: 'persona_title', lane: 'person', provider: 'tavily', outcome_runs: 8, qualified_candidates: 6, returned_candidates: 5 },
+      { family: 'local_market', lane: 'account', provider: 'brightdata', outcome_runs: 8, qualified_candidates: 0, returned_candidates: 0, provider_units: 8 },
+      { family: 'growth_signal', lane: 'signal', provider: 'corroborate', outcome_runs: 1, qualified_candidates: 1, returned_candidates: 1 },
+      { family: 'tooling_signal', lane: 'signal', provider: 'brightdata', outcome_runs: 8, qualified_candidates: 0, rescued_candidates: 5, provider_units: 8 }
+    ];
+    seedAdaptiveRandom(42);
+    const a = scheduleAdaptiveRetrievalTasks(tasks, rows as any, { maxTasks: 2, minOutcomeRuns: 4 });
+    seedAdaptiveRandom(42);
+    const b = scheduleAdaptiveRetrievalTasks(tasks, rows as any, { maxTasks: 2, minOutcomeRuns: 4 });
+    assert.deepEqual(a.tasks.map(t => t.query), b.tasks.map(t => t.query));
+    resetAdaptiveRandomSource();
+  });
+
   it('never prunes contract coverage even when it exceeds the normal task cap', () => {
     const contractTasks = tasks.map((item, index) => ({
       ...item,

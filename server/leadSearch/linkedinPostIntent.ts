@@ -8,7 +8,7 @@ import {
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
 import { getIntentCacheEntry, getIntentCacheEntriesBatch, upsertIntentCacheEntry } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
-import { applyPostIntentDelta, rankLeadForFinalSelection } from './scoring.js';
+import { applyPostIntentDelta } from './scoring.js';
 import type { ProspectContract } from './prospectContract.js';
 import type { BrightDataSearchResult, BrightDataSearchOptions } from '../services/brightdata.js';
 
@@ -451,7 +451,9 @@ export async function runLinkedInPostIntentEnrichment(
     contract,
     brightDataSearch,
     tavilySearchFallback,
-    targetLimit,
+    // G12 annotate-only: targetLimit no longer drives a cutline; kept in the
+    // options type for caller compatibility.
+    targetLimit: _targetLimit,
     maxLeads = 10,
     concurrency = 2,
     ttlDays = 7,
@@ -475,10 +477,9 @@ export async function runLinkedInPostIntentEnrichment(
 
   const INTENT_FINGERPRINT = 'linkedin_post_v1';
 
-  // Pre-warm postIntentEvidence from cache before sorting.
-  // rankLeadForFinalSelection calls postIntentScore(lead), which reads lead.postIntentEvidence.
-  // Without this step, postIntentEvidence is undefined for every lead and the sort is blind
-  // to Phase 5 signal entirely -- defeating the purpose of the cutline sort.
+  // Pre-warm postIntentEvidence from cache before annotating.
+  // postIntentScore(lead) reads lead.postIntentEvidence; without this step it
+  // is undefined for every lead and annotation deltas start from a blind baseline.
   // Cache reads are synchronous SQLite; no SERP calls are made here.
   const allLeads = Array.from(qualifiedLeads.values());
   const lookups: Array<{ lead: any; cacheKey: string }> = [];
@@ -507,30 +508,12 @@ export async function runLinkedInPostIntentEnrichment(
     }
   }
 
-  // --- Cutline & Bubble Selection Logic ---
-  // Max possible rank swing = (Max Phase 5 Score - Baseline) * Weight = (8.9 - 5.0) * 0.10 = 0.39
-  const MAX_INTENT_SWING = 0.39;
-
-  const sortedLeads = [...allLeads].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
-  let leadsToProcess: any[] = [];
-
-  if (typeof targetLimit === 'number' && targetLimit > 0 && targetLimit < sortedLeads.length) {
-    const cutlineIndex = targetLimit - 1;
-    const cutlineScore = rankLeadForFinalSelection(sortedLeads[cutlineIndex]);
-
-    // Only process "Bubble" candidates whose rank could realistically flip across the cutline
-    const bubbleLeads = sortedLeads.filter(lead => {
-      const score = rankLeadForFinalSelection(lead);
-      return score >= (cutlineScore - MAX_INTENT_SWING) &&
-             score <= (cutlineScore + MAX_INTENT_SWING);
-    });
-
-    leadsToProcess = bubbleLeads.slice(0, maxLeads);
-    logEvent(`Phase 5: evaluating LinkedIn post intent for ${leadsToProcess.length} bubble candidate(s) near cutline (cutlineScore=${cutlineScore.toFixed(2)}, totalQualified=${allLeads.length}).`);
-  } else {
-    leadsToProcess = sortedLeads.slice(0, Math.min(maxLeads, 3));
-    logEvent(`Phase 5: evaluating LinkedIn post intent for top ${leadsToProcess.length} prospects (from ${allLeads.length} candidates).`);
-  }
+  // G12 (annotate-only): post-selection intent annotates finalists with
+  // scores/badges but never reorders or re-cuts who is returned. The former
+  // bubble/cutline machinery implied a second selection cutline that did not
+  // exist -- intent enriches, selection already happened.
+  const leadsToProcess: any[] = allLeads.slice(0, Math.max(0, maxLeads));
+  logEvent(`Phase 5: annotating LinkedIn post intent for ${leadsToProcess.length} finalist(s) (from ${allLeads.length} candidates; annotate-only, no reorder).`);
 
   interface CandidateNeedingLlm {
     lead: any;

@@ -109,7 +109,7 @@ test('applyPostIntentDelta adds expected score deltas and updates scoreBreakdown
       quality: 'strong' as const,
       intentCategory: 'hiring' as const,
       confidenceScore: 0.8,
-      postSnippets: ['Hiring n8n developer'],
+      postSnippets: ['Posted 2 hours ago - Hiring n8n developer'],
       intentKeywords: ['hiring', 'n8n'],
       llmReason: 'Actively hiring automation developer.'
     }
@@ -121,16 +121,25 @@ test('applyPostIntentDelta adds expected score deltas and updates scoreBreakdown
   assert.strictEqual(lead.scoreBreakdown.finalScore, 6.74);
   assert.strictEqual(lead.scoreBreakdown.postIntentScore, 8.0);
 
+  // G11: undated snippets are neutral (45d, multiplier ~0.41), never "best".
+  const undatedLead: any = {
+    finalSelectionScore: 6.0,
+    postIntentEvidence: { quality: 'strong' as const, confidenceScore: 0.8, postSnippets: ['Hiring n8n developer'] },
+  };
+  assert.ok(applyPostIntentDelta(undatedLead) < newScore);
+
   const moderateLead = {
     finalSelectionScore: 5.0,
     postIntentEvidence: {
       quality: 'moderate' as const,
       intentCategory: 'pain_signal' as const,
-      confidenceScore: 0.5
+      confidenceScore: 0.5,
+      postSnippets: ['1d ago - Scaling workflow bottlenecks']
     }
   };
-  // delta = 0.25 + 0.5 * 0.20 = 0.35 -> 5.0 + 0.35 = 5.35
-  assert.strictEqual(applyPostIntentDelta(moderateLead), 5.35);
+  // delta = (0.25 + 0.5 * 0.20) * exp(-0.02*1) ~ 0.35 * 0.98 = 0.343 -> 5.0 + 0.34 = 5.34 (or 5.35 when fresh)
+  const modScore = applyPostIntentDelta(moderateLead);
+  assert.ok(modScore >= 5.30 && modScore <= 5.36);
 
   const noneLead = {
     finalSelectionScore: 5.5,
@@ -307,7 +316,7 @@ test('computeParetoFrontier includes strong post-intent candidates on Pareto sky
   assert.ok(nonSkylineNames.includes('Charlie Weak'), 'Dominated candidate must be excluded from Pareto Skyline');
 });
 
-test('runLinkedInPostIntentEnrichment processes leads in sorted rank order', async () => {
+test('G12 annotate-only: runLinkedInPostIntentEnrichment annotates in map order without reordering', async () => {
   const mockContract: ProspectContract = {
     version: 1,
     policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
@@ -351,9 +360,10 @@ test('runLinkedInPostIntentEnrichment processes leads in sorted rank order', asy
     recordTrace: () => {}
   });
 
-  // Because maxLeads=1 and sorted by rank, High Rank MUST be the one processed
+  // G12 annotate-only: no rank sort -- the first maxLeads finalists in map
+  // order are annotated. Intent never changes who is returned.
   assert.strictEqual(processedOrder.length, 1);
-  assert.ok(processedOrder[0].includes('high-rank'), 'Must process High Rank lead first when maxLeads cap is reached');
+  assert.ok(processedOrder[0].includes('low-rank'), 'Annotate-only processes map order, not rank order');
 });
 
 test('cache pre-warm elevates a lead with cached strong intent above an equal-base-rank lead with no cache', () => {
@@ -386,7 +396,7 @@ test('cache pre-warm elevates a lead with cached strong intent above an equal-ba
       quality: 'strong' as const,
       intentCategory: 'evaluating_tools' as const,
       confidenceScore: 0.9,
-      postSnippets: ['Actively evaluating n8n for automation stack'],
+      postSnippets: ['1d ago - Actively evaluating n8n for automation stack'],
       intentKeywords: ['n8n', 'automation'],
       llmReason: 'Prospect is actively evaluating the exact tooling category.'
     }
@@ -434,7 +444,7 @@ test('postIntentScore handles epistemic states correctly (not_enriched = 5.0, en
   assert.ok(score >= 8.5 && score <= 9.0, `enriched_signal with strong quality should score ~8.9, got ${score}`);
 });
 
-test('runLinkedInPostIntentEnrichment cutline bubble logic prioritizes candidates near the cutline over distant top winners', async () => {
+test('G12 annotate-only: enrichment annotates the first maxLeads finalists regardless of cutline', async () => {
   const mockContract: ProspectContract = {
     version: 1,
     policyVersion: PROSPECT_CONTRACT_POLICY_VERSION,
@@ -498,12 +508,12 @@ test('runLinkedInPostIntentEnrichment cutline bubble logic prioritizes candidate
     recordTrace: () => {}
   });
 
-  // The 2 processed leads must be the Bubble candidates (Cutline Lead and Bubble Challenger),
-  // NOT Guaranteed Winner (which doesn't need enrichment to qualify) or Far Below Lead.
+  // G12 annotate-only: no bubble/cutline -- the first maxLeads finalists in
+  // map order are annotated (Guaranteed Winner + Cutline Lead).
   assert.strictEqual(processedQueries.length, 2);
-  assert.ok(processedQueries.some(q => q.includes('cutline-lead')), 'Cutline lead must be in the bubble');
-  assert.ok(processedQueries.some(q => q.includes('bubble-challenger')), 'Bubble challenger must be prioritized over guaranteed winner');
-  assert.ok(!processedQueries.some(q => q.includes('guaranteed-winner')), 'Guaranteed winner outside the bubble should not consume budget when cap is tight');
+  assert.ok(processedQueries.some(q => q.includes('guaranteed-winner')), 'First finalist annotated');
+  assert.ok(processedQueries.some(q => q.includes('cutline-lead')), 'Second finalist annotated');
+  assert.ok(!processedQueries.some(q => q.includes('bubble-challenger')), 'Beyond-budget finalists are not annotated');
 });
 
 test('runLinkedInPostIntentEnrichment falls back to Tavily search when Bright Data returns empty or fails', async () => {

@@ -31,40 +31,44 @@ const cleanSignalToken = (value: unknown): string => {
     .trim();
 };
 
+/** G11: neutral age for undated snippets (multiplier ~0.41, never 1.0). */
+export const UNKNOWN_AGE_DAYS = 45;
+
 export function parseSnippetFreshnessDays(snippets: string[] | string): number {
   const texts = Array.isArray(snippets) ? snippets : [snippets];
   let minDays: number | null = null;
   for (const raw of texts) {
     const text = String(raw || '').toLowerCase();
-    const hoursMatch = text.match(/\b(\d+)\s*(?:hour|hr)s?\s*ago\b/);
+    const hoursMatch = text.match(/\b(\d+)\s*(?:h|hours?|hrs?)\s*ago\b/);
     if (hoursMatch) return 0;
-    const daysMatch = text.match(/\b(\d+)\s*days?\s*ago\b/);
+    const daysMatch = text.match(/\b(\d+)\s*(?:d|days?)\s*ago\b/);
     if (daysMatch) {
       const d = parseInt(daysMatch[1], 10);
       minDays = minDays === null ? d : Math.min(minDays, d);
       continue;
     }
-    const weeksMatch = text.match(/\b(\d+)\s*weeks?\s*ago\b/);
+    const weeksMatch = text.match(/\b(\d+)\s*(?:w|weeks?|wks?)\s*ago\b/);
     if (weeksMatch) {
       const d = parseInt(weeksMatch[1], 10) * 7;
       minDays = minDays === null ? d : Math.min(minDays, d);
       continue;
     }
-    const monthsMatch = text.match(/\b(\d+)\s*months?\s*ago\b/);
+    const monthsMatch = text.match(/\b(\d+)\s*(?:m|months?|mos?)\s*ago\b/);
     if (monthsMatch) {
       const d = parseInt(monthsMatch[1], 10) * 30;
       minDays = minDays === null ? d : Math.min(minDays, d);
       continue;
     }
-    const yearsMatch = text.match(/\b(\d+)\s*years?\s*ago\b/);
+    const yearsMatch = text.match(/\b(\d+)\s*(?:y|years?|yrs?)\s*ago\b/);
     if (yearsMatch) {
       const d = parseInt(yearsMatch[1], 10) * 365;
       minDays = minDays === null ? d : Math.min(minDays, d);
       continue;
     }
   }
-  // When no explicit relative timestamp is present in the snippet, default to 0 days (freshly returned SERP post)
-  return minDays !== null ? minDays : 0;
+  // G11: unknown age is neutral, never "best". 45 days yields ~0.41 via
+  // exp(-0.02*45) instead of 1.0 for undated snippets.
+  return minDays !== null ? minDays : UNKNOWN_AGE_DAYS;
 }
 
 export function computeFreshnessMultiplier(ageDays: number): number {

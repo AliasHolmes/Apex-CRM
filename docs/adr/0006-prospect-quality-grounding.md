@@ -163,15 +163,14 @@ way to demonstrate that this ADR improved anything, only that it changed behavio
 
 ## Addendum (2026-09-25)
 
-Status update on the follow-ups and the core loop, measured against the current tree:
+Status update on the follow-ups and the core loop, measured against the current tree (`5a052c4`):
 
-- **The disposition loop has partially landed.** `lead_outcomes` (binary
-  `positive | negative`) is written from lead stage/review transitions
-  (`server/routes/api.ts`) and read back by the scheduler as a global outcome rate
-  (`adaptiveScheduler.ts:190`, G17). The richer `KEEP = +1.0 / MAYBE = +0.3 / REJECT = -1.0`
-  weighting, per-arm disposition counters, and judge calibration (Brier score /
-  reliability curve) from §3 are **not** implemented — the reward is still dominated by
-  judge-passed `qualified` counts.
+- **The disposition loop and eval harness have landed in Phase 1 form (G5, G17, G20):**
+  - `lead_outcomes` (schema v23, binary `positive | negative` with `stage_detail`) is written on CRM stage and review transitions (`KEEP`, `VERIFIED`, `CONVERTED`, `CLOSED_WON`, `MEETING BOOKED`, `REPLIED` vs `REJECT`, `REJECTED`, `LOST`, `UNQUALIFIED`) in `server/routes/api.ts`.
+  - `planStage.ts` passes `readOutcomeRate().rate` into `scheduleAdaptiveRetrievalTasks`, which applies `outcomeBoost = outcomeRate * 4.0` and penalizes `hard_failed_candidates` (`+ hardFailed * 2.0` in `betaPost`, `- hardFailed * 2.0` in `meanReward`) in `adaptiveScheduler.ts`.
+  - Per-lead arm attribution now persists top-level `discoveryFamily` and `discoveryLane` (`leadMapping.ts`) and routes CRM verification/rejection events back to `recordQueryPerformance` with `domainCluster: deriveDomainCluster(briefText)` so feedback scope keys match scheduler lookup keys (`domain_cluster|family|lane|provider`).
+  - The Phase 0 evaluation harness (`test/queryIntelligence.eval.ts`, wired as `npm run test:eval`) is live with 30+ gold briefs and a deterministic qualified-yield baseline.
+  - Remaining future work from §3: ternary `KEEP = +1.0 / MAYBE = +0.3 / REJECT = -1.0` per-arm counters and judge uncertainty Brier calibration curves.
 - **Inert flags:** resolved 2026-09-17 — the six graduated flags in `featureFlags.ts`
   are now permanent architectural invariants returning `true` unconditionally.
 - **`ProviderTrafficController`:** still exported from `keyRotator.ts` but exercised
@@ -181,3 +180,4 @@ Status update on the follow-ups and the core loop, measured against the current 
   not a second SSRF implementation.
 - The ADR-0007 concurrency candidate is partially de-risked by stage-lane sharding
   (`FEATURE_LLM_STAGE_QUEUES=true`), which is implemented but off by default.
+

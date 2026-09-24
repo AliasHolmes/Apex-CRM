@@ -32,7 +32,7 @@ A non-dominated subset of candidate leads that excel across multi-objective dime
 The feedback loop where open-web signal searches discover active hiring/tooling accounts, and dynamically generate targeted executive profile queries for decision-makers at those specific accounts.
 
 ### Domain-Clustered Multi-Armed Bandit (MAB)
-A contextual Thompson-sampling and UCB scheduler that ranks and throttles query plan arms (`family|lane|provider`) partitioned by business domain cluster (e.g. `b2b_agency`, `b2b_saas`, `executive_coaching`) with exponential moving average time decay ($\lambda = 0.95$).
+A contextual Thompson-sampling and UCB scheduler that ranks and throttles query plan arms (`family|lane|provider`) partitioned by business domain cluster (e.g. `b2b_agency`, `b2b_saas`, `executive_coaching`) with exponential moving average time decay ($\lambda = 0.95$), binary outcome rate boosting (`lead_outcomes`), and explicit penalties for hard-failed candidates.
 
 ### Dynamic Semantic Query Expansion
 A non-colliding fallback query planner that synthesizes multi-attribute candidate search queries using domain synonyms, tooling keywords, and pain signals from the prospect contract rather than rigid Cartesian permutation loops.
@@ -47,7 +47,7 @@ A multi-tier extraction engine that inspects target company root websites and de
 An alias-matching and normalization system that strips global corporate entity forms (`S.R.L.`, `S.A.S.`, `S.L.`, `AG`, `Pte Ltd`, `Sdn Bhd`, `Sp. z o.o.`, `ApS`, `Pty Ltd`) and regional branch designations (`EMEA`, `APAC`, `Global`, `Holdings`) to prevent company profile duplicates.
 
 ### Lean Adaptive Collection Capacity
-A dynamic candidate sizing policy that sets search pool targets proportional to requested output limits (1.15x–1.25x cushion) with dynamic batch scaling (15–40 leads/round). Round budgets are derived by target size (default cap of 3 rounds for targets up to 30, 4 up to 50, 6 above), bounded by a hard ceiling of `MAX_COLLECTION_ROUNDS = 24`, and overridden by `LEAD_SEARCH_MAX_ROUNDS` when that is set (6 in the shipped configuration).
+A dynamic candidate sizing policy that sets search pool targets proportional to requested output limits (1.15x-1.25x cushion) with dynamic batch scaling (15-40 leads/round). Round budgets are derived by target size (default cap of 3 rounds for targets up to 30, 4 up to 50, 6 above), bounded by a hard ceiling of `MAX_COLLECTION_ROUNDS = 24`, and overridden by `LEAD_SEARCH_MAX_ROUNDS` when that is set (6 in the shipped configuration).
 
 ### Decoupled Early Shortlist Termination
 A high-selectivity discovery exit check that terminates search rounds immediately when verified candidate volume satisfies target limits, decoupled from literal keyword substring heuristics.
@@ -59,7 +59,7 @@ A pipeline execution order that defers intensive Phase 4 company website probing
 A zero-latency, non-LLM filtration boundary positioned immediately after SERP retrieval and observation fusion. It drops known CRM duplicates (via SQLite identity keys in 0ms), filters out non-LinkedIn items when individual profiles are required, strips HTML boilerplate and cookie banners from snippets, and safely bypasses the extraction LLM when zero viable items remain.
 
 ### Upstream CRM Negative Feedback & Metro Saturation Avoidance
-A closed-loop query optimization mechanism that extracts existing company domains from the CRM database and injects them directly into Tavily's `exclude_domains` parameter. It also monitors metropolitan saturation ($\ge 15$ leads in CRM) to steer query generation toward unmined secondary tech clusters while equipping the LLM strategist with negative search operators (`-"Known Agency"`).
+A closed-loop query optimization mechanism that extracts existing company domains from the CRM database and injects them directly into Tavily's `exclude_domains` parameter. It also monitors metropolitan saturation ($\ge 15$ leads in CRM, including JSON-extracted `profile.location` and `profile.city` fields) and seeds cross-session `discovered_companies` to steer query generation toward unmined secondary tech clusters while equipping the LLM strategist with negative search operators (`-"Known Agency"`).
 
 ### Consolidated Site Probing
 Target company website inspection is consolidated in `enrichStage` (following Pareto candidate selection) with normalized bare-host caching. In ~250ms per company, it fetches root page meta description or title to inject verified business context and commercial signals into candidate profiles without duplicate network calls.
@@ -74,16 +74,16 @@ The core concurrency invariant governing all LLM interactions in the discovery e
 A deterministic complexity classifier that labels each brief `vague | standard | rich` with an ambiguity score and missing-slot list (`role`, `geo`, `industry`, `seniority`, `signal`). It drives vagueness-aware retrieval depth, task sizing, and the interactive (`needs_clarification`) vs headless (expander fallback) clarification gate. Long briefs are salience-compressed before prompt injection instead of mid-phrase truncation.
 
 ### Zero Default-Invention Rule (`resolveGeo`)
-When a brief specifies no geography, the engine returns `geo=open_global` with no `countryAnchor` and no metro hubs. Fallback query builders (`searchSpec.ts`, `prospectContract.ts`, `planStage.ts`) emit global queries without synthetic `USA`/US-metro tokens.
+When a brief specifies no geography, the engine returns `geo=open_global` with no `countryAnchor` and no metro hubs. Two-character ISO country codes colliding with English pronouns or prepositions (`us`, `me`, `am`, `in`, `is`, `at`, etc.) require explicit prepositional context, uppercase casing, or metro cues before anchoring geography. City-only geographies (`London`, `Berlin`) resolve to their parent country and metro anchor without allowing the vertical slot to equal the location.
 
 ### Alias-First Matching (`aliasMap.ts`)
-A zero-network, synchronous normalization map (roles, ISO geographies/regions, company types, tools) used in hot loops (`fuseStage`, `evidenceSelection`, `finalistJudge`) and contract grounding (`sourceAppearsInBrief`). `MD` matches `managing director`, `US` matches `united states`, `VP` matches `vice president` with 0ms latency.
+A zero-network, synchronous normalization map (roles, ISO geographies/regions, company types, tools) used in hot loops (`fuseStage`, `evidenceSelection`, `finalistJudge`) and contract grounding (`sourceAppearsInBrief`). `aliasIncludes` performs symmetrical bidirectional token and phrase normalization (`MD` <-> `managing director`, `US` <-> `united states`, `CEO` <-> `chief executive officer`, `UK` <-> `united kingdom`) with 0ms latency, while contract role matchers accept plural persona forms (`CEOs`, `Presidents`, `VPs`) without leaking roles into `company_type`.
 
 ### Complexity-Aware Query Rewriter (`queryRewriter.ts`)
-A bounded (max 3) zero-yield recovery policy that replaces single-retry ablation as the second chance: `vague` briefs broaden (drop 1 constraint + synonym swap), `rich` briefs relax the lowest-salience covered hard requirement. Coverage IDs are recomputed for the planner.
+A bounded (max 3) zero-yield recovery policy that replaces single-retry ablation as the second chance: `vague` and `standard` briefs broaden by dropping low-signal tokens while skipping Tier-1 immutable identity anchors (`person_role`, `company_type`, `industry`), and `rich` briefs relax the lowest-salience covered non-Tier-1 hard requirement (preferring `person_location` before `company_type`). Rewritten queries dispatch on both credit-reservation and standard execution paths, threading `demotedRequirementId` into coverage tracking.
 
 ### Quantized Semantic Centroids (MAB)
-The domain-clustered MAB pools Thompson-sampling priors by 24 persistent deterministic buckets (`centroid_<cluster>_<00-23>`, FNV-1a over the normalized brief) instead of raw embedding vectors, so repeated brief shapes converge instead of permanent cold-start. `contract_guard` selection is hard-capped at `maxTasks+2`.
+The domain-clustered MAB pools Thompson-sampling priors by 24 persistent deterministic buckets (`centroid_<cluster>_<00-23>`, FNV-1a over the normalized brief) instead of raw embedding vectors, so repeated brief shapes converge instead of permanent cold-start. `contract_guard` tasks are treated as non-optional correctness constraints: only non-guard tasks are trimmed by the `maxTasks+2` cap, ensuring 100% hard-requirement coverage survives pruning.
 
 ### Contract-Aware Ranking (`rankLeadForFinalSelection`)
 Final selection scoring takes the contract into account: hard-requirement coverage dominates with a `1.2x` spread and soft-signal coverage actively boosts (`0.4x`), replacing the previous hard-only rank where soft nuance was invisible.
@@ -95,5 +95,20 @@ A durable, prompt-hash-keyed cache in front of the LLM gateway (`server/services
 A bounded LLM attribution step that verifies a discovered company actually fits the brief before prospects are attributed to it. It classifies the company's business model (`client_services_agency`, `software_saas`, `e_commerce`, ...), checks query alignment (`matches_brief | adjacent | contradicts`), and emits `verified_fit | unverified | disqualifying_contradiction` verdicts grounded in a verbatim evidence quote. Business-model contradictions gate candidates out before judge tokens are spent.
 
 ### Deterministic Profile Quality Gates (`profileQuality.ts`)
-Zero-LLM quality gates shared by dataset-dossier and SERP candidates: social-proof parsing (followers/connections/influencer), company-page and ghost-profile detection, and wrong-vertical agency detection. Single source of truth for `checkStrictContradiction` in the Finalist Judge so both candidate origins face identical gates at zero token cost.
+Zero-LLM quality gates shared by dataset-dossier and SERP candidates: social-proof parsing (followers/connections/influencer), company-page and ghost-profile detection, and wrong-vertical agency detection. Single source of truth for `checkStrictContradiction` in the Finalist Judge (with `b2b_saas` contradictions scoped to company and industry fields so past-career bio mentions do not false-fail) so both candidate origins face identical gates at zero token cost.
+
+### Strict Evidence Citation Grounding (`EVIDENCE_GROUNDING_MODE`)
+The verification rule governing finalist judging (`strict` by default). Every LLM `pass` verdict on a contract requirement must cite a resolvable evidence passage whose quote matches via exact, alias-normalized, or polarity-guarded fuzzy matching (`0.7 * windowOverlap + 0.3 * setOverlap`, rejecting windows with stray negators such as `not`, `no`, `never`, `former`, `ex-`). Passes without grounded citations degrade to `unknown` (`fabricatedPass`), while explicit hard-requirement failures (`identityFails > 0 || contextFails > 0`) always take precedence as `hard_fail`.
+
+### Location Provenance Separation (`_locationProvenance`)
+The provenance boundary distinguishing a prospect's personal location from a company headquarters address scraped during website probing (`_locationProvenance = 'company_site'`). Company-derived locations are provided to the semantic judge as context but are excluded from `hasStrictStructuredMatch` for `person_location` hard requirements. Evidence-extracted URLs (`evidence_url`) must share a meaningful token with the company name before site probing to prevent press domains (e.g. TechCrunch) from being scraped as company sites.
+
+### Annotate-Only Post-Intent Enrichment
+The execution model for Phase 5 LinkedIn post SERP research (`linkedinPostIntent.ts`): enrichment annotates selected finalists in map order without re-sorting or cutting the finalist list. Snippet recency parsing supports both full and abbreviated markers (`2d ago`, `1w ago`, `3mo ago`, `1y ago`, `2h ago`), and undated snippets default to a neutral 45-day age (`UNKNOWN_AGE_DAYS = 45`) so undated text never receives a synthetic recency boost.
+
+### CRM Workflow Field Preservation
+The persistence rule in `upsertLeadInExistingTransaction` (`server/db.ts`) that protects human-managed CRM state (`stage`, `reviewStatus`, `nextAction`, `notes`) during engine re-persistence. When a discovery session re-encounters an existing lead, objective profile and score fields are refreshed while human workflow fields remain untouched unless `forceOverwrite: true` is explicitly supplied.
+
+### Binary Outcome Feedback (`lead_outcomes`)
+The closed-loop disposition table (schema v23) recording `positive` (`KEEP`, `VERIFIED`, `CONVERTED`, `CLOSED_WON`, `MEETING BOOKED`, `REPLIED`) and `negative` (`REJECT`, `REJECTED`, `LOST`, `UNQUALIFIED`) transitions. Outcome events update both the global outcome rate boost in `scoreAdaptiveArm` and cluster-scoped `query_performance` counters via top-level `discoveryFamily` and `discoveryLane` attribution.
 

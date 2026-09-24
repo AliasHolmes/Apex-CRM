@@ -36,13 +36,13 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | ~11,640 lines across 35 files                                              |
-| Backend engine (`server/leadSearch/`)                            | ~21,230 lines: 39 modules + 9 `stages/`                                    |
+| Frontend (`src/`)                                                | ~11,800 lines across 36 files                                              |
+| Backend engine (`server/leadSearch/`)                            | ~21,280 lines: 39 modules + 9 `stages/`                                    |
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~13,880 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 20 base tables + `leads_fts` (fts5), schema **v23**, WAL                   |
-| Test suite                                                       | 128 files, ~800 tests / 172 suites, all passing                            |
-| Total first-party LOC                                            | ~69,000 (incl. ~22,200 test LOC)                                           |
+| Test suite                                                       | 129 files (128 `.test.ts` + 1 `.eval.ts`), 860 unit tests / 172 suites + 13 eval tests, all passing |
+| Total first-party LOC                                            | ~69,500 (incl. ~22,535 test LOC)                                           |
 | Working tree                                                     | clean (all fixes committed through `5a052c4`)                              |
 
 ## 3. Tech stack
@@ -63,59 +63,78 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ```
 server.ts                    Express app + static Vite serve (333 lines)
 server/db.ts                 SQLite layer: schema v23, migrations, 40+ readers/writers (4,792)
-server/routes/api.ts         41 REST routes (2,160)
+server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,160)
 server/services/             llm.ts (2,760, incl. prompt-hash completion cache) ·
                              brightdata.ts (2,242) · keyRotator ·
                              sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
                              outboundPrompt · langfuse
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,540)
-  prospectContract.ts        brief -> contract compilation + validation (1,834)
-  finalistJudge.ts           tri-partition, contradiction checks, score normalization (1,289)
+  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support (1,834)
+  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, tri-partition (1,289)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, contract-aware rank (668)
-  queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo, salience compression
-  aliasMap.ts                zero-network role/geo/company/tool alias normalization for hot loops
-  queryRewriter.ts           bounded complexity-aware zero-yield rewriter
+  queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
+  aliasMap.ts                symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
+  queryRewriter.ts           bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection)
   companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating
-  profileQuality.ts          deterministic social-proof parsing, ghost/company-page & wrong-vertical gates
+  profileQuality.ts          deterministic social-proof parsing, ghost/company-page & company-scoped contradiction gates
   providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
-  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (quantized MAB) · collectionCapacity.ts ·
-  constraintAblation.ts · evidenceSelection.ts (alias-aware) · intentSignals.ts · intentEnrichment.ts ·
-  companyIntent.ts · linkedinPostIntent.ts · siteProbe.ts · signalStore.ts · telemetry.ts ·
-  featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
+  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (quantized MAB, outcome boost, hard-fail penalty, seeded RNG) ·
+  collectionCapacity.ts · constraintAblation.ts · evidenceSelection.ts (alias-aware, location provenance guard) ·
+  intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
+  companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard) ·
+  signalStore.ts · telemetry.ts · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts · profileEnrichment.ts · rejections.ts ·
   roundDiagnostics.ts · scoutScoring.ts · targetFulfillment.ts · verification.ts ·
   evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware)
-  stages/                    plan (resolveGeo, per-round cache refresh) · retrieve (vagueness-aware depth + rewriter) · fuse (alias-aware) · extract · verify · enrich · judge · select · persist
+  stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate) ·
+                             retrieve (vagueness-aware depth + rewriter on both paths) ·
+                             fuse (symmetrical alias-aware) · extract · verify ·
+                             enrich (provenance-tagged site probe + annotate-only post intent) ·
+                             judge (strict grounding + polarity guard) · select ·
+                             persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
-test/                        128 files, node:test runner via tsx
-scripts/dev.ts               spawns Vite + Express
+test/                        129 files (128 .test.ts + queryIntelligence.eval.ts), node:test runner via tsx
+scripts/dev.ts               spawns Vite + Express (84 lines)
 ```
 
 ## 5. The discovery pipeline
 
 Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
-1. **plan** — CRM negative-domain exclusion, metro-saturation avoidance, `resolveGeo`
-   (no `USA` invention for open-global briefs), strategist query generation,
-   per-round `query_performance` cache refresh (`planStage.ts`)
+1. **plan** — CRM negative-domain exclusion, JSON-aware metro-saturation avoidance
+   (`$.profile.location` / `$.profile.city`), cross-session `discovered_companies` seeding
+   (`readDiscoveredCompanyNames(25)`), `resolveGeo` with pronoun-collision and city-only
+   geo guards (no `USA` invention for open-global briefs), strategist query generation,
+   cluster-keyed `historicalYield` (`domain_cluster|family|lane|provider`), and
+   `readOutcomeRate().rate` injection into `scheduleAdaptiveRetrievalTasks` (`planStage.ts`)
 2. **retrieve** — two-wave parallel Tavily + Bright Data lanes, conditional supplemental
    fallback when Tavily yield is low, vagueness-aware `maxResults`/depth
-   (`vague: 20`, `rich: precision-tuned`), bounded `queryRewriter` rescue after
-   ablation (`retrieveStage.ts`, `queryRewriter.ts`)
-3. **fuse** — corroboration fusion, dedupe, ablation tagging, alias-aware term
-   scoring (`MD` == `managing director`) (`fuseStage.ts`, `aliasMap.ts`)
-4. **extract** — token-dieted LLM extraction, chunked (`extractStage.ts`)
+   (`vague: 20`, `rich: precision-tuned`), bounded `queryRewriter` rescue dispatched across
+   both credit-reservation and standard paths with `demotedRequirementId` threading and
+   Tier-1 immutable anchor protection (`retrieveStage.ts`, `queryRewriter.ts`)
+3. **fuse** — corroboration fusion, dedupe, ablation tagging, symmetrical bidirectional
+   alias-aware term scoring (`MD` <-> `managing director`, `US` <-> `United States`)
+   (`fuseStage.ts`, `aliasMap.ts`)
+4. **extract** — Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked (`extractStage.ts`)
 5. **verify** — hard-requirement verification, borderline survival band (`verifyStage.ts`)
-6. **enrich** — consolidated site probing + TF-IDF company intent + LinkedIn post intent,
-   runs **after** selection (`enrichStage.ts`)
+6. **enrich** — consolidated site probing (tagging `_locationProvenance = 'company_site'`
+   and rejecting non-matching press URLs via `urlHostSharesCompanyToken`) + TF-IDF company
+   intent + annotate-only LinkedIn post intent (abbreviated recency support, 45d neutral
+   undated age), runs **after** selection (`enrichStage.ts`, `siteProbe.ts`, `linkedinPostIntent.ts`)
 7. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded),
-   tri-partition by evidence, alias-aware quote checks, contract-aware ranking
+   tri-partition by evidence (excluding company-derived locations from `person_location`
+   auto-pass), `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with negation polarity
+   guard (`0.7 * window + 0.3 * setOverlap`), company-scoped `b2b_saas` contradiction
+   checks, `hard_fail` precedence over `fabricatedPass`, and contract-aware ranking
    (hard `1.2x` + soft `0.4x`) (`judgeStage.ts`, `titleTriage.ts`,
-   `finalistJudge.ts`, `scoring.ts`)
+   `finalistJudge.ts`, `profileQuality.ts`, `scoring.ts`)
 8. **select** — Pareto skyline + MMR diversification (`selectStage.ts`)
-9. **persist** — identity-keyed upserts, FTS maintenance, exclude-list append (`persistStage.ts`)
+9. **persist** — identity-keyed upserts preserving CRM-owned workflow fields (`stage`,
+   `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), FTS
+   maintenance, exclude-list append, and session/log status (`success | partial_success | error`)
+   derived from actual `persistenceStatus` (`persistStage.ts`, `db.ts`)
 
 Cross-cutting invariants:
 
@@ -125,7 +144,8 @@ Cross-cutting invariants:
   judge | general` lanes (max 2 each, global cap 4) with backoff preserved.
   `ExecuteDiscoveryOptions` supports `parentSessionId`/`deltaBrief` follow-ups
   and `interactive=false` headless expander fallback. The MAB pools priors by
-  24 quantized brief centroids with `contract_guard` capped at `maxTasks+2`.
+  24 quantized brief centroids while preserving all `contract_guard` tasks above the
+  `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **Stage-boundary checkpoints** (`mining_sessions.checkpoint_json`, 512KB guard) power
   1-click resume; resume rebuilds `seenCandidateKeys` and _replaces_ checkpoint counters.
 - **Per-provider circuit breaker** with cooldown ladders and key rotation.
@@ -134,6 +154,9 @@ Cross-cutting invariants:
 
 144 keys in `.env` (mirrored by `.env.example`). Notable:
 
+- `EVIDENCE_GROUNDING_MODE` (`.env.example` = `"strict"`) — enforces verbatim, alias, or
+  polarity-guarded fuzzy quote citations on every `pass` verdict (`"legacy"`/`"permissive"`
+  restores pre-G1 behavior).
 - `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) — authoritative round budget; the in-loop
   extension ceiling now defers to it when set (was hard-coded 10, which is how a run
   configured for 6 reached 10).
@@ -148,16 +171,22 @@ env-overridable.
 
 ## 7. Test suite
 
-128 files / ~800 tests, `npm test` (~6 min, verified passing 2026-09-25). Composition:
+129 files / 860 unit & integration tests (172 suites) via `npm test` + 13 eval tests via
+`npm run test:eval` (verified passing 2026-09-25). Composition:
 
+- **Query & intelligence eval**: `queryIntelligence.eval` (13 suites covering 30+ gold briefs,
+  pronoun-collision guard G21, plural-persona extraction G22, city-only geo anchoring G24,
+  and qualified-yield baseline)
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
-  (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12)
+  (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12),
+  `fuzzyQuoteGrounding`, `profileQuality`, `siteProbe`, `adaptiveScheduler`
 - **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (29), `keyRotator`,
   `tavilyRotation`, `kalmanStability`, `serverResilience`, `sessionStreamHubPruning`
-- **Persistence**: `leadPersistence`, `leadDedupe`, `leadIdentityMigration`,
-  `sessionPersistenceAndResume`, `concurrencyShieldAndBulkDelete`
+- **Persistence**: `leadPersistence` (incl. G15 CRM workflow preservation), `leadDedupe`,
+  `leadIdentityMigration`, `sessionPersistenceAndResume`, `concurrencyShieldAndBulkDelete`,
+  `crmNegativeExclusions` (incl. G13 JSON metro saturation)
 - **Contracts**: `uiContracts` (16), `encodingHygiene`, `contractShape`
-- Curated subsets are wired as named `npm run test:*` scripts.
+- Curated subsets are wired as named `npm run test:*` scripts (incl. `npm run test:eval`).
 
 ## 8. Assessment — what is strong
 
@@ -287,6 +316,14 @@ Wholesale `delete process.env[key]` wipe loops in `test/llmUntrustedMessage.test
 const statusMaxRetries = maxRetries;
 ```
 When `LLM_MAX_RETRIES=0` (or `1`), the engine cascades immediately after the configured retry count rather than forcing a 2-retry minimum. Furthermore, the request timeout timer is armed only once queued HTTP execution begins, preventing queue wait starvation.
+
+### 9.10 Intelligence Gap Remediation (G1–G24) — RESOLVED (2026-09-23, `5a052c4`)
+
+All 24 findings from the 2026-09-22 intelligence gap audit have been resolved across 34 files and verified across 860 unit/integration tests + 13 eval tests:
+
+- **Evidence Integrity & Grounding (G1, G2, G3, G4, G9)**: Added `EVIDENCE_GROUNDING_MODE=strict` (default), polarity-guarded fuzzy quote verification (`0.7 * window + 0.3 * setOverlap`), `hard_fail` precedence over `fabricatedPass`, `_locationProvenance = 'company_site'` exclusion from `person_location` auto-pass, `urlHostSharesCompanyToken` press-URL rejection, and symmetrical bidirectional alias matching (`aliasIncludes`).
+- **Retrieval Determinism & Planning (G5, G6, G7, G8, G10, G13, G16, G21, G22, G24)**: Added top-level `discoveryFamily`/`discoveryLane` persistence, cluster-keyed `historicalYield` (`domain_cluster|family|lane|provider`), `contract_guard` retention above `maxTasks+2`, seeded PRNG (`seedAdaptiveRandom`), non-reservation `queryRewriter` dispatch with `demotedRequirementId` and Tier-1 anchor protection, company-scoped `b2b_saas` contradiction checks, SQLite JSON `$.profile.location` saturation counting, derived persistence status (`success | partial_success | error`), 2-char pronoun-collision geo guards, plural-persona role matching, and city-only geo anchoring without vertical-equals-location collisions.
+- **Intent, Learning & Persistence (G11, G12, G14, G15, G17, G20)**: Added `UNKNOWN_AGE_DAYS = 45` neutral undated freshness and abbreviated recency units (`2d`, `1w`, `3mo`, `1y`, `2h`), annotate-only post-intent enrichment, cross-session `discovered_companies` seeding into `planStage`, CRM workflow field preservation (`stage`, `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), schema v23 `lead_outcomes` binary feedback (`REPLIED`, `KEEP`, `CONVERTED` vs `REJECT`, `LOST`) wired into `scoreAdaptiveArm` alongside `hard_failed_candidates` penalties, and the `npm run test:eval` golden-brief harness.
 
 ## 10. Recommended next actions
 

@@ -88,3 +88,12 @@ The domain-clustered MAB pools Thompson-sampling priors by 24 persistent determi
 ### Contract-Aware Ranking (`rankLeadForFinalSelection`)
 Final selection scoring takes the contract into account: hard-requirement coverage dominates with a `1.2x` spread and soft-signal coverage actively boosts (`0.4x`), replacing the previous hard-only rank where soft nuance was invisible.
 
+### LLM Completion Cache (`llm_completion_cache`)
+A durable, prompt-hash-keyed cache in front of the LLM gateway (`server/services/llm.ts`). Repeat completions (strategist rounds, identical extraction chunks) are served from SQLite instead of the provider, with per-entry `expires_at` TTL and periodic `purgeLlmCacheExpired` sweeps. It targets the dominant share of session wall clock previously lost to repeated LLM latency.
+
+### Gated Company Attribution (`companyAttribution.ts`)
+A bounded LLM attribution step that verifies a discovered company actually fits the brief before prospects are attributed to it. It classifies the company's business model (`client_services_agency`, `software_saas`, `e_commerce`, ...), checks query alignment (`matches_brief | adjacent | contradicts`), and emits `verified_fit | unverified | disqualifying_contradiction` verdicts grounded in a verbatim evidence quote. Business-model contradictions gate candidates out before judge tokens are spent.
+
+### Deterministic Profile Quality Gates (`profileQuality.ts`)
+Zero-LLM quality gates shared by dataset-dossier and SERP candidates: social-proof parsing (followers/connections/influencer), company-page and ghost-profile detection, and wrong-vertical agency detection. Single source of truth for `checkStrictContradiction` in the Finalist Judge so both candidate origins face identical gates at zero token cost.
+

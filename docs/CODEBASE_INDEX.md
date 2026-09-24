@@ -1,10 +1,12 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-09-16 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-09-25 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
-> Supersedes the retired 2026-09-12 index, which had drifted on schema version, route count,
-> and test counts. Verified values below were measured directly from the tree, not inherited.
+> Supersedes the 2026-09-16 index, which had drifted on schema version (v22 → v23), test
+> counts (95 files → 128), table inventory, and module listings. Verified values below were
+> measured directly from the tree, not inherited: `tsc --noEmit` passes with 0 errors and
+> the full suite (`npm test`) passes end-to-end as of this date.
 
 ---
 
@@ -34,14 +36,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | ~11,587 lines across 35 files                                              |
-| Backend engine (`server/leadSearch/`)                            | ~18,577 lines: 33 modules + 9 `stages/`                                    |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~12,221 lines                                                              |
+| Frontend (`src/`)                                                | ~11,640 lines across 35 files                                              |
+| Backend engine (`server/leadSearch/`)                            | ~21,230 lines: 39 modules + 9 `stages/`                                    |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~13,880 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 18 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v22**, WAL |
-| Test suite                                                       | 95 files, 689 tests / 157 suites, all passing                              |
-| Total first-party LOC                                            | ~60,100                                                                    |
-| Working tree                                                     | clean (all fixes committed through `15beacf`)                              |
+| SQLite                                                           | 20 base tables + `leads_fts` (fts5), schema **v23**, WAL                   |
+| Test suite                                                       | 128 files, ~800 tests / 172 suites, all passing                            |
+| Total first-party LOC                                            | ~69,000 (incl. ~22,200 test LOC)                                           |
+| Working tree                                                     | clean (all fixes committed through `5a052c4`)                              |
 
 ## 3. Tech stack
 
@@ -59,31 +61,35 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (326 lines)
-server/db.ts                 SQLite layer: schema v21, migrations, 40+ readers/writers (4,277)
-server/routes/api.ts         41 REST routes (2,068)
-server/services/             llm.ts (2,211) · brightdata.ts (1,917) · keyRotator ·
+server.ts                    Express app + static Vite serve (333 lines)
+server/db.ts                 SQLite layer: schema v23, migrations, 40+ readers/writers (4,792)
+server/routes/api.ts         41 REST routes (2,160)
+server/services/             llm.ts (2,760, incl. prompt-hash completion cache) ·
+                             brightdata.ts (2,242) · keyRotator ·
                              sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
                              outboundPrompt · langfuse
 server/leadSearch/           the discovery engine
-  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,441)
-  prospectContract.ts        brief -> contract compilation + validation (1,563)
-  finalistJudge.ts           tri-partition, contradiction checks, score normalization (1,136)
-  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, contract-aware rank (641)
-  queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo, salience compression (new)
-  aliasMap.ts                zero-network role/geo/company/tool alias normalization for hot loops (new)
-  queryRewriter.ts           bounded complexity-aware zero-yield rewriter (new)
+  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,540)
+  prospectContract.ts        brief -> contract compilation + validation (1,834)
+  finalistJudge.ts           tri-partition, contradiction checks, score normalization (1,289)
+  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, contract-aware rank (668)
+  queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo, salience compression
+  aliasMap.ts                zero-network role/geo/company/tool alias normalization for hot loops
+  queryRewriter.ts           bounded complexity-aware zero-yield rewriter
+  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating
+  profileQuality.ts          deterministic social-proof parsing, ghost/company-page & wrong-vertical gates
+  providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
   searchSpec.ts · strategist.ts · adaptiveScheduler.ts (quantized MAB) · collectionCapacity.ts ·
-  constraintAblation.ts · evidenceSelection.ts (alias-aware) · intentEnrichment.ts · companyIntent.ts ·
-  linkedinPostIntent.ts · siteProbe.ts · signalStore.ts · telemetry.ts ·
+  constraintAblation.ts · evidenceSelection.ts (alias-aware) · intentSignals.ts · intentEnrichment.ts ·
+  companyIntent.ts · linkedinPostIntent.ts · siteProbe.ts · signalStore.ts · telemetry.ts ·
   featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts · profileEnrichment.ts · rejections.ts ·
   roundDiagnostics.ts · scoutScoring.ts · targetFulfillment.ts · verification.ts ·
   evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware)
   stages/                    plan (resolveGeo, per-round cache refresh) · retrieve (vagueness-aware depth + rewriter) · fuse (alias-aware) · extract · verify · enrich · judge · select · persist
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
-                             ToastContext) · components/ (10 feature + 10 ui) · lib/ · utils/
-test/                        94 files, node:test runner via tsx
+                             ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
+test/                        128 files, node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express
 ```
 
@@ -126,7 +132,7 @@ Cross-cutting invariants:
 
 ## 6. Configuration surface
 
-138 keys in `.env` (mirrored by `.env.example`). Notable:
+144 keys in `.env` (mirrored by `.env.example`). Notable:
 
 - `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) — authoritative round budget; the in-loop
   extension ceiling now defers to it when set (was hard-coded 10, which is how a run
@@ -136,16 +142,17 @@ Cross-cutting invariants:
 - `LEAD_SEARCH_TIMEOUT_MS=0` disables the 15-minute safety timeout.
 - `server/configValidation.ts` emits non-fatal boot warnings for misconfigurations.
 
-`featureFlags.ts` exposes 15 env-overridable flags; **6 are marked `@deprecated` as
-"graduated into standard architecture"** but remain overridable (see §9.6).
+`featureFlags.ts` exposes 15 flags; **6 have graduated into permanent architectural
+invariants** that return `true` unconditionally (see §9.6), the rest remain
+env-overridable.
 
 ## 7. Test suite
 
-94 files / 681 tests, `npm run test:all` (~6 min). Composition:
+128 files / ~800 tests, `npm test` (~6 min, verified passing 2026-09-25). Composition:
 
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
   (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12)
-- **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (32), `keyRotator`,
+- **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (29), `keyRotator`,
   `tavilyRotation`, `kalmanStability`, `serverResilience`, `sessionStreamHubPruning`
 - **Persistence**: `leadPersistence`, `leadDedupe`, `leadIdentityMigration`,
   `sessionPersistenceAndResume`, `concurrencyShieldAndBulkDelete`
@@ -179,7 +186,8 @@ Ordered by leverage, not severity.
 the `MAX_COLLECTION_ROUNDS = 24` ceiling, and the `LEAD_SEARCH_MAX_ROUNDS` override, instead
 of the incorrect "2-4 rounds". The README badge now reads `681_Tests_Passing`, matching the
 measured suite. Generating the badge from the test run remains an option but it is no longer
-wrong.
+wrong. *(2026-09-25 note: the badge has since been simplified to `Lead_Engine-Passing`;
+current counts live in §2.)*
 
 ### 9.2 `executeJudgeStage` dead code — RESOLVED (2026-09-16)
 
@@ -240,13 +248,16 @@ guard that fails if an executable `<= 1.0` comparison is reintroduced in `LeadCo
 Non-vacuousness was verified by reintroducing the original expression at the call site and
 confirming the guard fails.
 
-### 9.4 No LLM completion cache (medium — the real bottleneck)
+### 9.4 No LLM completion cache — RESOLVED (2026-09-25)
 
-`llm.ts` contains no memoization or completion cache of any kind. The last measured
-session spent **79% of wall clock in LLM latency**, with `extraction` at 37.8s per call
-and the strategist repeating substantially across rounds. Both audit documents recommend a
-completion cache before any further prompt dieting. This is the highest-leverage
-unaddressed performance item.
+`server/services/llm.ts` now consults a durable completion cache before dispatching:
+`getLlmCacheEntry(promptHash)` (llm.ts:2192) short-circuits repeat completions, and
+fresh responses are persisted via `upsertLlmCacheEntry` (llm.ts:2240, :2307). The cache
+is backed by the `llm_completion_cache` table (`prompt_hash` PK, provider/model/response/
+usage payload, `expires_at` TTL with `purgeLlmCacheExpired` sweeps). Pinned by
+`test/llmCompletionCache.test.ts`. This was the highest-leverage performance item
+(79% of session wall clock in LLM latency); whether it moved the needle still requires
+the re-measurement in §10.6.
 
 ### 9.5 Uncommitted work — RESOLVED (2026-09-16)
 
@@ -279,20 +290,20 @@ When `LLM_MAX_RETRIES=0` (or `1`), the engine cascades immediately after the con
 
 ## 10. Recommended next actions
 
-Updated 2026-09-17. Items 1, 2, 4, 7, and 8 below are done; the rest stand.
+Updated 2026-09-25. Every item below is now done except the re-measurement (item 6).
 
 1. ~~**Commit the working tree.**~~ Done (`e3c851d`), along with the Atria provider work
    (`172fb00`), TPS assessment (`4de56b5`), and audit fixes (`15beacf`).
 2. ~~**Fix `LeadContext.tsx:589`** to `< 1.0`.~~ Done — see §9.3.
-3. **Delete `executeJudgeStage`** and migrate its two test callers to
-   `evaluateIncrementalJudgeBatches`, removing the duplicate triage block. Still the
-   clearest remaining correctness risk: a second copy of triage logic that can drift while
-   the live copy is fixed.
+3. ~~**Delete `executeJudgeStage`** and migrate its test callers.~~ Done — see §9.2.
+   The live safety-net path (`promoteSafetyNetCandidates` + `isEligibleForSafetyNet`)
+   is now the only copy and is directly tested.
 4. ~~**Correct `CONTEXT.md:50`** and fix the README badge.~~ Done — see §9.1 and `README.md`.
-5. **Add an LLM completion cache** keyed on provider+model+prompt hash, behind a flag, with
-   a TTL — this targets the 79% of wall clock that every other optimization has left
-   untouched.
+5. ~~**Add an LLM completion cache.**~~ Done — durable, prompt-hash keyed, TTL-bounded;
+   see §9.4.
 6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
-   39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the fixes.
+   39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the
+   fixes; this is now the *only* outstanding item and doubles as the acceptance check
+   for the completion cache (item 5).
 7. ~~**Decide §9.9** (`LLM_MAX_RETRIES` 429 floor)~~ Done — strictly honors `LLM_MAX_RETRIES`.
-8. ~~**Commit this index** alongside the engine resilience fixes.~~ Done (`15beacf`).
+8. ~~**Commit this index**~~ Done (refreshed again 2026-09-25).

@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-8.2-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v22-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v22" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v23-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v23" />
     <img src="https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
     <img src="https://img.shields.io/badge/Lead_Engine-Passing-10B981" alt="Lead Engine Tests" />
   </p>
@@ -67,7 +67,7 @@ flowchart TD
     StreamA --> Plan
     StreamB --> Plan
 
-    Judge --> Checkpoint[("Durable SQLite Checkpoint (Schema v21)")]
+    Judge --> Checkpoint[("Durable SQLite Checkpoint (Schema v23)")]
     Judge --> Inventory["Local Prospect Inventory"]
 ```
 
@@ -148,7 +148,7 @@ flowchart TD
 ```mermaid
 graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
-    API --> DB[("SQLite Database (node:sqlite, Schema v21, WAL mode)")]
+    API --> DB[("SQLite Database (node:sqlite, Schema v23, WAL mode)")]
 
     API --> Direct["Direct OpenAI-Compatible Provider Chain"]
     Direct --> Primary["Atria / Byesu Provider"]
@@ -164,9 +164,9 @@ graph TD
 
 ### Technology Stack
 
-- **Frontend**: React 19, Vite 6, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
-- **Backend**: Node.js 24+, TypeScript 5.9, Express 5, `p-queue` rate limiting.
-- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v21**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
+- **Frontend**: React 19, Vite 8, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
+- **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
+- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v23**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
 - **LLM Routing**: Direct OpenAI-compatible provider chain with automatic fallback (Atria / Byesu -> OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
@@ -288,7 +288,7 @@ All API routes are mounted under `/api`:
 
 ---
 
-## Database & Schema (v22)
+## Database & Schema (v23)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
@@ -300,6 +300,10 @@ The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode wi
 - **`query_performance`**: Historical yield, latency, and provider unit accounting per query family and lane.
 - **`prospect_contract_cache`**: Versioned requirement contracts, decomposition modes, and compilation metadata.
 - **`enrichment_cache`**: Positive and negative profile scraping caches (incl. intent fingerprints).
+- **`llm_completion_cache`**: Prompt-hash-keyed LLM completion cache with TTL, cutting repeat strategist/extraction latency across rounds.
+- **`discovered_companies`**: Signal-to-company reverse flywheel account inventory with attribution metadata.
+- **`lead_outcomes`**: Per-lead disposition labels feeding quality grounding (ADR-0006).
+- **`icp_hypothesis_cache`**: Cached ICP hypothesis decompositions for repeat brief shapes.
 - **`saved_searches`**: Reusable prospecting configurations.
 - **`lead_activities` & `outreach_drafts`**: Audit trails and draft messaging.
 
@@ -309,7 +313,7 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite (127 test files, run via `tsx --test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30 gold briefs) and stage-queue concurrency tests (`test/llmStageQueue.test.ts`):
+Apex CRM maintains an extensive test suite (128 test files, ~800 tests across 172 suites, run via `tsx --test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30 gold briefs) and stage-queue concurrency tests (`test/llmStageQueue.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
@@ -318,25 +322,25 @@ npm run lint
 # Full test suite (100% pass)
 npm test
 
-# Full Lead Engine Suite (293 tests across 32 suites)
+# Full Lead Engine Suite (300 tests across 28 suites)
 npm run test:lead-engine
 
-# Audit Invariants & Engine Resilience Suite (11 tests across 8 suites)
+# Audit Invariants & Engine Resilience Suite (11 tests)
 npx tsx --test test/auditFixesResilience.test.ts
 
-# Two-Wave Parallel Retrieval & Planner Derivation (4 tests)
+# Two-Wave Parallel Retrieval & Planner Derivation (5 tests)
 npx tsx --test test/parallelRetrieval.test.ts
 
-# Durable Session Checkpoints & Resumption (3 tests)
+# Durable Session Checkpoints & Resumption (11 tests)
 npx tsx --test test/sessionPersistenceAndResume.test.ts
 
-# UI Contracts, Navigation & Trace Store (7 tests)
+# UI Contracts, Navigation & Trace Store (16 tests)
 npm run test:ui
 
-# Adaptive Decomposition & Multi-Source Intent Suite (24 tests)
+# Adaptive Decomposition & Multi-Source Intent Suite (34 tests)
 npm run test:intent-engine
 
-# Persistence, Identity Deduplication & Revisions (10 tests)
+# Persistence, Identity Deduplication & Revisions (21 tests)
 npm run test:dedupe
 ```
 
@@ -384,12 +388,15 @@ server/
     queryRewriter.ts         Bounded complexity-aware zero-yield rewriter (broaden/relax, max 3)
     intentSignals.ts         Dynamic signal compiler, categories & freshness decay
     companyIntent.ts         Phase 4 company website TF-IDF intent scoring
+    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating
+    profileQuality.ts        Deterministic social-proof parsing, ghost/company-page & wrong-vertical detection
     linkedinPostIntent.ts    Phase 5 LinkedIn post SERP intent research
+    providerQueue.ts         Bounded-concurrency provider task queue (`runProviderQueue`)
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
     scoring.ts               Composite scoring, freshness decay & MMR diversity
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v22 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
-test/                        Automated unit, integration, and replay test suites (120 test files via tsx --test)
+  db.ts                      SQLite v23 schema (with leads_fts virtual table + leads_fts_map rowid index), migrations, checkpoint CRUD & startup sweeps
+test/                        Automated unit, integration, and replay test suites (128 test files via tsx --test)
 scripts/                     Dev orchestrator and server runners
 .env.example                 Configuration variables and default settings
 ```

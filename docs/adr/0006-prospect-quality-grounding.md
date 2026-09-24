@@ -160,3 +160,24 @@ way to demonstrate that this ADR improved anything, only that it changed behavio
   `proactiveTokenRegulator`), `ProviderTrafficController` is dead code, and two divergent
   copies of the SSRF guard exist (`server/services/privateHosts.ts` vs
   `server/hostValidation.ts`).
+
+## Addendum (2026-09-25)
+
+Status update on the follow-ups and the core loop, measured against the current tree:
+
+- **The disposition loop has partially landed.** `lead_outcomes` (binary
+  `positive | negative`) is written from lead stage/review transitions
+  (`server/routes/api.ts`) and read back by the scheduler as a global outcome rate
+  (`adaptiveScheduler.ts:190`, G17). The richer `KEEP = +1.0 / MAYBE = +0.3 / REJECT = -1.0`
+  weighting, per-arm disposition counters, and judge calibration (Brier score /
+  reliability curve) from §3 are **not** implemented — the reward is still dominated by
+  judge-passed `qualified` counts.
+- **Inert flags:** resolved 2026-09-17 — the six graduated flags in `featureFlags.ts`
+  are now permanent architectural invariants returning `true` unconditionally.
+- **`ProviderTrafficController`:** still exported from `keyRotator.ts` but exercised
+  only by `test/resilienceAndCacheHygiene.test.ts`; no production caller.
+- **SSRF guard duplication:** resolved in substance — `privateHosts.ts` is the shared
+  SSRF guard; `hostValidation.ts` is an HTTP `Host`-header parser (request validation),
+  not a second SSRF implementation.
+- The ADR-0007 concurrency candidate is partially de-risked by stage-lane sharding
+  (`FEATURE_LLM_STAGE_QUEUES=true`), which is implemented but off by default.

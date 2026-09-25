@@ -206,6 +206,78 @@ export type GatedCompanyAttributionOptions = {
   ) => Promise<any>;
 };
 
+const companyAttributionCache = new Map<
+  string,
+  { result: CompanyAttributionResult; sourceLength: number }
+>();
+const MAX_COMPANY_ATTRIBUTION_CACHE = 1000;
+
+function buildCompanyAttributionCacheKey(
+  companyKey: string,
+  contract: ProspectContract,
+): string {
+  const briefKey = String(contract.brief || "").trim().toLowerCase();
+  const policyKey = String(contract.policyVersion || "");
+  const reqKey = (contract.requirements || [])
+    .map((r) => `${r.id}:${r.importance}:${r.scope}:${r.description}`)
+    .join("|")
+    .toLowerCase();
+  return `${companyKey.toLowerCase()}::${policyKey}::${briefKey}::${reqKey}`;
+}
+
+function applyAttributionToGroup(
+  groupTargets: Array<{
+    candidate: FinalistCandidate;
+    companyKey: string;
+    companyName: string;
+    domain: string;
+    sourceText: string;
+  }>,
+  attributionResult: CompanyAttributionResult,
+  summary: {
+    attributedCount: number;
+    contradictionCount: number;
+    verifiedCount: number;
+  },
+): void {
+  const { verdict, verbatimEvidenceQuote: citedQuote, quoteVerified: quoteValid } =
+    attributionResult;
+  const first = groupTargets[0];
+
+  summary.attributedCount += groupTargets.length;
+  if (verdict === "disqualifying_contradiction") {
+    summary.contradictionCount += groupTargets.length;
+  } else if (verdict === "verified_fit") {
+    summary.verifiedCount += groupTargets.length;
+  }
+
+  for (const target of groupTargets) {
+    const lead = target.candidate.lead;
+    lead.companyAttribution = attributionResult;
+
+    if (verdict === "disqualifying_contradiction") {
+      lead._autoFailed = true;
+      lead._contradictionReason = `Company Attribution: ${attributionResult.reason} (business model: ${attributionResult.businessModel})`;
+    } else {
+      const quoteSnippet = quoteValid && citedQuote ? ` Quote: "${citedQuote}".` : "";
+      const attrEvidenceItem = {
+        id: "e_company_attr",
+        text: `[COMPANY ATTRIBUTION (${verdict}): ${first.domain || first.companyName}] Business Model: ${attributionResult.businessModel}. Offering: ${attributionResult.primaryOffering}.${quoteSnippet} Reason: ${attributionResult.reason}`,
+      };
+      const existingEvidence = (target.candidate.evidence || []).filter(
+        (item) => item?.id !== "e_company_attr",
+      );
+      target.candidate.evidence = [attrEvidenceItem, ...existingEvidence];
+      if (lead.companyAccount) {
+        lead.companyAccount.businessModel = attributionResult.businessModel;
+        if (attributionResult.primaryOffering) {
+          lead.companyAccount.description = attributionResult.primaryOffering;
+        }
+      }
+    }
+  }
+}
+
 export async function runGatedCompanyAttribution(
   candidates: FinalistCandidate[],
   contract: ProspectContract,
@@ -236,6 +308,7 @@ export async function runGatedCompanyAttribution(
   const targets: CandidateTarget[] = [];
   for (const cand of candidates) {
     if (cand.lead._autoFailed) continue;
+    if (cand.lead.companyAttribution) continue;
     const { companyName, domain, sourceText } = extractCompanySourceText(cand);
     if (!companyName || sourceText.length < 30) continue;
     const companyKey = domain || companyName.toLowerCase();
@@ -258,7 +331,27 @@ export async function runGatedCompanyAttribution(
     byCompany.set(target.companyKey, list);
   }
 
-  const uniqueCompanyEntries = Array.from(byCompany.entries());
+  const useCache = !options.openAIStructured;
+  const uniqueCompanyEntries: Array<[string, CandidateTarget[]]> = [];
+  for (const [key, groupTargets] of byCompany.entries()) {
+    if (useCache) {
+      const cacheKey = buildCompanyAttributionCacheKey(key, contract);
+      const cached = companyAttributionCache.get(cacheKey);
+      const currentSourceLen = groupTargets[0]?.sourceText.length || 0;
+      if (
+        cached &&
+        (cached.result.verdict !== "unverified" ||
+          cached.sourceLength >= currentSourceLen)
+      ) {
+        applyAttributionToGroup(groupTargets, cached.result, result);
+        continue;
+      }
+    }
+    uniqueCompanyEntries.push([key, groupTargets]);
+  }
+
+  if (uniqueCompanyEntries.length === 0) return result;
+
   if (options.logEvent) {
     options.logEvent(
       `[Company Attribution] Evaluating ${uniqueCompanyEntries.length} unique companies for ${targets.length} ambiguous candidates.`,
@@ -360,41 +453,21 @@ export async function runGatedCompanyAttribution(
           quoteVerified: quoteValid,
         };
 
-        result.attributedCount += groupTargets.length;
-        if (verdict === "disqualifying_contradiction") {
-          result.contradictionCount += groupTargets.length;
-        } else if (verdict === "verified_fit") {
-          result.verifiedCount += groupTargets.length;
-        }
-
-        // Apply attribution results to every candidate in the company group
-        for (const target of groupTargets) {
-          const lead = target.candidate.lead;
-          lead.companyAttribution = attributionResult;
-
-          if (verdict === "disqualifying_contradiction") {
-            // Auto-fail obvious business-model contradictions (e.g. detective agency on an agency brief)
-            lead._autoFailed = true;
-            lead._contradictionReason = `Company Attribution: ${attributionResult.reason} (business model: ${attributionResult.businessModel})`;
-          } else {
-            // Attach structured attribution evidence so the Finalist Judge evaluates it
-            const quoteSnippet = quoteValid ? ` Quote: "${citedQuote}".` : "";
-            const attrEvidenceItem = {
-              id: "e_company_attr",
-              text: `[COMPANY ATTRIBUTION (${verdict}): ${first.domain || first.companyName}] Business Model: ${attributionResult.businessModel}. Offering: ${attributionResult.primaryOffering}.${quoteSnippet} Reason: ${attributionResult.reason}`,
-            };
-            target.candidate.evidence = [
-              attrEvidenceItem,
-              ...(target.candidate.evidence || []),
-            ];
-            if (lead.companyAccount) {
-              lead.companyAccount.businessModel = attributionResult.businessModel;
-              if (attributionResult.primaryOffering) {
-                lead.companyAccount.description = attributionResult.primaryOffering;
-              }
-            }
+        if (useCache) {
+          if (companyAttributionCache.size >= MAX_COMPANY_ATTRIBUTION_CACHE) {
+            const oldestKey = companyAttributionCache.keys().next().value;
+            if (oldestKey !== undefined) companyAttributionCache.delete(oldestKey);
           }
+          companyAttributionCache.set(
+            buildCompanyAttributionCacheKey(key, contract),
+            {
+              result: attributionResult,
+              sourceLength: first.sourceText.length,
+            },
+          );
         }
+
+        applyAttributionToGroup(groupTargets, attributionResult, result);
       }
     } catch (err: any) {
       if (options.logEvent) {

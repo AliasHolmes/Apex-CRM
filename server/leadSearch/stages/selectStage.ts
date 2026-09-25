@@ -1,7 +1,7 @@
 import { runLinkedInPostIntentEnrichment } from '../linkedinPostIntent.js';
 import { runIntentEnrichment } from '../intentEnrichment.js';
 import { selectDiversifiedLeads } from '../scoutScoring.js';
-import { recordQueryPerformance } from '../../db.js';
+import { recordQueryPerformanceBatch } from '../../db.js';
 import { hasTavilyKey } from '../../services/llm.js';
 import { deriveDomainCluster } from '../adaptiveScheduler.js';
 import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
@@ -117,6 +117,10 @@ export async function executeSelectStage(
   if (linkedinPostIntentEnabled && shouldRunIntent && finalLeads.length > 0) {
     logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${finalLeads.length} finalist candidates.`);
     const qualifiedMap = new Map<string, any>(finalLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
+    const postIntentConcurrency = Math.max(
+      1,
+      Math.min(4, Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 3)),
+    );
     const postIntentStats = await runLinkedInPostIntentEnrichment({
       qualifiedLeads: qualifiedMap,
       contract,
@@ -124,7 +128,7 @@ export async function executeSelectStage(
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
       maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), finalLeads.length),
-      concurrency: 1, // strictly sequential LLM execution
+      concurrency: postIntentConcurrency, // concurrent SERP retrieval; Phase B LLM batching remains sequential
       ttlDays,
       sessionAbortSignal: state.abortController.signal,
       logEvent,
@@ -145,13 +149,13 @@ export async function executeSelectStage(
     if (queryRun) queryRun.returnedFinalists++;
   }
   const domainCluster = deriveDomainCluster(contract.brief || (ctx.config as any)?.promptQuery || '');
-  for (const run of stats.queryRuns) {
+  const perfUpdates = stats.queryRuns.map((run: any) => {
     const failDigest =
       run.requirementFailCounts &&
       Object.keys(run.requirementFailCounts).length > 0
         ? JSON.stringify(run.requirementFailCounts)
         : undefined;
-    recordQueryPerformance({
+    return {
       domainCluster,
       family: run.family || 'general',
       lane: run.lane || 'person',
@@ -171,8 +175,9 @@ export async function executeSelectStage(
       rescuedCandidates: run.rescuedFinalists,
       returnedCandidates: run.returnedFinalists,
       requirementFailDigest: failDigest,
-    });
-  }
+    };
+  });
+  recordQueryPerformanceBatch(perfUpdates);
 
   const leadsFound = finalLeads.length;
   stats.returned = leadsFound;

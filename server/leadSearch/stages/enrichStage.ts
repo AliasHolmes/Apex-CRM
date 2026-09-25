@@ -920,11 +920,35 @@ export async function executeEnrichStage(
         })
         .sort((a, b) => (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0));
 
-      const candidateDomains = probeCandidateTargets
-        .map((t) => deriveCompanyDomain(t.lead))
-        .filter(Boolean) as string[];
+      const toHostKey = (rawDomain: string): string => {
+        try {
+          return new URL(
+            rawDomain.startsWith("http") ? rawDomain : `https://${rawDomain}`,
+          )
+            .hostname.replace(/^www\./, "")
+            .toLowerCase();
+        } catch {
+          return rawDomain
+            .replace(/^https?:\/\/(www\.)?/i, "")
+            .replace(/\/.*$/, "")
+            .toLowerCase();
+        }
+      };
 
-      const domainLookups = candidateDomains.map((d) => ({ normalizedUrl: d }));
+      const targetDomainMeta = new Map<
+        EnrichmentTarget,
+        { domain: string; host: string }
+      >();
+      for (const target of probeCandidateTargets) {
+        const domain = deriveCompanyDomain(target.lead);
+        if (domain) {
+          targetDomainMeta.set(target, { domain, host: toHostKey(domain) });
+        }
+      }
+
+      const domainLookups = Array.from(targetDomainMeta.values()).flatMap(
+        (m) => [{ normalizedUrl: m.host }, { normalizedUrl: m.domain }],
+      );
       const positiveSiteCacheMap = getEnrichmentCacheEntriesBatch(domainLookups);
       const negativeSiteCacheMap = getNegativeEnrichmentCacheEntriesBatch(
         domainLookups,
@@ -938,12 +962,14 @@ export async function executeEnrichStage(
           stats.siteProbe.skippedCap++;
           continue;
         }
-        const domain = deriveCompanyDomain(target.lead);
-        if (!domain) continue;
+        const meta = targetDomainMeta.get(target);
+        if (!meta) continue;
+        const { domain, host } = meta;
 
-        // Check positive cache
-        const posCache = positiveSiteCacheMap.get(domain);
-        if (posCache) {
+        // Check positive cache (host key written by applySiteProbe/groundCandidateWithSiteProbe, or legacy full domain)
+        const posCache =
+          positiveSiteCacheMap.get(host) || positiveSiteCacheMap.get(domain);
+        if (posCache && posCache.evidenceBlock) {
           stats.siteProbe.cacheHits++;
           const signals = parseSiteSignalsFromEvidenceBlock(
             posCache.evidenceBlock,
@@ -955,7 +981,8 @@ export async function executeEnrichStage(
         }
 
         // Check negative cache
-        const negCache = negativeSiteCacheMap.get(domain);
+        const negCache =
+          negativeSiteCacheMap.get(host) || negativeSiteCacheMap.get(domain);
         if (negCache) {
           stats.siteProbe.negativeHits++;
           continue;
@@ -979,16 +1006,18 @@ export async function executeEnrichStage(
 
           let probeSucceeded = 0;
           for (const target of targetsToProbe) {
-            const domain = deriveCompanyDomain(target.lead);
-            if (domain && probeResults.has(domain)) {
+            const meta = targetDomainMeta.get(target);
+            if (!meta) continue;
+            const { domain, host } = meta;
+            if (probeResults.has(domain)) {
               const signals = probeResults.get(domain)!;
               applySiteProbe(target, signals, domain, refreshLeadEvidence);
               probeSucceeded++;
-            } else if (domain) {
-              // Negative cache dead / failed domain
+            } else {
+              // Negative cache dead / failed domain using canonical host key
               upsertNegativeEnrichmentCacheEntry(
                 {
-                  normalizedUrl: domain,
+                  normalizedUrl: host,
                   scrapeQuality: "bad",
                   evidenceBlock: "site_probe_no_signals",
                   sourceProvider: "site_probe",

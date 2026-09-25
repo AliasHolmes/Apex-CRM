@@ -1771,6 +1771,9 @@ export function invalidateLeadsStatsCache() {
   cachedLeadsStatsExpiresAt = 0;
   cachedExistingIdentityKeys = null;
   cachedIdentityKeysMutationCounter = -1;
+  cachedStoredCompanyNames = null;
+  cachedStoredCompanyDomains = null;
+  cachedStoredMetroSaturation = null;
   dbMutationCounter++;
 }
 
@@ -1780,11 +1783,13 @@ export function getLeadsDbMutationCounter(): number {
 
 export function getLeadsETag(queryParams?: Record<string, any>): string {
   const db = getLeadsDb();
-  const row = db
-    .prepare("SELECT MAX(updated_at) as max_updated, COUNT(*) as count FROM leads")
-    .get() as { max_updated?: string; count?: number } | undefined;
+  const row = getCachedStatement(
+    db,
+    "SELECT MAX(updated_at) as max_updated, COUNT(*) as count FROM leads",
+  ).get() as { max_updated?: string; count?: number } | undefined;
   const maxUpdated = row?.max_updated || "0";
   const count = Number(row?.count || 0);
+  const initialized = hasLeadStoreBeenInitialized() ? "1" : "0";
   let qStr = "";
   if (queryParams && typeof queryParams === "object") {
     const ignoredKeys = new Set(["_t", "_", "timestamp", "t", "cachebuster", "_cachebuster"]);
@@ -1797,7 +1802,11 @@ export function getLeadsETag(queryParams?: Record<string, any>): string {
     }
     qStr = JSON.stringify(sortedObj);
   }
-  const hash = crypto.createHash("md5").update(`${maxUpdated}:${count}:${qStr}`).digest("hex").slice(0, 16);
+  const hash = crypto
+    .createHash("md5")
+    .update(`${maxUpdated}:${count}:${dbMutationCounter}:${initialized}:${qStr}`)
+    .digest("hex")
+    .slice(0, 16);
   return `W/"${hash}"`;
 }
 
@@ -3589,9 +3598,9 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     ? update.scopeKey.toLowerCase()
     : [domainCluster !== "global" ? domainCluster : "", family, lane, provider].filter(Boolean).join("|").toLowerCase();
 
-  getLeadsDb()
-    .prepare(
-      `
+  getCachedStatement(
+    getLeadsDb(),
+    `
     INSERT INTO query_performance (
       scope_key, domain_cluster, family, lane, provider, runs, raw_candidates, unique_candidates,
       extracted_candidates, accepted_candidates, duplicate_candidates, outcome_runs,
@@ -3625,31 +3634,49 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       END,
       updated_at = excluded.updated_at
   `,
-    )
-    .run(
-      scopeKey,
-      domainCluster,
-      family,
-      lane,
-      provider,
-      Math.max(0, Math.floor(update.runs ?? 1)),
-      Math.max(0, Math.floor(update.rawCandidates || 0)),
-      Math.max(0, Math.floor(update.uniqueCandidates || 0)),
-      Math.max(0, Math.floor(update.extractedCandidates || 0)),
-      Math.max(0, Math.floor(update.acceptedCandidates || 0)),
-      Math.max(0, Math.floor(update.duplicateCandidates || 0)),
-      Math.max(0, Math.floor(update.outcomeRuns || 0)),
-      Math.max(0, Math.floor(update.qualifiedCandidates || 0)),
-      Math.max(0, Math.floor(update.rescuedCandidates || 0)),
-      Math.max(0, Math.floor(update.returnedCandidates || 0)),
-      Math.max(0, Math.floor(update.searchLatencyMs || 0)),
-      Math.max(0, Math.floor(update.providerUnits || 0)),
-      Math.max(0, Math.floor(update.judgedCandidates || 0)),
-      Math.max(0, Math.floor(update.hardFailedCandidates || 0)),
-      Math.max(0, Math.floor(update.unknownCandidates || 0)),
-      update.requirementFailDigest || null,
-      new Date().toISOString(),
-    );
+  ).run(
+    scopeKey,
+    domainCluster,
+    family,
+    lane,
+    provider,
+    Math.max(0, Math.floor(update.runs ?? 1)),
+    Math.max(0, Math.floor(update.rawCandidates || 0)),
+    Math.max(0, Math.floor(update.uniqueCandidates || 0)),
+    Math.max(0, Math.floor(update.extractedCandidates || 0)),
+    Math.max(0, Math.floor(update.acceptedCandidates || 0)),
+    Math.max(0, Math.floor(update.duplicateCandidates || 0)),
+    Math.max(0, Math.floor(update.outcomeRuns || 0)),
+    Math.max(0, Math.floor(update.qualifiedCandidates || 0)),
+    Math.max(0, Math.floor(update.rescuedCandidates || 0)),
+    Math.max(0, Math.floor(update.returnedCandidates || 0)),
+    Math.max(0, Math.floor(update.searchLatencyMs || 0)),
+    Math.max(0, Math.floor(update.providerUnits || 0)),
+    Math.max(0, Math.floor(update.judgedCandidates || 0)),
+    Math.max(0, Math.floor(update.hardFailedCandidates || 0)),
+    Math.max(0, Math.floor(update.unknownCandidates || 0)),
+    update.requirementFailDigest || null,
+    new Date().toISOString(),
+  );
+}
+
+export function recordQueryPerformanceBatch(updates: QueryPerformanceUpdate[]) {
+  if (!updates || updates.length === 0) return;
+  const db = getLeadsDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const update of updates) {
+      recordQueryPerformance(update);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* no-op */
+    }
+    throw error;
+  }
 }
 
 export function readQueryPerformance(limit = 100, domainCluster?: string) {
@@ -3744,47 +3771,34 @@ export function readProviderUsage(provider?: string, period = usagePeriod()) {
  */
 export function recordProviderUsage(provider: string, units: number) {
   const requested = Math.max(0, Math.floor(units || 0));
+  const db = getLeadsDb();
+  const period = usagePeriod();
   if (!requested) {
     const used = Number(
       (
-        getLeadsDb()
-          .prepare(
-            "SELECT units FROM provider_usage WHERE provider = ? AND period = ?",
-          )
-          .get(provider, usagePeriod()) as { units?: number } | undefined
+        getCachedStatement(
+          db,
+          "SELECT units FROM provider_usage WHERE provider = ? AND period = ?",
+        ).get(provider, period) as { units?: number } | undefined
       )?.units || 0,
     );
     return { recorded: false, used, requested };
   }
-  const period = usagePeriod();
-  const db = getLeadsDb();
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const current = db
-      .prepare(
-        "SELECT units FROM provider_usage WHERE provider = ? AND period = ?",
-      )
-      .get(provider, period) as { units?: number } | undefined;
-    const used = Number(current?.units || 0);
-    db.prepare(
-      `
+  const row = getCachedStatement(
+    db,
+    `
       INSERT INTO provider_usage (provider, period, units, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(provider, period) DO UPDATE SET
-        units = excluded.units,
+        units = provider_usage.units + excluded.units,
         updated_at = excluded.updated_at
+      RETURNING units
     `,
-    ).run(provider, period, used + requested, new Date().toISOString());
-    db.exec("COMMIT");
-    return { recorded: true, used: used + requested, requested };
-  } catch (error) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      /* no-op */
-    }
-    throw error;
-  }
+  ).get(provider, period, requested, new Date().toISOString()) as
+    | { units?: number }
+    | undefined;
+  const used = Number(row?.units || requested);
+  return { recorded: true, used, requested };
 }
 
 /**
@@ -3995,19 +4009,23 @@ export class CheckpointBudgetExceededError extends Error {
   }
 }
 
-export function enforceCheckpointByteBudget(
+export function enforceCheckpointByteBudgetWithPayload(
   checkpoint: MiningSessionCheckpoint,
   maxBytes = 512_000,
-): MiningSessionCheckpoint {
+): { checkpoint: MiningSessionCheckpoint; payload: string } {
   let cp = { ...checkpoint };
   let payload = JSON.stringify(cp);
-  if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
+    return { checkpoint: cp, payload };
+  }
 
   // Step 1: Strip evidenceByUrl
   if (cp.evidenceByUrl && Object.keys(cp.evidenceByUrl).length > 0) {
     cp.evidenceByUrl = {};
     payload = JSON.stringify(cp);
-    if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+    if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
+      return { checkpoint: cp, payload };
+    }
   }
 
   // Step 2: Trim queryRunsDelta, debugLogsTail, signalStoreState, seen keys
@@ -4025,7 +4043,9 @@ export function enforceCheckpointByteBudget(
   }
   cp.signalStoreState = undefined;
   payload = JSON.stringify(cp);
-  if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
+    return { checkpoint: cp, payload };
+  }
 
   // Step 2.5: Drop debugLogsTail and leadQueryRunMap entirely if still exceeding budget
   cp.debugLogsTail = undefined;
@@ -4034,7 +4054,9 @@ export function enforceCheckpointByteBudget(
     cp.seenCandidateKeys = cp.seenCandidateKeys.slice(-500);
   }
   payload = JSON.stringify(cp);
-  if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+  if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
+    return { checkpoint: cp, payload };
+  }
 
   // Step 3: Progressively clamp candidate lists (800 -> 400 -> 200 -> 100 -> 50 -> 25 -> 10)
   const candidateLimits = [800, 400, 200, 100, 50, 25, 10];
@@ -4061,7 +4083,9 @@ export function enforceCheckpointByteBudget(
       (cp as any).candidatePool = (cp as any).candidatePool.slice(0, limit);
     }
     payload = JSON.stringify(cp);
-    if (Buffer.byteLength(payload, "utf8") <= maxBytes) return cp;
+    if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
+      return { checkpoint: cp, payload };
+    }
   }
 
   // Step 4: Drop bulky candidate fields (evidence, scout, audit, rawExperience, searchHistory)
@@ -4092,7 +4116,9 @@ export function enforceCheckpointByteBudget(
   if (Array.isArray((cp as any).rescuedLeads)) (cp as any).rescuedLeads = (cp as any).rescuedLeads.map(stripBulkyFields);
   payload = JSON.stringify(cp);
   let currentBytes = Buffer.byteLength(payload, "utf8");
-  if (currentBytes <= maxBytes) return cp;
+  if (currentBytes <= maxBytes) {
+    return { checkpoint: cp, payload };
+  }
 
   // Step 5: If still > maxBytes, clamp candidate lists down to 5 and drop remaining non-essential keys
   cp.seenCandidateKeys = undefined;
@@ -4102,10 +4128,19 @@ export function enforceCheckpointByteBudget(
   if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.slice(0, 5);
   payload = JSON.stringify(cp);
   currentBytes = Buffer.byteLength(payload, "utf8");
-  if (currentBytes <= maxBytes) return cp;
+  if (currentBytes <= maxBytes) {
+    return { checkpoint: cp, payload };
+  }
 
   // Step 6: Throw typed error only if budget is impossible to satisfy (e.g. maxBytes is trivially small)
   throw new CheckpointBudgetExceededError(currentBytes, maxBytes);
+}
+
+export function enforceCheckpointByteBudget(
+  checkpoint: MiningSessionCheckpoint,
+  maxBytes = 512_000,
+): MiningSessionCheckpoint {
+  return enforceCheckpointByteBudgetWithPayload(checkpoint, maxBytes).checkpoint;
 }
 
 export function saveMiningSessionCheckpoint(
@@ -4114,11 +4149,12 @@ export function saveMiningSessionCheckpoint(
 ) {
   try {
     const db = getLeadsDb();
-    const budgetedCheckpoint = enforceCheckpointByteBudget(checkpoint);
+    const { checkpoint: budgetedCheckpoint, payload } =
+      enforceCheckpointByteBudgetWithPayload(checkpoint);
     const now = budgetedCheckpoint.updatedAt || new Date().toISOString();
-    const payload = JSON.stringify(budgetedCheckpoint);
 
-    db.prepare(
+    getCachedStatement(
+      db,
       `
       UPDATE mining_sessions
       SET checkpoint_json = ?,
@@ -4264,9 +4300,12 @@ export function upsertMiningSession(
 
   const hasCheckpointUpdate = update.checkpoint !== undefined ? 1 : 0;
   let budgetedCheckpoint = update.checkpoint;
+  let checkpointJsonParam: string | null = null;
   if (update.checkpoint) {
     try {
-      budgetedCheckpoint = enforceCheckpointByteBudget(update.checkpoint);
+      const budgeted = enforceCheckpointByteBudgetWithPayload(update.checkpoint);
+      budgetedCheckpoint = budgeted.checkpoint;
+      checkpointJsonParam = budgeted.payload;
     } catch (budgetError) {
       console.warn(
         `[upsertMiningSession] ${update.id}: non-fatal checkpoint budget warning:`,
@@ -4280,15 +4319,13 @@ export function upsertMiningSession(
         acceptedLeads: (update.checkpoint.acceptedLeads || []).slice(0, 5),
         qualifiedLeads: (update.checkpoint.qualifiedLeads || []).slice(0, 5),
       };
+      checkpointJsonParam = JSON.stringify(budgetedCheckpoint);
     }
   }
   record.checkpoint = budgetedCheckpoint ?? existing?.checkpoint;
-  const checkpointJsonParam =
-    update.checkpoint !== undefined
-      ? (budgetedCheckpoint ? JSON.stringify(budgetedCheckpoint) : null)
-      : null;
 
-  db.prepare(
+  getCachedStatement(
+    db,
     `
     INSERT INTO mining_sessions (
       id, status, prompt, requested_limit, started_at, completed_at,
@@ -4655,19 +4692,59 @@ export function readDiscoveredCompanyNames(limit = 20): string[] {
   }
 }
 
+let cachedStoredCompanyNames: {
+  db: DatabaseSync;
+  counter: number;
+  limit: number;
+  values: string[];
+} | null = null;
+
+let cachedStoredCompanyDomains: {
+  db: DatabaseSync;
+  counter: number;
+  limit: number;
+  values: string[];
+} | null = null;
+
+let cachedStoredMetroSaturation: {
+  db: DatabaseSync;
+  counter: number;
+  values: Record<string, number>;
+} | null = null;
+
 export function readStoredCompanyNames(limit = 100): string[] {
   try {
     const db = getLeadsDb();
     const cappedLimit = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
-    const rows = db.prepare(`
+    if (
+      cachedStoredCompanyNames &&
+      cachedStoredCompanyNames.db === db &&
+      cachedStoredCompanyNames.counter === dbMutationCounter &&
+      cachedStoredCompanyNames.limit >= cappedLimit
+    ) {
+      return cachedStoredCompanyNames.values.slice(0, cappedLimit);
+    }
+    const rows = getCachedStatement(
+      db,
+      `
       SELECT company
       FROM leads
       WHERE company IS NOT NULL AND trim(company) != ''
       GROUP BY company
       ORDER BY MAX(updated_at) DESC
       LIMIT ?
-    `).all(cappedLimit) as { company?: string }[];
-    return rows.map(r => r.company?.trim()).filter((n): n is string => Boolean(n));
+    `,
+    ).all(cappedLimit) as { company?: string }[];
+    const values = rows
+      .map((r) => r.company?.trim())
+      .filter((n): n is string => Boolean(n));
+    cachedStoredCompanyNames = {
+      db,
+      counter: dbMutationCounter,
+      limit: cappedLimit,
+      values,
+    };
+    return [...values];
   } catch {
     return [];
   }
@@ -4713,7 +4790,17 @@ export function readStoredCompanyDomains(limit = 100): string[] {
   try {
     const db = getLeadsDb();
     const cappedLimit = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
-    const rows = db.prepare(`
+    if (
+      cachedStoredCompanyDomains &&
+      cachedStoredCompanyDomains.db === db &&
+      cachedStoredCompanyDomains.counter === dbMutationCounter &&
+      cachedStoredCompanyDomains.limit >= cappedLimit
+    ) {
+      return cachedStoredCompanyDomains.values.slice(0, cappedLimit);
+    }
+    const rows = getCachedStatement(
+      db,
+      `
       SELECT payload
       FROM leads
       WHERE json_extract(payload, '$.website') IS NOT NULL
@@ -4722,7 +4809,8 @@ export function readStoredCompanyDomains(limit = 100): string[] {
          OR company IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT ?
-    `).all(cappedLimit * 3) as { payload: string }[];
+    `,
+    ).all(cappedLimit * 3) as { payload: string }[];
 
     const domains = new Set<string>();
     for (const row of rows) {
@@ -4745,7 +4833,14 @@ export function readStoredCompanyDomains(limit = 100): string[] {
       } catch {}
       if (domains.size >= cappedLimit) break;
     }
-    return Array.from(domains).slice(0, cappedLimit);
+    const values = Array.from(domains).slice(0, cappedLimit);
+    cachedStoredCompanyDomains = {
+      db,
+      counter: dbMutationCounter,
+      limit: cappedLimit,
+      values,
+    };
+    return [...values];
   } catch {
     return [];
   }
@@ -4754,10 +4849,19 @@ export function readStoredCompanyDomains(limit = 100): string[] {
 export function readStoredMetroSaturation(): Record<string, number> {
   try {
     const db = getLeadsDb();
+    if (
+      cachedStoredMetroSaturation &&
+      cachedStoredMetroSaturation.db === db &&
+      cachedStoredMetroSaturation.counter === dbMutationCounter
+    ) {
+      return { ...cachedStoredMetroSaturation.values };
+    }
     // G13: engine-persisted leads store location under profile.*, so the
     // WHERE clause must match those paths too -- otherwise the
     // profile.location branch in the loop below is unreachable for them.
-    const rows = db.prepare(`
+    const rows = getCachedStatement(
+      db,
+      `
       SELECT payload
       FROM leads
       WHERE json_extract(payload, '$.location') IS NOT NULL
@@ -4766,7 +4870,8 @@ export function readStoredMetroSaturation(): Record<string, number> {
          OR json_extract(payload, '$.profile.city') IS NOT NULL
       ORDER BY updated_at DESC
       LIMIT 1000
-    `).all() as { payload: string }[];
+    `,
+    ).all() as { payload: string }[];
 
     const counts: Record<string, number> = {};
     for (const row of rows) {
@@ -4782,7 +4887,12 @@ export function readStoredMetroSaturation(): Record<string, number> {
         }
       } catch {}
     }
-    return counts;
+    cachedStoredMetroSaturation = {
+      db,
+      counter: dbMutationCounter,
+      values: counts,
+    };
+    return { ...counts };
   } catch {
     return {};
   }

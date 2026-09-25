@@ -97,13 +97,12 @@ export async function executePlanStage(
   const { config, state, logEvent, recordTrace } = ctx;
 
   const domainCluster = deriveDomainCluster(config.contract?.brief || config.promptQuery || "");
-  // Phase 3: refresh intra-session so selectStage writes inform next-round planning.
-  // Refresh every round (cheap SQLite reads, LIMIT 100) instead of once-per-session.
+  const existingPlanCache = (state as any)._planStageCache;
   (state as any)._planStageCache = {
     historicalPerformance: readQueryPerformance(100, domainCluster),
-    crmCompanies: readStoredCompanyNames(100),
-    crmDomains: readStoredCompanyDomains(50),
-    metroSaturation: readStoredMetroSaturation(),
+    crmCompanies: existingPlanCache?.crmCompanies ?? readStoredCompanyNames(100),
+    crmDomains: existingPlanCache?.crmDomains ?? readStoredCompanyDomains(50),
+    metroSaturation: existingPlanCache?.metroSaturation ?? readStoredMetroSaturation(),
   };
   const { historicalPerformance, crmCompanies, crmDomains, metroSaturation } = (state as any)._planStageCache;
   // G5: key by domain_cluster|family|lane|provider so cluster rows and

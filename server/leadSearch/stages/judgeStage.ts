@@ -30,7 +30,7 @@ import { runGatedCompanyAttribution } from "../companyAttribution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(batchLength: number): number {
-  return Math.min(950, Math.max(500, batchLength * 350));
+  return Math.min(2400, Math.max(500, batchLength * 350));
 }
 
 export function isEligibleForSafetyNet(
@@ -254,54 +254,8 @@ export async function evaluateIncrementalJudgeBatches(
     );
   }
 
-  // Gated Company Attribution Step: evaluate ambiguous companies against brief
   const companyAttributionEnabled =
     process.env.LEAD_COMPANY_ATTRIBUTION_ENABLED !== "false";
-  if (companyAttributionEnabled && vettedCandidates.length > 0) {
-    const attrSummary = await runGatedCompanyAttribution(
-      vettedCandidates,
-      contract,
-      {
-        signal: state.abortController?.signal,
-        logEvent,
-      },
-    );
-    if (attrSummary.attributedCount > 0) {
-      logEvent(
-        `Round ${round} Company Attribution: evaluated ${attrSummary.attributedCount} candidates (${attrSummary.verifiedCount} verified fit, ${attrSummary.contradictionCount} disqualifying contradictions).`,
-      );
-    }
-  }
-
-  // Filter out any candidate whose company attribution proved a disqualifying contradiction
-  const candidatesToJudge: FinalistCandidate[] = [];
-  for (const candidate of vettedCandidates) {
-    if (candidate.lead._autoFailed && candidate.lead._contradictionReason) {
-      const contradictionInsight = {
-        status: "hard_fail" as FinalistOutcomeStatus,
-        score: -100,
-        reason: candidate.lead._contradictionReason,
-      };
-      judgmentInsights.set(candidate.candidateId, contradictionInsight);
-      candidate.lead.judgmentInsight = contradictionInsight;
-      candidate.lead.qualification = {
-        policyVersion: contract.policyVersion,
-        verdict: "hard_fail",
-        qualificationSource: "deterministic",
-        finalScore: 0,
-        requirements: contract.requirements.map((r) => ({
-          requirementId: r.id,
-          status:
-            r.scope === "company_type" || r.scope === "company_industry"
-              ? "fail"
-              : "unknown",
-        })),
-        reason: candidate.lead._contradictionReason,
-      };
-    } else {
-      candidatesToJudge.push(candidate);
-    }
-  }
 
   // Micro-batch size: 6 candidates per batch for optimal context utilization on modern LLMs
   const microBatchSize = Math.max(
@@ -314,8 +268,8 @@ export async function evaluateIncrementalJudgeBatches(
   );
 
   const microBatches: FinalistCandidate[][] = [];
-  for (let i = 0; i < candidatesToJudge.length; i += microBatchSize) {
-    microBatches.push(candidatesToJudge.slice(i, i + microBatchSize));
+  for (let i = 0; i < vettedCandidates.length; i += microBatchSize) {
+    microBatches.push(vettedCandidates.slice(i, i + microBatchSize));
   }
 
   // Chunk micro-batches into waves according to concurrency
@@ -634,8 +588,64 @@ export async function evaluateIncrementalJudgeBatches(
 
   for (let w = 0; w < waves.length; w++) {
     const waveBatches = waves[w];
+    const waveCandidates = waveBatches.flat();
+
+    if (companyAttributionEnabled && waveCandidates.length > 0) {
+      const attrSummary = await runGatedCompanyAttribution(
+        waveCandidates,
+        contract,
+        {
+          signal: state.abortController?.signal,
+          logEvent,
+        },
+      );
+      if (attrSummary.attributedCount > 0) {
+        logEvent(
+          `Round ${round} Company Attribution: evaluated ${attrSummary.attributedCount} candidates (${attrSummary.verifiedCount} verified fit, ${attrSummary.contradictionCount} disqualifying contradictions).`,
+        );
+      }
+    }
+
+    const activeWaveCandidates: FinalistCandidate[] = [];
+    for (const candidate of waveCandidates) {
+      if (candidate.lead._autoFailed && candidate.lead._contradictionReason) {
+        const contradictionInsight = {
+          status: "hard_fail" as FinalistOutcomeStatus,
+          score: -100,
+          reason: candidate.lead._contradictionReason,
+        };
+        judgmentInsights.set(candidate.candidateId, contradictionInsight);
+        candidate.lead.judgmentInsight = contradictionInsight;
+        candidate.lead.qualification = {
+          policyVersion: contract.policyVersion,
+          verdict: "hard_fail",
+          qualificationSource: "deterministic",
+          finalScore: 0,
+          requirements: contract.requirements.map((r) => ({
+            requirementId: r.id,
+            status:
+              r.scope === "company_type" || r.scope === "company_industry"
+                ? "fail"
+                : "unknown",
+          })),
+          reason: candidate.lead._contradictionReason,
+        };
+      } else {
+        activeWaveCandidates.push(candidate);
+      }
+    }
+
+    if (activeWaveCandidates.length === 0) {
+      continue;
+    }
+
+    const activeWaveBatches: FinalistCandidate[][] = [];
+    for (let i = 0; i < activeWaveCandidates.length; i += microBatchSize) {
+      activeWaveBatches.push(activeWaveCandidates.slice(i, i + microBatchSize));
+    }
+
     const waveResults: any[][] = await Promise.all(
-      waveBatches.map((batch, idx) =>
+      activeWaveBatches.map((batch, idx) =>
         evaluateSingleBatch(batch, w * judgeConcurrency + idx),
       ),
     );

@@ -88,43 +88,99 @@ type StoredLeadsResponse = {
   stats?: LeadContextStats;
 };
 
+let lastLeadsEtag: string | null = null;
+let lastLeadsResponse: StoredLeadsResponse | null = null;
+let lastStatsEtag: string | null = null;
+let lastStatsResponse: LeadContextStats | null = null;
+
+function invalidateClientLeadsCache(): void {
+  lastLeadsEtag = null;
+  lastLeadsResponse = null;
+  lastStatsEtag = null;
+  lastStatsResponse = null;
+}
+
 async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
-  const response = await fetch(`/api/leads?_t=${Date.now()}`, {
-    cache: 'no-store',
-    headers: {
-      'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache'
-    }
+  const headers: Record<string, string> = {};
+  if (lastLeadsEtag) {
+    headers['If-None-Match'] = lastLeadsEtag;
+  }
+  const response = await fetch('/api/leads', {
+    cache: 'no-cache',
+    headers,
   });
+  if (response.status === 304 && lastLeadsResponse) {
+    return {
+      ...lastLeadsResponse,
+      leads: [...lastLeadsResponse.leads],
+    };
+  }
   if (!response.ok) {
     throw new Error(`Failed to load leads: ${response.status}`);
   }
+  const etag = response.headers.get('ETag');
+  if (etag && etag === lastLeadsEtag && lastLeadsResponse) {
+    return {
+      ...lastLeadsResponse,
+      leads: [...lastLeadsResponse.leads],
+    };
+  }
 
   const data = await response.json();
-  return {
+  const result: StoredLeadsResponse = {
     leads: Array.isArray(data.leads) ? sanitizeLeads(data.leads) : [],
     initialized: Boolean(data.initialized),
     stats: data.stats,
+  };
+  if (etag) {
+    lastLeadsEtag = etag;
+    lastLeadsResponse = result;
+  }
+  return {
+    ...result,
+    leads: [...result.leads],
   };
 }
 
 async function fetchLeadsStats(): Promise<LeadContextStats | null> {
   try {
-    const response = await fetch(`/api/leads/stats?_t=${Date.now()}`, {
-      cache: 'no-store',
-      headers: {
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-      }
+    const headers: Record<string, string> = {};
+    if (lastStatsEtag) {
+      headers['If-None-Match'] = lastStatsEtag;
+    }
+    const response = await fetch('/api/leads/stats', {
+      cache: 'no-cache',
+      headers,
     });
+    if (response.status === 304 && lastStatsResponse) {
+      return {
+        ...lastStatsResponse,
+        stageCounts: { ...lastStatsResponse.stageCounts },
+      };
+    }
     if (!response.ok) return null;
+    const etag = response.headers.get('ETag');
+    if (etag && etag === lastStatsEtag && lastStatsResponse) {
+      return {
+        ...lastStatsResponse,
+        stageCounts: { ...lastStatsResponse.stageCounts },
+      };
+    }
     const data = await response.json();
-    return {
+    const result: LeadContextStats = {
       total: Number(data.total || 0),
       stageCounts: data.stageCounts || INITIAL_LEAD_STATS.stageCounts,
       averageQualification: Number(data.averageQualification || 0),
       conversionRate: Number(data.conversionRate || 0),
       initialized: Boolean(data.initialized),
+    };
+    if (etag) {
+      lastStatsEtag = etag;
+      lastStatsResponse = result;
+    }
+    return {
+      ...result,
+      stageCounts: { ...result.stageCounts },
     };
   } catch {
     return null;
@@ -132,6 +188,7 @@ async function fetchLeadsStats(): Promise<LeadContextStats | null> {
 }
 
 async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
+  invalidateClientLeadsCache();
   const response = await fetch('/api/leads/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -208,6 +265,7 @@ class LeadDeletedConflictError extends Error {
 }
 
 async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<{ lead: Lead; disposition?: string }> {
+  invalidateClientLeadsCache();
   const leadToSend = !allowCreate && !Number.isInteger(lead.revision)
     ? { ...lead, revision: 1 }
     : lead;
@@ -737,6 +795,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     let bulkOperation!: Promise<boolean>;
     bulkOperation = (async () => {
       try {
+        invalidateClientLeadsCache();
         const response = await fetch('/api/leads/bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -951,6 +1010,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     saveLeadsToStorage(currentLeads => currentLeads.filter(l => l.id !== duplicateId));
 
     try {
+      invalidateClientLeadsCache();
       const response = await fetch(`/api/leads/${winnerId}/merge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1016,6 +1076,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return currentLeads.filter(l => l.id !== leadId);
       });
 
+      invalidateClientLeadsCache();
       const response = await fetch(`/api/leads/${leadId}`, { method: 'DELETE' });
       if (!response.ok) {
         throw new Error(`Failed to delete lead: ${response.status}`);
@@ -1061,6 +1122,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         return currentLeads.filter(l => !idSet.has(l.id));
       });
 
+      invalidateClientLeadsCache();
       const response = await fetch('/api/leads', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -1118,6 +1180,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     bulkStageOperation = (async () => {
       try {
         const persistStageBatch = async (batch: Lead[]) => {
+          invalidateClientLeadsCache();
           const response = await fetch('/api/leads/bulk', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

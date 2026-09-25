@@ -917,18 +917,39 @@ Evidence:
         `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Extraction Chunk ${chunkIndex}/${chunks.length}: ${extractedLeads.length} leads]`,
       );
 
-      if (state.debugLogs.length >= 500) {
-        state.debugLogs.splice(0, state.debugLogs.length - 499);
+      const verboseDebugLogs =
+        process.env.LEAD_SEARCH_VERBOSE_DEBUG_LOGS === "true";
+      const debugLogCap = verboseDebugLogs ? 500 : 100;
+      if (state.debugLogs.length >= debugLogCap) {
+        state.debugLogs.splice(0, state.debugLogs.length - (debugLogCap - 1));
       }
-      state.debugLogs.push({
-        timestamp: new Date().toISOString(),
-        type: "llm_request",
-        label: `extraction_round_${round}_chunk_${chunkIndex}`,
-        model: resolvedModel,
-        prompt,
-        systemInstruction: EXTRACTION_SYSTEM_PROMPT,
-        response: JSON.parse(JSON.stringify(extractedLeads)),
-      });
+      state.debugLogs.push(
+        verboseDebugLogs
+          ? {
+              timestamp: new Date().toISOString(),
+              type: "llm_request",
+              label: `extraction_round_${round}_chunk_${chunkIndex}`,
+              model: resolvedModel,
+              prompt,
+              systemInstruction: EXTRACTION_SYSTEM_PROMPT,
+              response: JSON.parse(JSON.stringify(extractedLeads)),
+            }
+          : {
+              timestamp: new Date().toISOString(),
+              type: "llm_request",
+              label: `extraction_round_${round}_chunk_${chunkIndex}`,
+              model: resolvedModel,
+              promptLength: prompt.length,
+              promptPreview: prompt.slice(0, 400),
+              extractedCount: extractedLeads.length,
+              response: extractedLeads.map((l: any) => ({
+                fullName: l.fullName,
+                currentTitle: l.currentTitle,
+                currentCompany: l.currentCompany,
+                sourceUrl: l.sourceUrl,
+              })),
+            },
+      );
       recordTrace({
         phase: "extraction",
         operation: "llm_extract_chunk",

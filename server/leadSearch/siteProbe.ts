@@ -282,6 +282,9 @@ export function parseSiteSignalsFromEvidenceBlock(block?: string): SiteSignals {
     const srvMatch = line.match(/^Services:\s*(.+)$/i);
     if (srvMatch?.[1]) signals.services = srvMatch[1].trim();
   }
+  if (!signals.location && !signals.headcount && !signals.services && lines.length > 0) {
+    signals.services = lines.join(' | ').slice(0, 380);
+  }
   return signals;
 }
 
@@ -627,20 +630,22 @@ export function applySiteProbe(
   }
 
   // 6. Record positive cache entry
-  try {
-    let host = sourceUrl;
+  if (evidenceLines.length > 0) {
     try {
-      host = new URL(sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`).hostname.replace(/^www\./, '').toLowerCase();
-    } catch {}
-    upsertEnrichmentCacheEntry({
-      normalizedUrl: host,
-      companyName: lead.currentCompany || lead.company,
-      evidenceBlock: evidenceLines.join('\n'),
-      scrapeQuality: signals.location && signals.services ? 'good' : 'partial',
-      sourceProvider: 'site_probe'
-    }, 7);
-  } catch {
-    // ignore cache write errors
+      let host = sourceUrl;
+      try {
+        host = new URL(sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`).hostname.replace(/^www\./, '').toLowerCase();
+      } catch {}
+      upsertEnrichmentCacheEntry({
+        normalizedUrl: host,
+        companyName: lead.currentCompany || lead.company,
+        evidenceBlock: evidenceLines.join('\n'),
+        scrapeQuality: signals.location && signals.services ? 'good' : 'partial',
+        sourceProvider: 'site_probe'
+      }, 7);
+    } catch {
+      // ignore cache write errors
+    }
   }
 }
 
@@ -726,6 +731,17 @@ export async function groundCandidateWithSiteProbe(
         if (resp.ok) {
           const text = await resp.text();
           html = text.slice(0, 15000);
+        } else if (resp.status === 404 || resp.status === 410) {
+          try {
+            upsertNegativeEnrichmentCacheEntry({
+              normalizedUrl: host,
+              companyName: lead.currentCompany || lead.company,
+              evidenceBlock: 'probe_not_found',
+              scrapeQuality: 'bad',
+              sourceProvider: 'site_probe',
+            }, 48);
+          } catch {}
+          return null;
         }
         break;
       }
@@ -775,8 +791,6 @@ export async function groundCandidateWithSiteProbe(
   } catch (err: any) {
     try {
       const isDefinitiveFailure =
-        err?.status === 404 ||
-        err?.status === 410 ||
         err?.code === 'ENOTFOUND' ||
         /not found|does not exist/i.test(err?.message || '');
       if (isDefinitiveFailure) {

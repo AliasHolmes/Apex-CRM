@@ -26,6 +26,7 @@ import {
   deriveCompanyDomain,
   probeCompanySites,
   applySiteProbe,
+  applySiteProbeSignals,
   parseSiteSignalsFromEvidenceBlock,
 } from "../siteProbe.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
@@ -957,11 +958,8 @@ export async function executeEnrichStage(
       );
 
       const targetsToProbe: EnrichmentTarget[] = [];
+      const probedUniqueHosts = new Set<string>();
       for (const target of probeCandidateTargets) {
-        if (targetsToProbe.length >= siteProbeMax) {
-          stats.siteProbe.skippedCap++;
-          continue;
-        }
         const meta = targetDomainMeta.get(target);
         if (!meta) continue;
         const { domain, host } = meta;
@@ -975,7 +973,7 @@ export async function executeEnrichStage(
             posCache.evidenceBlock,
           );
           signals.sourceUrl = domain;
-          applySiteProbe(target, signals, domain, refreshLeadEvidence);
+          applySiteProbeSignals(target, signals, domain, refreshLeadEvidence);
           target.enriched = true;
           continue;
         }
@@ -988,7 +986,17 @@ export async function executeEnrichStage(
           continue;
         }
 
-        targetsToProbe.push(target);
+        const domainKey = host || domain;
+        if (!probedUniqueHosts.has(domainKey)) {
+          if (probedUniqueHosts.size >= siteProbeMax) {
+            stats.siteProbe.skippedCap++;
+            continue;
+          }
+          probedUniqueHosts.add(domainKey);
+          targetsToProbe.push(target);
+        } else {
+          targetsToProbe.push(target); // Same domain, already counted
+        }
       }
 
       if (targetsToProbe.length > 0) {
@@ -1005,15 +1013,23 @@ export async function executeEnrichStage(
           });
 
           let probeSucceeded = 0;
+          const persistedDomains = new Set<string>();
+          const negativeCachedHosts = new Set<string>();
           for (const target of targetsToProbe) {
             const meta = targetDomainMeta.get(target);
             if (!meta) continue;
             const { domain, host } = meta;
             if (probeResults.has(domain)) {
               const signals = probeResults.get(domain)!;
-              applySiteProbe(target, signals, domain, refreshLeadEvidence);
+              if (!persistedDomains.has(domain)) {
+                persistedDomains.add(domain);
+                applySiteProbe(target, signals, domain, refreshLeadEvidence);
+              } else {
+                applySiteProbeSignals(target, signals, domain, refreshLeadEvidence);
+              }
               probeSucceeded++;
-            } else {
+            } else if (!negativeCachedHosts.has(host)) {
+              negativeCachedHosts.add(host);
               // Negative cache dead / failed domain using canonical host key
               upsertNegativeEnrichmentCacheEntry(
                 {

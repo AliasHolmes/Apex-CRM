@@ -2724,6 +2724,69 @@ export function getIntentCacheEntriesBatch(
   return result;
 }
 
+export type SearchCacheEntry = {
+  query: string;
+  results: any[];
+  provider: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+const SERP_CACHE_FINGERPRINT = "serp_query_cache";
+
+export function getSearchCacheEntry(
+  query: string,
+  now = new Date(),
+): SearchCacheEntry | null {
+  const cleanQuery = String(query || "").trim().toLowerCase();
+  if (!cleanQuery) return null;
+  try {
+    const entry = getIntentCacheEntry(
+      `serp:${cleanQuery}`,
+      SERP_CACHE_FINGERPRINT,
+      now,
+    );
+    if (!entry || !entry.evidenceBlock) return null;
+    const parsed = JSON.parse(entry.evidenceBlock);
+    if (!Array.isArray(parsed)) return null;
+    return {
+      query: cleanQuery,
+      results: parsed,
+      provider: entry.sourceProvider || "brightdata",
+      createdAt: entry.createdAt || now.toISOString(),
+      expiresAt: entry.expiresAt || now.toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function upsertSearchCacheEntry(
+  query: string,
+  results: any[],
+  provider: "brightdata" | "tavily" | "brightdata_search" | "site_probe" = "brightdata",
+  ttlDays = 7,
+  now = new Date(),
+): void {
+  const cleanQuery = String(query || "").trim().toLowerCase();
+  if (!cleanQuery || !Array.isArray(results) || results.length === 0) return;
+  try {
+    upsertIntentCacheEntry(
+      {
+        normalizedUrl: `serp:${cleanQuery}`,
+        evidenceBlock: JSON.stringify(results),
+        scrapeQuality: "good",
+        sourceProvider: provider,
+        intentFingerprint: SERP_CACHE_FINGERPRINT,
+      },
+      ttlDays,
+      now,
+    );
+  } catch {
+    // Non-fatal cache write failure
+  }
+}
+
 export type LlmCacheEntry = {
   response: string;
   usage?: any;
@@ -3598,8 +3661,53 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     ? update.scopeKey.toLowerCase()
     : [domainCluster !== "global" ? domainCluster : "", family, lane, provider].filter(Boolean).join("|").toLowerCase();
 
+  const db = getLeadsDb();
+  let effectiveDigest = update.requirementFailDigest || null;
+  if (effectiveDigest) {
+    const existingRow = getCachedStatement(
+      db,
+      `SELECT requirement_fail_digest FROM query_performance WHERE scope_key = ?`,
+    ).get(scopeKey) as { requirement_fail_digest?: string | null } | undefined;
+    const existingRaw = existingRow?.requirement_fail_digest;
+    const merged: Record<string, any> = {};
+    const segments = existingRaw
+      ? [...existingRaw.split(";"), effectiveDigest]
+      : [effectiveDigest];
+    for (const seg of segments) {
+      const trimmed = seg.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          Object.assign(merged, parsed);
+        }
+      } catch {
+        // ignore non-JSON segment
+      }
+    }
+    if (Object.keys(merged).length > 0) {
+      let serialized = JSON.stringify(merged);
+      if (serialized.length > 2000) {
+        const sortedEntries = Object.entries(merged).sort(
+          (a, b) => Number(b[1] || 0) - Number(a[1] || 0),
+        );
+        const bounded: Record<string, any> = {};
+        for (const [k, v] of sortedEntries) {
+          bounded[k] = v;
+          const candidateStr = JSON.stringify(bounded);
+          if (candidateStr.length > 2000) {
+            delete bounded[k];
+            break;
+          }
+          serialized = candidateStr;
+        }
+      }
+      effectiveDigest = serialized;
+    }
+  }
+
   getCachedStatement(
-    getLeadsDb(),
+    db,
     `
     INSERT INTO query_performance (
       scope_key, domain_cluster, family, lane, provider, runs, raw_candidates, unique_candidates,
@@ -3628,8 +3736,9 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
       requirement_fail_digest = CASE
         WHEN excluded.requirement_fail_digest IS NOT NULL AND excluded.requirement_fail_digest != ''
          AND query_performance.requirement_fail_digest IS NOT NULL AND query_performance.requirement_fail_digest != ''
-         AND instr(query_performance.requirement_fail_digest, excluded.requirement_fail_digest) = 0
-          THEN substr(query_performance.requirement_fail_digest || '; ' || excluded.requirement_fail_digest, 1, 2000)
+         AND json_valid(query_performance.requirement_fail_digest)
+         AND json_valid(excluded.requirement_fail_digest)
+          THEN substr(json_patch(query_performance.requirement_fail_digest, excluded.requirement_fail_digest), 1, 2000)
         ELSE COALESCE(excluded.requirement_fail_digest, query_performance.requirement_fail_digest)
       END,
       updated_at = excluded.updated_at
@@ -3655,7 +3764,7 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     Math.max(0, Math.floor(update.judgedCandidates || 0)),
     Math.max(0, Math.floor(update.hardFailedCandidates || 0)),
     Math.max(0, Math.floor(update.unknownCandidates || 0)),
-    update.requirementFailDigest || null,
+    effectiveDigest,
     new Date().toISOString(),
   );
 }

@@ -111,6 +111,7 @@ export type SiteSignals = {
   openRoles?: string;
   sourceUrl?: string;
   provenance?: DomainProvenance;
+  rawExcerpt?: string;
 };
 
 const clean = (val: unknown) => String(val || '').replace(/\s+/g, ' ').trim();
@@ -273,7 +274,8 @@ export function matchesCompanyIdentity(
 export function parseSiteSignalsFromEvidenceBlock(block?: string): SiteSignals {
   const signals: SiteSignals = {};
   if (!block) return signals;
-  const lines = block.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const [structuredPart, rawExcerptPart] = block.split(/\r?\n---\r?\n/);
+  const lines = (structuredPart || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   for (const line of lines) {
     const locMatch = line.match(/^Location:\s*(.+)$/i);
     if (locMatch?.[1]) signals.location = locMatch[1].trim();
@@ -284,6 +286,9 @@ export function parseSiteSignalsFromEvidenceBlock(block?: string): SiteSignals {
   }
   if (!signals.location && !signals.headcount && !signals.services && lines.length > 0) {
     signals.services = lines.join(' | ').slice(0, 380);
+  }
+  if (rawExcerptPart && rawExcerptPart.trim()) {
+    signals.rawExcerpt = rawExcerptPart.trim();
   }
   return signals;
 }
@@ -560,6 +565,9 @@ export async function probeCompanySites(
     if (signals) {
       signals.sourceUrl = domain;
       signals.provenance = provenance;
+      signals.rawExcerpt = combinedMarkdown
+        ? combinedMarkdown.slice(0, 1200).replace(/\s+/g, ' ').trim()
+        : undefined;
       results.set(domain, signals);
     }
   }
@@ -567,12 +575,12 @@ export async function probeCompanySites(
   return results;
 }
 
-export function applySiteProbe(
+export function applySiteProbeSignals(
   target: EnrichmentTarget,
   signals: SiteSignals,
   sourceUrl: string,
   refreshLeadEvidence?: (target: EnrichmentTarget) => void
-) {
+): string[] {
   const lead = target.lead;
   lead.profile = lead.profile || {};
   lead.companyAccount = lead.companyAccount || {};
@@ -606,14 +614,16 @@ export function applySiteProbe(
   if (signals.headcount) evidenceLines.push(`Team: ${signals.headcount}`);
   if (signals.services) evidenceLines.push(`Services: ${signals.services}`);
 
-  if (evidenceLines.length > 0) {
+  if (evidenceLines.length > 0 || signals.rawExcerpt) {
     const provenanceTag = signals.provenance === 'slug_guess'
       ? 'name-match'
       : signals.provenance === 'explicit'
         ? 'verified-site'
         : 'extracted-url';
 
-    const siteEvidence = `[COMPANY SITE (${provenanceTag}): ${sourceUrl}] ${evidenceLines.join(' | ')}`;
+    const summaryPart = evidenceLines.length > 0 ? ` ${evidenceLines.join(' | ')}` : '';
+    const excerptPart = signals.rawExcerpt ? `\n${signals.rawExcerpt}` : '';
+    const siteEvidence = `[COMPANY SITE (${provenanceTag}): ${sourceUrl}]${summaryPart}${excerptPart}`;
     if (target.evidenceMeta) {
       target.evidenceMeta.evidenceBlock = [target.evidenceMeta.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
     }
@@ -629,17 +639,36 @@ export function applySiteProbe(
     refreshLeadEvidence(target);
   }
 
-  // 6. Record positive cache entry
+  return evidenceLines;
+}
+
+export function applySiteProbe(
+  target: EnrichmentTarget,
+  signals: SiteSignals,
+  sourceUrl: string,
+  refreshLeadEvidence?: (target: EnrichmentTarget) => void
+) {
+  const lead = target.lead;
+  const evidenceLines = applySiteProbeSignals(target, signals, sourceUrl, refreshLeadEvidence);
+
+  // 6. Record positive cache entry (with both structured signals AND raw prose excerpt)
   if (evidenceLines.length > 0) {
     try {
       let host = sourceUrl;
       try {
         host = new URL(sourceUrl.startsWith('http') ? sourceUrl : `https://${sourceUrl}`).hostname.replace(/^www\./, '').toLowerCase();
       } catch {}
+      const structuredLines = evidenceLines.join('\n');
+      const rawExcerpt = signals.rawExcerpt
+        ? signals.rawExcerpt.slice(0, 1200).replace(/\s+/g, ' ').trim()
+        : '';
+      const fullEvidenceBlock = rawExcerpt
+        ? `${structuredLines}\n---\n${rawExcerpt}`
+        : structuredLines;
       upsertEnrichmentCacheEntry({
         normalizedUrl: host,
         companyName: lead.currentCompany || lead.company,
-        evidenceBlock: evidenceLines.join('\n'),
+        evidenceBlock: fullEvidenceBlock,
         scrapeQuality: signals.location && signals.services ? 'good' : 'partial',
         sourceProvider: 'site_probe'
       }, 7);

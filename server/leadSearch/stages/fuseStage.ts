@@ -290,6 +290,12 @@ export async function executeFuseStage(
     item._expectedSignal =
       observation.expectedSignal || plan?.item.expectedSignal;
     item._queryRun = queryRun;
+    item._corroboratingQueryRuns = Array.isArray(observation.sourceQueries)
+      ? observation.sourceQueries
+          .filter((q) => q && q !== observation.query)
+          .map((q) => queryRunByQuery.get(q))
+          .filter((r): r is QueryRunStats => Boolean(r && r !== queryRun))
+      : [];
     item._sourceProviders = observation.sourceProviders;
     item._sourceCount = observation.sourceCount;
     item._lanes = observation.lanes;

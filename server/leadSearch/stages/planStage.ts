@@ -31,7 +31,12 @@ import {
   enforceContractQueries,
   COUNTRY_CANONICAL_MAP,
 } from "../prospectContract.js";
-import { scheduleAdaptiveRetrievalTasks, deriveDomainCluster } from "../adaptiveScheduler.js";
+import {
+  scheduleAdaptiveRetrievalTasks,
+  deriveDomainCluster,
+  quantizeBriefToCentroid,
+  centroidScopeKey,
+} from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
 import { summarizeLLM } from "../telemetry.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -96,7 +101,11 @@ export async function executePlanStage(
   } = input;
   const { config, state, logEvent, recordTrace } = ctx;
 
-  const domainCluster = deriveDomainCluster(config.contract?.brief || config.promptQuery || "");
+  const briefText = config.contract?.brief || config.promptQuery || "";
+  const centroidEnabled = process.env.LEAD_ADAPTIVE_CENTROID_ENABLED === "true";
+  const domainCluster = centroidEnabled
+    ? quantizeBriefToCentroid(briefText)
+    : deriveDomainCluster(briefText);
   const existingPlanCache = (state as any)._planStageCache;
   (state as any)._planStageCache = {
     historicalPerformance: readQueryPerformance(100, domainCluster),
@@ -109,10 +118,19 @@ export async function executePlanStage(
   // CRM feedback rows no longer collide on one key and overwrite each other.
   const historicalYield = Object.fromEntries(
     historicalPerformance.slice(0, 30).map((row: any) => [
-      [row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster !== "global" ? domainCluster : "", row.family || "general", row.lane || "person", row.provider || "tavily"]
-        .filter(Boolean)
-        .join("|")
-        .toLowerCase(),
+      centroidEnabled
+        ? centroidScopeKey(
+            {
+              family: row.family || "general",
+              lane: row.lane || "person",
+              providerPreference: row.provider || "tavily",
+            },
+            row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster,
+          )
+        : [row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster !== "global" ? domainCluster : "", row.family || "general", row.lane || "person", row.provider || "tavily"]
+            .filter(Boolean)
+            .join("|")
+            .toLowerCase(),
       {
         runs: Number(row.runs || 0),
         outcomeRuns: Number(row.outcome_runs || 0),
@@ -171,148 +189,178 @@ export async function executePlanStage(
     new Set([...crmCompanies, ...signalCompanies, ...discoveredCompanies]),
   );
 
-  const strategistPrompt = buildScoutStrategistPrompt({
-    query: config.promptQuery,
-    spec: searchSpec,
-    round,
-    maxRounds: config.maxRounds,
-    remaining,
-    previousQueries: generatedQueries,
-    previousRoundSummary: state.previousRoundSummary as any,
-    queryPerformance: historicalYield,
-    discoveryMode: discoveryProviderMode,
-    contract: config.contract,
-    missingRequirementIds: (state.previousRoundSummary as any)
-      ?.missingHardRequirementIds,
-    discoveredCompanies: signalCompanies,
-    knownCompanyEntities,
-    metroSaturation,
-    isRecovery: isRecoveryMode,
-    recoveryAttempt: currentRecoveryAttempt,
-    logEvent,
-  });
+  const envTasks = Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND);
+  const maxTasks =
+    Number.isFinite(envTasks) && envTasks > 0
+      ? envTasks
+      : Math.min(
+          8,
+          Math.max(
+            3,
+            Math.ceil((config.capacity?.candidateBatchSize || 12) / 4),
+          ),
+        );
 
   let planItems: SearchQueryPlanItem[] = [];
-  const strategyStarted = Date.now();
-  const strategyProviderAttempts: LLMProviderAttempt[] = [];
-  let strategyUsage: LLMUsage | undefined;
-  const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
 
-  try {
-    recordTrace({
-      phase: "strategy",
-      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-      status: "started",
-      provider: "llm",
+  // Round 1 optimization: use contract.initialQueries directly when available,
+  // avoiding a redundant 5-20s Strategist LLM call (the contract compiler already
+  // generated these queries during prospect contract compilation).
+  if (
+    round === 1 &&
+    !isRecoveryMode &&
+    Array.isArray(config.contract?.initialQueries) &&
+    config.contract.initialQueries.length >= Math.max(2, maxTasks)
+  ) {
+    planItems = config.contract.initialQueries;
+    logEvent(
+      `Round 1: using ${planItems.length} contract-compiled initial queries (skipping redundant Strategist LLM call).`,
+    );
+  }
+
+  if (planItems.length === 0) {
+    const strategistPrompt = buildScoutStrategistPrompt({
+      query: config.promptQuery,
+      spec: searchSpec,
       round,
-      metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
+      maxRounds: config.maxRounds,
+      remaining,
+      previousQueries: generatedQueries,
+      previousRoundSummary: state.previousRoundSummary as any,
+      queryPerformance: historicalYield,
+      discoveryMode: discoveryProviderMode,
+      contract: config.contract,
+      missingRequirementIds: (state.previousRoundSummary as any)
+        ?.missingHardRequirementIds,
+      discoveredCompanies: signalCompanies,
+      knownCompanyEntities,
+      metroSaturation,
+      isRecovery: isRecoveryMode,
+      recoveryAttempt: currentRecoveryAttempt,
+      logEvent,
     });
-    const queryResult = await openAIStructured<any>(
-      strategistPrompt,
-      searchQueriesSchema,
-      STRATEGIST_SYSTEM_PROMPT,
-      {
-        maxTokens: 800,
-        temperature: 0.1,
-        circuitBreaker: state.llmCircuitBreaker,
-        signal: effectiveSignal,
-        onProviderAttempt: (attempt) =>
-          strategyProviderAttempts.push(attempt),
-        onUsage: (usage) => {
-          strategyUsage = usage;
+
+    const strategyStarted = Date.now();
+    const strategyProviderAttempts: LLMProviderAttempt[] = [];
+    let strategyUsage: LLMUsage | undefined;
+    const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
+
+    try {
+      recordTrace({
+        phase: "strategy",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+        status: "started",
+        provider: "llm",
+        round,
+        metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
+      });
+      const queryResult = await openAIStructured<any>(
+        strategistPrompt,
+        searchQueriesSchema,
+        STRATEGIST_SYSTEM_PROMPT,
+        {
+          maxTokens: 800,
+          temperature: 0.1,
+          circuitBreaker: state.llmCircuitBreaker,
+          signal: effectiveSignal,
+          onProviderAttempt: (attempt) =>
+            strategyProviderAttempts.push(attempt),
+          onUsage: (usage) => {
+            strategyUsage = usage;
+          },
         },
-      },
-    );
-    const successfulAttempt = strategyProviderAttempts.find(
-      (attempt) => attempt.status === "success",
-    );
-    const resolvedModel =
-      strategyUsage?.model ||
-      successfulAttempt?.actualModel ||
-      successfulAttempt?.model ||
-      process.env.OPENAI_MODEL ||
-      DEFAULT_PRIMARY_MODEL;
-    const latency = Date.now() - strategyStarted;
-    const tokens = strategyUsage?.totalTokens;
-    logEvent(
-      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Strategist Planning: ${normalizeQueryPlanItems(queryResult).length} queries]`,
-    );
+      );
+      const successfulAttempt = strategyProviderAttempts.find(
+        (attempt) => attempt.status === "success",
+      );
+      const resolvedModel =
+        strategyUsage?.model ||
+        successfulAttempt?.actualModel ||
+        successfulAttempt?.model ||
+        process.env.OPENAI_MODEL ||
+        DEFAULT_PRIMARY_MODEL;
+      const latency = Date.now() - strategyStarted;
+      const tokens = strategyUsage?.totalTokens;
+      logEvent(
+        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Strategist Planning: ${normalizeQueryPlanItems(queryResult).length} queries]`,
+      );
 
-    const reqLog = {
-      timestamp: new Date().toISOString(),
-      type: "llm_request",
-      label,
-      model: resolvedModel,
-      prompt: strategistPrompt,
-      systemInstruction: STRATEGIST_SYSTEM_PROMPT,
-      response: queryResult,
-    };
-    localDebugLogs.push(reqLog);
-    if (!input.isSpeculative) {
-      pushStateDebugLog(state, reqLog);
-    }
-    planItems = normalizeQueryPlanItems(queryResult);
-    if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
-      state.recoveryAttempts = (state.recoveryAttempts || 0) + 1;
-    }
-    recordTrace({
-      phase: "strategy",
-      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-      status: "success",
-      provider: "llm",
-      model: resolvedModel,
-      round,
-      latencyMs: latency,
-      counts: { generatedQueries: planItems.length },
-      llm: summarizeLLM(
-        "strategy",
-        strategistPrompt,
-        queryResult,
-        latency,
-        0,
-        strategyProviderAttempts,
-        strategyUsage,
-      ),
-    });
-  } catch (e: any) {
-    if (effectiveSignal?.aborted) {
-      logEvent(`Round ${round}: planning was aborted by generation guard.`);
-      return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
-    }
-    const failedAttempt = strategyProviderAttempts[strategyProviderAttempts.length - 1];
-    const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
-    recordTrace({
-      phase: "strategy",
-      operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
-      status: "error",
-      provider: "llm",
-      model: failedModel,
-      round,
-      latencyMs: Date.now() - strategyStarted,
-      error: { message: e.message || String(e) },
-      llm: summarizeLLM(
-        "strategy",
-        strategistPrompt,
-        "",
-        Date.now() - strategyStarted,
-        0,
-        strategyProviderAttempts,
-        strategyUsage,
-      ),
-    });
-    logEvent(
-      `[LLM ERROR] Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
-    );
-    const errLog = {
-      timestamp: new Date().toISOString(),
-      type: "llm_error",
-      label,
-      prompt: strategistPrompt,
-      error: e.message,
-    };
-    localDebugLogs.push(errLog);
-    if (!input.isSpeculative) {
-      pushStateDebugLog(state, errLog);
+      const reqLog = {
+        timestamp: new Date().toISOString(),
+        type: "llm_request",
+        label,
+        model: resolvedModel,
+        prompt: strategistPrompt,
+        systemInstruction: STRATEGIST_SYSTEM_PROMPT,
+        response: queryResult,
+      };
+      localDebugLogs.push(reqLog);
+      if (!input.isSpeculative) {
+        pushStateDebugLog(state, reqLog);
+      }
+      planItems = normalizeQueryPlanItems(queryResult);
+      if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
+        state.recoveryAttempts = (state.recoveryAttempts || 0) + 1;
+      }
+      recordTrace({
+        phase: "strategy",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+        status: "success",
+        provider: "llm",
+        model: resolvedModel,
+        round,
+        latencyMs: latency,
+        counts: { generatedQueries: planItems.length },
+        llm: summarizeLLM(
+          "strategy",
+          strategistPrompt,
+          queryResult,
+          latency,
+          0,
+          strategyProviderAttempts,
+          strategyUsage,
+        ),
+      });
+    } catch (e: any) {
+      if (effectiveSignal?.aborted) {
+        logEvent(`Round ${round}: planning was aborted by generation guard.`);
+        return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
+      }
+      const failedAttempt = strategyProviderAttempts[strategyProviderAttempts.length - 1];
+      const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
+      recordTrace({
+        phase: "strategy",
+        operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",
+        status: "error",
+        provider: "llm",
+        model: failedModel,
+        round,
+        latencyMs: Date.now() - strategyStarted,
+        error: { message: e.message || String(e) },
+        llm: summarizeLLM(
+          "strategy",
+          strategistPrompt,
+          "",
+          Date.now() - strategyStarted,
+          0,
+          strategyProviderAttempts,
+          strategyUsage,
+        ),
+      });
+      logEvent(
+        `[LLM ERROR] Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,
+      );
+      const errLog = {
+        timestamp: new Date().toISOString(),
+        type: "llm_error",
+        label,
+        prompt: strategistPrompt,
+        error: e.message,
+      };
+      localDebugLogs.push(errLog);
+      if (!input.isSpeculative) {
+        pushStateDebugLog(state, errLog);
+      }
     }
   }
 
@@ -335,18 +383,6 @@ export async function executePlanStage(
   }
 
   planItems = enforceContractQueries(planItems, config.contract);
-
-  const envTasks = Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND);
-  const maxTasks =
-    Number.isFinite(envTasks) && envTasks > 0
-      ? envTasks
-      : Math.min(
-          8,
-          Math.max(
-            3,
-            Math.ceil((config.capacity?.candidateBatchSize || 12) / 4),
-          ),
-        );
 
   const rawTasks = buildRetrievalTasks(planItems, searchSpec).map(t => ({
     ...t,

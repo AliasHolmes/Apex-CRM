@@ -55,6 +55,7 @@ export type EvidenceMeta = {
   sourceQuery: string;
   sourceRound: number;
   queryRun?: QueryRunStats;
+  corroboratingQueryRuns?: QueryRunStats[];
   sourceProviders?: string[];
   sourceCount?: number;
   lanes?: string[];
@@ -341,6 +342,9 @@ export async function executeExtractStage(
         ? item._lanes
         : [item._queryLane || "person"],
       corroborated: Boolean(item._corroborated),
+      corroboratingQueryRuns: Array.isArray(item._corroboratingQueryRuns)
+        ? item._corroboratingQueryRuns
+        : undefined,
       ablatedRequirementId:
         item._ablatedRequirementId || item.ablatedRequirementId,
       ablatedTerm: item._ablatedTerm || item.ablatedTerm,
@@ -682,6 +686,9 @@ export async function executeExtractStage(
       sourceQuery: item._sourceQuery || "",
       sourceRound: item._sourceRound || round,
       queryRun,
+      corroboratingQueryRuns: Array.isArray(item._corroboratingQueryRuns)
+        ? item._corroboratingQueryRuns
+        : undefined,
       sourceProviders: Array.isArray(item._sourceProviders)
         ? item._sourceProviders
         : [sourceProvider],

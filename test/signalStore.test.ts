@@ -194,3 +194,33 @@ test('extracted currentCompany attaches the correct open-web signal', () => {
   assert.match(match.blocks[0].text, /client delivery backlog/);
   assert.equal(store.getForCandidate('Apex Growth').length, 0);
 });
+
+test('Fix 5E: harvestSignalsFromSearchItems harvests company signals and persists discovered companies in a batch transaction', async () => {
+  const { harvestSignalsFromSearchItems } = await import('../server/leadSearch/signalStore.js');
+  const { readDiscoveredCompanyNames } = await import('../server/db.js');
+  const store = new SignalStore();
+  harvestSignalsFromSearchItems(
+    [
+      {
+        companyName: 'OrbitOps AI',
+        title: 'Hiring Senior Automation Architect | OrbitOps AI',
+        url: 'https://orbitops.ai/careers',
+        content: 'Building n8n and custom LLM pipelines for enterprise clients.',
+        query: 'OrbitOps AI hiring',
+      },
+      {
+        title: 'AI Workflow Engineer | QuantumFlow Studio',
+        url: 'https://jobs.lever.co/quantumflow/456',
+        content: 'Seeking an AI workflow engineer to scale client delivery.',
+        query: 'AI workflow engineer lever',
+      },
+    ],
+    1,
+    store,
+  );
+  assert.equal(store.size, 2);
+  const names = store.getUniqueCompanyNames();
+  assert.ok(names.includes('OrbitOps AI'));
+  const persisted = readDiscoveredCompanyNames(50);
+  assert.ok(persisted.includes('OrbitOps AI'));
+});

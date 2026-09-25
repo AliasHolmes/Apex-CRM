@@ -705,16 +705,25 @@ Prior rounds had low yield or missed specific criteria.
         (data as any)?.requirement_fail_digest;
       if (digest) {
         try {
-          const parsed =
-            typeof digest === "string" ? JSON.parse(digest) : digest;
-          if (parsed && typeof parsed === "object") {
-            const topFails = Object.entries(parsed)
-              .sort((a: any, b: any) => Number(b[1]) - Number(a[1]))
-              .slice(0, 2)
-              .map(([req, count]) => `${req} (${count} fails)`)
-              .join(", ");
-            if (topFails) requirementFails.push(`${scopeKey}: ${topFails}`);
+          // Handle legacy '; '-concatenated JSON from prior bug
+          const segments = typeof digest === "string" ? digest.split("; ") : [digest];
+          const merged: Record<string, number> = {};
+          for (const seg of segments) {
+            try {
+              const parsed = typeof seg === "string" ? JSON.parse(seg) : seg;
+              if (parsed && typeof parsed === "object") {
+                for (const [req, count] of Object.entries(parsed)) {
+                  merged[req] = (merged[req] || 0) + Number(count);
+                }
+              }
+            } catch {}
           }
+          const topFails = Object.entries(merged)
+            .sort((a, b) => Number(b[1]) - Number(a[1]))
+            .slice(0, 2)
+            .map(([req, count]) => `${req} (${count} fails)`)
+            .join(", ");
+          if (topFails) requirementFails.push(`${scopeKey}: ${topFails}`);
         } catch {}
       }
     }

@@ -671,8 +671,18 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     return true;
   };
 
-  const rawLocMatch = clean(brief).match(/\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120}?)(?=\s+\b(?:with|seeking|having|who|where|that|using|for)\b|[.,;]|$)/i)?.[1] || '';
-  const extractedLocations = rawLocMatch ? rawLocMatch.split(/,|\band\b|\bor\b|\//).map(s => s.trim().replace(CONJUNCTION_STOP_PATTERN, '').trim()).filter(isCleanRequirementTerm) : [];
+  const rawLocMatch = clean(brief).match(
+    /\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120}?)(?=\s+\b(?:in|near|from|located|with|seeking|having|who|where|that|using|for)\b|[;]|$)/gi
+  );
+  // Take the LAST match (closest to end of brief) to avoid capturing "in B2B SaaS"
+  const lastLocCapture = rawLocMatch ? rawLocMatch[rawLocMatch.length - 1] : '';
+  const locCaptureGroup = lastLocCapture.replace(/^\b(?:in|near|from)\s+/i, '').replace(/[.,;]+$/, '');
+  const extractedLocations = locCaptureGroup
+    ? locCaptureGroup
+        .split(/,|\band\b|\bor\b|\//)
+        .map(s => s.trim().replace(CONJUNCTION_STOP_PATTERN, '').trim())
+        .filter(isCleanRequirementTerm)
+    : [];
 
   // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
   // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
@@ -763,7 +773,16 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     if (prefix) {
       addCompanyType(prefix);
     } else if (cleanSegment && !roleStopRegex.test(cleanSegment)) {
-      addCompanyType(cleanSegment);
+      // Guard: skip segments that look like bare location names (already captured by rawLocMatch)
+      const isLikelyLocation =
+        extractedLocations.some(
+          loc => loc.toLowerCase() === cleanSegment.toLowerCase()
+        ) ||
+        (/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?$/.test(cleanSegment.trim()) &&
+          !/\b(agency|agencies|firm|firms|studio|studios|consultancy|consultancies|company|companies|startup|startups|platform|platforms|software|services|clinic|clinics|practice|group|labs?|shop|store|brand|brands|tech|fintech|healthtech|edtech|biotech|medtech|martech|proptech|insurtech|legaltech)\b/i.test(cleanSegment));
+      if (!isLikelyLocation) {
+        addCompanyType(cleanSegment);
+      }
     }
   }
 
@@ -1395,11 +1414,8 @@ export function normalizeProspectContract(
         hard.push(fbReq);
       }
     }
-    const locReq = hard.find(h => h.scope === 'person_location');
-    const fbLocReq = fallbackHard.find(h => h.scope === 'person_location');
-    if (locReq && fbLocReq) {
-      locReq.acceptableTerms = unique([...locReq.acceptableTerms, ...fbLocReq.acceptableTerms]);
-    }
+    // Note: Do NOT merge fbLocReq.acceptableTerms into an existing LLM locReq,
+    // as fallback location regex captures may contain noise.
   }
 
   // Step 4: Soft requirements (LLM primary, fallback supplement) with theme-merge overflow
@@ -1828,6 +1844,111 @@ export function searchSpecFromProspectContract(base: SearchSpec, contract: Prosp
       keywords: companyTypes.length ? unique(companyTypes) : base.company.keywords,
       locations: locations.length ? unique(locations) : base.company.locations
     },
-    signals: { ...base.signals, include: signals.length ? unique(signals) : base.signals.include }
+    signals: { ...base.signals, include: signals.length ? unique(signals) : base.signals.include },
+    ...(Array.isArray(contract.exclusions) && contract.exclusions.length > 0
+      ? {
+          exclusions: {
+            ...base.exclusions,
+            companies: unique([...(base.exclusions?.companies || []), ...contract.exclusions]),
+            domains: base.exclusions?.domains || [],
+          },
+        }
+      : {}),
   };
 }
+
+/**
+ * Applies a follow-up delta brief on top of a parent session's ProspectContract,
+ * merging exclusions and updating/adding requirements targeted by the delta brief.
+ */
+export function applyContractDelta(
+  parentContract: ProspectContract,
+  deltaBrief: string,
+  _searchSpec?: SearchSpec,
+): ProspectContract {
+  const cleanDelta = clean(deltaBrief);
+  if (!cleanDelta) return parentContract;
+
+  const combinedBrief = `${parentContract.brief} | Follow-up: ${cleanDelta}`;
+
+  const extraExclusions: string[] = [];
+  const exclusionClauseRegex = /\b(?:exclude|excluding|without|not|no)\s+([^,.;|]{2,80})/gi;
+  const exMatch = cleanDelta.match(exclusionClauseRegex);
+  if (exMatch) {
+    for (const m of exMatch) {
+      const term = m.replace(/^\b(?:exclude|excluding|without|not|no)\s+/i, '').trim();
+      if (term) extraExclusions.push(term);
+    }
+  }
+
+  const positiveDelta = clean(
+    cleanDelta
+      .replace(exclusionClauseRegex, ' ')
+      .replace(/^[,.;|\s]+|[,.;|\s]+$/g, ''),
+  );
+
+  // Parse positiveDelta directly without inheriting a fallback SearchSpec that
+  // might have been built from unstripped exclusion clauses or parent locations.
+  const deltaContract = positiveDelta
+    ? buildDeterministicProspectContract(positiveDelta)
+    : null;
+
+  const explicitRoleInDelta = positiveDelta
+    ? /\b(founder|co-founder|owner|ceo|cto|cmo|cfo|coo|cro|president|partner|director|vp|vice president|head|chief|manager|managing director|principal)\b/i.test(positiveDelta)
+    : false;
+  const explicitLocInDelta = positiveDelta
+    ? /\b(?:in|near|from|based in|located in|focus on)\s+[A-Za-z]/i.test(positiveDelta) ||
+      Object.keys(COUNTRY_CANONICAL_MAP).some((k) => k.length > 2 && new RegExp(`\\b${escapeRegex(k)}\\b`, 'i').test(positiveDelta))
+    : false;
+
+  const mergedRequirements: ProspectRequirement[] = parentContract.requirements.map(r => ({
+    ...r,
+    acceptableTerms: [...(r.acceptableTerms || [])],
+  }));
+
+  if (deltaContract) {
+    for (const deltaReq of deltaContract.requirements) {
+      if (deltaReq.scope === 'person_role' && !explicitRoleInDelta) continue;
+      if (deltaReq.scope === 'person_location' && !explicitLocInDelta) continue;
+
+      const existingIdx = mergedRequirements.findIndex(r => r.scope === deltaReq.scope);
+      if (existingIdx >= 0) {
+        if (deltaReq.scope === 'person_location') {
+          mergedRequirements[existingIdx] = {
+            ...deltaReq,
+            id: mergedRequirements[existingIdx].id,
+          };
+        } else {
+          mergedRequirements[existingIdx] = {
+            ...mergedRequirements[existingIdx],
+            description: `${mergedRequirements[existingIdx].description}; ${deltaReq.description}`,
+            acceptableTerms: unique([
+              ...(mergedRequirements[existingIdx].acceptableTerms || []),
+              ...(deltaReq.acceptableTerms || []),
+            ]),
+          };
+        }
+      } else {
+        mergedRequirements.push({ ...deltaReq });
+      }
+    }
+  }
+
+  const mergedContract: ProspectContract = {
+    ...parentContract,
+    brief: combinedBrief,
+    requirements: mergedRequirements,
+    exclusions: unique([
+      ...(parentContract.exclusions || []),
+      ...(deltaContract?.exclusions || []),
+      ...extraExclusions,
+    ]),
+    initialQueries: [],
+  };
+  mergedContract.initialQueries = enforceContractQueries(
+    [...(deltaContract?.initialQueries || []), ...(parentContract.initialQueries || [])],
+    mergedContract,
+  );
+  return mergedContract;
+}
+

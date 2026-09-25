@@ -150,6 +150,7 @@ export async function runIntentEnrichment(options: IntentEnrichmentOptions): Pro
           websiteUrl = await findCompanyWebsite({
             companyName: group.companyName,
             location,
+            ttlDays,
             brightDataSearch,
             tavilySearchFallback
           }) || '';

@@ -543,4 +543,47 @@ test('G15: same-id upsert preserves CRM-owned workflow fields across engine re-s
   assert.equal(loaded?.revision, 2);
 });
 
+test('Fix 3A: recordQueryPerformance merges JSON requirement_fail_digest via json_patch and migrates legacy semicolon-concatenated digests', async () => {
+  const { recordQueryPerformance, readQueryPerformance } = await import('../server/db.js');
+  const db = getLeadsDb();
+  const scopeKey = 'test_cluster|exec|person|tavily';
 
+  // Seed legacy '; '-concatenated requirement_fail_digest
+  db.prepare(`
+    INSERT OR REPLACE INTO query_performance (
+      scope_key, domain_cluster, family, lane, provider, runs, requirement_fail_digest, updated_at
+    ) VALUES (?, 'test_cluster', 'exec', 'person', 'tavily', 1, ?, datetime('now'))
+  `).run(scopeKey, '{"req-legacy": 4}; {"req-shared": 2}');
+
+  // First update migrates legacy '; '-delimited string and merges new JSON
+  recordQueryPerformance({
+    scopeKey,
+    domainCluster: 'test_cluster',
+    family: 'exec',
+    lane: 'person',
+    provider: 'tavily',
+    runs: 1,
+    requirementFailDigest: JSON.stringify({ 'req-shared': 5, 'req-new': 3 }),
+  });
+
+  // Second update uses native json_patch on the now-valid JSON object
+  recordQueryPerformance({
+    scopeKey,
+    domainCluster: 'test_cluster',
+    family: 'exec',
+    lane: 'person',
+    provider: 'tavily',
+    runs: 0,
+    outcomeRuns: 1,
+    requirementFailDigest: JSON.stringify({ 'req-final': 7 }),
+  });
+
+  const rows = readQueryPerformance(50, 'test_cluster');
+  const row = rows.find((r: any) => r.scope_key === scopeKey);
+  assert.ok(row, 'Should find query_performance row');
+  const parsed = JSON.parse(row.requirement_fail_digest);
+  assert.equal(parsed['req-legacy'], 4, 'Should preserve legacy key');
+  assert.equal(parsed['req-shared'], 5, 'Should update shared key');
+  assert.equal(parsed['req-new'], 3, 'Should include first update key');
+  assert.equal(parsed['req-final'], 7, 'Should json_patch second update key');
+});

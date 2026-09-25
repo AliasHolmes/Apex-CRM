@@ -12,10 +12,13 @@ import {
   recordProviderUsage,
   saveMiningSessionCheckpoint,
   readMiningSessionCheckpoint,
+  readMiningSessionById,
   readResumableMiningSessions,
   getProspectContractCache,
   upsertProspectContractCache,
   readStoredCompanyDomains,
+  getSearchCacheEntry,
+  upsertSearchCacheEntry,
 } from "../db.js";
 import {
   hasOpenAIKey,
@@ -103,6 +106,7 @@ import type {
 } from "./pipelineTypes.js";
 import { LeadQueryRunTracker } from "./pipelineTypes.js";
 import {
+  applyContractDelta,
   buildDeterministicProspectContract,
   buildProspectContractPrompt,
   COUNTRY_CANONICAL_MAP,
@@ -111,7 +115,9 @@ import {
   prospectContractSchema,
   PROSPECT_CONTRACT_POLICY_VERSION,
   searchSpecFromProspectContract,
+  type ProspectContract,
 } from "./prospectContract.js";
+import { ablateSearchSpec } from "./constraintAblation.js";
 import {
   finalistCandidateFromLead,
   triPartitionCandidatesByEvidence,
@@ -140,6 +146,9 @@ export interface DiscoveryRequest {
   discoveryProviderMode?: string;
   excludeList?: string[];
   savedSearchId?: string;
+  parentSessionId?: string;
+  deltaBrief?: string;
+  interactive?: boolean;
 }
 
 export interface DiscoveryEventListener {
@@ -384,7 +393,8 @@ export async function executeDiscoverySession(
     // serialized payload exceeds ~2MB, persist summary fields only - the
     // summaries (provider/cost/phase) carry the aggregate signal anyway.
     let events = trace.events;
-    if (events.length > 2000 || (events.length > 1000 && JSON.stringify(events).length > 2_000_000)) {
+    // Estimate: average trace event serializes to ~800 bytes
+    if (events.length > 2000 || (events.length > 1000 && events.length * 800 > 2_000_000)) {
       console.warn(
         `[find-leads] ${sessionId}: trace_events exceeded 2MB; persisting summary-only.`,
       );
@@ -603,9 +613,27 @@ export async function executeDiscoverySession(
           "person_first") as DiscoveryMode)
       : "person_first";
 
-    let searchSpec = normalizeSearchSpec(options.searchSpec, query);
-    if (!options.searchSpec) {
-      searchSpec = buildFallbackSearchSpec(query, requestedMode);
+    const parentSession = options.parentSessionId
+      ? readMiningSessionById(options.parentSessionId)
+      : null;
+    const parentContract: ProspectContract | undefined = options.parentSessionId
+      ? parentSession?.checkpoint?.contract ||
+        (parentSession?.stats as any)?.scout?.contract ||
+        readMiningSessionCheckpoint(options.parentSessionId)?.contract
+      : undefined;
+    const parentSpec = options.parentSessionId
+      ? (parentSession?.stats as any)?.scout?.spec
+      : undefined;
+
+    let searchSpec = normalizeSearchSpec(
+      options.searchSpec || parentSpec,
+      parentContract?.brief || query,
+    );
+    if (!options.searchSpec && !parentSpec) {
+      searchSpec = buildFallbackSearchSpec(
+        parentContract?.brief || query,
+        requestedMode,
+      );
     }
 
     const crmDomains = readStoredCompanyDomains(30);
@@ -616,14 +644,15 @@ export async function executeDiscoverySession(
       ).slice(0, 30);
     }
 
-    // Build deterministic contract first as fallback (or restore from checkpoint).
+    // Build deterministic contract first as fallback (or restore from checkpoint / parent session).
     const fallbackContract =
       options.initialCheckpoint?.contract ||
+      parentContract ||
       buildDeterministicProspectContract(query, searchSpec);
 
-    // Compile contract using LLM if OpenAI/Byesu key is configured and not resuming from existing contract.
-    let contract = options.initialCheckpoint?.contract || fallbackContract;
-    if (!options.initialCheckpoint?.contract) {
+    // Compile contract using LLM if OpenAI/Byesu key is configured and not resuming from existing or parent contract.
+    let contract = options.initialCheckpoint?.contract || parentContract || fallbackContract;
+    if (!options.initialCheckpoint?.contract && !parentContract) {
       const cacheKey = query.trim().toLowerCase();
       const cached = getProspectContractCache(cacheKey, PROSPECT_CONTRACT_POLICY_VERSION);
       if (cached) {
@@ -683,6 +712,15 @@ export async function executeDiscoverySession(
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, fallbackContract);
         }
       }
+    }
+    if (parentContract) {
+      const effectiveDelta = options.deltaBrief || query;
+      contract = applyContractDelta(parentContract, effectiveDelta, searchSpec);
+      logEvent(
+        `Applied multi-turn contract delta from parent session ${options.parentSessionId} (${contract.requirements.length} requirements).`,
+      );
+    } else if (options.deltaBrief) {
+      contract = applyContractDelta(contract, options.deltaBrief, searchSpec);
     }
     stats.scout.contract = contract;
 
@@ -1519,21 +1557,51 @@ export async function executeDiscoverySession(
 
             const replenishStart = Date.now();
             try {
-              recordProviderUsage("tavily", 1);
               const execReplenishQuery = toLinkedInSearchQuery({
                 query: replenishQuery,
                 lane: "person",
               });
-              const replenishRes = await tavilySearch(execReplenishQuery, {
-                searchDepth: "basic",
-                maxResults: 15,
-                includeDomains: ["linkedin.com"],
-                signal: sessionAbortController.signal,
-                ...(tavilyCountry ? { country: tavilyCountry } : {}),
-              });
+              const cachedReplenish = getSearchCacheEntry(execReplenishQuery);
+              let rawReplenishItems: any[];
+              if (cachedReplenish && cachedReplenish.results.length > 0) {
+                stats.cacheHits++;
+                rawReplenishItems = cachedReplenish.results;
+              } else {
+                recordProviderUsage("tavily", 1);
+                const replenishRes = await tavilySearch(execReplenishQuery, {
+                  searchDepth: "basic",
+                  maxResults: 15,
+                  includeDomains: ["linkedin.com"],
+                  signal: sessionAbortController.signal,
+                  ...(tavilyCountry ? { country: tavilyCountry } : {}),
+                });
+                rawReplenishItems = replenishRes.items || [];
+                if (rawReplenishItems.length > 0) {
+                  upsertSearchCacheEntry(execReplenishQuery, rawReplenishItems, "tavily", ttlDays);
+                  stats.cacheWrites++;
+                }
+              }
 
-              const rawReplenishItems = replenishRes.items || [];
               let addedCount = 0;
+              const replenishRun: QueryRunStats = {
+                round,
+                query: replenishQuery,
+                family: "replenishment_metro",
+                intent: "find_decision_makers",
+                rawCandidates: rawReplenishItems.length,
+                uniqueCandidates: 0,
+                evidenceBlocks: 0,
+                extractedLeads: 0,
+                acceptedLeads: 0,
+                rejectionReasons: {},
+                lane: "person",
+                providerPreference: "tavily",
+                searchLatencyMs: Date.now() - replenishStart,
+                providerUnits: cachedReplenish ? 0 : 1,
+                qualifiedFinalists: 0,
+                rescuedFinalists: 0,
+                returnedFinalists: 0,
+              };
 
               for (const item of rawReplenishItems) {
                 let url = item.url;
@@ -1581,11 +1649,14 @@ export async function executeDiscoverySession(
                 item._expectedSignal = "Replenished decision maker";
                 item._sourceProviders = ["tavily"];
                 item._lanes = ["person"];
+                item._queryRun = replenishRun;
 
                 candidateItems.push(item);
                 addedCount++;
                 if (candidateItems.length >= desiredBatchThreshold) break;
               }
+
+              replenishRun.uniqueCandidates = addedCount;
 
               if (addedCount === 0 && rawReplenishItems.length > 0 && chosenLoc) {
                 saturatedGeos.add(chosenLoc.toLowerCase());
@@ -1594,25 +1665,7 @@ export async function executeDiscoverySession(
               logEvent(
                 `[Dynamic Replenishment] Pass ${pass}/${maxReplenishPasses} added ${addedCount} candidate(s); batch now at ${candidateItems.length}/${desiredBatchThreshold}.`,
               );
-              stats.queryRuns.push({
-                round,
-                query: replenishQuery,
-                family: "replenishment_metro",
-                intent: "find_decision_makers",
-                rawCandidates: rawReplenishItems.length,
-                uniqueCandidates: addedCount,
-                evidenceBlocks: 0,
-                extractedLeads: 0,
-                acceptedLeads: 0,
-                rejectionReasons: {},
-                lane: "person",
-                providerPreference: "tavily",
-                searchLatencyMs: Date.now() - replenishStart,
-                providerUnits: 1,
-                qualifiedFinalists: 0,
-                rescuedFinalists: 0,
-                returnedFinalists: 0,
-              });
+              stats.queryRuns.push(replenishRun);
             } catch (err: any) {
               logEvent(`[Dynamic Replenishment] Pass ${pass} failed: ${err.message}`);
             }
@@ -1829,6 +1882,53 @@ export async function executeDiscoverySession(
             logEvent(
               `Round ${round} Incremental Judge: Qualified ${incrementalResult.qualifiedCandidates.length} candidate(s). Cumulative qualified: ${qualifiedLeads.length}.`,
             );
+
+            // Judge-failure-triggered constraint relaxation (Fix 6C):
+            // If 100% of judged candidates in this batch failed a specific non-identity requirement
+            // and cumulative qualified leads are below 50% of targetLimit, relax that constraint.
+            if (
+              incrementalResult.qualifiedCandidates.length === 0 &&
+              needsJudgeCandidates.length >= 2 &&
+              qualifiedLeads.length < targetLimit * 0.5
+            ) {
+              const judgeFailCounts =
+                incrementalResult.requirementFailCounts &&
+                Object.keys(incrementalResult.requirementFailCounts).length > 0
+                  ? incrementalResult.requirementFailCounts
+                  : (() => {
+                      const counts: Record<string, number> = {};
+                      for (const run of stats.queryRuns.filter((r) => r.round === round)) {
+                        for (const [reqId, cnt] of Object.entries(run.requirementFailCounts || {})) {
+                          counts[reqId] = (counts[reqId] || 0) + Number(cnt);
+                        }
+                      }
+                      return counts;
+                    })();
+              const universallyFailed = Object.entries(judgeFailCounts)
+                .filter(([, cnt]) => cnt >= needsJudgeCandidates.length)
+                .sort((a, b) => b[1] - a[1]);
+              for (const [failedReqId] of universallyFailed) {
+                const ablation = ablateSearchSpec(searchSpec, contract, failedReqId);
+                if (ablation.ablated) {
+                  searchSpec = ablation.spec;
+                  contract = ablation.contract;
+                  sessionConfig.contract = contract;
+                  stats.scout.contract = contract;
+                  stats.scout.spec = searchSpec;
+                  previousRoundSummary.shouldRecover = true;
+                  previousRoundSummary.missingHardRequirementIds = Array.from(
+                    new Set([
+                      ...(previousRoundSummary.missingHardRequirementIds || []),
+                      failedReqId,
+                    ]),
+                  );
+                  logEvent(
+                    `Round ${round}: 100% of judged candidates failed requirement "${ablation.ablatedRequirementId}" (Tier ${ablation.tier}). Relaxed constraint to soft and triggered recovery.`,
+                  );
+                  break;
+                }
+              }
+            }
           }
         }
 
@@ -1852,6 +1952,13 @@ export async function executeDiscoverySession(
 
         accumulatedViableCount += roundDiagnosticsObj.viableCandidates;
 
+        const combinedMissingHardIds = Array.from(
+          new Set([
+            ...(roundDiagnosticsObj.missingHardRequirementIds || []),
+            ...(previousRoundSummary.missingHardRequirementIds || []),
+          ]),
+        );
+
         previousRoundSummary = {
           rawCandidates: roundDiagnosticsObj.rawCandidates,
           uniqueCandidates: roundRuns.reduce(
@@ -1864,20 +1971,19 @@ export async function executeDiscoverySession(
             0,
           ),
           viableCandidates: accumulatedViableCount,
-          shouldRecover: roundDiagnosticsObj.shouldRecover,
-          missingHardRequirementIds:
-            roundDiagnosticsObj.missingHardRequirementIds,
+          shouldRecover: Boolean(roundDiagnosticsObj.shouldRecover || previousRoundSummary.shouldRecover),
+          missingHardRequirementIds: combinedMissingHardIds,
           rejectionReasons: stats.rejectionReasons,
         };
 
-        // Invalidate previous generation if post-judging diagnostics demand recovery
+        // Invalidate previous generation if post-judging diagnostics or ablation demand recovery
         if (
-          roundDiagnosticsObj.shouldRecover &&
+          previousRoundSummary.shouldRecover &&
           (sessionState.recoveryAttempts || 0) < 2
         ) {
           planningGeneration.value++;
           logEvent(
-            `Round ${round}: shouldRecover triggered for missing criteria [${(roundDiagnosticsObj.missingHardRequirementIds || []).join(", ")}]. Switching to authoritative recovery plan.`,
+            `Round ${round}: shouldRecover triggered for missing criteria [${combinedMissingHardIds.join(", ")}]. Switching to authoritative recovery plan.`,
           );
         }
 
@@ -2438,7 +2544,7 @@ export class DiscoverySessionEngine {
     request: DiscoveryRequest,
     listener?: DiscoveryEventListener,
   ): Promise<DiscoveryResult> {
-    const promptQuery = String(request.promptQuery || "").trim();
+    const promptQuery = String(request.promptQuery || request.deltaBrief || "").trim();
     if (!promptQuery || promptQuery.length > 2000) {
       throw new Error(
         "query must be a non-empty string of 2,000 characters or fewer.",
@@ -2477,6 +2583,9 @@ export class DiscoverySessionEngine {
         discoveryProviderMode: request.discoveryProviderMode,
         excludeList: request.excludeList,
         savedSearchId: request.savedSearchId,
+        parentSessionId: request.parentSessionId,
+        deltaBrief: request.deltaBrief,
+        interactive: request.interactive,
         listener,
       });
     } catch (err) {

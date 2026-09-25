@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   classifyAblationTier,
   ablateQueryTask,
+  ablateSearchSpec,
   ABLATION_TIERS,
   createAblationTracker,
 } from '../server/leadSearch/constraintAblation.js';
@@ -248,5 +249,27 @@ describe('Hierarchical Algorithmic Constraint Ablation', () => {
       assert.strictEqual(triage.needsJudge.length, 1);
       assert.strictEqual(triage.needsJudge[0].candidateId, 'c1');
     });
+
+    it('Fix 6C: ablateSearchSpec demotes non-identity hard requirement to soft while refusing Tier 1 identity', () => {
+      const relaxed = ablateSearchSpec({}, mockContract, 'req-stack');
+      assert.strictEqual(relaxed.ablated, true);
+      const stackAfter = relaxed.contract.requirements.find(r => r.id === 'req-stack');
+      assert.strictEqual(stackAfter?.importance, 'soft');
+      assert.strictEqual(stackAfter?.requirementClass, 'ranking_signal');
+      assert.strictEqual(stackAfter?.queryHardness, 'optional_for_queries');
+
+      const onlyIdentityContract: ProspectContract = {
+        ...mockContract,
+        requirements: [reqRole],
+      };
+      const refusedCore = ablateSearchSpec({}, onlyIdentityContract, 'req-role');
+      assert.strictEqual(refusedCore.ablated, false, 'Tier 1 identity requirement must never be demoted');
+
+      // Even when other ablatable requirements (like req-stack) exist on the contract,
+      // explicitly targeting a Tier-1 requirement ('req-role') must return ablated: false.
+      const refusedExplicitTier1 = ablateSearchSpec({}, mockContract, 'req-role');
+      assert.strictEqual(refusedExplicitTier1.ablated, false, 'Explicit Tier 1 targetRequirementId must not silently ablate another requirement');
+    });
   });
 });
+

@@ -4,6 +4,7 @@ import {
   brightDataSearchDataset,
   brightDataGetCompanyProfile,
 } from '../services/brightdata.js';
+import { getSearchCacheEntry, upsertSearchCacheEntry } from '../db.js';
 import type { SearchSpec } from './searchSpec.js';
 import { UNIVERSAL_SIGNALS, type IntentSignalSpec } from './intentSignals.js';
 
@@ -170,6 +171,7 @@ export function cleanCompanyForDomainSearch(raw: string): string {
 export async function findCompanyWebsite(input: {
   companyName: string;
   location?: string;
+  ttlDays?: number;
   brightDataSearch: (query: string) => Promise<SearchResult[]>;
   tavilySearchFallback?: (query: string) => Promise<SearchResult[]>;
 }): Promise<string | null> {
@@ -182,7 +184,25 @@ export async function findCompanyWebsite(input: {
     ? `${nameQueryTerm} official website ${input.location}`
     : `${nameQueryTerm} official website`;
 
+  const cached = getSearchCacheEntry(query);
+  if (cached && cached.results.length > 0) {
+    const cachedScored = cached.results
+      .filter((result: SearchResult) => result.url && !isBlockedUrl(result.url))
+      .map((result: SearchResult) => ({
+        result,
+        score: companyMatchScore(cleanName, result),
+      }))
+      .filter((item) => item.score > 0);
+    if (cachedScored.length > 0) {
+      cachedScored.sort((a, b) => b.score - a.score);
+      return cachedScored[0]?.result.url || null;
+    }
+  }
+
   let results = await input.brightDataSearch(query).catch(() => []);
+  if (results && results.length > 0) {
+    upsertSearchCacheEntry(query, results, "brightdata", input.ttlDays ?? 7);
+  }
   let scoredResults = (results || [])
     .filter((result) => result.url && !isBlockedUrl(result.url))
     .map((result) => ({
@@ -193,6 +213,9 @@ export async function findCompanyWebsite(input: {
 
   if (scoredResults.length === 0 && input.tavilySearchFallback) {
     const fallbackResults = await input.tavilySearchFallback(query).catch(() => []);
+    if (fallbackResults && fallbackResults.length > 0) {
+      upsertSearchCacheEntry(query, fallbackResults, "tavily", input.ttlDays ?? 7);
+    }
     const fallbackScored = (fallbackResults || [])
       .filter((result) => result.url && !isBlockedUrl(result.url))
       .map((result) => ({

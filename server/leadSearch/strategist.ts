@@ -21,6 +21,9 @@ export type QueryRunStats = {
   qualifiedFinalists: number;
   rescuedFinalists: number;
   returnedFinalists: number;
+  judgedCandidates?: number;
+  hardFailedCandidates?: number;
+  unknownCandidates?: number;
   requirementFailCounts?: Record<string, number>;
 };
 

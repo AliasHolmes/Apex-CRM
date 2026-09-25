@@ -181,7 +181,8 @@ CORE RULES:
    - Software products, SaaS platforms, consumer apps, B2C mobile apps (e.g. personal trainer apps, habit trackers, consumer utilities), developer tools, and tech vendor platforms do NOT satisfy an agency requirement. Mark status: "fail" for company_type.
    - Non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI, etc.) and individual contributor roles (Staff/Principal Engineer, Product Manager) do NOT satisfy agency owner/founder requirements. Mark status: "fail".
 5. EVIDENCE rules:
-   - A requirement status is enough when the shown evidence is clear. Include an evidence id, quote, or explanation only when it resolves real ambiguity.
+   - For every hard requirement with status "pass", you MUST populate evidenceId (the [eN] tag of the evidence block containing the proof) and evidenceQuote (a short verbatim quote from that evidence, 5-40 words, that supports the verdict).
+   - For soft/signal requirements, evidenceId and evidenceQuote are optional.
    - "unknown" is used when evidence is insufficient or ambiguous.
    - "fail" is used when evidence explicitly contradicts a hard requirement.
 6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
@@ -295,7 +296,7 @@ export function buildFinalistJudgePrompt(
   const agencyGuidance = isAgencyBrief
     ? `\nClient Services vs Software Products: The contract requires a client-services firm (agency/consultancy/studio/integrator). Pure software products, SaaS platforms, consumer apps, Big Tech employees, and IC roles FAIL company_type or person_role with status: 'fail'.\n`
     : '';
-  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. Omit evidenceId, evidenceQuote, and reason unless they clarify an ambiguous verdict. Return judgments only.`;
+  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. For hard requirements with status "pass", also return evidenceId and a short verbatim evidenceQuote (5-40 words). Return judgments only.`;
 }
 
 const normalizePassage = (text: string): string =>
@@ -327,20 +328,81 @@ export function verifyEvidencePassage(
   }
   if (!evidenceText || !evidenceText.trim()) return { valid: false, similarity: 0.0 };
 
+  const NEGATORS = new Set(['not', 'no', 'isnt', 'isn', 'without', 'stopped', 'never', 'dont', 'doesnt', 'hasnt', 'wont', 'cannot', 'cant', 'nope', 'none']);
+  const PAST_ROLE_MARKERS = new Set(['former', 'previously', 'ex', 'past', 'formerly', 'retired', 'departed', 'left']);
+  const normNeg = (t: string) => t.toLowerCase().replace(/[^a-z]/g, '');
+
+  const normQuote = normalizePassage(citedQuote);
+  const rawQuoteTokens = normQuote.split(' ').filter(Boolean);
+  const quoteTokens = rawQuoteTokens.map(t => normalizeAliasTerm(t) || t);
+  const quoteNeg = new Set(quoteTokens.map(normNeg).filter(t => NEGATORS.has(t) || PAST_ROLE_MARKERS.has(t)));
+
+  const hasStrayNegator = (tokens: string[]): boolean => {
+    for (const rawTok of tokens) {
+      const tok = normNeg(rawTok);
+      if ((NEGATORS.has(tok) || PAST_ROLE_MARKERS.has(tok)) && !quoteNeg.has(tok)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   if (evidenceText.includes(citedQuote)) {
+    // Check preceding tokens within the same clause/sentence for negators or past-role markers
+    const matchIdx = evidenceText.indexOf(citedQuote);
+    const clauseBefore = evidenceText.slice(0, matchIdx).split(/[.;!?\n|—–]+/).pop() || '';
+    const precedingTokens = normalizePassage(clauseBefore).split(' ').filter(Boolean).slice(-4);
+    if (hasStrayNegator(precedingTokens)) {
+      return { valid: false, similarity: 0.49 };
+    }
     return { valid: true, similarity: 1.0 };
   }
+
+  const rawClauses = evidenceText.split(/[.;!?\n|—–]+/);
+  const rawEvidenceTokens: string[] = [];
+  const evidenceTokens: string[] = [];
+  const tokenClauseIdx: number[] = [];
+  rawClauses.forEach((clause, cIdx) => {
+    const cNorm = normalizePassage(clause);
+    for (const rawTok of cNorm.split(' ').filter(Boolean)) {
+      rawEvidenceTokens.push(rawTok);
+      evidenceTokens.push(normalizeAliasTerm(rawTok) || rawTok);
+      tokenClauseIdx.push(cIdx);
+    }
+  });
 
   const normEvidence = normalizePassage(evidenceText);
-  const normQuote = normalizePassage(citedQuote);
 
-  if (normEvidence.includes(normQuote)) {
+  if (normEvidence.includes(normQuote) && rawQuoteTokens.length > 0) {
+    // Locate token index of the normalized quote match to check same-clause preceding tokens
+    let matchStartTok = -1;
+    for (let i = 0; i <= rawEvidenceTokens.length - rawQuoteTokens.length; i++) {
+      let allMatch = true;
+      for (let j = 0; j < rawQuoteTokens.length; j++) {
+        if (rawEvidenceTokens[i + j] !== rawQuoteTokens[j]) {
+          allMatch = false;
+          break;
+        }
+      }
+      if (allMatch) {
+        matchStartTok = i;
+        break;
+      }
+    }
+    if (matchStartTok >= 0) {
+      const matchClause = tokenClauseIdx[matchStartTok];
+      const precedingSameClause: string[] = [];
+      for (let i = Math.max(0, matchStartTok - 4); i < matchStartTok; i++) {
+        if (tokenClauseIdx[i] === matchClause) {
+          precedingSameClause.push(rawEvidenceTokens[i]);
+        }
+      }
+      if (hasStrayNegator(precedingSameClause)) {
+        return { valid: false, similarity: 0.49 };
+      }
+    }
     return { valid: true, similarity: 1.0 };
   }
-
-  // Phase 4: alias-aware token comparison (MD==managing director, US==united states)
-  const quoteTokens = normQuote.split(' ').filter(Boolean).map(t => normalizeAliasTerm(t) || t);
-  const evidenceTokens = normEvidence.split(' ').filter(Boolean).map(t => normalizeAliasTerm(t) || t);
 
   if (quoteTokens.length === 0) {
     if (evidenceGroundingMode() === 'strict') return { valid: false, similarity: 0.0 };
@@ -368,6 +430,8 @@ export function verifyEvidencePassage(
   // Sliding window matching
   const windowSize = quoteTokens.length;
   let maxSimilarity = setOverlap * 0.9;
+  let bestWindowStart = 0;
+  let bestWindowSim = -1;
 
   for (let i = 0; i <= evidenceTokens.length - Math.min(windowSize, evidenceTokens.length); i++) {
     const candidateSlice = evidenceTokens.slice(i, i + windowSize);
@@ -384,6 +448,10 @@ export function verifyEvidencePassage(
       }
     }
     const sim = matchCount / windowSize;
+    if (sim > bestWindowSim) {
+      bestWindowSim = sim;
+      bestWindowStart = i;
+    }
     if (sim > maxSimilarity) {
       maxSimilarity = sim;
     }
@@ -396,19 +464,20 @@ export function verifyEvidencePassage(
   const finalSim = maxSimilarity * 0.7 + setOverlap * 0.3;
 
   // G9 negation-polarity guard: a negator adjacent to the matched span in
-  // evidence that is absent from the quote rejects regardless of overlap.
-  const NEGATORS = new Set(['not', 'no', 'isnt', 'isn', 'without', 'stopped', 'never', 'dont', 'doesnt', 'hasnt', 'wont', 'cannot', 'cant', 'nope', 'none']);
-  const normNeg = (t: string) => t.toLowerCase().replace(/[^a-z]/g, '');
-  const quoteNeg = new Set(quoteTokens.map(normNeg).filter(t => NEGATORS.has(t)));
+  // the same clause of evidence that is absent from the quote rejects regardless of overlap.
   let windowHasStrayNegator = false;
   const wSize = Math.min(windowSize, evidenceTokens.length);
-  outer: for (let i = 0; i <= evidenceTokens.length - wSize; i++) {
-    const slice = evidenceTokens.slice(i, i + wSize);
-    for (let j = 0; j < slice.length; j++) {
-      if (NEGATORS.has(normNeg(slice[j])) && !quoteNeg.has(normNeg(slice[j]))) {
-        windowHasStrayNegator = true;
-        break outer;
-      }
+  const startClause = tokenClauseIdx[bestWindowStart] ?? 0;
+  const endClause = tokenClauseIdx[Math.min(evidenceTokens.length - 1, bestWindowStart + wSize - 1)] ?? startClause;
+  const checkStart = Math.max(0, bestWindowStart - 4);
+  const checkEnd = Math.min(evidenceTokens.length, bestWindowStart + wSize + 3);
+  for (let i = checkStart; i < checkEnd; i++) {
+    if (i < bestWindowStart && tokenClauseIdx[i] !== startClause) continue;
+    if (i >= bestWindowStart + wSize && tokenClauseIdx[i] !== endClause) continue;
+    const tok = normNeg(evidenceTokens[i]);
+    if ((NEGATORS.has(tok) || PAST_ROLE_MARKERS.has(tok)) && !quoteNeg.has(tok)) {
+      windowHasStrayNegator = true;
+      break;
     }
   }
   if (windowHasStrayNegator) {
@@ -452,6 +521,9 @@ const normalizeAssessment = (
     }
     // Phase 0 counter (telemetry only): count passes that would be uncited.
     if (status === 'pass') judgeEvidenceTelemetry.uncitedPasses++;
+    // NOTE: Do NOT set fabricatedPass here. An omitted quote is a citation gap,
+    // not an actively fabricated claim. fabricatedPass is reserved for quotes
+    // that were provided but don't match any evidence passage.
   } else if (!isFlagEnabled.fuzzyQuoteGrounding()) {
     quoteValid = Boolean(evidence && evidence.text.includes(evidenceQuote));
   } else if (evidence && verifyEvidencePassage(evidence.text, evidenceQuote).valid) {
@@ -473,7 +545,7 @@ const normalizeAssessment = (
   return {
     requirementId: requirement.id,
     status: quoteValid ? status : "unknown",
-    fabricatedPass: status === "pass" && !quoteValid,
+    fabricatedPass: status === "pass" && !quoteValid && Boolean(evidenceQuote),
     evidenceId: quoteValid ? matchedEvidenceId || undefined : undefined,
     evidenceQuote: quoteValid ? evidenceQuote || undefined : undefined,
     reason: clean(raw?.reason, 280) || undefined,
@@ -579,6 +651,7 @@ export function validateFinalistJudgments(
       contextPasses = 0;
     let signalPasses = 0;
     let fabricatedHardPass = false;
+    let uncitedIdentityPass = false;
 
     let identityHardTotal = profileHardReqs.filter(
       (req) => req.scope === "person_role",
@@ -618,6 +691,11 @@ export function validateFinalistJudgments(
       if (!req) continue;
       if (req.fabricatedPass) fabricatedHardPass = true;
       const isIdentity = contractReq.scope === 'person_role';
+      const rawReq = assessmentById.get(contractReq.id) as any;
+      const rawClaimedPass = typeof rawReq?.status === 'string' && ['pass', 'qualified', 'passed'].includes(rawReq.status.trim().toLowerCase());
+      if (isIdentity && rawClaimedPass && req.status === 'unknown' && !req.fabricatedPass) {
+        uncitedIdentityPass = true;
+      }
       if (req.status === 'pass') {
         if (isIdentity) identityPasses++;
         else contextPasses++;
@@ -631,6 +709,16 @@ export function validateFinalistJudgments(
       const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
       const groupAssessments = groupReqs.map(gr => requirements.find(r => r.requirementId === gr.id)).filter(Boolean);
       if (groupAssessments.some(a => a?.fabricatedPass)) fabricatedHardPass = true;
+      if (isIdentityGroup) {
+        for (const gr of groupReqs) {
+          const rawReq = assessmentById.get(gr.id) as any;
+          const rawClaimedPass = typeof rawReq?.status === 'string' && ['pass', 'qualified', 'passed'].includes(rawReq.status.trim().toLowerCase());
+          const normReq = requirements.find(r => r.requirementId === gr.id);
+          if (rawClaimedPass && normReq?.status === 'unknown' && !normReq?.fabricatedPass) {
+            uncitedIdentityPass = true;
+          }
+        }
+      }
 
       const anyPass = groupAssessments.some(a => a?.status === 'pass');
       const allFail = groupAssessments.length > 0 && groupAssessments.every(a => a?.status === 'fail');
@@ -677,8 +765,12 @@ export function validateFinalistJudgments(
     // When evidence packets are too thin to verify identity outright, the
     // judge's graded scores still carry decision weight instead of being
     // discarded: strong semantic + authority ratings qualify as partial.
+    // However, in strict mode an uncited identity "pass" degrades to unknown
+    // and is not rescued by graded scores alone.
     const stronglyRatedIdentity =
-      semanticFit >= 6.5 && authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
+      !uncitedIdentityPass &&
+      semanticFit >= 6.5 &&
+      authorityFit >= (contract.authorityRequired ? 7.5 : 7.0);
 
     let status: FinalistOutcomeStatus = "unknown";
     if (identityFails > 0 || contextFails > 0) {

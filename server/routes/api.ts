@@ -1627,7 +1627,13 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     return res.status(400).json({ error: "Invalid sessionId." });
   }
 
-  const promptQuery = String(req.body?.query || "").trim();
+  const suppliedParentSessionId =
+    typeof req.body?.parentSessionId === "string" ? req.body.parentSessionId.trim() : "";
+  if (suppliedParentSessionId && !isSafeSessionId(suppliedParentSessionId)) {
+    return res.status(400).json({ error: "Invalid parentSessionId." });
+  }
+
+  const promptQuery = String(req.body?.query || req.body?.deltaBrief || "").trim();
   if (!promptQuery || promptQuery.length > 2000) {
     return res.status(400).json({
       error: "query must be a non-empty string of 2,000 characters or fewer.",
@@ -1698,6 +1704,18 @@ router.post("/find-leads", async (req, res): Promise<any> => {
         searchSpec: req.body?.searchSpec,
         excludeList: mergedExcludeList,
         savedSearchId,
+        parentSessionId:
+          typeof req.body?.parentSessionId === "string"
+            ? req.body.parentSessionId.trim() || undefined
+            : undefined,
+        deltaBrief:
+          typeof req.body?.deltaBrief === "string"
+            ? req.body.deltaBrief.trim() || undefined
+            : undefined,
+        interactive:
+          typeof req.body?.interactive === "boolean"
+            ? req.body.interactive
+            : undefined,
       })
       .catch((err) => {
         if (err instanceof SessionAlreadyActiveError) return;
@@ -1733,6 +1751,18 @@ router.post("/find-leads", async (req, res): Promise<any> => {
       searchSpec: req.body?.searchSpec,
       excludeList: mergedExcludeList,
       savedSearchId,
+      parentSessionId:
+        typeof req.body?.parentSessionId === "string"
+          ? req.body.parentSessionId.trim() || undefined
+          : undefined,
+      deltaBrief:
+        typeof req.body?.deltaBrief === "string"
+          ? req.body.deltaBrief.trim() || undefined
+          : undefined,
+      interactive:
+        typeof req.body?.interactive === "boolean"
+          ? req.body.interactive
+          : undefined,
     });
     return res.status(200).json(result);
   } catch (error: any) {

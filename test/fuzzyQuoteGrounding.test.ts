@@ -206,5 +206,65 @@ describe('Optimization 1: Fuzzy Token-Aligned Quote Grounding', () => {
       const outcome = outcomes.get('cand-1');
       assert.equal(outcome?.status, 'qualified', 'Fuzzy grounding verifies normalized quote and qualifies candidate');
     });
+
+    it('Fix 1B: window-scoped negation/past-role guard allows affirmative current role when past role is distant', () => {
+      const multiSentenceEvidence =
+        'Alex River is the Founder & CEO at Apex Studio in Austin. Previously he was VP of Sales at LegacyCorp from 2018 to 2021.';
+      const result = verifyEvidencePassage(multiSentenceEvidence, 'Founder & CEO at Apex Studio');
+      assert.equal(result.valid, true, 'Distant "Previously" should not invalidate current role quote');
+    });
+
+    it('Fix 1B: boundary-aware substring fast-path rejects quote immediately preceded by past-role or negation marker', () => {
+      const pastRoleEvidence = 'Alex River was formerly Founder & CEO at Apex Studio before joining BetaCorp.';
+      const resultPast = verifyEvidencePassage(pastRoleEvidence, 'Founder & CEO at Apex Studio');
+      assert.equal(resultPast.valid, false, 'Immediate preceding "formerly" must invalidate affirmative role quote');
+
+      const pastRoleWithArticle = 'Alex River was formerly the Founder & CEO at Apex Studio before joining BetaCorp.';
+      const resultPastArticle = verifyEvidencePassage(pastRoleWithArticle, 'Founder & CEO at Apex Studio');
+      assert.equal(resultPastArticle.valid, false, 'Preceding "formerly the" must invalidate affirmative role quote');
+
+      const negatedEvidence = 'Alex River is not Founder & CEO at Apex Studio.';
+      const resultNeg = verifyEvidencePassage(negatedEvidence, 'Founder & CEO at Apex Studio');
+      assert.equal(resultNeg.valid, false, 'Immediate preceding "not" must invalidate affirmative role quote');
+
+      const negatedWithArticle = 'Alex River is not a Founder & CEO at Apex Studio.';
+      const resultNegArticle = verifyEvidencePassage(negatedWithArticle, 'Founder & CEO at Apex Studio');
+      assert.equal(resultNegArticle.valid, false, 'Preceding "not a" must invalidate affirmative role quote');
+
+      const adjacentSentencePast = 'Previously at BetaCorp. Founder & CEO at Apex Studio.';
+      const resultAdjSubstr = verifyEvidencePassage(adjacentSentencePast, 'Founder & CEO at Apex Studio');
+      assert.equal(resultAdjSubstr.valid, true, '"Previously" in prior sentence must not invalidate current role in substring path');
+      const resultAdjWindow = verifyEvidencePassage(adjacentSentencePast, 'Founder and CEO of Apex Studio');
+      assert.equal(resultAdjWindow.valid, true, '"Previously" in prior sentence must not invalidate current role in sliding-window path');
+    });
+
+    it('Fix 1A: distinguishes omitted empty quote (uncited) from non-empty fabricated quote', () => {
+      process.env.FUZZY_QUOTE_GROUNDING_ENABLED = 'true';
+      delete process.env.EVIDENCE_GROUNDING_MODE;
+      const uncitedJudgment = [
+        {
+          candidateId: 'cand-1',
+          requirements: [{ requirementId: 'req-founder', status: 'pass', evidenceId: 'e1', evidenceQuote: '' }],
+          semanticFit: 9, authorityFit: 9, evidenceConfidence: 9, verdict: 'qualified', reason: 'Matches'
+        }
+      ];
+      const { outcomes: uncitedOutcomes } = validateFinalistJudgments({ judgments: uncitedJudgment }, contract, [candidate]);
+      const uncitedOutcome = uncitedOutcomes.get('cand-1');
+      assert.equal(uncitedOutcome?.status, 'unknown');
+      assert.equal(uncitedOutcome?.requirements?.[0]?.fabricatedPass, false, 'Empty quote is uncited, not fabricated');
+
+      const fabricatedJudgment = [
+        {
+          candidateId: 'cand-1',
+          requirements: [{ requirementId: 'req-founder', status: 'pass', evidenceId: 'e1', evidenceQuote: 'totally invented quote not in evidence' }],
+          semanticFit: 9, authorityFit: 9, evidenceConfidence: 9, verdict: 'qualified', reason: 'Matches'
+        }
+      ];
+      const { outcomes: fabOutcomes } = validateFinalistJudgments({ judgments: fabricatedJudgment }, contract, [candidate]);
+      const fabOutcome = fabOutcomes.get('cand-1');
+      assert.equal(fabOutcome?.status, 'unknown');
+      assert.equal(fabOutcome?.requirements?.[0]?.fabricatedPass, true, 'Non-empty invalid quote is flagged as fabricatedPass');
+    });
   });
 });
+

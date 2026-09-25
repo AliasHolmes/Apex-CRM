@@ -190,6 +190,7 @@ export type IncrementalJudgeOutput = {
     string,
     { status: FinalistOutcomeStatus; score: number; reason?: string }
   >;
+  requirementFailCounts?: Record<string, number>;
 };
 
 export async function evaluateIncrementalJudgeBatches(
@@ -212,10 +213,48 @@ export async function evaluateIncrementalJudgeBatches(
     { status: FinalistOutcomeStatus; score: number; reason?: string }
   >();
   const qualifiedCandidates: any[] = [];
+  const batchRequirementFailCounts: Record<string, number> = {};
 
   if (!candidates || candidates.length === 0) {
-    return { qualifiedCandidates, judgmentInsights };
+    return {
+      qualifiedCandidates,
+      judgmentInsights,
+      requirementFailCounts: batchRequirementFailCounts,
+    };
   }
+
+  const recordCandidateJudgeOutcome = (
+    candidate: FinalistCandidate,
+    status: FinalistOutcomeStatus | undefined,
+    failedReqIds: string[],
+  ) => {
+    for (const reqId of failedReqIds) {
+      if (reqId) {
+        batchRequirementFailCounts[reqId] =
+          (batchRequirementFailCounts[reqId] || 0) + 1;
+      }
+    }
+    const queryRun =
+      leadQueryRuns?.get?.(candidate.lead) || leadQueryRuns?.get?.(candidate);
+    if (!queryRun) return;
+    queryRun.judgedCandidates = (queryRun.judgedCandidates || 0) + 1;
+    if (status === "hard_fail") {
+      queryRun.hardFailedCandidates = (queryRun.hardFailedCandidates || 0) + 1;
+    } else if (status === "unknown" || status === "unjudged") {
+      queryRun.unknownCandidates = (queryRun.unknownCandidates || 0) + 1;
+    }
+    if (failedReqIds.length > 0) {
+      if (!queryRun.requirementFailCounts) {
+        queryRun.requirementFailCounts = {};
+      }
+      for (const reqId of failedReqIds) {
+        if (reqId) {
+          queryRun.requirementFailCounts[reqId] =
+            (queryRun.requirementFailCounts[reqId] || 0) + 1;
+        }
+      }
+    }
+  };
 
   // Pre-Judge Role Triage: Discard obvious non-decision makers deterministically before spending LLM tokens
   const { admitted: vettedCandidates, rejected: triageRejected } =
@@ -246,6 +285,10 @@ export async function evaluateIncrementalJudgeBatches(
       })),
       reason: `Title "${title}" does not meet decision maker requirement.`,
     };
+    const roleReqIds = contract.requirements
+      .filter((r) => r.scope === "person_role")
+      .map((r) => r.id);
+    recordCandidateJudgeOutcome(candidate, "hard_fail", roleReqIds);
   }
 
   if (triageRejected.length > 0) {
@@ -443,23 +486,20 @@ export async function evaluateIncrementalJudgeBatches(
         if (ins) {
           candidate.lead.judgmentInsight = ins;
         }
-        const queryRun =
-          leadQueryRuns?.get?.(candidate.lead) ||
-          leadQueryRuns?.get?.(candidate);
-        if (queryRun) {
-          const jm = judgmentsByCandidateId.get(candidate.candidateId);
-          if (Array.isArray(jm?.requirements)) {
-            if (!queryRun.requirementFailCounts) {
-              queryRun.requirementFailCounts = {};
-            }
-            for (const req of jm.requirements) {
-              if (req && req.status === "fail" && req.requirementId) {
-                queryRun.requirementFailCounts[req.requirementId] =
-                  (queryRun.requirementFailCounts[req.requirementId] || 0) + 1;
-              }
+        const jm = judgmentsByCandidateId.get(candidate.candidateId);
+        const failedReqIds: string[] = [];
+        if (Array.isArray(jm?.requirements)) {
+          for (const req of jm.requirements) {
+            if (
+              req &&
+              req.requirementId &&
+              /^(fail|failed|disqualified)$/i.test(String(req.status || "").trim())
+            ) {
+              failedReqIds.push(String(req.requirementId));
             }
           }
         }
+        recordCandidateJudgeOutcome(candidate, ins?.status, failedReqIds);
       }
 
       const successfulAttempt = judgeAttempts.find((a) => a.status === "success");
@@ -630,6 +670,12 @@ export async function evaluateIncrementalJudgeBatches(
           })),
           reason: candidate.lead._contradictionReason,
         };
+        const companyReqIds = contract.requirements
+          .filter(
+            (r) => r.scope === "company_type" || r.scope === "company_industry",
+          )
+          .map((r) => r.id);
+        recordCandidateJudgeOutcome(candidate, "hard_fail", companyReqIds);
       } else {
         activeWaveCandidates.push(candidate);
       }
@@ -666,5 +712,9 @@ export async function evaluateIncrementalJudgeBatches(
     }
   }
 
-  return { qualifiedCandidates, judgmentInsights };
+  return {
+    qualifiedCandidates,
+    judgmentInsights,
+    requirementFailCounts: batchRequirementFailCounts,
+  };
 }

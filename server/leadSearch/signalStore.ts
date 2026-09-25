@@ -1,4 +1,9 @@
-import type { SignalBlock } from './observations.js';
+import {
+  extractCompanyHintDeterministic,
+  looksLikeCompanyHint,
+  type SignalBlock,
+} from './observations.js';
+import { upsertDiscoveredCompanies } from '../db.js';
 import { isFlagEnabled } from './featureFlags.js';
 
 export const MAX_SIGNAL_BLOCKS = 50;
@@ -393,3 +398,53 @@ export class SignalStore {
     return this.blocks.length;
   }
 }
+
+/**
+ * Harvests company signal blocks from search items and persists discovered companies
+ * in a single batched SQLite transaction (BEGIN IMMEDIATE ... COMMIT via upsertDiscoveredCompanies).
+ */
+export function harvestSignalsFromSearchItems(
+  items: any[],
+  round: number,
+  store?: SignalStore,
+): void {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const targetStore = store || new SignalStore();
+  for (const item of items) {
+    if (!item) continue;
+    const rawCompany =
+      item.companyName ||
+      item.currentCompany ||
+      item.company ||
+      extractCompanyHintDeterministic({
+        title: String(item.title || ''),
+        url: String(item.url || ''),
+        content: String(item.content || item.raw_content || ''),
+        provider: 'tavily',
+        query: String(item.query || item._sourceQuery || ''),
+        round,
+        identityKey: '',
+        sourceCount: 1,
+        sourceProviders: ['tavily'],
+        sourceQueries: [],
+        lanes: [],
+        corroborated: false,
+        raw: item,
+      });
+    if (!rawCompany || !looksLikeCompanyHint(rawCompany)) continue;
+    const text = `${item.title || ''} - ${item.content || item.raw_content || ''}`.trim();
+    targetStore.add({
+      companyName: rawCompany,
+      url: String(item.url || ''),
+      text,
+      query: String(item.query || item._sourceQuery || ''),
+      round,
+      confidence: Number(item.confidence || 0.75),
+    });
+  }
+  const discovered = targetStore.getTopDiscoveredCompanies(MAX_DISCOVERED_COMPANIES);
+  if (discovered.length > 0) {
+    upsertDiscoveredCompanies(discovered);
+  }
+}
+

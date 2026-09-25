@@ -227,3 +227,112 @@ export function createAblationTracker(maxAblatedPerRound = 2): AblationTracker {
     maxAblatedPerRound,
   };
 }
+
+export type SpecAblationResult = {
+  ablated: boolean;
+  spec: any;
+  contract: ProspectContract;
+  ablatedRequirementId?: string;
+  tier?: AblationTier;
+};
+
+/**
+ * Relaxes a non-identity hard requirement in the ProspectContract and SearchSpec
+ * when 100% of judged candidates fail that requirement during a round.
+ * Tier 1 (identity_hard / person_role / immutable core) is never ablated.
+ */
+export function ablateSearchSpec(
+  spec: any,
+  contract: ProspectContract,
+  targetRequirementId?: string,
+): SpecAblationResult {
+  const ablatableReqs = (contract.requirements || [])
+    .filter((req) => req.importance === 'hard' && classifyAblationTier(req) > ABLATION_TIERS.TIER_1_IMMUTABLE_CORE)
+    .sort((a, b) => classifyAblationTier(b) - classifyAblationTier(a));
+
+  if (ablatableReqs.length === 0) {
+    return { ablated: false, spec, contract };
+  }
+
+  const target = targetRequirementId
+    ? ablatableReqs.find((r) => r.id === targetRequirementId)
+    : ablatableReqs[0];
+
+  if (!target) {
+    return { ablated: false, spec, contract };
+  }
+
+  const tier = classifyAblationTier(target);
+  const termsLower = new Set(
+    [...(target.acceptableTerms || []), target.sourcePhrase]
+      .filter(Boolean)
+      .map((t) => t.trim().toLowerCase()),
+  );
+
+  const updatedRequirements = contract.requirements.map((req) =>
+    req.id === target.id
+      ? {
+          ...req,
+          importance: 'soft' as const,
+          requirementClass: 'ranking_signal' as const,
+          queryHardness: 'optional_for_queries' as const,
+        }
+      : req,
+  );
+
+  const updatedContract: ProspectContract = {
+    ...contract,
+    requirements: updatedRequirements,
+  };
+
+  const filterTerms = (arr: string[] | undefined) =>
+    Array.isArray(arr)
+      ? arr.filter((item) => !termsLower.has(String(item || '').trim().toLowerCase()))
+      : [];
+
+  const updatedSpec = spec
+    ? {
+        ...spec,
+        person: spec.person
+          ? {
+              ...spec.person,
+              locations:
+                target.scope === 'person_location'
+                  ? filterTerms(spec.person.locations)
+                  : spec.person.locations,
+            }
+          : spec.person,
+        company: spec.company
+          ? {
+              ...spec.company,
+              keywords:
+                target.scope === 'company_type' || target.scope === 'signal'
+                  ? filterTerms(spec.company.keywords)
+                  : spec.company.keywords,
+              locations:
+                target.scope === 'person_location'
+                  ? filterTerms(spec.company.locations)
+                  : spec.company.locations,
+            }
+          : spec.company,
+        signals: spec.signals
+          ? {
+              ...spec.signals,
+              include:
+                target.scope === 'signal'
+                  ? filterTerms(spec.signals.include)
+                  : spec.signals.include,
+            }
+          : spec.signals,
+      }
+    : spec;
+
+  return {
+    ablated: true,
+    spec: updatedSpec,
+    contract: updatedContract,
+    ablatedRequirementId: target.id,
+    tier,
+  };
+}
+

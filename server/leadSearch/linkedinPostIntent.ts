@@ -6,7 +6,12 @@ import {
   type LLMUsage,
 } from '../services/llm.js';
 import { extractLinkedInUsername } from '../services/linkedinEvidence.js';
-import { getIntentCacheEntriesBatch, upsertIntentCacheEntry } from '../db.js';
+import {
+  getIntentCacheEntriesBatch,
+  upsertIntentCacheEntry,
+  getSearchCacheEntry,
+  upsertSearchCacheEntry,
+} from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
 import { applyPostIntentDelta } from './scoring.js';
 import type { ProspectContract } from './prospectContract.js';
@@ -587,17 +592,28 @@ export async function runLinkedInPostIntentEnrichment(
         }
 
         try {
-          let results = await brightDataSearch(query, {
-            onBingFallback: ({ resultsCount }: { resultsCount: number }) => {
-              logEvent(`[Phase 5] Google SERP challenged for ${name}; Bing fallback rescued ${resultsCount} post result(s).`);
-            }
-          }).catch(() => {
-            // The Bright Data service already retried internally; this is the
-            // final failure. Log compactly and let the Tavily fallback run.
-            logEvent(`[Phase 5] Bright Data post search unavailable for ${name}; continuing with fallback results.`);
-            return [] as BrightDataSearchResult[];
-          });
+          let results: BrightDataSearchResult[] = [];
           let activeProvider: 'brightdata' | 'tavily' = 'brightdata';
+          const cachedSerp = getSearchCacheEntry(query);
+          if (cachedSerp && cachedSerp.results.length > 0) {
+            stats.cacheHits++;
+            results = cachedSerp.results as BrightDataSearchResult[];
+            activeProvider = cachedSerp.provider === 'tavily' ? 'tavily' : 'brightdata';
+          } else {
+            results = await brightDataSearch(query, {
+              onBingFallback: ({ resultsCount }: { resultsCount: number }) => {
+                logEvent(`[Phase 5] Google SERP challenged for ${name}; Bing fallback rescued ${resultsCount} post result(s).`);
+              }
+            }).catch(() => {
+              // The Bright Data service already retried internally; this is the
+              // final failure. Log compactly and let the Tavily fallback run.
+              logEvent(`[Phase 5] Bright Data post search unavailable for ${name}; continuing with fallback results.`);
+              return [] as BrightDataSearchResult[];
+            });
+            if (results && results.length > 0) {
+              upsertSearchCacheEntry(query, results, 'brightdata', ttlDays);
+            }
+          }
 
           if ((!results || results.length === 0) && tavilySearchFallback) {
             try {
@@ -612,29 +628,39 @@ export async function runLinkedInPostIntentEnrichment(
                 : name && companyName
                   ? `${name} ${companyName} linkedin posts`
                   : `${name} linkedin posts`;
-              const tavilyRes = await tavilySearchFallback(tavilyQuery, {
-                searchDepth: "basic",
-                maxResults: 5,
-                includeDomains: ["linkedin.com"],
-              });
-              const items = Array.isArray(tavilyRes)
-                ? tavilyRes
-                : tavilyRes?.items || tavilyRes?.results || [];
-              if (items.length > 0) {
+              const cachedTavily = getSearchCacheEntry(tavilyQuery);
+              if (cachedTavily && cachedTavily.results.length > 0) {
+                stats.cacheHits++;
                 activeProvider = "tavily";
-                results = items
-                  .map((item: any) => ({
-                    title: String(item.title || ""),
-                    url: String(item.url || item.link || ""),
-                    content: String(
-                      item.content ||
-                        item.raw_content ||
-                        item.snippet ||
-                        "",
-                    ),
-                    sourceProvider: "tavily" as any,
-                  }))
-                  .filter((item: any) => item.url && item.title);
+                results = cachedTavily.results as BrightDataSearchResult[];
+              } else {
+                const tavilyRes = await tavilySearchFallback(tavilyQuery, {
+                  searchDepth: "basic",
+                  maxResults: 5,
+                  includeDomains: ["linkedin.com"],
+                });
+                const items = Array.isArray(tavilyRes)
+                  ? tavilyRes
+                  : tavilyRes?.items || tavilyRes?.results || [];
+                if (items.length > 0) {
+                  activeProvider = "tavily";
+                  results = items
+                    .map((item: any) => ({
+                      title: String(item.title || ""),
+                      url: String(item.url || item.link || ""),
+                      content: String(
+                        item.content ||
+                          item.raw_content ||
+                          item.snippet ||
+                          "",
+                      ),
+                      sourceProvider: "tavily" as any,
+                    }))
+                    .filter((item: any) => item.url && item.title);
+                  if (results.length > 0) {
+                    upsertSearchCacheEntry(tavilyQuery, results, "tavily", ttlDays);
+                  }
+                }
               }
             } catch {
               // tavily fallback failed, proceed with empty results

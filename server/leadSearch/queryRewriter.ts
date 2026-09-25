@@ -20,6 +20,24 @@ export type RewriteResult = {
 
 const clean = (v: unknown) => String(v || '').replace(/\s+/g, ' ').trim();
 
+/** Split a query string preserving quoted phrases as single tokens and stripping site: prefix. */
+export function tokenizeQuery(query: string): { prefix: string; tokens: string[] } {
+  let prefix = '';
+  let rest = query;
+  const siteMatch = rest.match(/^(site:\S+)\s*/i);
+  if (siteMatch) {
+    prefix = siteMatch[1];
+    rest = rest.slice(siteMatch[0].length);
+  }
+  const tokens: string[] = [];
+  const re = /"([^"]+)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rest)) !== null) {
+    tokens.push(m[1] || m[2]);
+  }
+  return { prefix, tokens };
+}
+
 function salienceOf(req: ProspectRequirement): number {
   if (req.requirementClass === 'identity_hard') return 100;
   if (req.scope === 'person_role') return 90;
@@ -63,12 +81,19 @@ export function rewriteZeroYieldQuery(
     // Broaden: drop the longest low-signal token (metro/country or filler) + synonym swap.
     // G8: never drop the trailing token when it is an identity anchor --
     // "... agency owner" must not become "... agency".
-    const tokens = base.split(' ').filter(Boolean);
+    const { prefix, tokens } = tokenizeQuery(base);
+    const quoteIfNeeded = (t: string) => (t.includes(' ') ? `"${t}"` : t);
+    const assembleQuery = (toks: string[]) =>
+      [prefix, ...toks]
+        .filter(Boolean)
+        .map(t => (t === prefix ? t : quoteIfNeeded(t)))
+        .join(' ');
+
     if (tokens.length <= 2) {
       // Synonym swap only: expand first term via alias
       const expanded = expandAliasTerm(tokens[0]);
       const alt = expanded.find(e => e.toLowerCase() !== tokens[0].toLowerCase());
-      if (alt) return { query: [alt, ...tokens.slice(1)].join(' '), strategy: 'synonym_swap' };
+      if (alt) return { query: assembleQuery([alt, ...tokens.slice(1)]), strategy: 'synonym_swap' };
       return { query: base, strategy: 'none' };
     }
     // Drop a likely-constraint token: prefer trailing geo/metro token, but
@@ -79,11 +104,14 @@ export function rewriteZeroYieldQuery(
       // Entire query is identity anchors -- synonym swap or nothing.
       const expanded = expandAliasTerm(tokens[0]);
       const alt = expanded.find(e => e.toLowerCase() !== tokens[0].toLowerCase());
-      if (alt) return { query: [alt, ...tokens.slice(1)].join(' '), strategy: 'synonym_swap' };
+      if (alt) return { query: assembleQuery([alt, ...tokens.slice(1)]), strategy: 'synonym_swap' };
       return { query: base, strategy: 'none' };
     }
     const dropped = tokens[dropIndex];
-    const broadened = [...tokens.slice(0, dropIndex), ...tokens.slice(dropIndex + 1)].join(' ');
+    const broadened = [prefix, ...tokens.slice(0, dropIndex), ...tokens.slice(dropIndex + 1)]
+      .filter(Boolean)
+      .map(t => (t === prefix ? t : quoteIfNeeded(t)))
+      .join(' ');
     return { query: broadened, droppedTerm: dropped, strategy: 'broaden' };
   }
 
@@ -104,14 +132,17 @@ export function rewriteZeroYieldQuery(
   const victim = candidates[0];
   if (!victim) return { query: base, strategy: 'none' };
   let relaxed = base;
+  let actualDroppedTerm: string | undefined;
   for (const term of victim.acceptableTerms || []) {
     const escaped = String(term).replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-    const re = new RegExp(`(^|\\s)${escaped}(\\s|$)`, 'i');
+    // Match both quoted and unquoted forms
+    const re = new RegExp(`(^|\\s)"?${escaped}"?(\\s|$)`, 'i');
     if (re.test(relaxed)) {
       relaxed = relaxed.replace(re, ' ').replace(/\s+/g, ' ').trim();
+      actualDroppedTerm = term;
       break;
     }
   }
   if (relaxed === base) return { query: base, strategy: 'none' };
-  return { query: relaxed, demotedRequirementId: victim.id, droppedTerm: victim.acceptableTerms?.[0], strategy: 'relax' };
+  return { query: relaxed, demotedRequirementId: victim.id, droppedTerm: actualDroppedTerm || victim.acceptableTerms?.[0], strategy: 'relax' };
 }

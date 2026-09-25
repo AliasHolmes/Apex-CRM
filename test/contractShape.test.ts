@@ -16,11 +16,14 @@ import {
   classifyRequirement,
   assignQueryHardness,
   normalizeProspectContract,
+  applyContractDelta,
   PROSPECT_CONTRACT_POLICY_VERSION,
   type ProspectRequirement,
   type RequirementClass,
   type QueryHardness
 } from '../server/leadSearch/prospectContract.js';
+import { tokenizeQuery, rewriteZeroYieldQuery } from '../server/leadSearch/queryRewriter.js';
+import { parseSiteSignalsFromEvidenceBlock } from '../server/leadSearch/siteProbe.js';
 import type { SearchSpec } from '../server/leadSearch/searchSpec.js';
 
 // Minimal SearchSpec for testing
@@ -470,4 +473,97 @@ describe('Phase 1: Requirement Taxonomy', () => {
       }
     });
   });
+
+  describe('Workstream 4, 5, 6 Regression Tests', () => {
+    it('Fix 4A: rawLocMatch captures the last location clause rather than greedy industry prefix', () => {
+      const brief = 'Founders in B2B SaaS in Austin, TX';
+      const contract = buildDeterministicProspectContract(brief, minimalSpec);
+      const locReq = contract.requirements.find(r => r.scope === 'person_location');
+      assert.ok(locReq, 'Should have person_location requirement');
+      assert.ok(
+        !locReq.acceptableTerms.some(t => /b2b saas/i.test(t)),
+        `person_location should not include industry prefix "B2B SaaS", got: ${JSON.stringify(locReq.acceptableTerms)}`
+      );
+      assert.ok(
+        locReq.acceptableTerms.some(t => /austin/i.test(t)),
+        'person_location should include Austin'
+      );
+    });
+
+    it('Fix 4B: multi-city clause does not leak secondary cities into company_type', () => {
+      const brief = 'AI agency founders in New York, London, or Toronto';
+      const contract = buildDeterministicProspectContract(brief, minimalSpec);
+      const companyReqs = contract.requirements.filter(r => r.scope === 'company_type' || r.scope === 'company_industry');
+      for (const req of companyReqs) {
+        assert.ok(
+          !req.acceptableTerms.some(t => /^(london|toronto)$/i.test(t.trim())),
+          `City name leaked into ${req.scope}: ${JSON.stringify(req.acceptableTerms)}`
+        );
+      }
+    });
+
+    it('Fix 4C: tokenizeQuery and rewriteZeroYieldQuery preserve quoted multi-word phrases and strip site: prefix', () => {
+      const raw = 'site:linkedin.com/in/ "AI agency" founder Austin extraNoiseToken';
+      const parsedTokens = tokenizeQuery(raw);
+      assert.equal(parsedTokens.prefix, 'site:linkedin.com/in/');
+      assert.deepEqual(parsedTokens.tokens, ['AI agency', 'founder', 'Austin', 'extraNoiseToken']);
+
+      const contract = buildDeterministicProspectContract('Find AI agency founders in Austin', minimalSpec);
+      const rewritten = rewriteZeroYieldQuery(raw, contract, 1);
+      assert.ok(
+        !rewritten.query.includes('""AI') && !rewritten.query.includes('agency""'),
+        `Rewritten query should not split quoted phrase: ${rewritten.query}`
+      );
+      assert.ok(
+        rewritten.query.includes('"AI agency"'),
+        `Rewritten query should preserve "AI agency" intact: ${rewritten.query}`
+      );
+    });
+
+    it('Fix 5C: parseSiteSignalsFromEvidenceBlock splits raw markdown excerpt on --- delimiter', async () => {
+      const { applySiteProbe } = await import('../server/leadSearch/siteProbe.js');
+      const cachedEvidence = 'Location: Austin, TX\nServices: AI Automation\n---\nWe help enterprise teams deploy custom LLM workflows and autonomous agents.';
+      const parsed = parseSiteSignalsFromEvidenceBlock(cachedEvidence);
+      assert.equal(parsed.location, 'Austin, TX');
+      assert.equal(parsed.services, 'AI Automation');
+      assert.equal(parsed.rawExcerpt, 'We help enterprise teams deploy custom LLM workflows and autonomous agents.');
+
+      const target: any = {
+        lead: { fullName: 'Jane Doe', currentCompany: 'Apex AI', evidence: { evidenceBlock: '', snippets: [] } },
+        evidenceMeta: { evidenceBlock: '' },
+      };
+      applySiteProbe(target, { ...parsed, provenance: 'explicit' }, 'https://apexai.io');
+      assert.ok(
+        target.evidenceMeta.evidenceBlock.includes('We help enterprise teams deploy custom LLM workflows'),
+        'applySiteProbe should append rawExcerpt to evidenceMeta.evidenceBlock',
+      );
+    });
+
+    it('Fix 6B: applyContractDelta merges new requirements and exclusions from follow-up brief without polluting positive requirements', () => {
+      const baseContract = buildDeterministicProspectContract('Find AI agency founders in New York', minimalSpec);
+      const updated = applyContractDelta(baseContract, 'Also in London, exclude Accenture', minimalSpec);
+      assert.ok(updated.brief.includes('Also in London'));
+      assert.ok(updated.exclusions.some(e => /accenture/i.test(e)), 'Should merge exclusion from deltaBrief');
+      const locReq = updated.requirements.find(r => r.scope === 'person_location');
+      assert.ok(locReq?.acceptableTerms.some(t => /london/i.test(t)), 'Should merge London into person_location');
+
+      // Pure exclusion delta with location/company terms must not overwrite positive location or add "Exclude ..." to company_type
+      const exclusionOnly = applyContractDelta(baseContract, 'Exclude staffing agencies in London', minimalSpec);
+      assert.ok(exclusionOnly.exclusions.some(e => /staffing agencies in london/i.test(e)));
+      const locAfterExcl = exclusionOnly.requirements.find(r => r.scope === 'person_location');
+      assert.ok(
+        locAfterExcl?.acceptableTerms.some(t => /new york/i.test(t)) &&
+          !locAfterExcl?.acceptableTerms.some(t => /london/i.test(t)),
+        `Exclusion-only delta should keep New York and not overwrite with London, got: ${JSON.stringify(locAfterExcl?.acceptableTerms)}`,
+      );
+      const compTypeReqs = exclusionOnly.requirements.filter(r => r.scope === 'company_type');
+      for (const req of compTypeReqs) {
+        assert.ok(
+          !req.acceptableTerms.some(t => /exclude|staffing/i.test(t)),
+          `Exclusion term leaked into company_type: ${JSON.stringify(req.acceptableTerms)}`,
+        );
+      }
+    });
+  });
 });
+

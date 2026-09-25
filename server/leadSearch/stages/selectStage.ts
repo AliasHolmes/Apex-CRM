@@ -3,7 +3,12 @@ import { runIntentEnrichment } from '../intentEnrichment.js';
 import { selectDiversifiedLeads } from '../scoutScoring.js';
 import { recordQueryPerformanceBatch } from '../../db.js';
 import { hasTavilyKey } from '../../services/llm.js';
-import { deriveDomainCluster } from '../adaptiveScheduler.js';
+import {
+  deriveDomainCluster,
+  quantizeBriefToCentroid,
+  centroidScopeKey,
+} from '../adaptiveScheduler.js';
+import { effectiveScore as sharedEffectiveScore } from '../sessionHelpers.js';
 import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
 import type { ProspectContract } from '../prospectContract.js';
 import type { SearchSpec } from '../searchSpec.js';
@@ -62,13 +67,14 @@ export async function executeSelectStage(
     );
   }
 
-  // 1. Initial Selection and Diversification (Pareto selection before Phase 4 & Phase 5 enrichment)
-  // Selecting finalists first prevents wasting paid company website and LinkedIn post scraping
-  // on candidates that would be discarded anyway by maxPerCompany or score cutoffs.
-  const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
+  // 1. Run Phase 4 & Phase 5 on top qualified candidates (before selection)
+  //    Cap intent enrichment to top ceil(targetLimit * 1.5) candidates by effectiveScore to limit cost.
+  const intentPool = [...qualifiedLeads]
+    .sort((a, b) => sharedEffectiveScore(b) - sharedEffectiveScore(a))
+    .slice(0, Math.min(qualifiedLeads.length, Math.ceil(targetLimit * 1.5)));
 
-  // 2. Targeted Phase 4: Company Intent Probing on selected finalist leads
-  const leadsNeedingIntent = finalLeads.filter((l) => {
+  // Phase 4: Targeted Company Intent Probing on intent pool
+  const leadsNeedingIntent = intentPool.filter((l) => {
     if (l.companyIntentEvidence || l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
     const company = String(l.currentCompany || l.company || l.profile?.currentCompany || l.companyName || "").trim();
     if (!company || company.length < 2) return false;
@@ -113,10 +119,10 @@ export async function executeSelectStage(
     }
   }
 
-  // 3. Targeted Phase 5: LinkedIn Post Intent Enrichment on selected finalist leads
-  if (linkedinPostIntentEnabled && shouldRunIntent && finalLeads.length > 0) {
-    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${finalLeads.length} finalist candidates.`);
-    const qualifiedMap = new Map<string, any>(finalLeads.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
+  // Phase 5: Targeted LinkedIn Post Intent Enrichment on intent pool
+  if (linkedinPostIntentEnabled && shouldRunIntent && intentPool.length > 0) {
+    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${intentPool.length} finalist candidates.`);
+    const qualifiedMap = new Map<string, any>(intentPool.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
     const postIntentConcurrency = Math.max(
       1,
       Math.min(4, Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 3)),
@@ -127,7 +133,7 @@ export async function executeSelectStage(
       brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
-      maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), finalLeads.length),
+      maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), intentPool.length),
       concurrency: postIntentConcurrency, // concurrent SERP retrieval; Phase B LLM batching remains sequential
       ttlDays,
       sessionAbortSignal: state.abortController.signal,
@@ -138,6 +144,16 @@ export async function executeSelectStage(
     logEvent(`Phase 5 complete: ${postIntentStats.succeeded} enriched, ${postIntentStats.cacheHits} cache hits, ${postIntentStats.noResults} no-results, ${postIntentStats.llmSkipped} skipped, ${postIntentStats.failed} failed.`);
   }
 
+  // 2. NOW run selection with fully enriched scores (all 4 Pareto dimensions active)
+  const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
+
+  // Final rank-order by post-enrichment score
+  finalLeads.sort((a, b) => {
+    const scoreA = a.finalSelectionScore ?? sharedEffectiveScore(a);
+    const scoreB = b.finalSelectionScore ?? sharedEffectiveScore(b);
+    return scoreB - scoreA;
+  });
+
   for (const lead of qualifiedLeads) {
     const queryRun = leadQueryRuns.get(lead);
     if (!queryRun) continue;
@@ -147,19 +163,57 @@ export async function executeSelectStage(
   for (const lead of finalLeads) {
     const queryRun = leadQueryRuns.get(lead);
     if (queryRun) queryRun.returnedFinalists++;
+    // Credit corroborating query runs proportionally
+    const corrobRuns = (lead as any)._corroboratingQueryRuns as QueryRunStats[] | undefined;
+    if (corrobRuns) {
+      for (const cRun of corrobRuns) {
+        if (cRun) cRun.returnedFinalists = (cRun.returnedFinalists || 0) + 0.5;
+      }
+    }
   }
-  const domainCluster = deriveDomainCluster(contract.brief || (ctx.config as any)?.promptQuery || '');
+
+  const briefText = contract.brief || (ctx.config as any)?.promptQuery || '';
+  const useCentroid = process.env.LEAD_ADAPTIVE_CENTROID_ENABLED === 'true';
+  const domainCluster = useCentroid
+    ? quantizeBriefToCentroid(briefText)
+    : deriveDomainCluster(briefText);
+
+  // Pre-merge requirementFailCounts per scopeKey so within-session runs accumulate additively
+  const mergedFailCountsByScope = new Map<string, Record<string, number>>();
+  for (const run of stats.queryRuns || []) {
+    if (!run?.requirementFailCounts) continue;
+    const family = run.family || 'general';
+    const lane = run.lane || 'person';
+    const provider = run.providerPreference || 'tavily';
+    const sKey = useCentroid
+      ? centroidScopeKey({ family, lane, providerPreference: provider }, domainCluster)
+      : [domainCluster !== 'global' ? domainCluster : '', family, lane, provider].filter(Boolean).join('|').toLowerCase();
+    const acc = mergedFailCountsByScope.get(sKey) || {};
+    for (const [reqId, cnt] of Object.entries(run.requirementFailCounts)) {
+      acc[reqId] = (acc[reqId] || 0) + Number(cnt);
+    }
+    mergedFailCountsByScope.set(sKey, acc);
+  }
+
   const perfUpdates = stats.queryRuns.map((run: any) => {
+    const family = run.family || 'general';
+    const lane = run.lane || 'person';
+    const provider = run.providerPreference || 'tavily';
+    const scopeKey = useCentroid
+      ? centroidScopeKey({ family, lane, providerPreference: provider }, domainCluster)
+      : undefined;
+    const lookupKey = scopeKey || [domainCluster !== 'global' ? domainCluster : '', family, lane, provider].filter(Boolean).join('|').toLowerCase();
+    const mergedCounts = mergedFailCountsByScope.get(lookupKey) || run.requirementFailCounts;
     const failDigest =
-      run.requirementFailCounts &&
-      Object.keys(run.requirementFailCounts).length > 0
-        ? JSON.stringify(run.requirementFailCounts)
+      mergedCounts && Object.keys(mergedCounts).length > 0
+        ? JSON.stringify(mergedCounts)
         : undefined;
     return {
+      ...(scopeKey ? { scopeKey } : {}),
       domainCluster,
-      family: run.family || 'general',
-      lane: run.lane || 'person',
-      provider: run.providerPreference || 'tavily',
+      family,
+      lane,
+      provider,
       runs: 1,
       outcomeRuns: 1,
       rawCandidates: run.rawCandidates || 0,
@@ -173,7 +227,10 @@ export async function executeSelectStage(
       providerUnits: run.providerUnits || 0,
       qualifiedCandidates: run.qualifiedFinalists,
       rescuedCandidates: run.rescuedFinalists,
-      returnedCandidates: run.returnedFinalists,
+      returnedCandidates: Math.round(run.returnedFinalists || 0),
+      judgedCandidates: run.judgedCandidates || 0,
+      hardFailedCandidates: run.hardFailedCandidates || 0,
+      unknownCandidates: run.unknownCandidates || 0,
       requirementFailDigest: failDigest,
     };
   });

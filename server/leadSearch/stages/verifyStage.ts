@@ -211,6 +211,12 @@ export async function executeVerifyStage(
       lead._ablatedRequirementId = evidenceMeta.ablatedRequirementId;
       lead._ablatedTerm = evidenceMeta.ablatedTerm;
     }
+    if (
+      Array.isArray(evidenceMeta.corroboratingQueryRuns) &&
+      evidenceMeta.corroboratingQueryRuns.length > 0
+    ) {
+      lead._corroboratingQueryRuns = evidenceMeta.corroboratingQueryRuns;
+    }
     lead.scout = buildScoutEvidence(lead, searchSpec, {
       sourceProviders: evidenceMeta.sourceProviders,
       sourceCount: evidenceMeta.sourceCount,

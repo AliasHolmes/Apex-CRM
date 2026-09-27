@@ -185,7 +185,7 @@ export function extractPostSnippets(results: BrightDataSearchResult[]): { snippe
     }
   }
 
-  const postContext = contextParts.join('\n').slice(0, 1000);
+  const postContext = contextParts.join('\n').slice(0, 2400);
   const firstUrl = targetResults[0]?.url;
   return { snippets, postContext, firstUrl };
 }
@@ -252,8 +252,13 @@ Analyze the snippets and classify the prospect's intent:`;
       keywords?: string[];
       reason?: string;
     }>(userPrompt, postIntentSchema, POST_INTENT_SYSTEM_PROMPT, {
-      maxTokens: 600,
+      maxTokens: Math.max(600, Math.ceil(userPrompt.length / 3)),
       temperature: 0,
+      metadata: {
+        stage: 'post_intent',
+        candidateCount: 1,
+        promptSize: userPrompt.length,
+      },
       onProviderAttempt: (attempt) => attempts.push(attempt),
       onUsage: (u) => {
         usage = u;
@@ -372,8 +377,13 @@ ${promptSections}`;
         reason?: string;
       }>;
     }>(userPrompt, postIntentBatchSchema, POST_INTENT_BATCH_SYSTEM_PROMPT, {
-      maxTokens: Math.min(2500, Math.max(800, candidates.length * 350)),
+      maxTokens: Math.max(800, candidates.length * 400),
       temperature: 0,
+      metadata: {
+        stage: 'post_intent',
+        candidateCount: candidates.length,
+        promptSize: userPrompt.length,
+      },
       onProviderAttempt: (attempt) => attempts.push(attempt),
       onUsage: (u) => {
         usage = u;

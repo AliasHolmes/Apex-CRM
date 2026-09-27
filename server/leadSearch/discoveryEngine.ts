@@ -666,12 +666,16 @@ export async function executeDiscoverySession(
         const contractAttempts: LLMProviderAttempt[] = [];
         let contractUsage: LLMUsage | undefined;
         try {
+          const contractMaxTokens = Math.max(
+            2500,
+            Math.ceil(contractPrompt.length / 2),
+          );
           const compiled = await openAIStructured<any>(
             contractPrompt,
             prospectContractSchema,
             `You are an expert B2B lead generation strategist. Compile the targeting contract.`,
             {
-              maxTokens: 2500,
+              maxTokens: contractMaxTokens,
               temperature: 0,
               signal: sessionAbortController.signal,
               timeoutMs: Math.min(
@@ -680,6 +684,11 @@ export async function executeDiscoverySession(
               ),
               maxRetries: 1,
               retryOnParseFailure: true,
+              metadata: {
+                stage: "contract",
+                promptSize: contractPrompt.length,
+                sessionId,
+              },
               onProviderAttempt: (attempt) => contractAttempts.push(attempt),
               onUsage: (usage) => {
                 contractUsage = usage;
@@ -1453,7 +1462,11 @@ export async function executeDiscoverySession(
                   mappedMetros.push(m);
                 }
               }
-            } else if (cleanTerm.length > 2 && !/^(any|all|global|worldwide|remote)$/i.test(cleanTerm)) {
+            } else if (
+              cleanTerm.length > 2 &&
+              !COUNTRY_CANONICAL_MAP[cleanTerm] &&
+              !/^(any|all|global|worldwide|remote)$/i.test(cleanTerm)
+            ) {
               const countrySuffix = targetCountry;
               if (countrySuffix && !term.toLowerCase().includes(countrySuffix.toLowerCase())) {
                 mappedMetros.push(`${term} ${countrySuffix}`);
@@ -2084,6 +2097,16 @@ export async function executeDiscoverySession(
             : null;
 
         // In dual-stream intent mode, verify intent corroboration among qualified leads
+        const signalReqIds = new Set(
+          (contract?.requirements || [])
+            .filter(
+              (req: any) =>
+                req.scope === "signal" ||
+                req.evidenceModality === "open_web_signal" ||
+                req.importance === "soft",
+            )
+            .map((req: any) => req.id),
+        );
         const intentCorroboratedCount = qualifiedLeads.filter((lead) => {
           if (
             lead.qualification?.verdict !== "qualified" &&
@@ -2096,11 +2119,24 @@ export async function executeDiscoverySession(
             lead.qualification.requirements.some(
               (r: any) =>
                 r.status === "pass" &&
-                (r.requirementId?.startsWith("signal") ||
+                (signalReqIds.has(r.requirementId) ||
+                  r.requirementId?.startsWith("signal") ||
                   r.requirementId?.startsWith("pain") ||
                   r.requirementId?.startsWith("tool") ||
+                  r.requirementId?.includes("intent") ||
+                  r.requirementId?.includes("hiring") ||
                   r.scope === "signal"),
             );
+          const combinedLeadText = [
+            lead.match_reasons,
+            lead.whyThisLead,
+            lead.evidence?.evidenceBlock,
+            Array.isArray(lead.evidenceReasons)
+              ? lead.evidenceReasons.join(" ")
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
           const hasIntentSignals = Boolean(
             (lead.signals && lead.signals.length > 0) ||
               lead.intent_evidence ||
@@ -2108,8 +2144,8 @@ export async function executeDiscoverySession(
               lead.linkedinPostIntentEvidence ||
               lead.scout?.hasBuyingSignal ||
               (dynamicIntentRegex &&
-                lead.match_reasons &&
-                dynamicIntentRegex.test(lead.match_reasons)),
+                combinedLeadText &&
+                dynamicIntentRegex.test(combinedLeadText)),
           );
           return hasPassedSignalReq || hasIntentSignals;
         }).length;

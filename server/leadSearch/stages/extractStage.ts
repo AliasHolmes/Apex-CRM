@@ -18,7 +18,6 @@ import {
   bulkLeadsArraySchema,
   EXTRACTION_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
-  isAtriaConfigured,
   isAtriaPrimary,
   CLOUDFLARE_MAX_TIMEOUT_MS,
   type LLMProviderAttempt,
@@ -82,7 +81,15 @@ export function buildCleanEvidence(item: any): string {
   const title = cleanSnippetNoise(item?.title || "Untitled result");
   const rawSnippet = item?.content || item?.raw_content || "";
   const cleaned = cleanSnippetNoise(rawSnippet);
-  const maxChars = item?._evidenceUpgraded ? 1800 : 500;
+  const configuredSnippetMax = Number(
+    process.env.LEAD_EXTRACTION_SNIPPET_MAX_CHARS || 0,
+  );
+  const maxChars =
+    configuredSnippetMax > 0
+      ? configuredSnippetMax
+      : item?._evidenceUpgraded
+        ? 3200
+        : 1500;
   const snippet = cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}...` : cleaned;
   const providerLabel = String(item?.sourceProvider || "").startsWith("brightdata")
     ? "[BRIGHTDATA SNIPPET]"
@@ -98,7 +105,15 @@ export function buildCleanEvidence(item: any): string {
 export function formatExperienceBlock(experiences: any[]): string {
   if (!Array.isArray(experiences) || experiences.length === 0) return "";
   const lines: string[] = ["EXPERIENCE:"];
-  for (const exp of experiences.slice(0, 5)) {
+  const sorted = [...experiences].sort((a, b) => {
+    const aCurrent = /present|current/i.test(String(a?.duration || a?.dates || "")) ? 1 : 0;
+    const bCurrent = /present|current/i.test(String(b?.duration || b?.dates || "")) ? 1 : 0;
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+    const aDesc = String(a?.summary || a?.description || "").length > 0 ? 1 : 0;
+    const bDesc = String(b?.summary || b?.description || "").length > 0 ? 1 : 0;
+    return bDesc - aDesc;
+  });
+  for (const exp of sorted.slice(0, 10)) {
     const title = exp.title || exp.position || "";
     const company = exp.company || exp.company_name || "";
     const duration = exp.duration || exp.dates || "";
@@ -739,18 +754,28 @@ export async function executeExtractStage(
   }
 
   // 4. Token budget calculation and chunking
-  const extractionChunkChars = Math.min(
-    Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000), 1800),
-    32000,
+  const atriaDynamicMode = isAtriaPrimary();
+  const rawChunkChars = Math.max(
+    Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000),
+    1800,
   );
-  const configuredExtractionMaxTokens = Math.min(
-    Math.max(Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 2000), 800),
-    6000,
+  const extractionChunkChars = atriaDynamicMode
+    ? rawChunkChars
+    : Math.min(rawChunkChars, 32000);
+  const rawMaxTokens = Math.max(
+    Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3800),
+    800,
   );
-  const providerTokenBudget = Math.min(
-    Math.max(Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 24000), 4000),
-    120_000,
+  const configuredExtractionMaxTokens = atriaDynamicMode
+    ? Math.max(rawMaxTokens, Math.ceil(extractionChunkChars / 2))
+    : Math.min(rawMaxTokens, 6000);
+  const rawProviderBudget = Math.max(
+    Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 24000),
+    4000,
   );
+  const providerTokenBudget = atriaDynamicMode
+    ? Math.max(rawProviderBudget, configuredExtractionMaxTokens * 3 + Math.ceil(extractionChunkChars / 2))
+    : Math.min(rawProviderBudget, 120_000);
   const tokenSafetyMargin = Math.min(
     Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
     2000,
@@ -829,26 +854,10 @@ Evidence:
         Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_RETRIES ?? 1), 0),
         2,
       );
-      const isAtria = isAtriaPrimary() || isAtriaConfigured();
-      const chunkChars = chunk.length;
-      let extractionTimeoutMs: number;
-      if (isAtria) {
-        // Atria: reasoning model requiring 120s-180s for heavy evidence chunks
-        const scale = Math.min(1, Math.max(0, (chunkChars - 2000) / 6000));
-        const dynamicTimeout = Math.round(120_000 + scale * 60_000); // 120s to 180s
-        const configuredTimeout = Number(
-          process.env.LLM_EXTRACTION_TIMEOUT_MS || 0,
-        );
-        extractionTimeoutMs =
-          configuredTimeout > 0
-            ? Math.max(configuredTimeout, dynamicTimeout)
-            : dynamicTimeout;
-      } else {
-        extractionTimeoutMs = Math.min(
-          CLOUDFLARE_MAX_TIMEOUT_MS,
-          Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),
-        );
-      }
+      const extractionTimeoutMs = Math.min(
+        CLOUDFLARE_MAX_TIMEOUT_MS,
+        Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),
+      );
       const extracted = await runWithTransientRetry(
         () =>
           openAIStructured<any[]>(

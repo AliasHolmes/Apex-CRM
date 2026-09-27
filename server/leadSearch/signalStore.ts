@@ -255,6 +255,7 @@ export class SignalStore {
     confidence = 0.7
   ): void {
     const cleanName = String(companyName || '').trim();
+    if (!looksLikeCompanyHint(cleanName)) return;
     const normalized = normalizeCompanyName(cleanName);
     if (!normalized || normalized.length < 2 || genericCompanyTokens.has(normalized)) return;
 
@@ -315,7 +316,7 @@ export class SignalStore {
   /** Return top high-conviction discovered companies ranked by signalCount and confidence. */
   getTopDiscoveredCompanies(limit = 5): DiscoveredCompanySignal[] {
     return Array.from(this.companyMap.values())
-      .filter(c => c.signalCount > 0 && c.companyName.length >= 2)
+      .filter(c => c.signalCount > 0 && c.companyName.length >= 2 && looksLikeCompanyHint(c.companyName))
       .sort((a, b) => (b.signalCount * b.confidence) - (a.signalCount * a.confidence))
       .slice(0, limit);
   }

@@ -198,6 +198,9 @@ export function sanitizeDomainGuess(companyName: string): string {
 export type GatedCompanyAttributionOptions = {
   signal?: AbortSignal;
   logEvent?: (msg: string) => void;
+  circuitBreaker?: any;
+  timeoutMs?: number;
+  batchSize?: number;
   openAIStructured?: (
     prompt: string,
     schema: any,
@@ -258,7 +261,7 @@ function applyAttributionToGroup(
     if (verdict === "disqualifying_contradiction") {
       lead._autoFailed = true;
       lead._contradictionReason = `Company Attribution: ${attributionResult.reason} (business model: ${attributionResult.businessModel})`;
-    } else {
+    } else if (verdict === "verified_fit") {
       const quoteSnippet = quoteValid && citedQuote ? ` Quote: "${citedQuote}".` : "";
       const attrEvidenceItem = {
         id: "e_company_attr",
@@ -358,8 +361,14 @@ export async function runGatedCompanyAttribution(
     );
   }
 
-  // Micro-batch up to 4 companies per LLM call
-  const BATCH_SIZE = 4;
+  // Micro-batch up to batchSize (default 4, configurable up to 8) companies per LLM call
+  const BATCH_SIZE = Math.max(
+    1,
+    Math.min(
+      8,
+      Number(options.batchSize || process.env.COMPANY_ATTRIBUTION_BATCH_SIZE || 4),
+    ),
+  );
   const structuredFn = options.openAIStructured || openAIStructured;
   for (let i = 0; i < uniqueCompanyEntries.length; i += BATCH_SIZE) {
     if (options.signal?.aborted) break;
@@ -379,8 +388,14 @@ export async function runGatedCompanyAttribution(
             ),
           ),
         ).filter(Boolean);
-        // Truncate raw company text to 1200 chars per company to prevent prompt bloat
-        const truncatedText = first.sourceText.slice(0, 1200).replace(/\s+/g, " ");
+        // Scale source text allowance dynamically based on batch size (more context when fewer companies are in the batch)
+        const dynamicSourceChars = Math.max(
+          1200,
+          Math.floor(9600 / Math.max(1, batch.length)),
+        );
+        const truncatedText = first.sourceText
+          .slice(0, dynamicSourceChars)
+          .replace(/\s+/g, " ");
         return [
           `--- COMPANY KEY: ${key} ---`,
           `Company Name: ${first.companyName}`,
@@ -394,6 +409,7 @@ export async function runGatedCompanyAttribution(
     ].join("\n");
 
     try {
+      const dynamicAttributionTokens = Math.max(1200, batch.length * 400);
       const response = (await runWithLlmStageLane("judge", () =>
         structuredFn(
           promptText,
@@ -401,8 +417,15 @@ export async function runGatedCompanyAttribution(
           COMPANY_ATTRIBUTION_SYSTEM_PROMPT,
           {
             temperature: 0.0,
-            maxTokens: 1200,
+            maxTokens: dynamicAttributionTokens,
             signal: options.signal,
+            circuitBreaker: options.circuitBreaker,
+            timeoutMs: options.timeoutMs ?? 45_000,
+            metadata: {
+              stage: "company_attribution",
+              itemCount: batch.length,
+              promptSize: promptText.length,
+            },
           },
         ),
       )) as { attributions?: any[] } | null | undefined;

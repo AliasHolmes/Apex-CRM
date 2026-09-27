@@ -102,21 +102,39 @@ const COMPANY_HINT_BLOCKLIST = new Set([
   'short notice', 'home', 'large', 'will', 'present', 'remote', 'available',
   'your service', 'your company', 'clients', 'request', 'application',
   'stealth', 'freelance', 'self employed', 'confidential', 'various',
-  'we', 'we are', 'our team', 'i am', 'who', 'who is', 'someone',
+  'we', 'we are', 'we\'re', 'our team', 'i am', 'i\'m', 'you\'re', 'they\'re', 'it\'s',
+  'who', 'who is', 'someone', 'unknown', 'none', 'n/a', 'null', 'talent', 'index',
   'youtube', 'vimeo', 'medium', 'substack', 'reddit', 'quora', 'wikipedia',
   'itbrew', 'morningbrew', 'seekout', 'seekout blog', 'github', 'gitlab',
   'stackoverflow', 'techcrunch', 'forbes', 'bloomberg', 'g2', 'capterra',
-  'trustpilot', 'clutch', 'crunchbase', 'google', 'microsoft', 'apple'
+  'trustpilot', 'clutch', 'crunchbase', 'google', 'microsoft', 'apple',
+  'linkedin', 'glassdoor', 'seek', 'indeed', 'bing', 'yahoo', 'duckduckgo',
+  'ziprecruiter', 'wellfound', 'monster', 'simplyhired', 'workable', 'greenhouse',
+  'lever', 'ashby', 'upwork', 'fiverr', 'n8n', 'zapier', 'make', 'openai',
+  'chatgpt', 'claude', 'gemini', 'copilot'
 ]);
+
+const LEGAL_SUFFIX_RE = /\b(?:pty\s+ltd|ltd|limited|inc|incorporated|llc|llp|corp|corporation|gmbh|plc|group|holdings)\.?$/i;
 
 export const looksLikeCompanyHint = (value: string) => {
   const candidate = cleanCompanyHint(value);
-  if (candidate.length < 3 || candidate.length > 80) return false;
+  if (candidate.length < 3 || candidate.length > 65) return false;
   if (!/[a-z0-9]/i.test(candidate)) return false;
+  // Reject strings starting with a lowercase letter (e.g. "r/curtin", "how to survive...", "index")
+  if (/^[a-z]/.test(candidate)) return false;
+  // Reject Reddit sub paths or questions/exclamations
+  if (/^\/?r\//i.test(candidate) || /[?!]/.test(candidate)) return false;
   const lower = candidate.toLowerCase();
   if (COMPANY_HINT_BLOCKLIST.has(lower)) return false;
-  if (/\b(hiring|job|jobs|careers|work|apply|vacancy|position|role|blog|news|article)\b/i.test(candidate)) return false;
-  if (/\b(connections?|followers?|people also viewed|about|experience|education)\b/i.test(candidate)) return false;
+  const words = candidate.split(/\s+/).filter(Boolean);
+  if (words.length > 5 && !LEGAL_SUFFIX_RE.test(candidate)) return false;
+  if (/^(?:we're|i'm|you're|they're|it's|what|how|why|when|where|who|which|must|unlock|managed|building|scaling|guide|complete|ultimate|discover|explore|learn|join|hiring|looking|seeking|find|search|browse|top|best)\b/i.test(candidate)) return false;
+  if (/^\d+\+?\s*(?:comments?|jobs?|roles?|results?|profiles?|openings?|positions?)\b/i.test(candidate)) return false;
+  // Reject geographic "City, ST" or "City, State, Country" strings
+  if (/,\s*(?:[A-Z]{2,3}|australia|united states|usa|uk|united kingdom|canada|new zealand|india|germany|france|singapore)\b/i.test(candidate)) return false;
+  if (/^(?:australia|australian|united states|usa|united kingdom|uk|canada|new zealand|sydney|melbourne|brisbane|perth|adelaide|canberra|gold coast|new south wales|victoria|queensland|western australia|south australia|tasmania|austin|new york|san francisco|los angeles|london|toronto)$/i.test(lower)) return false;
+  if (/\b(hiring|job|jobs|careers|work|apply|vacancy|position|role|blog|news|article|guide|tutorial)\b/i.test(candidate)) return false;
+  if (/\b(connections?|followers?|people also viewed|about|experience|education|located in)\b/i.test(candidate)) return false;
   if (/\b(available at|open to|looking for|seeking|working at)\b/i.test(lower)) return false;
   if (/^[\d\s,.-]+$/.test(candidate)) return false;
   return true;
@@ -139,8 +157,9 @@ const companyFromDomain = (url: URL) => {
   const blockedDomains = [
     // Social & Professional Networks
     'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'threads.net',
-    // Job boards & ATS
-    'indeed.com', 'glassdoor.com', 'angellist.com', 'wellfound.com', 'lever.co', 'greenhouse.io', 'ashbyhq.com', 'workable.com', 'ziprecruiter.com', 'monster.com', 'simplyhired.com',
+    // Job boards & ATS & Search Engines
+    'indeed.com', 'glassdoor.com', 'seek.com.au', 'seek.co.nz', 'bing.com', 'google.com', 'yahoo.com', 'duckduckgo.com',
+    'angellist.com', 'wellfound.com', 'lever.co', 'greenhouse.io', 'ashbyhq.com', 'workable.com', 'ziprecruiter.com', 'monster.com', 'simplyhired.com',
     // Video, Media, News, Newsletters & Community Platforms
     'youtube.com', 'youtu.be', 'vimeo.com', 'medium.com', 'substack.com', 'reddit.com', 'quora.com', 'wikipedia.org',
     'techcrunch.com', 'forbes.com', 'bloomberg.com', 'businessinsider.com', 'wsj.com', 'nytimes.com', 'reuters.com',
@@ -187,9 +206,9 @@ export function extractCompanyHintDeterministic(obs: FusedObservation): string {
     if (looksLikeCompanyHint(lastPart)) return lastPart;
   }
 
-  // Strategy 2: "TechFlow AI is hiring..." in the title or opening content.
+  // Strategy 2: "TechFlow AI is hiring..." in the title or opening content (case-sensitive start + required auxiliary verb).
   const hiringMatch = `${obs.title}\n${obs.content.slice(0, 240)}`.match(
-    /(?:^|\n)([A-Z][A-Za-z0-9&.' -]{2,60})\s+(?:is\s+)?(?:hiring|looking for|seeking)\b/i
+    /(?:^|\n)([A-Z][A-Za-z0-9&.' -]{2,50}?)\s+(?:is|are)\s+(?:actively\s+|currently\s+)?(?:hiring|looking for|seeking)\b/
   );
   const hiringCompany = cleanCompanyHint(hiringMatch?.[1]);
   if (looksLikeCompanyHint(hiringCompany)) return hiringCompany;
@@ -217,15 +236,9 @@ export function extractCompanyHintFromProfile(obs: FusedObservation): string {
   if (looksLikeCompanyHint(rawCompany)) return rawCompany;
 
   const text = `${obs.title}\n${obs.content.slice(0, 800)}`;
-  const atCompany = text.match(/\b(?:at|@)\s+([A-Z][A-Za-z0-9&.' -]{2,80})(?=\s*(?:\||\n|,|\u2013|\u2014|$))/);
+  const atCompany = text.match(/\b(?:at|@)\s+([A-Z][A-Za-z0-9&.' -]{2,60})(?=\s*(?:\||\n|,|\u2013|\u2014|$))/);
   const inlineCompany = cleanCompanyHint(atCompany?.[1]);
   if (looksLikeCompanyHint(inlineCompany)) return inlineCompany;
-
-  const lines = obs.content
-    .split(/\r?\n/)
-    .map(line => cleanCompanyHint(line.replace(/^#+\s*/, '')))
-    .filter(Boolean);
-  if (lines.length >= 2 && looksLikeCompanyHint(lines[1])) return lines[1];
 
   return '';
 }
@@ -251,7 +264,8 @@ export async function extractCompanyHintFromSignal(
       'You extract company names. Return only the company name, or an empty string if unknown.',
       { maxTokens: 40, temperature: 0 }
     );
-    return (result?.company || '').trim().slice(0, 80);
+    const candidate = cleanCompanyHint(result?.company);
+    return looksLikeCompanyHint(candidate) ? candidate : '';
   } catch {
     return '';
   }

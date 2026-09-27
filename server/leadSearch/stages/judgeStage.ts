@@ -30,7 +30,7 @@ import { runGatedCompanyAttribution } from "../companyAttribution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(batchLength: number): number {
-  return Math.min(2400, Math.max(500, batchLength * 350));
+  return Math.max(500, batchLength * 400);
 }
 
 export function isEligibleForSafetyNet(
@@ -300,19 +300,45 @@ export async function evaluateIncrementalJudgeBatches(
   const companyAttributionEnabled =
     process.env.LEAD_COMPANY_ATTRIBUTION_ENABLED !== "false";
 
-  // Micro-batch size: 6 candidates per batch for optimal context utilization on modern LLMs
-  const microBatchSize = Math.max(
-    1,
-    Math.min(8, Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 6)),
-  );
+  // Dynamic token-weight micro-batching: pack up to ~4,500 evidence tokens per batch (1-12 candidates),
+  // or honor FINALIST_JUDGE_MICRO_BATCH_SIZE when explicitly configured.
+  const explicitBatchSize = Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 0);
+  const maxBatchCandidates =
+    Number.isFinite(explicitBatchSize) && explicitBatchSize > 0
+      ? Math.max(1, Math.min(12, Math.floor(explicitBatchSize)))
+      : 10;
+  const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 4500);
   const judgeConcurrency = Math.max(
     1,
     Math.min(4, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
   );
 
   const microBatches: FinalistCandidate[][] = [];
-  for (let i = 0; i < vettedCandidates.length; i += microBatchSize) {
-    microBatches.push(vettedCandidates.slice(i, i + microBatchSize));
+  let currentBatch: FinalistCandidate[] = [];
+  let currentBatchTokens = 0;
+  for (const cand of vettedCandidates) {
+    const evText = Array.isArray(cand.evidence)
+      ? cand.evidence
+          .slice(0, 6)
+          .map((e) => String(e?.text || "").slice(0, 2400))
+          .join("\n")
+      : "";
+    const candTokens = Math.max(150, estimateTokenCount(evText) + 120);
+    if (
+      currentBatch.length > 0 &&
+      (currentBatch.length >= maxBatchCandidates ||
+        currentBatchTokens + candTokens > targetBatchTokens)
+    ) {
+      microBatches.push(currentBatch);
+      currentBatch = [cand];
+      currentBatchTokens = candTokens;
+    } else {
+      currentBatch.push(cand);
+      currentBatchTokens += candTokens;
+    }
+  }
+  if (currentBatch.length > 0) {
+    microBatches.push(currentBatch);
   }
 
   // Chunk micro-batches into waves according to concurrency
@@ -427,7 +453,7 @@ export async function evaluateIncrementalJudgeBatches(
         batch,
       );
 
-      const minimumValid = Math.ceil(batch.length * 0.6);
+      const minimumValid = Math.ceil(batch.length * 0.4);
       if (validation.validJudgmentCount < minimumValid && batch.length > 1 && depth < 2) {
         logEvent(
           `Incremental Judge: Batch ${batchIndex + 1} omitted judgments; splitting ${batch.length} candidates.`,
@@ -637,6 +663,9 @@ export async function evaluateIncrementalJudgeBatches(
         {
           signal: state.abortController?.signal,
           logEvent,
+          circuitBreaker: llmCircuitBreaker,
+          timeoutMs: 45_000,
+          batchSize: Math.max(6, microBatchSize),
         },
       );
       if (attrSummary.attributedCount > 0) {

@@ -299,16 +299,20 @@ export function resolveBusinessArchetype(briefOrQuery: string): BusinessArchetyp
 
 export const COUNTRY_TO_METROS: Record<string, string[]> = {
   australia: ["Sydney", "Melbourne", "Brisbane", "Perth"],
+  australian: ["Sydney", "Melbourne", "Brisbane", "Perth"],
   au: ["Sydney", "Melbourne", "Brisbane", "Perth"],
   uk: ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
   "united kingdom": ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
   britain: ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
+  british: ["London", "Manchester", "Bristol", "Edinburgh", "Birmingham"],
   england: ["London", "Manchester", "Bristol", "Birmingham"],
   canada: ["Toronto", "Vancouver", "Montreal", "Ottawa", "Calgary"],
+  canadian: ["Toronto", "Vancouver", "Montreal", "Ottawa", "Calgary"],
   usa: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston", "Denver", "Los Angeles", "Miami"],
   "united states": ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston", "Denver", "Los Angeles", "Miami"],
   us: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
   america: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
+  american: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
   "new zealand": ["Auckland", "Wellington", "Christchurch"],
   nz: ["Auckland", "Wellington", "Christchurch"],
   germany: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
@@ -349,10 +353,12 @@ export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
   'u.s.': 'USA',
   'u.s.a.': 'USA',
   america: 'USA',
+  american: 'USA',
   'united states of america': 'USA',
   uk: 'UK',
   'united kingdom': 'UK',
   britain: 'UK',
+  british: 'UK',
   'great britain': 'UK',
   england: 'UK',
   canada: 'Canada',
@@ -385,7 +391,18 @@ export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
 };
 
 const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
-  const expanded = [...terms];
+  const expanded: string[] = [];
+  if (scope === 'person_location') {
+    for (const t of terms) {
+      const canonical = COUNTRY_CANONICAL_MAP[String(t || '').trim().toLowerCase()];
+      if (canonical && !expanded.includes(canonical)) {
+        expanded.push(canonical);
+      }
+      expanded.push(t);
+    }
+  } else {
+    expanded.push(...terms);
+  }
   const hasTerm = (list: string[], matches: string[]) =>
     list.some(t => {
       const lowerT = t.toLowerCase().trim();
@@ -1088,7 +1105,7 @@ export function buildContractFallbackQueries(
     const canonical = COUNTRY_CANONICAL_MAP[cleanLoc] || cleanLoc;
     if (!seenDedupe.has(canonical.toLowerCase())) {
       seenDedupe.add(canonical.toLowerCase());
-      deduplicatedLocations.push(loc);
+      deduplicatedLocations.push(COUNTRY_CANONICAL_MAP[cleanLoc] || loc);
     }
   }
 

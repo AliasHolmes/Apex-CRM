@@ -180,11 +180,12 @@ CORE RULES:
    - When the contract specifies agencies, consultancies, studios, integrators, or client services: the candidate's firm MUST be a client-services business.
    - Software products, SaaS platforms, consumer apps, B2C mobile apps (e.g. personal trainer apps, habit trackers, consumer utilities), developer tools, and tech vendor platforms do NOT satisfy an agency requirement. Mark status: "fail" for company_type.
    - Non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI, etc.) and individual contributor roles (Staff/Principal Engineer, Product Manager) do NOT satisfy agency owner/founder requirements. Mark status: "fail".
+   - ABSENCE OF EVIDENCE IS NOT A FAIL FOR COMPANY TYPE/INDUSTRY: If a candidate's snippet only shows their title and company name (or a brief bio) without describing the company's business model in detail, and does NOT explicitly show a disqualifying model (such as a SaaS product, consumer app, university, government body, or Big Tech employer), you MUST mark company_type / company_industry as "unknown", NEVER "fail".
 5. EVIDENCE rules:
    - For every hard requirement with status "pass", you MUST populate evidenceId (the [eN] tag of the evidence block containing the proof) and evidenceQuote (a short verbatim quote from that evidence, 5-40 words, that supports the verdict).
    - For soft/signal requirements, evidenceId and evidenceQuote are optional.
    - "unknown" is used when evidence is insufficient or ambiguous.
-   - "fail" is used when evidence explicitly contradicts a hard requirement.
+   - "fail" is used ONLY when evidence explicitly contradicts a hard requirement.
 6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
 7. SIGNAL & SOFT REQUIREMENTS:
    - For soft/ranking signal requirements (e.g. specific tooling like n8n, hiring triggers, client delivery bottlenecks): assign status "pass" if evidence demonstrates or mentions it, "fail" if explicitly contradicted, or "unknown" if evidence lacks mention.
@@ -192,7 +193,7 @@ CORE RULES:
 8. SCORING SCALE & INTENT CALIBRATION:
    - For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).
    - When soft/intent requirements (e.g. tooling, specific pain points) are present in the contract, a candidate who satisfies identity (e.g. agency owner) but has ZERO evidence for the soft/intent requirements MUST be rated moderate (semanticFit 4-6), NOT high (8-10). Reserve 8-10 for candidates who demonstrate both identity AND intent/tooling alignment.
-9. CONCISE OUTPUT FORMAT: Keep any internal reasoning concise (under 60 words total) and immediately emit the JSON judgment block. Do not write lengthy essays or chain-of-thought disclaimers.`;
+9. PROPORTIONAL REASONING & STRUCTURED OUTPUT: Keep internal reasoning focused on verifying each candidate's evidence against the contract requirements, then emit the JSON judgment block.`;
 
 const clampEnvInt = (
   name: string,
@@ -205,21 +206,6 @@ const clampEnvInt = (
     ? Math.min(Math.max(Math.floor(raw), min), max)
     : fallback;
 };
-
-// Token-diet controls: evidence dominates judge prompt weight. Caps are env-
-// tunable; term-matching evidence is always preserved regardless of caps.
-const MAX_EVIDENCE_ITEMS = clampEnvInt(
-  "FINALIST_JUDGE_MAX_EVIDENCE_ITEMS",
-  5,
-  1,
-  8,
-);
-const EVIDENCE_CHARS = clampEnvInt(
-  "FINALIST_JUDGE_EVIDENCE_CHARS",
-  1800,
-  200,
-  3600,
-);
 
 export function buildFinalistJudgePrompt(
   contract: ProspectContract,
@@ -235,6 +221,33 @@ export function buildFinalistJudgePrompt(
   const allTerms = activeRequirements.flatMap((requirement) =>
     requirement.acceptableTerms.map((term) => String(term).toLowerCase()),
   );
+  const batchLen = Math.max(1, candidates.length);
+  const configuredMaxItems = clampEnvInt(
+    "FINALIST_JUDGE_MAX_EVIDENCE_ITEMS",
+    5,
+    1,
+    10,
+  );
+  const configuredEvidenceChars = clampEnvInt(
+    "FINALIST_JUDGE_EVIDENCE_CHARS",
+    1800,
+    200,
+    4800,
+  );
+  const dynamicMaxItems = process.env.FINALIST_JUDGE_MAX_EVIDENCE_ITEMS
+    ? configuredMaxItems
+    : batchLen <= 3
+      ? 8
+      : batchLen <= 6
+        ? 6
+        : configuredMaxItems;
+  const dynamicEvidenceChars = process.env.FINALIST_JUDGE_EVIDENCE_CHARS
+    ? configuredEvidenceChars
+    : batchLen <= 3
+      ? 3600
+      : batchLen <= 6
+        ? 2400
+        : configuredEvidenceChars;
   const candidateText = candidates
     .map((candidate) => {
       const lead = candidate.lead;
@@ -244,7 +257,7 @@ export function buildFinalistJudgePrompt(
       const candEvidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
       const selected: typeof candEvidence = [];
       for (const item of candEvidence) {
-        if (selected.length >= MAX_EVIDENCE_ITEMS) break;
+        if (selected.length >= dynamicMaxItems) break;
         if (item === candEvidence[0]) {
           selected.push(item);
           continue;
@@ -257,13 +270,13 @@ export function buildFinalistJudgePrompt(
           selected.push(item);
       }
       for (const item of candEvidence) {
-        if (selected.length >= MAX_EVIDENCE_ITEMS) break;
+        if (selected.length >= dynamicMaxItems) break;
         if (!selected.includes(item)) selected.push(item);
       }
       const evidence = selected
         .map((item) => {
-          const rawText = clean(item.text, 2000);
-          if (rawText.length <= EVIDENCE_CHARS) {
+          const rawText = clean(item.text, Math.max(2000, dynamicEvidenceChars + 200));
+          if (rawText.length <= dynamicEvidenceChars) {
             return `[${item.id}] ${rawText || "No evidence."}`;
           }
           const lower = rawText.toLowerCase();
@@ -272,10 +285,10 @@ export function buildFinalistJudgePrompt(
             .filter((idx) => idx >= 0)
             .sort((a, b) => a - b)[0];
           if (matchIndex === undefined) {
-            return `[${item.id}] ${rawText.slice(0, Math.max(1, EVIDENCE_CHARS - 3)).trim()}...`;
+            return `[${item.id}] ${rawText.slice(0, Math.max(1, dynamicEvidenceChars - 3)).trim()}...`;
           }
-          const start = Math.max(0, matchIndex - Math.floor(EVIDENCE_CHARS * 0.3));
-          const end = Math.min(rawText.length, start + Math.max(1, EVIDENCE_CHARS - 6));
+          const start = Math.max(0, matchIndex - Math.floor(dynamicEvidenceChars * 0.3));
+          const end = Math.min(rawText.length, start + Math.max(1, dynamicEvidenceChars - 6));
           const cropped = `${start > 0 ? "..." : ""}${rawText.slice(start, end).trim()}${end < rawText.length ? "..." : ""}`;
           return `[${item.id}] ${cropped}`;
         })
@@ -496,7 +509,7 @@ const normalizeAssessment = (
   requirement: ProspectRequirement,
 ): RequirementAssessment => {
   const rawStatus = typeof raw?.status === "string" ? raw.status.trim().toLowerCase() : "";
-  const status: RequirementStatus =
+  let status: RequirementStatus =
     rawStatus === "pass" || rawStatus === "fail"
       ? rawStatus
       : rawStatus === "qualified" || rawStatus === "passed"
@@ -506,21 +519,45 @@ const normalizeAssessment = (
       : "unknown";
   const evidenceId = clean(raw?.evidenceId, 100);
   const evidenceQuote = clean(raw?.evidenceQuote, 400);
+  const reasonText = clean(raw?.reason, 280);
   const evidence = candidate.evidence.find((item) => item.id === evidenceId);
+
+  // Guard company_type / company_industry against false hard-fails when snippet merely lacks detail
+  if (
+    status === "fail" &&
+    (requirement.scope === "company_type" || requirement.scope === "company_industry") &&
+    candidate.lead?.companyAttribution?.verdict !== "disqualifying_contradiction"
+  ) {
+    const isMissingEvidenceFail =
+      /\b(not\s+(?:explicitly\s+)?(?:mention|state|specif|provid|clear|confirm|detail|describ|indicat|verify|verified)|no\s+(?:explicit\s+)?(?:evidence|mention|information|detail|indication|proof|description)|cannot\s+(?:verify|confirm|determine|establish)|insufficient|unclear|unverified|unknown|ambiguous|lacks?\s+(?:detail|information|evidence|description)|does\s+not\s+(?:mention|state|specify|describe|clarify))\b/i.test(
+        reasonText,
+      ) &&
+      !/\b(saas|software\s+product|consumer\s+app|mobile\s+app|university|government|non-?profit|hospital|retail\s+store|e-?commerce\s+brand|contradict)\b/i.test(
+        reasonText,
+      );
+    if (isMissingEvidenceFail) {
+      status = "unknown";
+    }
+  }
 
   let matchedEvidenceId = evidenceId;
   let quoteValid = false;
   if (status !== 'pass') {
     quoteValid = true;
   } else if (!evidenceQuote) {
-    // G1: strict (default) degrades uncited passes to unknown; legacy preserves replay.
-    if (evidenceGroundingMode() === 'legacy') {
+    // Soft/signal requirements explicitly allow optional quotes per prompt Rule 5
+    if (requirement.importance !== 'hard') {
+      quoteValid = true;
+    } else if (evidenceGroundingMode() === 'legacy') {
+      // G1: strict (default) degrades uncited hard passes to unknown; legacy preserves replay.
       quoteValid = !process.env.ENFORCE_CITATION_QUOTES;
     } else {
       quoteValid = false;
     }
     // Phase 0 counter (telemetry only): count passes that would be uncited.
-    if (status === 'pass') judgeEvidenceTelemetry.uncitedPasses++;
+    if (status === 'pass' && requirement.importance === 'hard') {
+      judgeEvidenceTelemetry.uncitedPasses++;
+    }
     // NOTE: Do NOT set fabricatedPass here. An omitted quote is a citation gap,
     // not an actively fabricated claim. fabricatedPass is reserved for quotes
     // that were provided but don't match any evidence passage.
@@ -548,7 +585,7 @@ const normalizeAssessment = (
     fabricatedPass: status === "pass" && !quoteValid && Boolean(evidenceQuote),
     evidenceId: quoteValid ? matchedEvidenceId || undefined : undefined,
     evidenceQuote: quoteValid ? evidenceQuote || undefined : undefined,
-    reason: clean(raw?.reason, 280) || undefined,
+    reason: reasonText || undefined,
   };
 };
 
@@ -1288,20 +1325,22 @@ export function triPartitionCandidatesByEvidence(
     }
 
     // Candidate strictly satisfies every structured hard requirement (role, company, location).
-    // Now evaluate open-web signal requirements if any exist:
+    // Now evaluate open-web signal requirements (both hard and soft) against signalTexts:
+    const signalTexts = [
+      ...(candidate.evidence || []).map((e) => e?.text || ""),
+      lead.evidence?.evidenceBlock || "",
+      ...(Array.isArray(lead.evidence?.snippets)
+        ? lead.evidence.snippets.map((s: any) =>
+            typeof s === "string" ? s : s?.text || "",
+          )
+        : []),
+      lead.companyIntentEvidence?.snippets?.join(" ") || "",
+    ]
+      .join(" ")
+      .toLowerCase();
+
     let hasSignalCorroboration = false;
     if (hasOpenWebSignalHardReqs) {
-      const signalTexts = [
-        lead.evidence?.evidenceBlock || "",
-        ...(Array.isArray(lead.evidence?.snippets)
-          ? lead.evidence.snippets.map((s: any) =>
-              typeof s === "string" ? s : s?.text || "",
-            )
-          : []),
-        lead.companyIntentEvidence?.snippets?.join(" ") || "",
-      ]
-        .join(" ")
-        .toLowerCase();
       const signalReqs = contract.requirements.filter(
         (r) =>
           r.importance === "hard" &&
@@ -1323,19 +1362,27 @@ export function triPartitionCandidatesByEvidence(
 
     const requirements: RequirementAssessment[] = contract.requirements.map(
       (requirement) => {
+        if (requirement.importance !== "hard") {
+          const softMatched = (requirement.acceptableTerms || []).some((term) =>
+            aliasIncludes(signalTexts, term),
+          );
+          const softStatus: RequirementStatus = softMatched ? "pass" : "unknown";
+          return {
+            requirementId: requirement.id,
+            status: softStatus,
+            evidenceId: softStatus === "pass" ? "e0" : undefined,
+          };
+        }
         const isSignal =
           (requirement.evidenceModality ||
             (requirement.scope === "signal"
               ? "open_web_signal"
               : "structured_profile")) === "open_web_signal";
-        const status =
-          requirement.importance !== "hard"
-            ? "unknown"
-            : isSignal
-              ? hasSignalCorroboration
-                ? "pass"
-                : "unknown"
-              : "pass";
+        const status: RequirementStatus = isSignal
+          ? hasSignalCorroboration
+            ? "pass"
+            : "unknown"
+          : "pass";
         return {
           requirementId: requirement.id,
           status,

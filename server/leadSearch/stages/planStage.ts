@@ -6,6 +6,7 @@ import {
   readDiscoveredCompanyNames,
   readOutcomeRate,
 } from "../../db.js";
+import { looksLikeCompanyHint } from "../observations.js";
 import {
   openAIStructured,
   searchQueriesSchema,
@@ -184,20 +185,23 @@ export async function executePlanStage(
 
   // G14: merge cross-session discovered companies so earlier discoveries
   // inform the strategist prompt instead of being write-only.
-  const discoveredCompanies = readDiscoveredCompanyNames(25);
+  const discoveredCompanies = readDiscoveredCompanyNames(25).filter(looksLikeCompanyHint);
   const knownCompanyEntities = Array.from(
     new Set([...crmCompanies, ...signalCompanies, ...discoveredCompanies]),
   );
 
   const envTasks = Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND);
+  const prevAccepted = Number((state.previousRoundSummary as any)?.accepted ?? -1);
+  const lowYieldBoost = isRecoveryMode || (round > 1 && prevAccepted >= 0 && prevAccepted <= 2) ? 1.5 : 1.0;
+  const shortfallDrivenTasks = Math.ceil(Math.max(remaining, config.capacity?.candidateBatchSize || 12) / 3.5);
   const maxTasks =
     Number.isFinite(envTasks) && envTasks > 0
       ? envTasks
       : Math.min(
-          8,
+          12,
           Math.max(
             3,
-            Math.ceil((config.capacity?.candidateBatchSize || 12) / 4),
+            Math.ceil(shortfallDrivenTasks * lowYieldBoost),
           ),
         );
 
@@ -210,7 +214,7 @@ export async function executePlanStage(
     round === 1 &&
     !isRecoveryMode &&
     Array.isArray(config.contract?.initialQueries) &&
-    config.contract.initialQueries.length >= Math.max(2, maxTasks)
+    config.contract.initialQueries.length >= Math.max(2, Math.min(maxTasks, 4))
   ) {
     planItems = config.contract.initialQueries;
     logEvent(
@@ -244,6 +248,10 @@ export async function executePlanStage(
     const strategyProviderAttempts: LLMProviderAttempt[] = [];
     let strategyUsage: LLMUsage | undefined;
     const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
+    const strategistMaxTokens = Math.max(
+      1200,
+      maxTasks * 250 + (isRecoveryMode ? 600 : 0),
+    );
 
     try {
       recordTrace({
@@ -259,10 +267,17 @@ export async function executePlanStage(
         searchQueriesSchema,
         STRATEGIST_SYSTEM_PROMPT,
         {
-          maxTokens: 800,
+          maxTokens: strategistMaxTokens,
           temperature: 0.1,
           circuitBreaker: state.llmCircuitBreaker,
           signal: effectiveSignal,
+          metadata: {
+            stage: "strategist",
+            round,
+            itemCount: maxTasks,
+            promptSize: strategistPrompt.length,
+            sessionId: config.sessionId,
+          },
           onProviderAttempt: (attempt) =>
             strategyProviderAttempts.push(attempt),
           onUsage: (usage) => {

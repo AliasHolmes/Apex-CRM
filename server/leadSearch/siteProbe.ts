@@ -253,19 +253,53 @@ export function matchesCompanyIdentity(
 
   // When safe slug probe is active and provenance is slug_guess, enforce secondary attribute corroboration
   if (isFlagEnabled.safeSlugProbe() && provenance === 'slug_guess' && lead) {
-    const loc = String(lead.location || lead.profile?.location || '').toLowerCase();
-    const locTokens = loc.split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !['united', 'states', 'kingdom', 'area'].includes(t));
+    const loc = String(
+      lead.location || lead.profile?.location || lead.evidence?.evidenceBlock || '',
+    ).toLowerCase();
+    const locTokens = loc
+      .split(/[^a-z0-9]+/)
+      .filter(
+        t =>
+          t.length >= 3 &&
+          ![
+            'united',
+            'states',
+            'kingdom',
+            'area',
+            'link',
+            'https',
+            'www',
+            'linkedin',
+            'com',
+            'name',
+            'company',
+            'title',
+            'snippet',
+          ].includes(t),
+      );
     const locMatched = locTokens.length > 0 && locTokens.some(t => lowerMarkdown.includes(t));
 
     const personName = String(lead.fullName || lead.profile?.fullName || '').toLowerCase();
     const nameTokens = personName.split(/[^a-z0-9]+/).filter(t => t.length >= 3);
     const nameMatched = nameTokens.length >= 2 && nameTokens.every(t => lowerMarkdown.includes(t));
 
-    const ind = String(lead.industry || lead.profile?.industry || '').toLowerCase();
-    const indTokens = ind.split(/[^a-z0-9]+/).filter(t => t.length >= 4);
+    const ind = String(
+      lead.industry || lead.profile?.industry || lead.headline || lead.currentTitle || '',
+    ).toLowerCase();
+    const indTokens = ind
+      .split(/[^a-z0-9]+/)
+      .filter(
+        t =>
+          t.length >= 4 &&
+          !['founder', 'owner', 'partner', 'director', 'chief', 'president', 'principal'].includes(t),
+      );
     const indMatched = indTokens.length > 0 && indTokens.some(t => lowerMarkdown.includes(t));
 
-    return locMatched || nameMatched || indMatched;
+    const multiTokenCompanyMatched =
+      tokens.length >= 2 &&
+      tokens.every(token => new RegExp(`\\b${token}\\b`, 'i').test(lowerMarkdown));
+
+    return locMatched || nameMatched || indMatched || multiTokenCompanyMatched;
   }
 
   return true;
@@ -313,7 +347,7 @@ export function extractSiteSignals(markdown: string): SiteSignals | null {
   }
 
   if (!signals.location) {
-    const addressMatch = markdown.match(/\b([A-Z][a-zA-Z\s.-]+,\s*(?:[A-Z]{2}|United States|Canada|United Kingdom|Australia|Germany|France|Netherlands)(?:\s+\d{5})?)\b/);
+    const addressMatch = markdown.match(/\b([A-Z][a-zA-Z\s.-]+,\s*(?:[A-Z]{2,3}|United States|Canada|United Kingdom|Australia|New Zealand|Germany|France|Netherlands)(?:\s+\d{4,5})?)\b/);
     if (addressMatch?.[1]) {
       const loc = clean(addressMatch[1]).slice(0, 80);
       if (loc.length >= 3) {
@@ -340,9 +374,10 @@ export function extractSiteSignals(markdown: string): SiteSignals | null {
     .map(line => clean(line))
     .filter(line =>
       line.length >= 10 &&
-      line.length <= 160 &&
-      /\b(automation|integration|workflow|crm|seo|paid media|growth|development|consulting|marketing|revops|design|software|ai|lead gen|b2b|custom api|make|zapier|n8n)\b/i.test(line)
+      line.length <= 360 &&
+      /\b(automation|integration|workflow|crm|seo|paid media|growth|development|consulting|marketing|revops|design|software|ai|agents?|llm|chatbots?|agency|analytics|data|cloud|digital|transformation|solutions|engineering|lead gen|b2b|custom api|make|zapier|n8n)\b/i.test(line)
     )
+    .map(line => line.slice(0, 200))
     .slice(0, 4);
 
   if (serviceLines.length > 0) {
@@ -519,15 +554,17 @@ export async function probeCompanySites(
     }
   }
 
-  const unextractedDomains = uniqueDomains.filter(
-    (d) => !(extractedByDomain.get(d) || []).length,
+  const unextractedVerifiedDomains = uniqueDomains.filter(
+    (d) =>
+      !(extractedByDomain.get(d) || []).length &&
+      domainProvenanceMap.get(d) !== 'slug_guess',
   );
   if (
-    unextractedDomains.length > 0 &&
+    unextractedVerifiedDomains.length > 0 &&
     isBrightDataConfigured() &&
     !isBrightDataCoolingDown()
   ) {
-    const bdPromises = unextractedDomains.slice(0, 5).map(async (domain) => {
+    const bdPromises = unextractedVerifiedDomains.slice(0, 5).map(async (domain) => {
       if (options.abortSignal?.aborted) return;
       try {
         let content: string | null = null;
@@ -547,6 +584,7 @@ export async function probeCompanySites(
     await Promise.allSettled(bdPromises);
   }
 
+  const unresolvedSlugDomains: string[] = [];
   for (const domain of uniqueDomains) {
     const contents = extractedByDomain.get(domain) || [];
     const combinedMarkdown = contents.join('\n\n');
@@ -558,6 +596,7 @@ export async function probeCompanySites(
     // token match in page content. explicit (website field) stays trusted.
     if ((provenance === 'slug_guess' || provenance === 'evidence_url') &&
         !matchesCompanyIdentity(companyName, combinedMarkdown, lead, provenance)) {
+      if (provenance === 'slug_guess') unresolvedSlugDomains.push(domain);
       continue;
     }
 
@@ -569,6 +608,95 @@ export async function probeCompanySites(
         ? combinedMarkdown.slice(0, 1200).replace(/\s+/g, ' ').trim()
         : undefined;
       results.set(domain, signals);
+    } else if (provenance === 'slug_guess') {
+      unresolvedSlugDomains.push(domain);
+    }
+  }
+
+  // Tier 3: Fast batch probe of alternate regional/tech TLDs (.com.au, .ai, .io, .co) for unresolved slug_guess domains
+  if (unresolvedSlugDomains.length > 0 && !options.abortSignal?.aborted) {
+    const altUrlToOriginalDomain = new Map<string, string>();
+    const altUrlsToExtract: string[] = [];
+
+    for (const domain of unresolvedSlugDomains) {
+      if (altUrlsToExtract.length >= BATCH_SIZE) break;
+      const slugMatch = domain.match(/^https?:\/\/([a-z0-9-]+)\.com$/i);
+      if (!slugMatch?.[1]) continue;
+      const slug = slugMatch[1];
+      const lead = domainLeadMap.get(domain);
+      const contextText = [
+        lead?.location,
+        lead?.profile?.location,
+        lead?.headline,
+        lead?.currentTitle,
+        lead?.currentCompany,
+        lead?.evidence?.evidenceBlock,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      const isAuContext = /\b(australia|australian|sydney|melbourne|brisbane|perth|adelaide|canberra|gold coast|nsw|vic|qld)\b/i.test(
+        contextText,
+      );
+      const isUkContext = /\b(united kingdom|\buk\b|london|manchester|birmingham|edinburgh|england|britain)\b/i.test(
+        contextText,
+      );
+      const isAiTech = /\b(ai|artificial intelligence|automation|agents?|llm|software|tech|digital|data|cloud)\b/i.test(
+        contextText,
+      );
+
+      const candidateTlds: string[] = [];
+      if (isAuContext) candidateTlds.push('com.au');
+      else if (isUkContext) candidateTlds.push('co.uk');
+      if (isAiTech) candidateTlds.push('ai', 'io');
+      else candidateTlds.push('co', 'io');
+
+      for (const tld of candidateTlds.slice(0, 2)) {
+        if (altUrlsToExtract.length >= BATCH_SIZE) break;
+        const altUrl = `https://${slug}.${tld}`;
+        altUrlsToExtract.push(altUrl);
+        altUrlToOriginalDomain.set(altUrl, domain);
+      }
+    }
+
+    if (altUrlsToExtract.length > 0) {
+      try {
+        options.onProviderUsage?.(altUrlsToExtract.length);
+        const altExtracted = await tavilyExtract(
+          altUrlsToExtract,
+          'company location team size services about us',
+          {
+            signal: options.abortSignal,
+            timeoutMs: 8000,
+          },
+        );
+        if (Array.isArray(altExtracted)) {
+          for (const res of altExtracted) {
+            const rawUrl = (res.url || '').replace(/\/$/, '');
+            const originalDomain =
+              altUrlToOriginalDomain.get(res.url || '') ||
+              altUrlToOriginalDomain.get(rawUrl);
+            const content = res.rawContent || '';
+            if (!originalDomain || !content || results.has(originalDomain)) continue;
+            const companyName = domainCompanyMap.get(originalDomain);
+            const lead = domainLeadMap.get(originalDomain);
+            if (!matchesCompanyIdentity(companyName, content, lead, 'slug_guess')) {
+              continue;
+            }
+            const signals = extractSiteSignals(content);
+            if (signals) {
+              signals.sourceUrl = rawUrl || originalDomain;
+              signals.provenance = 'slug_guess';
+              signals.rawExcerpt = content
+                .slice(0, 1200)
+                .replace(/\s+/g, ' ')
+                .trim();
+              results.set(originalDomain, signals);
+            }
+          }
+        }
+      } catch {
+        // Safe skip on alternate TLD batch error
+      }
     }
   }
 
@@ -621,9 +749,10 @@ export function applySiteProbeSignals(
         ? 'verified-site'
         : 'extracted-url';
 
+    const displayUrl = signals.sourceUrl || sourceUrl;
     const summaryPart = evidenceLines.length > 0 ? ` ${evidenceLines.join(' | ')}` : '';
     const excerptPart = signals.rawExcerpt ? `\n${signals.rawExcerpt}` : '';
-    const siteEvidence = `[COMPANY SITE (${provenanceTag}): ${sourceUrl}]${summaryPart}${excerptPart}`;
+    const siteEvidence = `[COMPANY SITE (${provenanceTag}): ${displayUrl}]${summaryPart}${excerptPart}`;
     if (target.evidenceMeta) {
       target.evidenceMeta.evidenceBlock = [target.evidenceMeta.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
     }

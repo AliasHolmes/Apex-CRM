@@ -82,7 +82,13 @@ export async function executeSelectStage(
     if (!title || title.length < 2) return false;
     return true;
   });
-  const effectiveIntentCap = Math.min(companyIntentMaxPerSearch || 6, 6);
+  const dynamicIntentDefault = Math.max(6, Math.ceil(targetLimit * 0.75));
+  const effectiveIntentCap = Math.min(
+    leadsNeedingIntent.length,
+    companyIntentMaxPerSearch && companyIntentMaxPerSearch > 0
+      ? Math.max(companyIntentMaxPerSearch, dynamicIntentDefault)
+      : dynamicIntentDefault,
+  );
   const effectiveIntentConcurrency = Math.max(1, companyIntentConcurrency || 1);
   if (
     companyIntentEnabled &&

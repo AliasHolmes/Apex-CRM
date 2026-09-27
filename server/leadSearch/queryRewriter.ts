@@ -20,7 +20,35 @@ export type RewriteResult = {
 
 const clean = (v: unknown) => String(v || '').replace(/\s+/g, ' ').trim();
 
-/** Split a query string preserving quoted phrases as single tokens and stripping site: prefix. */
+const MULTI_WORD_GEOS = new Set([
+  'gold coast',
+  'sunshine coast',
+  'new south wales',
+  'south australia',
+  'western australia',
+  'northern territory',
+  'new york',
+  'san francisco',
+  'los angeles',
+  'san diego',
+  'san jose',
+  'las vegas',
+  'salt lake',
+  'salt lake city',
+  'kansas city',
+  'st louis',
+  'united states',
+  'united kingdom',
+  'great britain',
+  'new zealand',
+  'south africa',
+  'hong kong',
+  'tel aviv',
+  'kuala lumpur',
+  'ho chi minh',
+]);
+
+/** Split a query string preserving quoted phrases as single tokens, stripping site: prefix, and coalescing unquoted multi-word geos. */
 export function tokenizeQuery(query: string): { prefix: string; tokens: string[] } {
   let prefix = '';
   let rest = query;
@@ -29,11 +57,31 @@ export function tokenizeQuery(query: string): { prefix: string; tokens: string[]
     prefix = siteMatch[1];
     rest = rest.slice(siteMatch[0].length);
   }
-  const tokens: string[] = [];
+  const rawTokens: string[] = [];
   const re = /"([^"]+)"|(\S+)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(rest)) !== null) {
-    tokens.push(m[1] || m[2]);
+    rawTokens.push(m[1] || m[2]);
+  }
+  const tokens: string[] = [];
+  for (let i = 0; i < rawTokens.length; i++) {
+    if (i + 2 < rawTokens.length) {
+      const tri = `${rawTokens[i]} ${rawTokens[i + 1]} ${rawTokens[i + 2]}`.toLowerCase();
+      if (MULTI_WORD_GEOS.has(tri)) {
+        tokens.push(`${rawTokens[i]} ${rawTokens[i + 1]} ${rawTokens[i + 2]}`);
+        i += 2;
+        continue;
+      }
+    }
+    if (i + 1 < rawTokens.length) {
+      const bi = `${rawTokens[i]} ${rawTokens[i + 1]}`.toLowerCase();
+      if (MULTI_WORD_GEOS.has(bi)) {
+        tokens.push(`${rawTokens[i]} ${rawTokens[i + 1]}`);
+        i += 1;
+        continue;
+      }
+    }
+    tokens.push(rawTokens[i]);
   }
   return { prefix, tokens };
 }

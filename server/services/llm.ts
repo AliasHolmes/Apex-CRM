@@ -363,10 +363,9 @@ export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
  * Atria (api.atria-asi.ai) is a self-hosted vLLM deployment behind an Aliyun ALB
  * (Singapore ap-southeast-1), NOT behind Cloudflare (verified in docs/ATRIA-ENDPOINT-PROBE-2026-09-16.md).
  * The 115s CLOUDFLARE_MAX_TIMEOUT_MS therefore does not apply to Atria traffic.
- * Outbound reasoning requests are bounded at 150s to allow heavy chain-of-thought
- * without unbounded socket lifetimes.
+ * Timeout scales dynamically with prompt weight and reasoning budget up to this safety ceiling.
  */
-export const ATRIA_MAX_TIMEOUT_MS = 150_000;
+export const ATRIA_MAX_TIMEOUT_MS = 300_000;
 
 /**
  * Bounded concurrency execution queue for all LLM calls.
@@ -426,14 +425,31 @@ let activeLlmSlots = 0;
 const llmWaitQueue: Array<{
   run: () => void;
   onAbort: () => void;
+  refreshTimer?: () => void;
 }> = [];
 
 // Sharded lane state (only used when FEATURE_LLM_STAGE_QUEUES=true)
 const laneActive: Record<LLMStageLane, number> = { strategist: 0, extraction: 0, judge: 0, general: 0 };
-const laneQueues: Record<LLMStageLane, Array<{ run: () => void; onAbort: () => void }>> = {
+const laneQueues: Record<LLMStageLane, Array<{ run: () => void; onAbort: () => void; refreshTimer?: () => void }>> = {
   strategist: [], extraction: [], judge: [], general: [],
 };
 let shardedGlobalActive = 0;
+
+function resolveDynamicQueueTimeoutMs(): number {
+  const configured = Number(process.env.LLM_QUEUE_TIMEOUT_MS);
+  if (Number.isFinite(configured) && configured > 0 && configured < 5_000) {
+    return configured;
+  }
+  const providerCeiling = isAtriaConfigured()
+    ? (Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
+        ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
+        : ATRIA_MAX_TIMEOUT_MS)
+    : CLOUDFLARE_MAX_TIMEOUT_MS;
+  return Math.max(
+    Number.isFinite(configured) && configured > 0 ? configured : 60_000,
+    providerCeiling + 15_000,
+  );
+}
 
 function pumpLlmQueue() {
   const maxSlots = getMaxLlmConcurrency();
@@ -443,6 +459,9 @@ function pumpLlmQueue() {
       activeLlmSlots++;
       next.run();
     }
+  }
+  for (const waiter of llmWaitQueue) {
+    waiter.refreshTimer?.();
   }
 }
 
@@ -463,6 +482,11 @@ function pumpShardedQueues() {
         progressed = true;
         next.run();
       }
+    }
+  }
+  for (const lane of lanes) {
+    for (const waiter of laneQueues[lane]) {
+      waiter.refreshTimer?.();
     }
   }
 }
@@ -490,12 +514,19 @@ export function withSequentialLLMExecution<T>(
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    let waitEntry: { run: () => void; onAbort: () => void } | null = null;
-    const queueTimeoutMs = Number(process.env.LLM_QUEUE_TIMEOUT_MS) || 60_000;
-    let queueTimer: NodeJS.Timeout | null = setTimeout(() => {
+    let waitEntry: { run: () => void; onAbort: () => void; refreshTimer?: () => void } | null = null;
+    let queueTimer: NodeJS.Timeout | null = null;
+
+    const armQueueTimer = () => {
       if (settled) return;
-      handleAbort("LLM request timed out waiting in execution queue.");
-    }, queueTimeoutMs);
+      if (queueTimer) clearTimeout(queueTimer);
+      const queueTimeoutMs = resolveDynamicQueueTimeoutMs();
+      queueTimer = setTimeout(() => {
+        if (settled) return;
+        handleAbort("LLM request timed out waiting in execution queue.");
+      }, queueTimeoutMs);
+    };
+    armQueueTimer();
 
     const cleanupAbort = () => {
       if (queueTimer) {
@@ -551,6 +582,7 @@ export function withSequentialLLMExecution<T>(
     waitEntry = {
       run: executeTask,
       onAbort: handleAbort,
+      refreshTimer: armQueueTimer,
     };
 
     if (signal) {
@@ -574,12 +606,19 @@ function withShardedLLMExecution<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    let waitEntry: { run: () => void; onAbort: () => void } | null = null;
-    const queueTimeoutMs = Number(process.env.LLM_QUEUE_TIMEOUT_MS) || 60_000;
-    let queueTimer: NodeJS.Timeout | null = setTimeout(() => {
+    let waitEntry: { run: () => void; onAbort: () => void; refreshTimer?: () => void } | null = null;
+    let queueTimer: NodeJS.Timeout | null = null;
+
+    const armQueueTimer = () => {
       if (settled) return;
-      handleAbort("LLM request timed out waiting in execution queue.");
-    }, queueTimeoutMs);
+      if (queueTimer) clearTimeout(queueTimer);
+      const queueTimeoutMs = resolveDynamicQueueTimeoutMs();
+      queueTimer = setTimeout(() => {
+        if (settled) return;
+        handleAbort("LLM request timed out waiting in execution queue.");
+      }, queueTimeoutMs);
+    };
+    armQueueTimer();
 
     const cleanupAbort = () => {
       if (queueTimer) {
@@ -627,7 +666,7 @@ function withShardedLLMExecution<T>(
       }
     };
 
-    waitEntry = { run: executeTask, onAbort: handleAbort };
+    waitEntry = { run: executeTask, onAbort: handleAbort, refreshTimer: armQueueTimer };
     if (signal) signal.addEventListener("abort", handleAbort, { once: true });
 
     const laneCap = getLaneConcurrency();
@@ -666,10 +705,14 @@ async function fetchWithRetry(
     Number.isFinite(rawRetries) && rawRetries >= 0 ? Math.floor(rawRetries) : 1;
 
   const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS);
+  const maxAtriaCeiling =
+    Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
+      ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
+      : ATRIA_MAX_TIMEOUT_MS;
   const effectiveTimeoutMs = isAtriaUrl
     ? Math.min(
-        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : ATRIA_MAX_TIMEOUT_MS,
-        ATRIA_MAX_TIMEOUT_MS,
+        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : maxAtriaCeiling,
+        maxAtriaCeiling,
       )
     : Math.min(
         Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
@@ -1025,7 +1068,13 @@ async function withProviderFallback<T>(
     try {
       const result = await operation(provider, providerExecutionOptions);
       if (executionOptions.circuitBreaker) {
-        executionOptions.circuitBreaker.failureCounts[provider.id] = 0;
+        const prevFailures = Number(
+          executionOptions.circuitBreaker.failureCounts[provider.id] || 0,
+        );
+        executionOptions.circuitBreaker.failureCounts[provider.id] = Math.max(
+          0,
+          prevFailures - 1,
+        );
       }
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
@@ -1060,6 +1109,18 @@ async function withProviderFallback<T>(
       if (isAbort) {
         throw normalized;
       }
+      const attemptElapsedMs = Date.now() - startedAt;
+      const expectedMaxTimeoutMs =
+        Number(executionOptions.timeoutMs || 0) > 0
+          ? Number(executionOptions.timeoutMs)
+          : CLOUDFLARE_MAX_TIMEOUT_MS;
+      const isOsSleepWakeGap = attemptElapsedMs > expectedMaxTimeoutMs + 60_000;
+      if (isOsSleepWakeGap) {
+        console.warn(
+          `[llm] Detected OS sleep/wake suspension (${Math.round(attemptElapsedMs / 1000)}s elapsed on ${provider.name}); pausing 3s for network stack recovery before fallback...`,
+        );
+        await sleepWithSignal(3_000, executionOptions.signal);
+      }
       const errStatus =
         normalized instanceof LLMProviderError ? normalized.status : undefined;
       console.error(
@@ -1075,7 +1136,7 @@ async function withProviderFallback<T>(
           normalized instanceof LLMProviderError
             ? normalized.status
             : undefined,
-        latencyMs: Date.now() - startedAt,
+        latencyMs: attemptElapsedMs,
         error: truncateProviderError(normalized.message),
       });
 
@@ -1120,7 +1181,11 @@ async function withProviderFallback<T>(
         console.warn(
           `[llm] ${provider.name} disabled for the rest of this mining session due to exhausted quota (HTTP 429 code 1300).`,
         );
-      } else if (breaker && isCircuitBreakingProviderFailure(normalized)) {
+      } else if (
+        breaker &&
+        !isOsSleepWakeGap &&
+        isCircuitBreakingProviderFailure(normalized)
+      ) {
         const failuresForProvider =
           Number(breaker.failureCounts[provider.id] || 0) + 1;
         breaker.failureCounts[provider.id] = failuresForProvider;
@@ -1131,20 +1196,26 @@ async function withProviderFallback<T>(
           );
         }
       }
+      const isFullRequestTimeout =
+        !hasUntrustedMessage(normalized) &&
+        /LLM request timed out after/i.test(normalized.message);
       const isTransientTimeoutOrRateLimit =
         !isExhaustedQuota &&
+        !isOsSleepWakeGap &&
         ((normalized instanceof LLMProviderError &&
           (normalized.status === 429 || normalized.status === 524)) ||
         (!hasUntrustedMessage(normalized) &&
           (/429|rate[-_ ]?limit|524/i.test(normalized.message) ||
-           /LLM request timed out after/i.test(normalized.message))));
+           isFullRequestTimeout)));
       if (isTransientTimeoutOrRateLimit) {
         const cooldownMs =
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
             ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
-            : process.env.LLM_MAX_RETRIES === "0"
-              ? 5_000
-              : 30_000;
+            : isFullRequestTimeout
+              ? 90_000
+              : process.env.LLM_MAX_RETRIES === "0"
+                ? 5_000
+                : 30_000;
         if (cooldownMs > 0) {
           providerCooldowns.set(provider.id, Date.now() + cooldownMs);
           console.warn(
@@ -1191,61 +1262,55 @@ export function computeAtriaDynamicMaxTokens(
       ? requestedMaxTokens
       : 4000;
 
-  // Calculate total prompt characters from messages and metadata safely
-  const messageChars = (Array.isArray(messages) ? messages : []).reduce(
+  // Calculate total prompt characters and user payload density dynamically without locking to a stage type
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const messageChars = safeMessages.reduce(
     (acc, m) =>
       acc + (typeof m?.content === "string" ? m.content.length : 0),
     0,
   );
+  const userText = safeMessages
+    .filter((m) => m?.role !== "system")
+    .map((m) => (typeof m?.content === "string" ? m.content : ""))
+    .join("\n");
+
   const chunkChars = Number(metadata?.chunkSize || 0);
-  const effectiveInputChars = Math.max(messageChars, chunkChars);
+  const promptSize = Number(metadata?.promptSize || 0);
+  const effectiveInputChars = Math.max(messageChars, chunkChars, promptSize);
+  const estimatedInputTokens = Math.ceil(effectiveInputChars / 3.5);
 
-  // Identify task type / stage
-  const stage = String(
-    metadata?.stage || metadata?.taskType || "",
-  ).toLowerCase();
-  const isExtraction =
-    stage === "extraction" ||
-    /extract/i.test(stage) ||
-    messages.some(
-      (m) =>
-        typeof m?.content === "string" &&
-        /evidence blocks|extract all distinct/i.test(m.content),
-    );
-  const isJudgeOrVerify =
-    stage === "judge" ||
-    /judge|verify|finalist/i.test(stage) ||
-    messages.some(
-      (m) =>
-        typeof m?.content === "string" &&
-        /finalist|verdict|judge|disqualif/i.test(m.content),
-    );
+  // Dynamically measure entity/block density in the payload
+  const explicitItems = Math.max(
+    0,
+    Number(
+      metadata?.candidateCount ||
+        metadata?.itemCount ||
+        metadata?.blockCount ||
+        0,
+    ),
+  );
+  const detectedItems = (
+    userText.match(
+      /(?:^|\n)(?:SOURCE_BLOCK|LINK:|CANDIDATE\b|###\s*Candidate|\[\d+\])/gi,
+    ) || []
+  ).length;
+  const itemCount = Math.max(explicitItems, detectedItems);
 
-  let reasoningHeadroom = 4000;
+  // Scale visible output budget dynamically to handle whatever volume the engine sends
+  const dynamicOutputBudget = Math.max(
+    baseRequested,
+    itemCount * 400,
+    Math.round(estimatedInputTokens * 0.5),
+  );
 
-  if (isExtraction) {
-    // Extraction: requires deep thinking over multi-source evidence blocks.
-    // Scales dynamically with chunk size / prompt length without an artificial ceiling.
-    reasoningHeadroom = Math.max(
-      4000,
-      Math.round(effectiveInputChars * 0.8),
-    );
-  } else if (isJudgeOrVerify) {
-    // Evaluation / verification of prospect criteria
-    reasoningHeadroom = Math.max(
-      3500,
-      Math.round(effectiveInputChars * 0.6),
-    );
-  } else {
-    // General / strategist / contract generation
-    reasoningHeadroom = Math.max(
-      3000,
-      Math.round(effectiveInputChars * 0.5),
-    );
-  }
+  // Scale reasoning headroom continuously with input volume and item density without stage-type locks or ceilings
+  const reasoningHeadroom = Math.max(
+    4000,
+    Math.round(effectiveInputChars * 0.85) + itemCount * 350,
+  );
 
   // Combined token budget for Atria (reasoning_content + visible content)
-  const flexibleBudget = baseRequested + reasoningHeadroom;
+  const flexibleBudget = dynamicOutputBudget + reasoningHeadroom;
 
   // Allow explicit env override if provided, otherwise allow flexible budget without static ceiling
   const envOverride = Number(process.env.ATRIA_MAX_TOKENS || 0);
@@ -1254,6 +1319,50 @@ export function computeAtriaDynamicMaxTokens(
   }
 
   return Math.max(4000, flexibleBudget);
+}
+
+export function computeAtriaDynamicTimeoutMs(
+  effectiveMaxTokens: number,
+  messages: ChatMessage[],
+  requestedTimeoutMs?: number,
+  metadata?: Record<string, any>,
+): number {
+  if (
+    requestedTimeoutMs !== undefined &&
+    requestedTimeoutMs > 0 &&
+    requestedTimeoutMs < 1000
+  ) {
+    return requestedTimeoutMs;
+  }
+
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const promptChars = safeMessages.reduce(
+    (acc, m) =>
+      acc + (typeof m?.content === "string" ? m.content.length : 0),
+    0,
+  );
+  const chunkChars = Number(metadata?.chunkSize || 0);
+  const promptSize = Number(metadata?.promptSize || 0);
+  const effectiveChars = Math.max(promptChars, chunkChars, promptSize);
+  const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
+
+  // Scale timeout dynamically with prefill tokens + reasoning/output token budget
+  const workloadTimeoutMs =
+    30_000 +
+    Math.round(estimatedInputTokens * 4) +
+    Math.round(Math.max(0, effectiveMaxTokens) * 4.5);
+
+  const minAtriaTimeout = Math.max(
+    60_000,
+    Number(process.env.ATRIA_MIN_TIMEOUT_MS || 0),
+    requestedTimeoutMs || 0,
+  );
+  const maxAtriaTimeout =
+    Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
+      ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
+      : ATRIA_MAX_TIMEOUT_MS;
+
+  return Math.min(maxAtriaTimeout, Math.max(minAtriaTimeout, workloadTimeoutMs));
 }
 
 async function sendChatCompletion(
@@ -1285,29 +1394,12 @@ async function sendChatCompletion(
 
   let timeoutForCall = options?.timeoutMs;
   if (isAtriaTarget) {
-    const promptChars = (Array.isArray(messages) ? messages : []).reduce(
-      (acc, m) =>
-        acc + (typeof m?.content === "string" ? m.content.length : 0),
-      0,
+    timeoutForCall = computeAtriaDynamicTimeoutMs(
+      effectiveMaxTokens,
+      messages,
+      options?.timeoutMs,
+      options?.metadata,
     );
-    const chunkChars = Number(options?.metadata?.chunkSize || 0);
-    const effectiveChars = Math.max(promptChars, chunkChars);
-    const stage = String(options?.metadata?.stage || "").toLowerCase();
-    const isExtraction = stage === "extraction" || /extract/i.test(stage);
-
-    // Compute dynamic adaptive timeout for Atria (120s-150s for heavy chunks)
-    const minAtriaTimeout = 120_000;
-    const maxAtriaTimeout = ATRIA_MAX_TIMEOUT_MS;
-    let adaptiveTimeout = minAtriaTimeout;
-    if (isExtraction || effectiveChars > 3000) {
-      const scale = Math.min(1, Math.max(0, (effectiveChars - 2000) / 6000));
-      adaptiveTimeout = Math.round(
-        minAtriaTimeout + scale * (maxAtriaTimeout - minAtriaTimeout),
-      );
-    }
-    if (!options?.timeoutMs || options.timeoutMs >= 1000) {
-      timeoutForCall = Math.max(options?.timeoutMs || 0, adaptiveTimeout);
-    }
   }
 
   const sessionHeaders: Record<string, string> = {};
@@ -2268,10 +2360,15 @@ export async function openAIStructured<T>(
       const retryMaxTokens =
         provider.id === "groq"
           ? Math.min(options?.maxTokens || 400, 950)
-          : Math.max(
-              Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
-              Math.min((options?.maxTokens || 4000) * 2, 8000),
-            );
+          : provider.id === "atria"
+            ? Math.max(
+                Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
+                (options?.maxTokens || 4000) * 2,
+              )
+            : Math.max(
+                Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
+                Math.min((options?.maxTokens || 4000) * 2, 8000),
+              );
       const retryMessages: ChatMessage[] = [
         {
           role: "system",

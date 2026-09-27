@@ -172,11 +172,24 @@ Focus exclusively on query-specific signals.
 Return JSON with "dynamic_signals": array of strings and "categorized": object with tooling, hiring, pain, growth arrays.`;
 
   try {
+    const dynamicSignalTokens = Math.max(
+      800,
+      contract.requirements.length * 250,
+    );
     const result = await openAIStructured<any>(
       prompt,
       intentSignalsSchema,
       'You are an expert B2B intent analyst compiling custom website buying signals.',
-      { maxTokens: 500, temperature: 0, circuitBreaker }
+      {
+        maxTokens: dynamicSignalTokens,
+        temperature: 0,
+        circuitBreaker,
+        metadata: {
+          stage: 'intent_signals',
+          itemCount: contract.requirements.length,
+          promptSize: prompt.length,
+        },
+      }
     );
 
     const dynamic = normalizeDynamicSignals(result?.dynamic_signals);

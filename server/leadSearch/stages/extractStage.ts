@@ -809,12 +809,17 @@ Evidence:
         structuredPromptOverheadTokens,
     ),
   );
+  const maxBlocksPerChunk = Math.max(
+    2,
+    Math.min(12, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 6)),
+  );
   const chunks = chunkEvidenceBlocksByTokenBudget(
     evidenceBlocks,
     evidenceTokenBudget,
+    maxBlocksPerChunk,
   );
   logEvent(
-    `Round ${round}: extracting ${chunks.length} token-budgeted evidence batches (max evidence tokens: ${evidenceTokenBudget}).`,
+    `Round ${round}: extracting ${chunks.length} token-budgeted evidence batches (max evidence tokens: ${evidenceTokenBudget}, max candidates/batch: ${maxBlocksPerChunk}).`,
   );
   recordTrace({
     phase: "extraction",

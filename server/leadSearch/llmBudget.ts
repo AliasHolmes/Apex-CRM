@@ -7,12 +7,21 @@ export function estimateTokenCount(value: unknown, charsPerToken = DEFAULT_CHARS
   return Math.ceil(String(value || '').length / normalizedCharsPerToken);
 }
 
-export function chunkEvidenceBlocksByTokenBudget(blocks: string[], maxTokens: number): string[] {
+export function chunkEvidenceBlocksByTokenBudget(
+  blocks: string[],
+  maxTokens: number,
+  maxBlocksPerChunk?: number,
+): string[] {
   const normalizedBudget = Math.max(1, Math.floor(maxTokens));
   const maxChars = normalizedBudget * DEFAULT_CHARS_PER_TOKEN;
+  const maxBlocks =
+    maxBlocksPerChunk !== undefined && Number.isFinite(maxBlocksPerChunk) && maxBlocksPerChunk > 0
+      ? Math.max(1, Math.floor(maxBlocksPerChunk))
+      : Number.POSITIVE_INFINITY;
   const chunks: string[] = [];
   let current = '';
   let currentLength = 0;
+  let currentBlocks = 0;
 
   for (const rawBlock of blocks) {
     // One pathological search result must not blow the budget for every fallback
@@ -21,13 +30,18 @@ export function chunkEvidenceBlocksByTokenBudget(blocks: string[], maxTokens: nu
     const block = String(rawBlock || '').slice(0, maxChars);
     if (!block) continue;
 
-    if (current && currentLength + block.length > maxChars) {
+    if (
+      current &&
+      (currentLength + block.length > maxChars || currentBlocks >= maxBlocks)
+    ) {
       chunks.push(current);
       current = block;
       currentLength = block.length;
+      currentBlocks = 1;
     } else {
       current += block;
       currentLength += block.length;
+      currentBlocks++;
     }
   }
 

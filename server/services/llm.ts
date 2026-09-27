@@ -1296,22 +1296,22 @@ export function computeAtriaDynamicMaxTokens(
   );
   const detectedItems = (
     userText.match(
-      /(?:^|\n)(?:SOURCE_BLOCK|LINK:|CANDIDATE\b|###\s*Candidate|\[\d+\])/gi,
+      /(?:^|\n)(?:---\s*PROFILE CANDIDATE\s*---|SOURCE_BLOCK|CANDIDATE\b|###\s*Candidate|\[\d+\])/gi,
     ) || []
   ).length;
-  const itemCount = Math.max(explicitItems, detectedItems);
+  const itemCount = explicitItems > 0 ? explicitItems : detectedItems;
 
   // Scale visible output budget dynamically to handle whatever volume the engine sends
   const dynamicOutputBudget = Math.max(
     baseRequested,
-    itemCount * 400,
-    Math.round(estimatedInputTokens * 0.5),
+    itemCount * 250,
+    Math.round(estimatedInputTokens * 0.6),
   );
 
-  // Scale reasoning headroom continuously with input volume and item density without stage-type locks or ceilings
+  // Scale reasoning headroom continuously with input token volume and item density without stage-type locks or ceilings
   const reasoningHeadroom = Math.max(
-    4000,
-    Math.round(effectiveInputChars * 0.85) + itemCount * 350,
+    3000,
+    Math.round(estimatedInputTokens * 1.25) + itemCount * 250,
   );
 
   // Combined token budget for Atria (reasoning_content + visible content)

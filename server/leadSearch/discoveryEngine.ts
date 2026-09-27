@@ -860,11 +860,15 @@ export async function executeDiscoverySession(
       10,
     );
     const companyIntentMaxPerSearch = Math.max(
-      Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 3),
+      Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 0),
       0,
     );
     const companyIntentConcurrency = Math.max(
-      Number(process.env.COMPANY_INTENT_CONCURRENCY || 4),
+      Number(
+        process.env.BRIGHTDATA_COMPANY_INTENT_CONCURRENCY ||
+          process.env.COMPANY_INTENT_CONCURRENCY ||
+          3,
+      ),
       1,
     );
     const linkedinPostIntentEnabled =

@@ -191,7 +191,11 @@ export async function executePlanStage(
   );
 
   const envTasks = Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND);
-  const prevAccepted = Number((state.previousRoundSummary as any)?.accepted ?? -1);
+  const prevAccepted = Number(
+    (state.previousRoundSummary as any)?.acceptedLeads ??
+      (state.previousRoundSummary as any)?.accepted ??
+      -1,
+  );
   const lowYieldBoost = isRecoveryMode || (round > 1 && prevAccepted >= 0 && prevAccepted <= 2) ? 1.5 : 1.0;
   const shortfallDrivenTasks = Math.ceil(Math.max(remaining, config.capacity?.candidateBatchSize || 12) / 3.5);
   const maxTasks =

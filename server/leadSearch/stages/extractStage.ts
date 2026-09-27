@@ -876,6 +876,8 @@ Evidence:
                 chunkIndex,
                 chunkTotal: chunks.length,
                 chunkSize: chunk.length,
+                blockCount:
+                  (chunk.match(/--- PROFILE CANDIDATE ---/g) || []).length || 1,
                 sessionId: config.sessionId,
               },
               onProviderAttempt: (attempt) =>

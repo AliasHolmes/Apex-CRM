@@ -1217,7 +1217,7 @@ async function withProviderFallback<T>(
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
             ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
             : isFullRequestTimeout
-              ? 90_000
+              ? 15_000
               : process.env.LLM_MAX_RETRIES === "0"
                 ? 5_000
                 : 30_000;
@@ -1231,6 +1231,66 @@ async function withProviderFallback<T>(
       console.warn(
         `[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`,
       );
+    }
+  }
+
+  // Cooldown-starvation recovery: if all non-circuit-broken providers were skipped solely due to
+  // overlapping temporary cooldowns (failures.length === 0), reinstate the highest-priority
+  // available provider (e.g., Atria or Byesu) rather than failing with 0 attempts.
+  if (failures.length === 0) {
+    const fallbackCandidate = providers.find(
+      (p) => !executionOptions.circuitBreaker?.disabledProviderIds.has(p.id),
+    );
+    if (fallbackCandidate) {
+      providerCooldowns.delete(fallbackCandidate.id);
+      const startedAt = Date.now();
+      let attemptUsage: LLMUsage | undefined;
+      const providerExecutionOptions: LLMExecutionOptions = {
+        ...executionOptions,
+        onUsage: (usage) => {
+          attemptUsage = usage;
+          executionOptions.onUsage?.(usage);
+        },
+      };
+      try {
+        const result = await operation(
+          fallbackCandidate,
+          providerExecutionOptions,
+        );
+        executionOptions.onProviderAttempt?.({
+          providerId: fallbackCandidate.id,
+          provider: fallbackCandidate.name,
+          model: fallbackCandidate.model,
+          actualModel: attemptUsage?.model || fallbackCandidate.model,
+          tokens: attemptUsage
+            ? {
+                input: attemptUsage.inputTokens,
+                output: attemptUsage.outputTokens,
+                total: attemptUsage.totalTokens,
+              }
+            : undefined,
+          status: "success",
+          latencyMs: Date.now() - startedAt,
+        });
+        return result;
+      } catch (error: any) {
+        const normalized =
+          error instanceof Error ? error : new Error(String(error));
+        failures.push(normalized);
+        executionOptions.onProviderAttempt?.({
+          providerId: fallbackCandidate.id,
+          provider: fallbackCandidate.name,
+          model: fallbackCandidate.model,
+          actualModel: attemptUsage?.model || fallbackCandidate.model,
+          status: "error",
+          statusCode:
+            normalized instanceof LLMProviderError
+              ? normalized.status
+              : undefined,
+          latencyMs: Date.now() - startedAt,
+          error: truncateProviderError(normalized.message),
+        });
+      }
     }
   }
 
@@ -1308,10 +1368,14 @@ export function computeAtriaDynamicMaxTokens(
     Math.round(estimatedInputTokens * 0.6),
   );
 
-  // Scale reasoning headroom continuously with input token volume and item density without stage-type locks or ceilings
+  const isJudgeLike =
+    /judge|finalist|verdict|disqualif/i.test(String(metadata?.stage || "")) ||
+    /\b(verdict|disqualif|evaluate these candidates)\b/i.test(userText);
+
+  // Scale reasoning headroom continuously with input volume and item density without static ceilings
   const reasoningHeadroom = Math.max(
-    3000,
-    Math.round(estimatedInputTokens * 1.25) + itemCount * 250,
+    isJudgeLike ? 3500 : 3000,
+    Math.round(effectiveInputChars * 0.8) + itemCount * 250,
   );
 
   // Combined token budget for Atria (reasoning_content + visible content)
@@ -1371,6 +1435,50 @@ export function computeAtriaDynamicTimeoutMs(
   return Math.min(maxAtriaTimeout, Math.max(minAtriaTimeout, workloadTimeoutMs));
 }
 
+export function computeByesuDynamicTimeoutMs(
+  effectiveMaxTokens: number,
+  messages: ChatMessage[],
+  requestedTimeoutMs?: number,
+  metadata?: Record<string, any>,
+): number {
+  if (
+    requestedTimeoutMs !== undefined &&
+    requestedTimeoutMs > 0 &&
+    requestedTimeoutMs < 1000
+  ) {
+    return requestedTimeoutMs;
+  }
+
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const promptChars = safeMessages.reduce(
+    (acc, m) =>
+      acc + (typeof m?.content === "string" ? m.content.length : 0),
+    0,
+  );
+  const chunkChars = Number(metadata?.chunkSize || 0);
+  const promptSize = Number(metadata?.promptSize || 0);
+  const effectiveChars = Math.max(promptChars, chunkChars, promptSize);
+  const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
+
+  // Scale timeout dynamically for Byesu GPT-5/GPT-6 models so multi-candidate
+  // batches do not prematurely abort at 30s/35s when falling back from Atria.
+  const workloadTimeoutMs =
+    45_000 +
+    Math.round(estimatedInputTokens * 6) +
+    Math.round(Math.max(0, effectiveMaxTokens) * 6);
+
+  const minByesuTimeout = Math.max(
+    75_000,
+    Number(process.env.BYESU_MIN_TIMEOUT_MS || 0),
+    requestedTimeoutMs || 0,
+  );
+
+  return Math.min(
+    CLOUDFLARE_MAX_TIMEOUT_MS,
+    Math.max(minByesuTimeout, workloadTimeoutMs),
+  );
+}
+
 async function sendChatCompletion(
   provider: LLMProvider,
   messages: ChatMessage[],
@@ -1387,6 +1495,7 @@ async function sendChatCompletion(
   }
   let res: Response;
   const isAtriaTarget = provider.id === "atria";
+  const isByesuTarget = provider.id === "primary";
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, 950)
@@ -1406,6 +1515,13 @@ async function sendChatCompletion(
       options?.timeoutMs,
       options?.metadata,
     );
+  } else if (isByesuTarget) {
+    timeoutForCall = computeByesuDynamicTimeoutMs(
+      effectiveMaxTokens,
+      messages,
+      options?.timeoutMs,
+      options?.metadata,
+    );
   }
 
   const sessionHeaders: Record<string, string> = {};
@@ -1414,7 +1530,9 @@ async function sendChatCompletion(
     sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
   }
   const isReasoningCapable =
-    /\b(gpt-5|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model);
+    /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model);
+  const effectiveReasoningEffort =
+    options?.reasoningEffort ?? (options?.responseFormat ? "low" : undefined);
   const callStartedAt = Date.now();
   try {
     res = await fetchWithRetry(
@@ -1439,8 +1557,8 @@ async function sendChatCompletion(
           ...(options?.responseFormat
             ? { response_format: options.responseFormat }
             : {}),
-          ...(options?.reasoningEffort && isReasoningCapable
-            ? { reasoning_effort: options.reasoningEffort }
+          ...(effectiveReasoningEffort && isReasoningCapable
+            ? { reasoning_effort: effectiveReasoningEffort }
             : {}),
         }),
         signal: options?.signal,

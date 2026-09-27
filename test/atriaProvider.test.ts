@@ -502,5 +502,87 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
       `expected judge headroom >= 3500 (total >= 5500), got ${judgeBudget}`,
     );
   });
+
+  it('places Byesu GPT as second priority behind Atria and defaults reasoning_effort to low on structured JSON fallback', async () => {
+    process.env.ATRIA_API_KEY = 'test-atria-key';
+    process.env.ATRIA_PRIORITY = 'primary';
+    process.env.BYESU_API_KEY = 'test-byesu-key';
+    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+
+    const llm = await importLLM('byesu-second-priority');
+    llm.clearProviderCooldowns();
+
+    const configuredIds = llm
+      .getLLMProviderSummaries()
+      .filter((p: any) => p.configured)
+      .map((p: any) => p.id);
+
+    assert.deepEqual(configuredIds.slice(0, 2), ['atria', 'primary']);
+
+    const dynamicTimeout = llm.computeByesuDynamicTimeoutMs(
+      4000,
+      [{ role: 'user', content: 'Evaluate 10 candidates' }],
+      35000,
+    );
+    assert.ok(
+      dynamicTimeout >= 75000,
+      `expected Byesu dynamic timeout >= 75000ms instead of 35000ms, got ${dynamicTimeout}`,
+    );
+
+    const capturedCalls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = async (url, options) => {
+      const body = JSON.parse((options as RequestInit).body as string);
+      capturedCalls.push({ url: url.toString(), body });
+      if (capturedCalls.length === 1) {
+        return jsonResponse({ error: { message: 'Atria gateway timeout' } }, 524);
+      }
+      return jsonResponse({
+        model: 'gpt-5.6-terra',
+        choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
+      });
+    };
+
+    const res = await llm.openAIStructured<{ ok: boolean }>(
+      'Test fallback to Byesu GPT',
+      { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      'Return JSON',
+      { maxRetries: 0 },
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(capturedCalls.length, 2);
+    assert.match(capturedCalls[0].url, /atria-asi\.ai/);
+    assert.match(capturedCalls[1].url, /byesu\.com/);
+    assert.equal(capturedCalls[1].body.model, 'gpt-5.6-terra');
+    assert.equal(capturedCalls[1].body.reasoning_effort, 'low');
+  });
+
+  it('recovers from cooldown starvation instead of failing with 0 attempts when Atria and Byesu have overlapping cooldowns', async () => {
+    process.env.ATRIA_API_KEY = 'test-atria-key';
+    process.env.ATRIA_PRIORITY = 'primary';
+    process.env.BYESU_API_KEY = 'test-byesu-key';
+
+    const llm = await importLLM('cooldown-starvation-recovery');
+    llm.clearProviderCooldowns();
+    llm.providerCooldowns.set('atria', Date.now() + 60_000);
+    llm.providerCooldowns.set('primary', Date.now() + 60_000);
+
+    const breaker = llm.createLLMSessionCircuitBreaker(4);
+    breaker.disabledProviderIds.add('atria');
+
+    globalThis.fetch = async () =>
+      jsonResponse({
+        model: 'gpt-5.5',
+        choices: [{ finish_reason: 'stop', message: { content: 'byesu-recovered' } }],
+      });
+
+    const res = await llm.openAIText('test prompt', undefined, {
+      circuitBreaker: breaker,
+      maxRetries: 0,
+    });
+
+    assert.equal(res.text, 'byesu-recovered');
+    assert.equal(res.provider, 'Byesu');
+  });
 });
 

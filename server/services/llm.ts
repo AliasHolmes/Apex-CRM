@@ -1111,9 +1111,14 @@ async function withProviderFallback<T>(
       }
       const attemptElapsedMs = Date.now() - startedAt;
       const expectedMaxTimeoutMs =
-        Number(executionOptions.timeoutMs || 0) > 0
-          ? Number(executionOptions.timeoutMs)
-          : CLOUDFLARE_MAX_TIMEOUT_MS;
+        provider.id === "atria"
+          ? Math.max(
+              ATRIA_MAX_TIMEOUT_MS,
+              Number(process.env.ATRIA_MAX_TIMEOUT_MS || ATRIA_MAX_TIMEOUT_MS),
+            )
+          : Number(executionOptions.timeoutMs || 0) > 0
+            ? Number(executionOptions.timeoutMs)
+            : CLOUDFLARE_MAX_TIMEOUT_MS;
       const isOsSleepWakeGap = attemptElapsedMs > expectedMaxTimeoutMs + 60_000;
       if (isOsSleepWakeGap) {
         console.warn(
@@ -1347,13 +1352,14 @@ export function computeAtriaDynamicTimeoutMs(
   const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
 
   // Scale timeout dynamically with prefill tokens + reasoning/output token budget
+  // Calibrated to Atria vLLM throughput (~35-45 tok/s + queue/prefill overhead)
   const workloadTimeoutMs =
-    30_000 +
-    Math.round(estimatedInputTokens * 4) +
-    Math.round(Math.max(0, effectiveMaxTokens) * 4.5);
+    45_000 +
+    Math.round(estimatedInputTokens * 8) +
+    Math.round(Math.max(0, effectiveMaxTokens) * 10);
 
   const minAtriaTimeout = Math.max(
-    60_000,
+    90_000,
     Number(process.env.ATRIA_MIN_TIMEOUT_MS || 0),
     requestedTimeoutMs || 0,
   );

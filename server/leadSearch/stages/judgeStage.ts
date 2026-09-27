@@ -665,7 +665,7 @@ export async function evaluateIncrementalJudgeBatches(
           logEvent,
           circuitBreaker: llmCircuitBreaker,
           timeoutMs: 45_000,
-          batchSize: Math.max(6, microBatchSize),
+          batchSize: Math.max(6, maxBatchCandidates),
         },
       );
       if (attrSummary.attributedCount > 0) {
@@ -714,10 +714,10 @@ export async function evaluateIncrementalJudgeBatches(
       continue;
     }
 
-    const activeWaveBatches: FinalistCandidate[][] = [];
-    for (let i = 0; i < activeWaveCandidates.length; i += microBatchSize) {
-      activeWaveBatches.push(activeWaveCandidates.slice(i, i + microBatchSize));
-    }
+    const activeCandidateSet = new Set(activeWaveCandidates);
+    const activeWaveBatches: FinalistCandidate[][] = waveBatches
+      .map((batch) => batch.filter((c) => activeCandidateSet.has(c)))
+      .filter((batch) => batch.length > 0);
 
     const waveResults: any[][] = await Promise.all(
       activeWaveBatches.map((batch, idx) =>

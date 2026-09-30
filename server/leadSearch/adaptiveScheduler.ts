@@ -13,6 +13,7 @@ export type AdaptivePerformanceRow = {
   duplicate_candidates?: number;
   search_latency_ms?: number;
   provider_units?: number;
+  accepted_candidates?: number;
   identity_pass_count?: number;
   context_pass_count?: number;
   signal_pass_count?: number;
@@ -43,6 +44,7 @@ export type AdaptiveSchedulerOptions = {
   round?: number;
   explorationFloorEvery?: number;
   outcomeRate?: number;
+  outcomeRateByScope?: Map<string, number> | Record<string, number>;
 };
 
 const finiteCount = (value: unknown) => {
@@ -50,16 +52,34 @@ const finiteCount = (value: unknown) => {
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 };
 
+export function buildScopeKey(input: {
+  domainCluster?: string;
+  centroid?: string;
+  family?: string;
+  lane?: string;
+  provider?: string;
+}): string {
+  const prefix = input.centroid
+    ? input.centroid.trim().toLowerCase()
+    : (input.domainCluster && input.domainCluster.trim().toLowerCase() !== 'global'
+        ? input.domainCluster.trim().toLowerCase()
+        : '');
+  const family = (input.family || 'general').trim().toLowerCase();
+  const lane = (input.lane || 'person').trim().toLowerCase();
+  const provider = (input.provider || 'tavily').trim().toLowerCase();
+  return [prefix, family, lane, provider].filter(Boolean).join('|');
+}
+
 export function deriveDomainCluster(queryOrBrief: string): string {
   const text = String(queryOrBrief || '').toLowerCase();
   if (!text.trim()) return 'global';
 
   const clusters: Array<{ id: string; pattern: RegExp }> = [
     { id: 'b2b_agency', pattern: /\b(agenc(?:y|ies)|lead[-\s]?gen|seo|creative|copywriting|performance marketing|growth marketing|media buyer(?:s)?|advertising)\b/gi },
-    { id: 'executive_coaching', pattern: /\b(coach(?:es|ing)?|executive coach(?:es)?|mastermind(?:s)?|mentor(?:s|ship)?|consultan(?:t|ts|cy|cies)|consulting|advisory)\b/gi },
+    { id: 'executive_coaching', pattern: /\b(coach(?:es|ing)?|executive coach(?:es)?|mastermind(?:s)?|mentor(?:s|ship)?|management consultan(?:t|ts|cy|cies)|management consulting|leadership advisory|advisory)\b/gi },
     { id: 'b2b_saas', pattern: /\b(saas|software|platform(?:s)?|cloud|api(?:s)?|fintech|edtech|healthtech|devops|cybersecurity)\b/gi },
     { id: 'local_services', pattern: /\b(dental|dentist(?:s)?|clinic(?:s)?|doctor(?:s)?|plumbing|hvac|roofing|electrician(?:s)?|contractor(?:s)?|realtor(?:s)?|real estate)\b/gi },
-    { id: 'ecommerce_retail', pattern: /\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store(?:s)?|brand(?:s)?)\b/gi },
+    { id: 'ecommerce_retail', pattern: /\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store(?:s)?)\b/gi },
     { id: 'healthcare_life_sciences', pattern: /\b(biotech|pharma|clinical|healthcare|hospital(?:s)?|medical)\b/gi },
     { id: 'professional_services', pattern: /\b(legal|law firm(?:s)?|attorney(?:s)?|accounting|cpa(?:s)?|tax firm(?:s)?)\b/gi },
     { id: 'manufacturing_industrial', pattern: /\b(manufacturing|industrial|factory|factories|fabrication|plant manager(?:s)?|industrial production)\b/gi },
@@ -67,59 +87,98 @@ export function deriveDomainCluster(queryOrBrief: string): string {
 
   let bestCluster = 'global';
   let bestScore = 0;
+  let isTie = false;
   for (const { id, pattern } of clusters) {
     const matches = text.match(pattern);
     const score = matches ? matches.length : 0;
     if (score > bestScore) {
       bestScore = score;
       bestCluster = id;
+      isTie = false;
+    } else if (score > 0 && score === bestScore) {
+      isTie = true;
     }
   }
-  return bestCluster;
+  return isTie ? 'global' : bestCluster;
 }
 
-export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'> & { domainCluster?: string }) =>
-  [task.domainCluster !== 'global' ? task.domainCluster : '', task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily']
-    .filter(Boolean)
-    .join('|')
-    .toLowerCase();
+export function deriveContractDomainCluster(
+  contractOrSpec: any,
+  briefFallback = '',
+): string {
+  if (!contractOrSpec) return deriveDomainCluster(briefFallback);
+  const parts: string[] = [];
+  if (typeof contractOrSpec.brief === 'string') parts.push(contractOrSpec.brief);
+  if (briefFallback) parts.push(briefFallback);
+
+  const idSpec = contractOrSpec.identitySpec || contractOrSpec;
+  if (Array.isArray(idSpec.industries)) parts.push(...idSpec.industries);
+  if (Array.isArray(idSpec.companyTypes)) parts.push(...idSpec.companyTypes);
+  if (Array.isArray(idSpec.roles)) parts.push(...idSpec.roles);
+  if (Array.isArray(idSpec.includeTitles)) parts.push(...idSpec.includeTitles);
+
+  const combined = parts.filter(Boolean).join(' ');
+  return deriveDomainCluster(combined || briefFallback);
+}
+
+export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'> & { domainCluster?: string; centroid?: string }) =>
+  buildScopeKey({
+    domainCluster: task.domainCluster,
+    centroid: (task as any).centroid,
+    family: task.family,
+    lane: task.lane,
+    provider: task.providerPreference,
+  });
 
 /**
- * Phase 3: Quantized semantic centroids for cross-session MAB pooling.
- * Raw embedding vectors never repeat; 24 stable buckets (domainCluster x tier)
- * let Thompson priors converge instead of permanent cold-start.
- * Hash is deterministic FNV-1a over normalized brief (no network).
+ * Quantized semantic centroids for cross-session MAB pooling.
+ * Deterministic slot key: slot:<cluster>:<role>:<industry>:<geo>
  */
-export const CENTROID_COUNT = 24;
-
-export function quantizeBriefToCentroid(brief: unknown): string {
-  const text = String(brief || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!text) return 'centroid_global_00';
-  const cluster = deriveDomainCluster(text);
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
+export function quantizeBriefToCentroid(briefOrContract: unknown): string {
+  if (!briefOrContract) return 'slot:global:all:all:all';
+  if (typeof briefOrContract === 'string') {
+    const text = briefOrContract.toLowerCase().trim();
+    if (!text) return 'slot:global:all:all:all';
+    const cluster = deriveDomainCluster(text);
+    return `slot:${cluster}:all:all:all`;
   }
-  const bucket = String(hash % CENTROID_COUNT).padStart(2, '0');
-  return `centroid_${cluster}_${bucket}`;
+  const obj = briefOrContract as Record<string, any>;
+  const cluster = deriveContractDomainCluster(obj, obj.brief || '');
+  const idSpec = obj.identitySpec || obj;
+  const role = Array.isArray(idSpec.roles) && idSpec.roles[0]
+    ? String(idSpec.roles[0]).toLowerCase().replace(/[^a-z0-9]/g, '')
+    : (Array.isArray(idSpec.includeTitles) && idSpec.includeTitles[0]
+        ? String(idSpec.includeTitles[0]).toLowerCase().replace(/[^a-z0-9]/g, '')
+        : 'all');
+  const industry = Array.isArray(idSpec.industries) && idSpec.industries[0]
+    ? String(idSpec.industries[0]).toLowerCase().replace(/[^a-z0-9]/g, '')
+    : 'all';
+  const geo = Array.isArray(idSpec.locations) && idSpec.locations[0]
+    ? String(idSpec.locations[0]).toLowerCase().replace(/[^a-z0-9]/g, '')
+    : 'all';
+  return `slot:${cluster}:${role || 'all'}:${industry || 'all'}:${geo || 'all'}`;
 }
 
 export const centroidScopeKey = (
   task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'>,
   centroid: string,
 ) =>
-  [centroid, task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily']
-    .filter(Boolean)
-    .join('|')
-    .toLowerCase();
+  buildScopeKey({
+    centroid,
+    family: task.family,
+    lane: task.lane,
+    provider: task.providerPreference,
+  });
 
-const rowScopeKey = (row: AdaptivePerformanceRow & { domain_cluster?: string; domainCluster?: string }) => {
-  const cluster = row.domain_cluster || row.domainCluster || '';
-  return [cluster !== 'global' ? cluster : '', row.family || 'general', row.lane || 'person', row.provider || 'tavily']
-    .filter(Boolean)
-    .join('|')
-    .toLowerCase();
+const rowScopeKey = (row: AdaptivePerformanceRow & { domain_cluster?: string; domainCluster?: string; scope_key?: string; scopeKey?: string }) => {
+  if (row.scope_key) return row.scope_key.toLowerCase();
+  if (row.scopeKey) return row.scopeKey.toLowerCase();
+  return buildScopeKey({
+    domainCluster: row.domain_cluster || row.domainCluster,
+    family: row.family,
+    lane: row.lane,
+    provider: row.provider,
+  });
 };
 
 /**
@@ -214,6 +273,44 @@ export function scoreAdaptiveArm(
   // G17: hard fails were stored but never read -- penalize harder than rescues.
   const hardFailed = finiteCount((row as any)?.hard_failed_candidates) / safeOutcomeRuns;
 
+  if (isFlagEnabled.adaptiveRewardV2()) {
+    const rawReturned = finiteCount(row?.returned_candidates);
+    const rawQualified = finiteCount(row?.qualified_candidates);
+    const rawRescued = finiteCount(row?.rescued_candidates);
+    const v2Returned = rawReturned / safeOutcomeRuns;
+    const qualifiedOnly = Math.max(0, rawQualified - rawReturned) / safeOutcomeRuns;
+    const v2Rescued = rawRescued / safeOutcomeRuns;
+
+    const successes = v2Returned * 1.0 + qualifiedOnly * 0.5 + v2Rescued * 0.25;
+    const observedTrials = (
+      finiteCount((row as any)?.judged_candidates) ||
+      finiteCount(row?.accepted_candidates) ||
+      finiteCount(row?.unique_candidates)
+    ) / safeOutcomeRuns;
+    const trials = Math.max(Math.ceil(successes), observedTrials);
+    const failures = Math.max(0, trials - successes) + hardFailed * 0.5;
+
+    const outcomeBoost = Math.max(0, Math.min(1, Number(outcomeRate) || 0)) * 4.0;
+    const alphaPost = 1.0 + successes + outcomeBoost;
+    const betaPost = 1.0 + failures;
+    const theta = useThompsonSampling
+      ? sampleBeta(alphaPost, betaPost)
+      : alphaPost / (alphaPost + betaPost);
+
+    const costUnits = Math.max(0.5, providerUnits + latencySeconds * 0.15);
+    const ucbExplorationBonus = explorationStrength * Math.sqrt(Math.log(totalOutcomeRuns + 1) / safeOutcomeRuns);
+    const score = (theta * 10 / costUnits) + ucbExplorationBonus;
+
+    return {
+      score,
+      outcomeRuns,
+      thompsonSample: theta,
+      alpha: alphaPost,
+      beta: betaPost,
+      reason: 'quality_history' as const
+    };
+  }
+
   let classBonus = 0;
   if (isFlagEnabled.classAwareScheduler()) {
     const idPasses = finiteCount(row?.identity_pass_count);
@@ -278,15 +375,42 @@ export function scheduleAdaptiveRetrievalTasks(
   const totalOutcomeRuns = rows.reduce((sum, row) => sum + finiteCount(row.outcome_runs), 0);
   const active = enabled && tasks.length >= maxTasks && totalOutcomeRuns >= minOutcomeRuns;
 
+  const resolveTaskRow = (task: RetrievalTask) => {
+    const slotKey = (task as any).centroid;
+    const slotScopeKey = slotKey
+      ? buildScopeKey({ centroid: slotKey, family: task.family, lane: task.lane, provider: task.providerPreference })
+      : undefined;
+    const clusterScopeKey = buildScopeKey({ domainCluster: task.domainCluster, family: task.family, lane: task.lane, provider: task.providerPreference });
+    const globalScopeKey = buildScopeKey({ domainCluster: 'global', family: task.family, lane: task.lane, provider: task.providerPreference });
+
+    const row = (slotScopeKey ? rowsByScope.get(slotScopeKey) : undefined)
+      ?? rowsByScope.get(clusterScopeKey)
+      ?? rowsByScope.get(globalScopeKey);
+
+    const scopeKey = (slotScopeKey && rowsByScope.has(slotScopeKey))
+      ? slotScopeKey
+      : (rowsByScope.has(clusterScopeKey) ? clusterScopeKey : (slotScopeKey ?? clusterScopeKey));
+
+    return { row, scopeKey };
+  };
+
+  const getOutcomeRateForScope = (scopeKey: string) => {
+    if (options.outcomeRateByScope instanceof Map) {
+      return options.outcomeRateByScope.get(scopeKey) ?? options.outcomeRate ?? 0;
+    }
+    if (options.outcomeRateByScope && typeof options.outcomeRateByScope === 'object') {
+      return (options.outcomeRateByScope as Record<string, number>)[scopeKey] ?? options.outcomeRate ?? 0;
+    }
+    return options.outcomeRate ?? 0;
+  };
+
   if (!active) {
     return {
       tasks,
       active: false,
       totalOutcomeRuns,
       decisions: tasks.map(task => {
-        const scopeKey = adaptiveScopeKey(task);
-        const globalScopeKey = [task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily'].filter(Boolean).join('|').toLowerCase();
-        const row = rowsByScope.get(scopeKey) || rowsByScope.get(globalScopeKey);
+        const { row, scopeKey } = resolveTaskRow(task);
         return {
           scopeKey,
           query: task.query,
@@ -300,10 +424,9 @@ export function scheduleAdaptiveRetrievalTasks(
   }
 
   const ranked = tasks.map((task, originalIndex) => {
-    const scopeKey = adaptiveScopeKey(task);
-    const globalScopeKey = [task.family || 'general', task.lane || 'person', task.providerPreference || 'tavily'].filter(Boolean).join('|').toLowerCase();
-    const row = rowsByScope.get(scopeKey) || rowsByScope.get(globalScopeKey);
-    const arm = scoreAdaptiveArm(row, totalOutcomeRuns, explorationStrength, true, options.outcomeRate ?? 0);
+    const { row, scopeKey } = resolveTaskRow(task);
+    const armOutcomeRate = getOutcomeRateForScope(scopeKey);
+    const arm = scoreAdaptiveArm(row, totalOutcomeRuns, explorationStrength, true, armOutcomeRate);
     return { task, originalIndex, scopeKey, ...arm };
   }).sort((a, b) => b.score - a.score || a.task.priority - b.task.priority || a.originalIndex - b.originalIndex);
 

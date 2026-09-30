@@ -109,5 +109,11 @@ export const isFlagEnabled = {
    * Phase 1.5: Sharded LLM stage queues (strategist|extraction|judge).
    * Default OFF for 100% backwards compatibility; enable via FEATURE_LLM_STAGE_QUEUES=true.
    */
-  llmStageQueues: () => readFlag('FEATURE_LLM_STAGE_QUEUES', false)
+  llmStageQueues: () => readFlag('FEATURE_LLM_STAGE_QUEUES', false),
+
+  /**
+   * Phase 4.2: Non-overlapping Beta-cost reward for adaptive scheduler.
+   * Default OFF for 100% backwards compatibility; enable via LEAD_ADAPTIVE_REWARD_V2=true.
+   */
+  adaptiveRewardV2: () => readFlag('LEAD_ADAPTIVE_REWARD_V2', false)
 };

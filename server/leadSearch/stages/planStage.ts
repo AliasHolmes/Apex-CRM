@@ -5,6 +5,7 @@ import {
   readStoredMetroSaturation,
   readDiscoveredCompanyNames,
   readOutcomeRate,
+  readOutcomeRateByScope,
 } from "../../db.js";
 import { looksLikeCompanyHint } from "../observations.js";
 import {
@@ -34,9 +35,10 @@ import {
 } from "../prospectContract.js";
 import {
   scheduleAdaptiveRetrievalTasks,
-  deriveDomainCluster,
+  deriveContractDomainCluster,
   quantizeBriefToCentroid,
   centroidScopeKey,
+  buildScopeKey,
 } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
 import { summarizeLLM } from "../telemetry.js";
@@ -105,8 +107,8 @@ export async function executePlanStage(
   const briefText = config.contract?.brief || config.promptQuery || "";
   const centroidEnabled = process.env.LEAD_ADAPTIVE_CENTROID_ENABLED === "true";
   const domainCluster = centroidEnabled
-    ? quantizeBriefToCentroid(briefText)
-    : deriveDomainCluster(briefText);
+    ? quantizeBriefToCentroid(config.contract || briefText)
+    : deriveContractDomainCluster(config.contract, briefText);
   const existingPlanCache = (state as any)._planStageCache;
   (state as any)._planStageCache = {
     historicalPerformance: readQueryPerformance(100, domainCluster),
@@ -128,10 +130,12 @@ export async function executePlanStage(
             },
             row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster,
           )
-        : [row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster !== "global" ? domainCluster : "", row.family || "general", row.lane || "person", row.provider || "tavily"]
-            .filter(Boolean)
-            .join("|")
-            .toLowerCase(),
+        : buildScopeKey({
+            domainCluster: row.domain_cluster && row.domain_cluster !== "global" ? row.domain_cluster : domainCluster,
+            family: row.family,
+            lane: row.lane,
+            provider: row.provider,
+          }),
       {
         runs: Number(row.runs || 0),
         outcomeRuns: Number(row.outcome_runs || 0),
@@ -405,7 +409,8 @@ export async function executePlanStage(
 
   const rawTasks = buildRetrievalTasks(planItems, searchSpec).map(t => ({
     ...t,
-    domainCluster: t.domainCluster || domainCluster
+    domainCluster: t.domainCluster || domainCluster,
+    centroid: centroidEnabled ? quantizeBriefToCentroid(config.contract || briefText) : undefined,
   }));
 
   const adaptiveSchedule = scheduleAdaptiveRetrievalTasks(
@@ -426,6 +431,9 @@ export async function executePlanStage(
         10,
       ),
       outcomeRate: readOutcomeRate().rate,
+      outcomeRateByScope: new Map(
+        Array.from(readOutcomeRateByScope(10).entries()).map(([k, v]) => [k, v.shrunkRate])
+      ),
     },
   );
 

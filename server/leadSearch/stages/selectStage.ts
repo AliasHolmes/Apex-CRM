@@ -4,9 +4,10 @@ import { selectDiversifiedLeads } from '../scoutScoring.js';
 import { recordQueryPerformanceBatch } from '../../db.js';
 import { hasTavilyKey } from '../../services/llm.js';
 import {
-  deriveDomainCluster,
+  deriveContractDomainCluster,
   quantizeBriefToCentroid,
   centroidScopeKey,
+  buildScopeKey,
 } from '../adaptiveScheduler.js';
 import { effectiveScore as sharedEffectiveScore } from '../sessionHelpers.js';
 import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
@@ -181,8 +182,8 @@ export async function executeSelectStage(
   const briefText = contract.brief || (ctx.config as any)?.promptQuery || '';
   const useCentroid = process.env.LEAD_ADAPTIVE_CENTROID_ENABLED === 'true';
   const domainCluster = useCentroid
-    ? quantizeBriefToCentroid(briefText)
-    : deriveDomainCluster(briefText);
+    ? quantizeBriefToCentroid(contract || briefText)
+    : deriveContractDomainCluster(contract, briefText);
 
   // Pre-merge requirementFailCounts per scopeKey so within-session runs accumulate additively
   const mergedFailCountsByScope = new Map<string, Record<string, number>>();
@@ -193,7 +194,7 @@ export async function executeSelectStage(
     const provider = run.providerPreference || 'tavily';
     const sKey = useCentroid
       ? centroidScopeKey({ family, lane, providerPreference: provider }, domainCluster)
-      : [domainCluster !== 'global' ? domainCluster : '', family, lane, provider].filter(Boolean).join('|').toLowerCase();
+      : buildScopeKey({ domainCluster, family, lane, provider });
     const acc = mergedFailCountsByScope.get(sKey) || {};
     for (const [reqId, cnt] of Object.entries(run.requirementFailCounts)) {
       acc[reqId] = (acc[reqId] || 0) + Number(cnt);
@@ -207,8 +208,8 @@ export async function executeSelectStage(
     const provider = run.providerPreference || 'tavily';
     const scopeKey = useCentroid
       ? centroidScopeKey({ family, lane, providerPreference: provider }, domainCluster)
-      : undefined;
-    const lookupKey = scopeKey || [domainCluster !== 'global' ? domainCluster : '', family, lane, provider].filter(Boolean).join('|').toLowerCase();
+      : buildScopeKey({ domainCluster, family, lane, provider });
+    const lookupKey = scopeKey;
     const mergedCounts = mergedFailCountsByScope.get(lookupKey) || run.requirementFailCounts;
     const failDigest =
       mergedCounts && Object.keys(mergedCounts).length > 0

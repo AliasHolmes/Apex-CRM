@@ -88,7 +88,7 @@ import {
   resolveBrightDataSearchMode,
 } from "../leadSearch/discoveryRouting.js";
 import { enrichLeadProfile } from "../leadSearch/profileEnrichment.js";
-import { deriveDomainCluster } from "../leadSearch/adaptiveScheduler.js";
+import { deriveDomainCluster, buildScopeKey } from "../leadSearch/adaptiveScheduler.js";
 import {
   discoveryEngine,
   SessionAlreadyActiveError,
@@ -317,8 +317,24 @@ router.patch("/leads/:id", (req, res): any => {
 
     const writeResult = upsertLeadWithIdentity(lead, {
       requireExisting: !allowCreate,
+      forceOverwrite: true,
     });
     const storedLead = writeResult.lead;
+
+    if (
+      !allowCreate &&
+      writeResult.disposition === "duplicate" &&
+      storedLead.id !== req.params.id
+    ) {
+      return res.status(409).json({
+        apiVersion: 1,
+        error:
+          "Another prospect already uses this email, LinkedIn URL, or identity.",
+        code: "IDENTITY_CONFLICT",
+        identityKey: writeResult.identityKey,
+        conflictingLeadId: storedLead.id,
+      });
+    }
 
     if (
       writeResult.disposition !== "duplicate" &&
@@ -340,48 +356,81 @@ router.patch("/leads/:id", (req, res): any => {
     // G17: REPLIED transitions now produce a positive outcome signal
     // (previously silent). Binary {positive, negative} + detail stage.
     const isNewReply =
-      ((storedLead.stage === "REPLIED" || (storedLead as any)?.reviewStatus === "REPLIED") &&
-        previousStage !== "REPLIED" && previousReviewStatus !== "REPLIED");
+      storedLead.stage === "REPLIED" && previousStage !== "REPLIED";
     const isNewRejection =
-      ((storedLead.reviewStatus === "REJECT" || storedLead.reviewStatus === "REJECTED") &&
-        previousReviewStatus !== "REJECT" && previousReviewStatus !== "REJECTED") ||
-      ((storedLead.stage === "LOST" || storedLead.stage === "UNQUALIFIED") &&
-        previousStage !== "LOST" && previousStage !== "UNQUALIFIED");
+      (storedLead.reviewStatus === "REJECT" &&
+        previousReviewStatus !== "REJECT") ||
+      (storedLead.stage === "LOST" && previousStage !== "LOST");
     const isNewDirectVerification =
-      ((storedLead.reviewStatus === "KEEP" || storedLead.reviewStatus === "VERIFIED") &&
-        previousReviewStatus !== "KEEP" && previousReviewStatus !== "VERIFIED") ||
-      ((storedLead.stage === "CONVERTED" || storedLead.stage === "CLOSED_WON") &&
-        previousStage !== "CONVERTED" && previousStage !== "CLOSED_WON") ||
-      ((storedLead.stage === "MEETING BOOKED" || storedLead.stage === "MEETING_SCHEDULED") &&
-        previousStage !== "MEETING BOOKED" && previousStage !== "MEETING_SCHEDULED");
+      (storedLead.reviewStatus === "KEEP" &&
+        previousReviewStatus !== "KEEP") ||
+      (storedLead.stage === "CONVERTED" && previousStage !== "CONVERTED") ||
+      (storedLead.stage === "MEETING BOOKED" &&
+        previousStage !== "MEETING BOOKED");
     const isNewVerification = isNewDirectVerification || isNewReply;
 
-    // G17: every stage/review transition writes a binary outcome row.
-    if (previousStage !== storedLead.stage || previousReviewStatus !== storedLead.reviewStatus) {
+    // G17: every stage/review transition writes a binary outcome row (deduplicated per lead + outcomeType).
+    let outcomeNewlyRecorded = false;
+    if (
+      previousStage !== storedLead.stage ||
+      previousReviewStatus !== storedLead.reviewStatus
+    ) {
       try {
         if (isNewReply) {
-          recordLeadOutcome(storedLead.id, "positive", "REPLIED");
+          outcomeNewlyRecorded = recordLeadOutcome(
+            storedLead.id,
+            "positive",
+            "REPLIED",
+            storedLead.discoveryScopeKey,
+          );
         } else if (isNewDirectVerification) {
-          recordLeadOutcome(storedLead.id, "positive", String(storedLead.stage || storedLead.reviewStatus));
+          outcomeNewlyRecorded = recordLeadOutcome(
+            storedLead.id,
+            "positive",
+            String(storedLead.stage || storedLead.reviewStatus),
+            storedLead.discoveryScopeKey,
+          );
         } else if (isNewRejection) {
-          recordLeadOutcome(storedLead.id, "negative", String(storedLead.stage || storedLead.reviewStatus));
+          outcomeNewlyRecorded = recordLeadOutcome(
+            storedLead.id,
+            "negative",
+            String(storedLead.stage || storedLead.reviewStatus),
+            storedLead.discoveryScopeKey,
+          );
         }
       } catch (err) {
         console.warn("[lead-outcomes] Failed to record lead outcome:", err);
       }
     }
 
-    if (isNewRejection || isNewVerification) {
+    if (outcomeNewlyRecorded && (isNewRejection || isNewVerification)) {
       // G5: read the producing arm from top-level fields (written by
       // leadMapping) with evidence/scout fallbacks, and pass domainCluster
       // so the feedback scope key matches the scheduler retrieval key.
-      const family = storedLead.discoveryFamily || storedLead.evidence?.discoveryFamily || storedLead.scout?.family || "general";
-      const lane = storedLead.discoveryLane || storedLead.evidence?.discoveryLane || storedLead.scout?.lane || "person";
-      const provider = storedLead.evidence?.sourceProvider || storedLead.source || "tavily";
+      const family =
+        storedLead.discoveryFamily ||
+        storedLead.evidence?.discoveryFamily ||
+        storedLead.scout?.family ||
+        "general";
+      const lane =
+        storedLead.discoveryLane ||
+        storedLead.evidence?.discoveryLane ||
+        storedLead.scout?.lane ||
+        "person";
+      const provider =
+        storedLead.evidence?.sourceProvider || storedLead.source || "tavily";
       try {
         const briefText = `${storedLead.profile?.currentTitle || storedLead.title || ""} ${storedLead.profile?.currentCompany || storedLead.company || ""} ${storedLead.profile?.industry || ""}`;
+        const domainCluster = storedLead.domainCluster || deriveDomainCluster(briefText);
+        const scopeKey = storedLead.discoveryScopeKey || buildScopeKey({
+          domainCluster,
+          family,
+          lane,
+          provider,
+        });
         recordQueryPerformance({
-          domainCluster: deriveDomainCluster(briefText),
+          scopeKey,
+          domainCluster,
           family,
           lane,
           provider,
@@ -392,7 +441,10 @@ router.patch("/leads/:id", (req, res): any => {
           rescuedCandidates: 0,
         });
       } catch (err) {
-        console.warn("[lead-review-feedback] Failed to record query performance feedback:", err);
+        console.warn(
+          "[lead-review-feedback] Failed to record query performance feedback:",
+          err,
+        );
       }
     }
 
@@ -572,8 +624,10 @@ router.post("/leads/:id/merge", (req, res): any => {
           mergeField(winner.nextAction, duplicate.nextAction) || "NONE",
       };
 
+      transferLeadIdentities(db, duplicateId, winner.id);
       const mergedWrite = upsertLeadInExistingTransaction(db, mergedLead, {
         requireExisting: true,
+        forceOverwrite: true,
       });
       if (
         mergedWrite.disposition === "duplicate" &&
@@ -583,7 +637,6 @@ router.post("/leads/:id/merge", (req, res): any => {
           "Cannot merge because the winner LinkedIn identity belongs to another prospect.",
         );
       }
-      transferLeadIdentities(db, duplicateId, winner.id);
       db.prepare("UPDATE outreach_drafts SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
       db.prepare("UPDATE lead_activities SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
       db.prepare("DELETE FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?").run(duplicateId, duplicateId);
@@ -815,9 +868,16 @@ router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promi
     // Step 1: Tavily search for public LinkedIn-indexed evidence
     console.log(`[scrape-url] Searching Tavily for: ${urlOrName}`);
 
+    const abortController = new AbortController();
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        abortController.abort();
+      }
+    });
+
     const { text: rawText, sources } = await tavilySearch(
       `${urlOrName} LinkedIn`,
-      { signal: (req as any).signal }
+      { signal: abortController.signal }
     );
 
     if (!rawText || rawText.length < 50) {
@@ -864,13 +924,22 @@ ${rawText}`;
 // 2. Extractor: Parse copy-pasted raw text or HTML block
 router.post("/scrape-pasted", paidRouteLimit("scrape-pasted"), async (req, res): Promise<any> => {
   try {
-    const { pastedText } = req.body;
-    if (!pastedText || pastedText.trim().length < 20) {
+    const rawPastedText = req.body?.pastedText;
+    if (typeof rawPastedText !== "string" || rawPastedText.trim().length < 20) {
       return res
         .status(400)
         .json({
           error:
             "Please paste a larger LinkedIn profile text block (minimum 20 characters).",
+        });
+    }
+    const pastedText = rawPastedText.trim();
+    if (pastedText.length > 10000) {
+      return res
+        .status(400)
+        .json({
+          error:
+            "Pasted text must be 10,000 characters or fewer.",
         });
     }
 
@@ -1515,12 +1584,16 @@ router.delete("/saved-searches/:id", (req, res): any => {
   }
 });
 
-router.post("/lead-search/preview", async (req, res): Promise<any> => {
+router.post("/lead-search/preview", paidRouteLimit("lead-search-preview"), async (req, res): Promise<any> => {
   const query = String(req.body?.query || "").trim();
   if (!query)
     return res
       .status(400)
       .json({ error: "Search criteria/query is required." });
+  if (query.length > 2000)
+    return res
+      .status(400)
+      .json({ error: "query must be a non-empty string of 2,000 characters or fewer." });
   const requestedMode = req.body?.discoveryMode as DiscoveryMode | undefined;
   let spec = normalizeSearchSpec(req.body?.searchSpec, query);
   if (!req.body?.searchSpec) {
@@ -1599,8 +1672,8 @@ router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
       process.env.LANGFUSE_BASEURL ||
       (process.env.LANGFUSE_PUBLIC_KEY ? "https://cloud.langfuse.com" : null);
 
-    const projectId = process.env.LANGFUSE_PROJECT_ID || "cmtyxoeu400amad0itl1axqqm";
-    const langfuseDeepLink = langfuseHost
+    const projectId = process.env.LANGFUSE_PROJECT_ID?.trim() || null;
+    const langfuseDeepLink = langfuseHost && projectId
       ? `${langfuseHost.replace(/\/$/, "")}/project/${projectId}/traces?search=${encodeURIComponent(sessionId)}`
       : null;
 
@@ -1648,7 +1721,9 @@ router.post("/find-leads", async (req, res): Promise<any> => {
   let mergedExcludeList: string[] | undefined = Array.isArray(
     req.body?.excludeList,
   )
-    ? [...req.body.excludeList]
+    ? req.body.excludeList
+        .filter((item: unknown): item is string => typeof item === "string")
+        .slice(0, 5000)
     : undefined;
 
   if (savedSearchId) {
@@ -1656,9 +1731,14 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     if (savedExclusions.length > 0) {
       mergedExcludeList = Array.from(
         new Set([...(mergedExcludeList || []), ...savedExclusions]),
-      );
+      ).slice(0, 5000);
     }
   }
+
+  const requestedLimit = Math.min(
+    Math.max(Number(req.body?.limit) || 5, 1),
+    200,
+  );
 
   const isAsyncMode =
     req.query.mode === "job" || req.headers["prefer"] === "respond-async";
@@ -1698,7 +1778,7 @@ router.post("/find-leads", async (req, res): Promise<any> => {
       .execute({
         sessionId: targetSessionId,
         promptQuery,
-        requestedLimit: req.body?.limit,
+        requestedLimit,
         discoveryProviderMode:
           req.body?.discoveryMode || req.body?.discoveryProviderMode,
         searchSpec: req.body?.searchSpec,
@@ -1745,7 +1825,7 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     const result = await discoveryEngine.execute({
       sessionId: targetSessionId,
       promptQuery,
-      requestedLimit: req.body?.limit,
+      requestedLimit,
       discoveryProviderMode:
         req.body?.discoveryMode || req.body?.discoveryProviderMode,
       searchSpec: req.body?.searchSpec,
@@ -1775,7 +1855,7 @@ router.post("/find-leads", async (req, res): Promise<any> => {
     ) {
       return res
         .status(409)
-        .json({ error: error.message, sessionId: suppliedSessionId });
+        .json({ error: error.message, sessionId: targetSessionId });
     }
     if (error.message?.includes("must be a non-empty string")) {
       return res.status(400).json({ error: error.message });

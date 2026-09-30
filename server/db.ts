@@ -28,7 +28,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 23;
+const LATEST_SCHEMA_VERSION = 24;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1236,6 +1236,33 @@ function runMigrations(db: DatabaseSync) {
       `);
     }
 
+    // Phase 4.3 (v24): scope_key attribution for lead_outcomes.
+    // Backfill scope_key ONLY from json_extract(l.payload, '$.discoveryScopeKey').
+    if (currentVersion < 24) {
+      addColumnIfMissing(db, "lead_outcomes", "scope_key", "scope_key TEXT");
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_lead_outcomes_scope_key
+          ON lead_outcomes(scope_key);
+      `);
+      if (tableExists(db, "leads")) {
+        db.exec(`
+          UPDATE lead_outcomes
+          SET scope_key = (
+            SELECT json_extract(l.payload, '$.discoveryScopeKey')
+            FROM leads l
+            WHERE l.id = lead_outcomes.lead_id
+          )
+          WHERE scope_key IS NULL
+            AND EXISTS (
+              SELECT 1 FROM leads l
+              WHERE l.id = lead_outcomes.lead_id
+                AND json_extract(l.payload, '$.discoveryScopeKey') IS NOT NULL
+                AND json_extract(l.payload, '$.discoveryScopeKey') != ''
+            );
+        `);
+      }
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1785,10 +1812,11 @@ export function getLeadsETag(queryParams?: Record<string, any>): string {
   const db = getLeadsDb();
   const row = getCachedStatement(
     db,
-    "SELECT MAX(updated_at) as max_updated, COUNT(*) as count FROM leads",
-  ).get() as { max_updated?: string; count?: number } | undefined;
+    "SELECT MAX(updated_at) as max_updated, COUNT(*) as count, COALESCE(SUM(revision), 0) as rev_sum FROM leads",
+  ).get() as { max_updated?: string; count?: number; rev_sum?: number } | undefined;
   const maxUpdated = row?.max_updated || "0";
   const count = Number(row?.count || 0);
+  const revSum = Number(row?.rev_sum || 0);
   const initialized = hasLeadStoreBeenInitialized() ? "1" : "0";
   let qStr = "";
   if (queryParams && typeof queryParams === "object") {
@@ -1804,7 +1832,7 @@ export function getLeadsETag(queryParams?: Record<string, any>): string {
   }
   const hash = crypto
     .createHash("md5")
-    .update(`${maxUpdated}:${count}:${dbMutationCounter}:${initialized}:${qStr}`)
+    .update(`${maxUpdated}:${count}:${revSum}:${initialized}:${qStr}`)
     .digest("hex")
     .slice(0, 16);
   return `W/"${hash}"`;
@@ -3815,14 +3843,44 @@ export function readQueryPerformance(limit = 100, domainCluster?: string) {
  */
 export type LeadOutcomeType = 'positive' | 'negative';
 
-export function recordLeadOutcome(leadId: string, outcomeType: LeadOutcomeType, outcomeDetail: string) {
+export function recordLeadOutcome(
+  leadId: string,
+  outcomeType: LeadOutcomeType,
+  outcomeDetail: string,
+  scopeKey?: string,
+): boolean {
   try {
-    getLeadsDb().prepare(
-      `INSERT INTO lead_outcomes (lead_id, outcome_type, outcome_detail, created_at)
-       VALUES (?, ?, ?, ?)`
-    ).run(String(leadId), outcomeType, String(outcomeDetail || '').slice(0, 80), new Date().toISOString());
+    const db = getLeadsDb();
+    const normalizedLeadId = String(leadId);
+    const existing = db
+      .prepare(
+        `SELECT 1 FROM lead_outcomes WHERE lead_id = ? AND outcome_type = ? LIMIT 1`,
+      )
+      .get(normalizedLeadId, outcomeType);
+    if (existing) {
+      return false;
+    }
+    let effectiveScopeKey = scopeKey ? String(scopeKey).toLowerCase() : null;
+    if (!effectiveScopeKey && tableExists(db, "leads")) {
+      const row = db
+        .prepare(`SELECT json_extract(payload, '$.discoveryScopeKey') as sk FROM leads WHERE id = ?`)
+        .get(normalizedLeadId) as { sk?: string } | undefined;
+      if (row?.sk) effectiveScopeKey = String(row.sk).toLowerCase();
+    }
+    db.prepare(
+      `INSERT INTO lead_outcomes (lead_id, outcome_type, outcome_detail, scope_key, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      normalizedLeadId,
+      outcomeType,
+      String(outcomeDetail || '').slice(0, 80),
+      effectiveScopeKey,
+      new Date().toISOString(),
+    );
+    return true;
   } catch (err) {
     console.warn('[lead-outcomes] Failed to record outcome:', err);
+    return false;
   }
 }
 
@@ -3841,6 +3899,59 @@ export function readOutcomeRate(): { positive: number; total: number; rate: numb
   } catch {
     return { positive: 0, total: 0, rate: 0 };
   }
+}
+
+export type ScopeOutcomeRate = {
+  positive: number;
+  total: number;
+  rawRate: number;
+  shrunkRate: number;
+};
+
+export function readOutcomeRateByScope(
+  priorStrength = 10,
+): Map<string, ScopeOutcomeRate> {
+  const result = new Map<string, ScopeOutcomeRate>();
+  try {
+    const db = getLeadsDb();
+    const globalStats = readOutcomeRate();
+    const globalRate = globalStats.rate;
+
+    const rows = db
+      .prepare(
+        `SELECT scope_key, outcome_type, COUNT(*) AS n
+         FROM lead_outcomes
+         WHERE scope_key IS NOT NULL AND scope_key != ''
+         GROUP BY scope_key, outcome_type`,
+      )
+      .all() as { scope_key?: string; outcome_type?: string; n?: number }[];
+
+    const countsByScope = new Map<string, { positive: number; total: number }>();
+    for (const r of rows) {
+      const key = String(r.scope_key || "").toLowerCase();
+      if (!key) continue;
+      const current = countsByScope.get(key) || { positive: 0, total: 0 };
+      const n = Number(r.n || 0);
+      current.total += n;
+      if (String(r.outcome_type) === "positive") current.positive += n;
+      countsByScope.set(key, current);
+    }
+
+    const kappa = Math.max(0, priorStrength);
+    for (const [key, counts] of countsByScope) {
+      const rawRate = counts.total > 0 ? counts.positive / counts.total : 0;
+      const shrunkRate = (counts.positive + kappa * globalRate) / (counts.total + kappa);
+      result.set(key, {
+        positive: counts.positive,
+        total: counts.total,
+        rawRate,
+        shrunkRate,
+      });
+    }
+  } catch (err) {
+    console.warn("[lead-outcomes] Failed to read outcome rate by scope:", err);
+  }
+  return result;
 }
 
 const usagePeriod = (date = new Date()) => date.toISOString().slice(0, 7);

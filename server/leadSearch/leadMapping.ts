@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { getLeadScore } from "./scoring.js";
+import { buildScopeKey } from "./adaptiveScheduler.js";
 
 /**
  * Canonical candidate-to-persisted-lead mapping.
@@ -88,6 +89,13 @@ export function mapCandidateToPersistedLead(
     discoveryFamily: p.discoveryFamily || p.scout?.family || p.evidence?.discoveryFamily || "general",
     discoveryLane: p.discoveryLane || p.scout?.lane || p.evidence?.discoveryLane || "person",
     sourceProvider: p.sourceProvider || "tavily",
+    domainCluster: p.domainCluster || p.evidence?.domainCluster || "global",
+    discoveryScopeKey: p.discoveryScopeKey || buildScopeKey({
+      domainCluster: p.domainCluster || p.evidence?.domainCluster,
+      family: p.discoveryFamily || p.scout?.family || p.evidence?.discoveryFamily || "general",
+      lane: p.discoveryLane || p.scout?.lane || p.evidence?.discoveryLane || "person",
+      provider: p.sourceProvider || "tavily",
+    }),
     evidenceReasons: p.evidenceReasons,
     evidence: p.evidence,
     scoreBreakdown: p.scoreBreakdown,

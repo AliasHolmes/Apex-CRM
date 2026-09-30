@@ -254,21 +254,84 @@ export function applyPostIntentDelta(lead: Record<string, any>): number {
   return newFinal;
 }
 
+export const MMR_SIM_COMPANY = 0.80;
+export const MMR_SIM_ROLE_FAMILY = 0.25;
+export const MMR_SIM_INDUSTRY = 0.20;
+export const MMR_SIM_LOCATION = 0.15;
+export const MMR_SIM_QUERY_FAMILY = 0.10;
+
+function extractRoleFamily(lead: Record<string, any>): string {
+  const raw = String(lead.currentTitle || lead.title || lead.jobTitle || lead.headline || lead.profile?.currentTitle || lead.profile?.headline || '').toLowerCase().trim();
+  if (!raw) return '';
+  if (/\b(?:founder|co-founder|cofounder|owner|proprietor)\b/.test(raw)) return 'founder';
+  if (/\b(?:ceo|chief executive)\b/.test(raw)) return 'ceo';
+  if (/\b(?:cto|chief technology)\b/.test(raw)) return 'cto';
+  if (/\b(?:cmo|chief marketing)\b/.test(raw)) return 'cmo';
+  if (/\b(?:cfo|chief financial)\b/.test(raw)) return 'cfo';
+  if (/\b(?:coo|chief operating)\b/.test(raw)) return 'coo';
+  if (/\b(?:cro|chief revenue)\b/.test(raw)) return 'cro';
+  if (/\b(?:vp|vice president)\b/.test(raw)) return 'vp';
+  if (/\b(?:director|managing director|md)\b/.test(raw)) return 'director';
+  if (/\b(?:partner|managing partner|principal)\b/.test(raw)) return 'partner';
+  if (/\b(?:lead|head of|manager)\b/.test(raw)) return 'lead';
+  return raw.split(/[^a-z0-9]+/)[0] || '';
+}
+
+function computeCandidateSimilarity<T extends Record<string, any>>(cand: T, sel: T): number {
+  let sim = 0;
+  const candCompany = String(cand.currentCompany || cand.company || cand.profile?.currentCompany || cand.profile?.company || '').trim();
+  const selCompany = String(sel.currentCompany || sel.company || sel.profile?.currentCompany || sel.profile?.company || '').trim();
+  if (candCompany && selCompany && (candCompany.toLowerCase() === selCompany.toLowerCase() || companiesMatch(candCompany, selCompany))) {
+    sim += MMR_SIM_COMPANY;
+  }
+
+  const candRole = extractRoleFamily(cand);
+  const selRole = extractRoleFamily(sel);
+  if (candRole && selRole && candRole === selRole) {
+    sim += MMR_SIM_ROLE_FAMILY;
+  }
+
+  const candInd = String(cand.companyAccount?.industry || cand.industry || cand.profile?.industry || '').toLowerCase().trim();
+  const selInd = String(sel.companyAccount?.industry || sel.industry || sel.profile?.industry || '').toLowerCase().trim();
+  if (candInd && selInd && (candInd === selInd || candInd.includes(selInd) || selInd.includes(candInd))) {
+    sim += MMR_SIM_INDUSTRY;
+  }
+
+  const candLoc = String(cand.location || cand.profile?.location || '').toLowerCase().trim();
+  const selLoc = String(sel.location || sel.profile?.location || '').toLowerCase().trim();
+  if (candLoc && selLoc && (candLoc === selLoc || candLoc.includes(selLoc) || selLoc.includes(candLoc))) {
+    sim += MMR_SIM_LOCATION;
+  }
+
+  const candFam = String(cand.discoveryFamily || cand.scout?.family || cand.evidence?.discoveryFamily || '').toLowerCase().trim();
+  const selFam = String(sel.discoveryFamily || sel.scout?.family || sel.evidence?.discoveryFamily || '').toLowerCase().trim();
+  if (candFam && selFam && candFam === selFam) {
+    sim += MMR_SIM_QUERY_FAMILY;
+  }
+
+  return Math.min(1.0, Number(sim.toFixed(2)));
+}
+
 export function computeMMRDiversitySelection<T extends Record<string, any>>(
   candidates: T[],
   targetCount: number,
   lambda = 0.70,
-  precomputedRanks?: ReadonlyMap<T, number>
+  precomputedRanks?: ReadonlyMap<T, number>,
+  seedSelected: readonly T[] = []
 ): T[] {
-  if (candidates.length <= targetCount) return candidates;
+  if (candidates.length <= targetCount && seedSelected.length === 0) return candidates;
 
   const getRank = (c: T) => precomputedRanks?.get(c) ?? rankLeadForFinalSelection(c);
   const selected: T[] = [];
   const pool = [...candidates].sort((a, b) => getRank(b) - getRank(a));
 
-  selected.push(pool.shift()!);
-
   while (selected.length < targetCount && pool.length > 0) {
+    const referenceSelected = [...seedSelected, ...selected];
+    if (referenceSelected.length === 0) {
+      selected.push(pool.shift()!);
+      continue;
+    }
+
     let bestIdx = 0;
     let bestMMR = -Infinity;
 
@@ -277,18 +340,8 @@ export function computeMMRDiversitySelection<T extends Record<string, any>>(
       const score = getRank(candidate) / 10;
 
       let maxSim = 0;
-      for (const sel of selected) {
-        let sim = 0;
-        const candCompany = candidate.currentCompany || candidate.company || '';
-        const selCompany = sel.currentCompany || sel.company || '';
-        if (candCompany && selCompany && (candCompany.toLowerCase() === selCompany.toLowerCase() || companiesMatch(candCompany, selCompany))) {
-          sim += 0.8;
-        }
-
-        const candLoc = (candidate.location || '').toLowerCase();
-        const selLoc = (sel.location || '').toLowerCase();
-        if (candLoc && selLoc && candLoc === selLoc) sim += 0.2;
-
+      for (const sel of referenceSelected) {
+        const sim = computeCandidateSimilarity(candidate, sel);
         if (sim > maxSim) maxSim = sim;
       }
 

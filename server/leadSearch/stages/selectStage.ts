@@ -155,8 +155,8 @@ export async function executeSelectStage(
 
   // Final rank-order by post-enrichment score
   finalLeads.sort((a, b) => {
-    const scoreA = a.finalSelectionScore ?? sharedEffectiveScore(a);
-    const scoreB = b.finalSelectionScore ?? sharedEffectiveScore(b);
+    const scoreA = sharedEffectiveScore(a);
+    const scoreB = sharedEffectiveScore(b);
     return scoreB - scoreA;
   });
 

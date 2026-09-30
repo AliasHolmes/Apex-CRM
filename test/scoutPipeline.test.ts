@@ -452,6 +452,20 @@ describe('free-tier prospect scout', () => {
     const cached = computeMMRDiversitySelection(pool, 3, 0.75, rankMap);
     assert.deepEqual(cached.map(c => c.id), direct.map(c => c.id));
   });
+
+  it('Phase 3.1: computeMMRDiversitySelection balances role, industry, location, and query family similarity and respects seedSelected', () => {
+    // Pool of 4 candidates with equal scores but different profiles
+    const c1 = { id: 'c1', currentCompany: 'Alpha', currentTitle: 'Founder', industry: 'SaaS', location: 'Austin', discoveryFamily: 'general', qualification: { finalScore: 9.0 } };
+    const c2 = { id: 'c2', currentCompany: 'Beta', currentTitle: 'Founder', industry: 'SaaS', location: 'Austin', discoveryFamily: 'general', qualification: { finalScore: 9.0 } };
+    const c3 = { id: 'c3', currentCompany: 'Gamma', currentTitle: 'VP of Engineering', industry: 'Health', location: 'Denver', discoveryFamily: 'hiring', qualification: { finalScore: 8.9 } };
+    const c4 = { id: 'c4', currentCompany: 'Delta', currentTitle: 'Managing Partner', industry: 'Fintech', location: 'London', discoveryFamily: 'scaling', qualification: { finalScore: 8.8 } };
+
+    // With c1 as seedSelected (e.g. from Pareto skyline), MMR should prefer diverse c3 over same-profile c2
+    const selected = computeMMRDiversitySelection([c2, c3, c4], 2, 0.70, undefined, [c1]);
+    assert.equal(selected[0].id, 'c3', 'Candidate with different role, industry, and location should be selected before same-profile c2');
+    assert.ok(selected.some(s => s.id === 'c3'));
+  });
 });
+
 
 

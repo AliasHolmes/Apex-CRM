@@ -119,18 +119,19 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
    (`fuseStage.ts`, `aliasMap.ts`)
 4. **extract** — Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked (`extractStage.ts`)
 5. **verify** — hard-requirement verification, borderline survival band (`verifyStage.ts`)
-6. **enrich** — consolidated site probing (tagging `_locationProvenance = 'company_site'`
-   and rejecting non-matching press URLs via `urlHostSharesCompanyToken`) + TF-IDF company
-   intent + annotate-only LinkedIn post intent (abbreviated recency support, 45d neutral
-   undated age), runs **after** selection (`enrichStage.ts`, `siteProbe.ts`, `linkedinPostIntent.ts`)
-7. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded),
+6. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded),
    tri-partition by evidence (excluding company-derived locations from `person_location`
    auto-pass), `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with negation polarity
    guard (`0.7 * window + 0.3 * setOverlap`), company-scoped `b2b_saas` contradiction
    checks, `hard_fail` precedence over `fabricatedPass`, and contract-aware ranking
    (hard `1.2x` + soft `0.4x`) (`judgeStage.ts`, `titleTriage.ts`,
    `finalistJudge.ts`, `profileQuality.ts`, `scoring.ts`)
-8. **select** — Pareto skyline + MMR diversification (`selectStage.ts`)
+7. **select** — pre-selection intent probing on top qualified candidates (Phase 4 company
+   intent + Phase 5 LinkedIn post intent on top `ceil(targetLimit * 1.5)` pool) to activate
+   all 4 Pareto dimensions, followed by Pareto skyline + MMR diversification (`selectStage.ts`)
+8. **enrich** — post-selection consolidated site probing (tagging `_locationProvenance = 'company_site'`
+   and rejecting non-matching press URLs via `urlHostSharesCompanyToken`) for selected finalists
+   (`enrichStage.ts`, `siteProbe.ts`)
 9. **persist** — identity-keyed upserts preserving CRM-owned workflow fields (`stage`,
    `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), FTS
    maintenance, exclude-list append, and session/log status (`success | partial_success | error`)

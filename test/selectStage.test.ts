@@ -10,6 +10,7 @@ const testDbPath = path.join(
 process.env.APEX_DB_PATH = testDbPath;
 
 import { determineSelectionShortfall } from "../server/leadSearch/stages/selectStage.js";
+import { applyIntentEnrichmentDelta, getLeadScore } from "../server/leadSearch/scoring.js";
 
 test("Stream 4 - Selection Stage Off-by-One Fix", async (t) => {
   await t.test("when qualified count equals targetLimit, isShortfall is FALSE (hit target runs execute intent)", () => {
@@ -26,4 +27,23 @@ test("Stream 4 - Selection Stage Off-by-One Fix", async (t) => {
     const isShortfall = determineSelectionShortfall(9, 10);
     assert.equal(isShortfall, true, "Strictly fewer leads than target is a shortfall");
   });
+
+  await t.test("Phase 3.2: judge qualification.finalScore remains the baseline score before and after enrichment deltas", () => {
+    const lead: Record<string, any> = {
+      id: "lead-judge-baseline",
+      qualification: { verdict: "qualified", finalScore: 8.4 },
+      finalSelectionScore: 8.4,
+      decisionMakerVerification: { confidence: 5 },
+      companyIntentEvidence: {
+        evidenceQuality: "good",
+        dynamicSignals: ["hiring n8n automation"],
+        universalSignals: ["careers"],
+        pagesMatched: 2
+      }
+    };
+    assert.equal(getLeadScore(lead), 8.4, "Baseline must be the judge score 8.4, not the lower structural rank");
+    const enriched = applyIntentEnrichmentDelta(lead, 0);
+    assert.ok(enriched > 8.4, `Enriched score (${enriched}) must build additively on judge score 8.4`);
+  });
 });
+

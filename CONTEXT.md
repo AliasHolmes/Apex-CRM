@@ -52,8 +52,8 @@ A dynamic candidate sizing policy that sets search pool targets proportional to 
 ### Decoupled Early Shortlist Termination
 A high-selectivity discovery exit check that terminates search rounds immediately when verified candidate volume satisfies target limits, decoupled from literal keyword substring heuristics.
 
-### Targeted Post-Selection Enrichment
-A pipeline execution order that defers intensive Phase 4 company website probing and Phase 5 LinkedIn post intent SERP lookups until after the Finalist Judge and Pareto diversification have selected the top $K$ prospect finalists.
+### Two-Tier Intent & Site Enrichment
+Pre-selection intent probing (Phase 4 company website intent and Phase 5 LinkedIn post intent) evaluates the top candidate pool ($\lceil \text{targetLimit} \times 1.5 \rceil$ by effective score) so all 4 Pareto dimensions (role fit, company match, seniority authority, intent signal) are fully informed during selection. Post-selection full company site probing (`enrichStage.ts`) runs strictly on the final selected leads to extract deep buying signals without duplicate external calls.
 
 ### Deterministic Pre-Filter Gate (Stage 2.5)
 A zero-latency, non-LLM filtration boundary positioned immediately after SERP retrieval and observation fusion. It drops known CRM duplicates (via SQLite identity keys in 0ms), filters out non-LinkedIn items when individual profiles are required, strips HTML boilerplate and cookie banners from snippets, and safely bypasses the extraction LLM when zero viable items remain.

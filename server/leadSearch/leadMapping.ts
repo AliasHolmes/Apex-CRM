@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { getLeadScore } from "./scoring.js";
 
 /**
  * Canonical candidate-to-persisted-lead mapping.
@@ -18,20 +19,7 @@ export function mapCandidateToPersistedLead(
   const leadId = p.id || fallbackId || `lead-${crypto.randomUUID()}`;
   p.id = leadId;
   const hasAccountContext = !!p.companyAccount;
-  const rawBackendScore = Number(
-    p.finalSelectionScore ||
-      p.scoreBreakdown?.finalScore ||
-      p.scoreOverride ||
-      0,
-  );
-  // `< 1.0`, not `<= 1.0`: the engine scores on a 1-10 scale, so a score of exactly 1
-  // is the weakest candidate. Reading it as a 0-1 probability turned the worst lead into
-  // compositeScore 100 / predictiveScore 90 in the CRM. Mirrors
-  // scoring.normalizeToTenScale and finalistJudge.normalizeScoreTo10.
-  const backendFinalScore =
-    rawBackendScore < 1.0 && rawBackendScore > 0
-      ? rawBackendScore * 10
-      : rawBackendScore;
+  const backendFinalScore = getLeadScore(p, 0);
   const compositeScore =
     backendFinalScore > 0
       ? Math.round(

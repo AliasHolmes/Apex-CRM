@@ -19,7 +19,8 @@ import {
   normalizeSearchSpec
 } from '../server/leadSearch/searchSpec.ts';
 import { buildScoutEvidence, selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
-import { rankLeadForFinalSelection } from '../server/leadSearch/scoring.ts';
+import { computeMMRDiversitySelection, getLeadScore, rankLeadForFinalSelection } from '../server/leadSearch/scoring.ts';
+import { effectiveScore } from '../server/leadSearch/sessionHelpers.ts';
 import { executeFuseStage } from '../server/leadSearch/stages/fuseStage.ts';
 import { buildRoundDiagnostics } from '../server/leadSearch/roundDiagnostics.ts';
 import type { ProspectContract } from '../server/leadSearch/prospectContract.ts';
@@ -394,5 +395,63 @@ describe('free-tier prospect scout', () => {
     assert.equal(byId.get('c1')?.scoreBreakdown.finalScore, 8.2);
     assert.equal((byId.get('c1') as any)?.sigmoidApplied, undefined);
   });
+
+  it('Phase 2.1: getLeadScore enforces canonical precedence (qualification.finalScore > finalSelectionScore > scoreBreakdown.finalScore > fitScore > compositeScore) and 0-10 scaling', () => {
+    // 1. qualification.finalScore wins over stale finalSelectionScore
+    assert.equal(
+      getLeadScore({
+        qualification: { finalScore: 8.7 },
+        finalSelectionScore: 7.1,
+        scoreBreakdown: { finalScore: 6.5 },
+        fitScore: 5.0,
+        compositeScore: 40
+      }),
+      8.7
+    );
+
+    // 2. finalSelectionScore wins when qualification.finalScore is absent
+    assert.equal(
+      getLeadScore({
+        finalSelectionScore: 8.4,
+        scoreBreakdown: { finalScore: 6.5 },
+        fitScore: 5.0
+      }),
+      8.4
+    );
+
+    // 3. scoreBreakdown.finalScore wins over fitScore / compositeScore
+    assert.equal(
+      getLeadScore({
+        scoreBreakdown: { finalScore: 7.6 },
+        fitScore: 6.0,
+        compositeScore: 50
+      }),
+      7.6
+    );
+
+    // 4. 0-1 probability and 0-100 composite scales normalize to 1-10, while 1.0 stays 1.0
+    assert.equal(getLeadScore({ qualification: { finalScore: 0.85 } }), 8.5);
+    assert.equal(getLeadScore({ compositeScore: 88 }), 8.8);
+    assert.equal(getLeadScore({ qualification: { finalScore: 1.0 } }), 1.0);
+    assert.equal(getLeadScore({}, 4.5), 4.5);
+
+    // 5. sessionHelpers.effectiveScore delegates to getLeadScore(lead, 0)
+    assert.equal(effectiveScore({ qualification: { finalScore: 9.1 } }), 9.1);
+    assert.equal(effectiveScore({}), 0);
+  });
+
+  it('Phase 2.2: computeMMRDiversitySelection accepts precomputedRanks and avoids redundant rank recomputation', () => {
+    const pool = [
+      { id: '1', fullName: 'A', currentCompany: 'Alpha', location: 'Austin', qualification: { finalScore: 9.0 } },
+      { id: '2', fullName: 'B', currentCompany: 'Beta', location: 'Boston', qualification: { finalScore: 8.5 } },
+      { id: '3', fullName: 'C', currentCompany: 'Gamma', location: 'Chicago', qualification: { finalScore: 8.0 } },
+      { id: '4', fullName: 'D', currentCompany: 'Delta', location: 'Denver', qualification: { finalScore: 7.5 } }
+    ];
+    const direct = computeMMRDiversitySelection(pool, 3, 0.75);
+    const rankMap = new Map(pool.map(c => [c, rankLeadForFinalSelection(c)]));
+    const cached = computeMMRDiversitySelection(pool, 3, 0.75, rankMap);
+    assert.deepEqual(cached.map(c => c.id), direct.map(c => c.id));
+  });
 });
+
 

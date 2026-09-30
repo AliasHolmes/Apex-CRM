@@ -1,5 +1,5 @@
 import { extractLinkedInUsername, normalizeLinkedInUrl } from "../services/linkedinEvidence.js";
-import type { EvidenceQuality, LeadSourceProvider } from "./scoring.js";
+import { getLeadScore, type EvidenceQuality, type LeadSourceProvider } from "./scoring.js";
 import { isFlagEnabled } from "./featureFlags.js";
 
 /**
@@ -50,16 +50,7 @@ export function clampEnvFloat(
 
 /** Resolve a lead's effective score from its breakdown with legacy fallbacks. */
 export function effectiveScore(lead: any): number {
-  const score = Number(lead?.scoreBreakdown?.finalScore || 0);
-  if (score > 0) return score;
-  const fit = Number(lead?.fitScore || 0);
-  const composite = Number(lead?.compositeScore || 0);
-  const predictive = Number(lead?.predictiveScore || 0);
-  if (fit > 0) return fit;
-  if (composite > 10) return composite / 10;
-  if (composite > 0) return composite;
-  if (predictive > 10) return predictive / 10;
-  return predictive;
+  return getLeadScore(lead, 0);
 }
 
 /** Build weak fallback evidence when no retrieval evidence was recorded. */

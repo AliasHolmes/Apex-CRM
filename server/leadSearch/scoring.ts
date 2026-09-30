@@ -183,9 +183,33 @@ export function computeTfIdfSignalWeight(
   return Number(Math.max(0, signalCount * idf).toFixed(4));
 }
 
+export function getLeadScore(lead: Record<string, any> | null | undefined, fallback = 5): number {
+  if (!lead || typeof lead !== 'object') return fallback;
+  const candidates = [
+    lead.qualification?.finalScore,
+    lead.profile?.qualification?.finalScore,
+    lead.finalSelectionScore,
+    lead.profile?.finalSelectionScore,
+    lead.scoreBreakdown?.finalScore,
+    lead.profile?.scoreBreakdown?.finalScore,
+    lead.scoreOverride,
+    lead.effectiveScore,
+    lead.fitScore,
+    lead.audit?.functionalRelevance,
+    lead.compositeScore,
+    lead.predictiveScore,
+  ];
+  for (const val of candidates) {
+    const num = Number(val);
+    if (Number.isFinite(num) && num > 0) {
+      return normalizeToTenScale(num, fallback);
+    }
+  }
+  return fallback;
+}
+
 export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDays = 0): number {
-  const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? rankLeadForFinalSelection(lead));
-  const base = normalizeToTenScale(rawBase, 5);
+  const base = getLeadScore(lead, Number.isFinite(Number(lead?.finalSelectionScore)) ? Number(lead.finalSelectionScore) : rankLeadForFinalSelection(lead));
   const intent = lead.companyIntentEvidence;
   if (!intent) return base;
 
@@ -208,8 +232,7 @@ export function applyIntentEnrichmentDelta(lead: Record<string, any>, cacheAgeDa
 }
 
 export function applyPostIntentDelta(lead: Record<string, any>): number {
-  const rawBase = Number(lead.finalSelectionScore ?? lead.qualification?.finalScore ?? lead.scoreOverride ?? 5);
-  const base = normalizeToTenScale(rawBase, 5);
+  const base = getLeadScore(lead, 5);
   const postIntent = lead.postIntentEvidence;
   if (!postIntent || postIntent.quality === 'none') return base;
 
@@ -234,12 +257,14 @@ export function applyPostIntentDelta(lead: Record<string, any>): number {
 export function computeMMRDiversitySelection<T extends Record<string, any>>(
   candidates: T[],
   targetCount: number,
-  lambda = 0.70
+  lambda = 0.70,
+  precomputedRanks?: ReadonlyMap<T, number>
 ): T[] {
   if (candidates.length <= targetCount) return candidates;
 
+  const getRank = (c: T) => precomputedRanks?.get(c) ?? rankLeadForFinalSelection(c);
   const selected: T[] = [];
-  const pool = [...candidates].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
+  const pool = [...candidates].sort((a, b) => getRank(b) - getRank(a));
 
   selected.push(pool.shift()!);
 
@@ -249,7 +274,7 @@ export function computeMMRDiversitySelection<T extends Record<string, any>>(
 
     for (let i = 0; i < pool.length; i++) {
       const candidate = pool[i];
-      const score = rankLeadForFinalSelection(candidate) / 10;
+      const score = getRank(candidate) / 10;
 
       let maxSim = 0;
       for (const sel of selected) {
@@ -326,10 +351,7 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   const corroborationScore = clampScore(lead.scout?.corroborationScore, 4);
   const sourceScore = sourceConfidenceScore(providerForLead(lead));
   const postScore = postIntentScore(lead);
-  const rawBase = Number(lead.qualification?.finalScore ?? lead.finalSelectionScore ?? lead.scoreBreakdown?.finalScore ?? lead.scoreOverride ?? lead.fitScore ?? audit?.functionalRelevance);
-  // `< 1.0`, not `<= 1.0`: a rank of exactly 1 is the worst possible candidate, not a
-  // 0-1 probability. See normalizeToTenScale for the full rationale.
-  const baseScore = clampScore(rawBase < 1.0 && rawBase > 0 ? rawBase * 10 : rawBase, 5);
+  const baseScore = getLeadScore(lead, 5);
 
   // BM25+ Profile & Evidence Text Relevance:
   const queryTerms: string[] = [];

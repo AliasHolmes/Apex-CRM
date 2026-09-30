@@ -85,7 +85,7 @@ export function buildScoutEvidence(
   };
 }
 
-import { computeMMRDiversitySelection, computeParetoFrontier, rankLeadForFinalSelection } from './scoring.js';
+import { computeMMRDiversitySelection, computeParetoFrontier, getLeadScore, rankLeadForFinalSelection } from './scoring.js';
 
 const candidateKey = (c: any): string => {
   return String(
@@ -113,17 +113,8 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   logEvent?: (msg: string) => void
 ) {
   const scoredCandidates = candidates.map((c) => {
-    const raw = Number(
-      (c as any).finalSelectionScore ??
-      (c as any).profile?.finalSelectionScore ??
-      (c as any).scoreBreakdown?.finalScore ??
-      (c as any).qualification?.finalScore ??
-      (c as any).profile?.qualification?.finalScore ??
-      (c as any).effectiveScore ??
-      rankLeadForFinalSelection(c)
-    );
-    const scaled = raw < 1.0 && raw > 0 ? raw * 10 : raw > 10 ? raw / 10 : raw;
-    const finalSelectionScore = clamp10(Number.isFinite(scaled) && scaled > 0 ? scaled : 5);
+    const score = getLeadScore(c, NaN);
+    const finalSelectionScore = clamp10(Number.isFinite(score) ? score : rankLeadForFinalSelection(c));
     return { ...c, finalSelectionScore };
   }) as T[];
 
@@ -134,6 +125,9 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   if (logEvent && skyline.length > 0) {
     logEvent(`[Pareto Skyline] Identified ${skyline.length}/${candidates.length} non-dominated Pareto Front candidates across authority, company intent, post intent, and evidence quality.`);
   }
+
+  // Precompute rankLeadForFinalSelection once across all candidates after Pareto flags are set
+  const rankMap = new Map<T, number>(scoredCandidates.map(c => [c, rankLeadForFinalSelection(c)]));
 
   const GENERIC_INDEPENDENT_COMPANIES = new Set([
     'self-employed',
@@ -170,7 +164,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   };
 
   // Sort skyline by candidate rank to take top-scoring non-dominated candidates first
-  const sortedSkyline = [...skyline].sort((a, b) => rankLeadForFinalSelection(b) - rankLeadForFinalSelection(a));
+  const sortedSkyline = [...skyline].sort((a, b) => (rankMap.get(b) ?? 0) - (rankMap.get(a) ?? 0));
 
   // Reserve up to 30% of slots for top Pareto non-dominated candidates, respecting maxPerCompany
   const paretoReservation = Math.max(0, Math.ceil(limit * 0.30));
@@ -204,7 +198,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
 
   // --- Step 3: MMR Diversity Selection ---
   const mmrLimit = Math.max(0, limit - paretoGuaranteed.length);
-  const mmrSelected = computeMMRDiversitySelection(filtered, mmrLimit, 0.75);
+  const mmrSelected = computeMMRDiversitySelection(filtered, mmrLimit, 0.75, rankMap);
   const selectedList = [...paretoGuaranteed, ...mmrSelected];
 
   // --- Step 4: Shortfall Backfill (guarantee full requested limit if candidate pool was sufficient while respecting maxPerCompany) ---

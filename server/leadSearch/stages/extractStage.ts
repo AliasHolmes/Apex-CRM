@@ -3,6 +3,8 @@ import {
   reserveProviderUsage,
   recordProviderUsage,
   readExistingIdentityKeys,
+  computeRequirementsFingerprint,
+  getCandidateVerdict,
 } from "../../db.js";
 import {
   chunkBrightDataBatchItems,
@@ -125,6 +127,107 @@ export function formatExperienceBlock(experiences: any[]): string {
   return lines.join("\n");
 }
 
+export interface DeterministicParsedProfile {
+  fullName: string;
+  currentTitle: string;
+  currentCompany: string;
+  location?: string;
+}
+
+/**
+ * Deterministically parses standard Google / Tavily LinkedIn SERP profile results in 0ms without LLM.
+ * Example title formats:
+ * - "Jane Doe - Founder & CEO - Acme Corp | LinkedIn"
+ * - "John Smith - Co-Founder at NextGen AI | LinkedIn"
+ * - "Dr. Alice Brown - VP of Engineering - ScaleOps | LinkedIn: Log In or Sign Up"
+ */
+export function parseDeterministicLinkedInProfile(
+  item: any,
+): DeterministicParsedProfile | null {
+  const url = String(item?.url || "").trim();
+  // Must be a LinkedIn personal profile (/in/)
+  if (!/linkedin\.com\/in\/[^/?#]+/i.test(url)) {
+    return null;
+  }
+
+  const rawTitle = cleanSnippetNoise(item?.title || "");
+  if (!rawTitle) return null;
+
+  // Strip trailing " | LinkedIn..." or " - LinkedIn..." or " – LinkedIn..."
+  const withoutLinkedIn = rawTitle
+    .replace(/(?:\s+[-–—]|\s*[|·•—])\s*LinkedIn.*$/i, "")
+    .trim();
+  if (!withoutLinkedIn) return null;
+
+  // Split by standard SERP title separators: " - ", " – ", " — ", " | ", " · ", " • "
+  // Requires whitespace around hyphens so hyphenated words like "Co-Founder" or "Vice-President" are preserved
+  const parts = withoutLinkedIn
+    .split(/(?:\s+[-–—]\s+|\s*[|·•—]\s*)/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  let fullName = "";
+  let currentTitle = "";
+  let currentCompany = "";
+
+  if (parts.length >= 3) {
+    fullName = parts[0];
+    currentTitle = parts[1];
+    currentCompany = parts.slice(2).join(" - ");
+  } else if (parts.length === 2) {
+    fullName = parts[0];
+    const secondPart = parts[1];
+    const atSplit = secondPart.split(/\s+(?:at|@)\s+/i);
+    if (atSplit.length >= 2) {
+      currentTitle = atSplit[0].trim();
+      currentCompany = atSplit.slice(1).join(" at ").trim();
+    } else {
+      currentTitle = secondPart;
+      currentCompany = "";
+    }
+  } else {
+    return null;
+  }
+
+  // Validate fullName: 1-4 words, 2-50 chars, no obvious non-name words
+  if (!fullName || fullName.length < 2 || fullName.length > 50) return null;
+  if (/\b(?:company|inc|llc|ltd|gmbh|jobs?|hiring|posts?|profile|updates?)\b/i.test(fullName)) return null;
+  if (/\d/.test(fullName)) return null;
+  const nameWords = fullName.split(/\s+/).filter(Boolean);
+  if (nameWords.length < 1 || nameWords.length > 5) return null;
+
+  // Validate currentTitle: 2-80 chars
+  if (!currentTitle || currentTitle.length < 2 || currentTitle.length > 80) return null;
+
+  if (currentCompany.length > 80) {
+    currentCompany = currentCompany.slice(0, 80).trim();
+  }
+
+  // Extract location from snippet if present
+  let location: string | undefined;
+  const snippet = cleanSnippetNoise(item?.content || item?.raw_content || "");
+  const locMatch = snippet.match(
+    /(?:Location:\s*|based in\s+|^)([A-Za-z\s,.-]{3,40}?)(?:\s*\.\s*|\s*·|\s*Experience|\s*Current|\s*Past|\s*Education|$)/i,
+  );
+  if (locMatch?.[1]) {
+    const candidateLoc = locMatch[1].trim();
+    if (
+      !/^(?:view|see|experienced|working|passionate|specializing|director|founder|ceo)/i.test(
+        candidateLoc,
+      )
+    ) {
+      location = candidateLoc;
+    }
+  }
+
+  return {
+    fullName,
+    currentTitle,
+    currentCompany,
+    location,
+  };
+}
+
 export type ExtractStageInput = {
   round: number;
   candidateItems: any[];
@@ -183,6 +286,7 @@ export async function executeExtractStage(
 
   // 0. Stage 2.5: FAST DETERMINISTIC PRE-FILTER GATE (0ms - No LLM)
   const existingCrmKeys = state.existingKeys || readExistingIdentityKeys();
+  const reqFingerprint = computeRequirementsFingerprint(config.contract?.requirements);
   const requiresPerson =
     config.contract?.requirements.some((r: any) => r.scope === "person_role") ?? true;
 
@@ -216,7 +320,18 @@ export async function executeExtractStage(
       continue;
     }
 
-    // b) Check LinkedIn profile requirement
+    // b) Check candidate verdict cache (cross-session negative memory)
+    const candidateIdentity = identityKey || handleKey;
+    if (candidateIdentity && reqFingerprint) {
+      const cachedVerdict = getCandidateVerdict(candidateIdentity, reqFingerprint);
+      if (cachedVerdict?.verdict === "hard_fail") {
+        stats.cachedDisqualifications = (stats.cachedDisqualifications || 0) + 1;
+        noteRejection("cached_disqualification", queryRun);
+        continue;
+      }
+    }
+
+    // c) Check LinkedIn profile requirement
     const isExplicitLinkedInProfile = Boolean(
       /linkedin\.com\/in\/[^/?#]+/i.test(effectiveUrl) ||
         (handle && isValidLinkedInHandle(handle)),
@@ -300,7 +415,7 @@ export async function executeExtractStage(
       item.sourceProvider === "brightdata_dataset" ||
       item.raw?.sourceProvider === "brightdata_dataset",
   );
-  const standardCandidateItems = preFilteredItems.filter(
+  const nonDatasetCandidateItems = preFilteredItems.filter(
     (item: any) =>
       item.sourceProvider !== "brightdata_dataset" &&
       item.raw?.sourceProvider !== "brightdata_dataset",
@@ -399,15 +514,98 @@ export async function executeExtractStage(
     });
   }
 
+  // Parse standard LinkedIn SERP items deterministically in 0ms (no LLM required)
+  const deterministicExtractedProfiles: any[] = [];
+  const standardCandidateItems: any[] = [];
+
+  for (const item of nonDatasetCandidateItems) {
+    const parsed = parseDeterministicLinkedInProfile(item);
+    if (parsed) {
+      const canonicalUrl = item.url;
+      const normalizedUrl =
+        item._normalizedUrl || normalizeLinkedInUrl(canonicalUrl);
+      const username =
+        item._linkedinUsername || extractLinkedInUsername(canonicalUrl);
+      const queryRun = item._queryRun as QueryRunStats | undefined;
+
+      const evidenceBlock = buildCleanEvidence(item);
+      const evidenceMeta: EvidenceMeta = {
+        evidenceBlock,
+        evidenceQuality: inferTavilyEvidenceQuality(item),
+        sourceProvider: item.sourceProvider || "tavily",
+        sourceUrl: canonicalUrl,
+        sourceQuery: item._sourceQuery || "",
+        sourceRound: item._sourceRound || round,
+        queryRun,
+        sourceProviders: Array.isArray(item._sourceProviders)
+          ? item._sourceProviders
+          : [item.sourceProvider || "tavily"],
+        sourceCount: Number(item._sourceCount || 1),
+        lanes: Array.isArray(item._lanes)
+          ? item._lanes
+          : [item._queryLane || "person"],
+        corroborated: Boolean(item._corroborated),
+        corroboratingQueryRuns: Array.isArray(item._corroboratingQueryRuns)
+          ? item._corroboratingQueryRuns
+          : undefined,
+        ablatedRequirementId:
+          item._ablatedRequirementId || item.ablatedRequirementId,
+        ablatedTerm: item._ablatedTerm || item.ablatedTerm,
+      };
+
+      const primaryKey = normalizedUrl || normalizeDedupeValue(canonicalUrl);
+      if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);
+      if (canonicalUrl && canonicalUrl !== primaryKey)
+        evidenceByUrl.set(canonicalUrl, evidenceMeta);
+      if (username) {
+        evidenceByUrl.set(`linkedin:${username}`, evidenceMeta);
+        evidenceByUrl.set(`linkedin.com/in/${username}`, evidenceMeta);
+      }
+      if (queryRun) queryRun.evidenceBlocks++;
+
+      deterministicExtractedProfiles.push({
+        id: `lead-${crypto.randomUUID()}`,
+        fullName: parsed.fullName,
+        currentTitle: parsed.currentTitle,
+        currentCompany: parsed.currentCompany,
+        company: parsed.currentCompany,
+        headline: parsed.currentTitle,
+        location: parsed.location || "",
+        contactDetails: {
+          linkedinUrl: normalizedUrl ? `https://${normalizedUrl}` : canonicalUrl,
+          website: "",
+        },
+        extractionConfidence: 9,
+        sourceProvider: item.sourceProvider || "tavily",
+        sourceRound: round,
+        evidenceReasons: [
+          `Deterministically parsed profile: ${parsed.fullName}, ${parsed.currentTitle}${parsed.currentCompany ? ` at ${parsed.currentCompany}` : ""}`,
+        ],
+        _extractedDeterministically: true,
+      });
+    } else {
+      standardCandidateItems.push(item);
+    }
+  }
+
+  if (deterministicExtractedProfiles.length > 0) {
+    logEvent(
+      `Round ${round}: Deterministically parsed ${deterministicExtractedProfiles.length}/${nonDatasetCandidateItems.length} LinkedIn profile(s) in 0ms without invoking LLM.`,
+    );
+  }
+
   if (
     standardCandidateItems.length === 0 &&
-    datasetExtractedProfiles.length > 0
+    (datasetExtractedProfiles.length > 0 || deterministicExtractedProfiles.length > 0)
   ) {
     logEvent(
-      `Round ${round}: All ${datasetExtractedProfiles.length} candidate(s) resolved via Bright Data dataset dossiers. Skipping extraction LLM.`,
+      `Round ${round}: All candidate(s) resolved deterministically (${datasetExtractedProfiles.length} dataset, ${deterministicExtractedProfiles.length} SERP). Skipping extraction LLM.`,
     );
     return {
-      extractedProfiles: datasetExtractedProfiles,
+      extractedProfiles: [
+        ...datasetExtractedProfiles,
+        ...deterministicExtractedProfiles,
+      ],
       evidenceByUrl,
       consecutiveFailedExtractionRounds: 0,
       brightDataProviderDisabled,
@@ -788,7 +986,6 @@ Rules:
 - Set contactDetails.linkedinUrl to the candidate's canonical LinkedIn profile URL from LINK or the snippet (e.g. https://linkedin.com/in/username). If LINK is a LinkedIn post or redirect, extract the person's profile URL.
 - If LINK is not a LinkedIn URL or is missing, leave contactDetails.linkedinUrl empty.
 - Preserve SOURCE_PROVIDER as sourceProvider.
-- Score conservatively from 1-10 using only visible evidence.
 - Add evidenceReasons as 1 short factual summary of the person's role/company from the snippet.
 - Do not filter out individuals or evaluate subjective criteria; extract all visible professional entities faithfully.
 
@@ -875,6 +1072,7 @@ Evidence:
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
               reasoningEffort: "low",
+              routingTier: "fast",
               timeoutMs: extractionTimeoutMs,
               metadata: {
                 stage: "extraction",
@@ -1079,9 +1277,18 @@ Evidence:
     },
   );
 
-  if (chunks.length > 0 && extractionFailuresThisRound === chunks.length) {
+  if (
+    chunks.length > 0 &&
+    extractionFailuresThisRound === chunks.length &&
+    deterministicExtractedProfiles.length === 0 &&
+    datasetExtractedProfiles.length === 0
+  ) {
     consecutiveFailedExtractionRounds++;
-  } else if (chunks.length > 0 && extractionFailuresThisRound < chunks.length) {
+  } else if (
+    (chunks.length > 0 && extractionFailuresThisRound < chunks.length) ||
+    deterministicExtractedProfiles.length > 0 ||
+    datasetExtractedProfiles.length > 0
+  ) {
     consecutiveFailedExtractionRounds = 0;
   }
 
@@ -1100,7 +1307,10 @@ Evidence:
       },
     });
     return {
-      extractedProfiles: [],
+      extractedProfiles: [
+        ...datasetExtractedProfiles,
+        ...deterministicExtractedProfiles,
+      ],
       evidenceByUrl,
       consecutiveFailedExtractionRounds,
       brightDataProviderDisabled,
@@ -1118,7 +1328,11 @@ Evidence:
     }
     return lead;
   });
-  const extractedProfiles = [...datasetExtractedProfiles, ...standardProfiles];
+  const extractedProfiles = [
+    ...datasetExtractedProfiles,
+    ...deterministicExtractedProfiles,
+    ...standardProfiles,
+  ];
   return {
     extractedProfiles,
     evidenceByUrl,

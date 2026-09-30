@@ -262,6 +262,9 @@ export async function executeVerifyStage(
       evidenceMeta.evidenceQuality,
       evidenceMeta.sourceProvider,
       dmVerification,
+      undefined,
+      ctx.config.contract?.requirements,
+      evidenceMeta.evidenceBlock,
     );
     lead.scoreOverride = lead.scoreBreakdown.finalScore;
     // Mark the score as current so enrichStage's acceptance loop can skip a

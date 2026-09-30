@@ -11,6 +11,7 @@ import {
 import {
   openAIStructured,
   DEFAULT_PRIMARY_MODEL,
+  isAtriaPrimary,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -18,6 +19,15 @@ import { estimateTokenCount } from "../llmBudget.js";
 import { summarizeLLM } from "../telemetry.js";
 import { rankLeadForFinalSelection } from "../scoring.js";
 import { effectiveScore as sharedEffectiveScore } from "../sessionHelpers.js";
+import {
+  readPastUserDecisions,
+  computeRequirementsFingerprint,
+  upsertCandidateVerdict,
+} from "../../db.js";
+import {
+  canonicalLinkedInIdentity,
+  getLinkedInHandle,
+} from "../../../src/utils/leadDedupe.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { ProspectContract } from "../prospectContract.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -29,8 +39,17 @@ import {
 import { runGatedCompanyAttribution } from "../companyAttribution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
-export function computeJudgeDynamicMaxTokens(batchLength: number): number {
-  return Math.min(950, Math.max(500, batchLength * 350));
+export function computeJudgeDynamicMaxTokens(
+  batchLength: number,
+  requirementCount = 4,
+  hasReasoningModel = false,
+): number {
+  const safeBatch = Math.max(1, batchLength);
+  const safeReqs = Math.max(1, requirementCount);
+  const perCandidateTokens = safeReqs * 65 + 60;
+  const jsonOutputBudget = safeBatch * perCandidateTokens + 300;
+  const reasoningBuffer = hasReasoningModel ? 1500 : 400;
+  return Math.min(8000, Math.max(1500, jsonOutputBudget + reasoningBuffer));
 }
 
 export function isEligibleForSafetyNet(
@@ -160,7 +179,7 @@ export function filterNonDecisionMakers(
         candidate.lead.headline ||
         "",
     );
-    const classification = classifyTitle(title);
+    const classification = classifyTitle(title, contract);
     if (classification.isIC) {
       rejected.push(candidate);
     } else {
@@ -223,6 +242,8 @@ export async function evaluateIncrementalJudgeBatches(
     };
   }
 
+  const reqFingerprint = computeRequirementsFingerprint(contract?.requirements);
+
   const recordCandidateJudgeOutcome = (
     candidate: FinalistCandidate,
     status: FinalistOutcomeStatus | undefined,
@@ -234,6 +255,20 @@ export async function evaluateIncrementalJudgeBatches(
           (batchRequirementFailCounts[reqId] || 0) + 1;
       }
     }
+
+    if (status === "hard_fail" && reqFingerprint) {
+      const lead = candidate.lead;
+      const url = lead?.profileUrl || lead?.canonicalUrl || lead?.url || (candidate as any).url;
+      const identityKey = canonicalLinkedInIdentity(url) || (url ? `url:${url}` : "");
+      const handle = getLinkedInHandle(url);
+      const key = identityKey || (handle ? `linkedin:${handle}` : "");
+      if (key) {
+        const reason = lead?.qualification?.reason || lead?.judgmentInsight?.reason || "Disqualified by finalist judge";
+        const firstFailedReqId = failedReqIds[0];
+        upsertCandidateVerdict(key, reqFingerprint, "hard_fail", reason, firstFailedReqId);
+      }
+    }
+
     const queryRun =
       leadQueryRuns?.get?.(candidate.lead) || leadQueryRuns?.get?.(candidate);
     if (!queryRun) return;
@@ -341,6 +376,8 @@ export async function evaluateIncrementalJudgeBatches(
     microBatches.push(currentBatch);
   }
 
+  const pastDecisions = readPastUserDecisions(5);
+
   // Chunk micro-batches into waves according to concurrency
   const waves: FinalistCandidate[][][] = [];
   for (let i = 0; i < microBatches.length; i += judgeConcurrency) {
@@ -411,8 +448,12 @@ export async function evaluateIncrementalJudgeBatches(
     const judgeStarted = Date.now();
     const judgeAttempts: LLMProviderAttempt[] = [];
     let judgeUsage: LLMUsage | undefined;
-    const judgePrompt = buildFinalistJudgePrompt(contract, batch);
-    const dynamicMaxTokens = computeJudgeDynamicMaxTokens(batch.length);
+    const judgePrompt = buildFinalistJudgePrompt(contract, batch, pastDecisions);
+    const dynamicMaxTokens = computeJudgeDynamicMaxTokens(
+      batch.length,
+      contract?.requirements?.length || 4,
+      isAtriaPrimary(),
+    );
     const estimatedInputTokens = estimateTokenCount(judgePrompt);
 
     try {
@@ -434,6 +475,7 @@ export async function evaluateIncrementalJudgeBatches(
           ),
           circuitBreaker: llmCircuitBreaker,
           signal: state.abortController.signal,
+          routingTier: depth > 0 ? "reasoning" : "fast",
           metadata: {
             stage: "judge",
             candidateCount: batch.length,
@@ -453,10 +495,10 @@ export async function evaluateIncrementalJudgeBatches(
         batch,
       );
 
-      const minimumValid = Math.ceil(batch.length * 0.4);
-      if (validation.validJudgmentCount < minimumValid && batch.length > 1 && depth < 2) {
+      // If zero judgments were returned and batch is divisible, split immediately
+      if (validation.validJudgmentCount === 0 && batch.length > 1 && depth < 2) {
         logEvent(
-          `Incremental Judge: Batch ${batchIndex + 1} omitted judgments; splitting ${batch.length} candidates.`,
+          `Incremental Judge: Batch ${batchIndex + 1} yielded 0 judgments; splitting ${batch.length} candidates.`,
         );
         const mid = Math.ceil(batch.length / 2);
         const left = await evaluateSingleBatch(batch.slice(0, mid), batchIndex, depth + 1);
@@ -571,7 +613,23 @@ export async function evaluateIncrementalJudgeBatches(
         },
       });
 
-      return batchQualified;
+      // Rescue unjudged candidates omitted due to output cutoff or model skipping:
+      const unjudgedCandidates = batch.filter(
+        (c) => validation.outcomes.get(c.candidateId)?.status === "unjudged",
+      );
+      let rescuedQualified: any[] = [];
+      if (unjudgedCandidates.length > 0 && depth < 2) {
+        logEvent(
+          `Incremental Judge: Batch ${batchIndex + 1} omitted ${unjudgedCandidates.length}/${batch.length} candidate(s); evaluating unjudged candidates in a remainder batch.`,
+        );
+        rescuedQualified = await evaluateSingleBatch(
+          unjudgedCandidates,
+          batchIndex,
+          depth + 1,
+        );
+      }
+
+      return [...batchQualified, ...rescuedQualified];
     } catch (error: any) {
       const failedAttempt = judgeAttempts[judgeAttempts.length - 1];
       const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
@@ -613,20 +671,14 @@ export async function evaluateIncrementalJudgeBatches(
         );
         return [];
       }
-      if (retries < 1) {
-        logEvent(
-          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); retrying once...`,
-        );
-        return evaluateSingleBatch(batch, batchIndex, depth, retries + 1);
-      }
       const isTokenOrSizeError =
         error.isTokenLimit ||
-        /413|payload too large|too many tokens|rate_limit_exceeded|429|rate[-_ ]?limit/i.test(
+        /413|payload too large|too many tokens|finish_reason.*length|context length|rate_limit_exceeded|429|rate[-_ ]?limit/i.test(
           error.message || "",
         );
       if (batch.length > 1 && (isTokenOrSizeError || depth < 2)) {
         logEvent(
-          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); splitting ${batch.length} candidates.`,
+          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); splitting ${batch.length} candidates${isTokenOrSizeError ? " immediately without doomed retry" : ""}.`,
         );
         const mid = Math.ceil(batch.length / 2);
         const left = await evaluateSingleBatch(
@@ -640,6 +692,12 @@ export async function evaluateIncrementalJudgeBatches(
           depth + 1,
         );
         return [...left, ...right];
+      }
+      if (retries < 1) {
+        logEvent(
+          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); retrying once...`,
+        );
+        return evaluateSingleBatch(batch, batchIndex, depth, retries + 1);
       }
       logEvent(
         `WARN: Incremental judge batch ${batchIndex + 1} failed completely (${error.message || String(error)}); marking ${batch.length} candidate(s) as unverified.`,

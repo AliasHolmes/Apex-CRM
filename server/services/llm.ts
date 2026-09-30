@@ -66,6 +66,8 @@ export type LLMSessionCircuitBreaker = {
   disabledProviderIds: Set<LLMProvider["id"]>;
 };
 
+export type LLMRoutingTier = "fast" | "reasoning" | "balanced";
+
 export type LLMExecutionOptions = {
   onProviderAttempt?: (attempt: LLMProviderAttempt) => void;
   onUsage?: (usage: LLMUsage) => void;
@@ -74,6 +76,7 @@ export type LLMExecutionOptions = {
   circuitBreaker?: LLMSessionCircuitBreaker;
   signal?: AbortSignal;
   reasoningEffort?: "low" | "medium" | "high";
+  routingTier?: LLMRoutingTier;
   metadata?: Record<string, any>;
 };
 
@@ -1018,7 +1021,24 @@ async function withProviderFallback<T>(
     throw cancelError;
   }
 
-  const providers = getConfiguredLLMProviders();
+  let providers = getConfiguredLLMProviders();
+  if (executionOptions.routingTier === "fast" || executionOptions.metadata?.stage === "extraction") {
+    providers = [...providers].sort((a, b) => {
+      const aIsReasoning = a.id === "atria";
+      const bIsReasoning = b.id === "atria";
+      if (aIsReasoning && !bIsReasoning) return 1;
+      if (!aIsReasoning && bIsReasoning) return -1;
+      return 0;
+    });
+  } else if (executionOptions.routingTier === "reasoning") {
+    providers = [...providers].sort((a, b) => {
+      const aIsReasoning = a.id === "atria";
+      const bIsReasoning = b.id === "atria";
+      if (aIsReasoning && !bIsReasoning) return -1;
+      if (!aIsReasoning && bIsReasoning) return 1;
+      return 0;
+    });
+  }
   if (providers.length === 0) {
     throw new Error(
       "No LLM provider available. Configure ATRIA_API_KEY, OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY in .env.",

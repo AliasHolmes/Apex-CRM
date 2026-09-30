@@ -12,7 +12,8 @@ export type RejectionReason =
   | 'brightdata_rate_limit'
   | 'brightdata_failed'
   | 'llm_extraction_empty'
-  | 'not_decision_maker';
+  | 'not_decision_maker'
+  | 'cached_disqualification';
 
 export type RejectionCounts = Record<string, number>;
 

@@ -28,7 +28,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-const LATEST_SCHEMA_VERSION = 24;
+const LATEST_SCHEMA_VERSION = 25;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1263,6 +1263,25 @@ function runMigrations(db: DatabaseSync) {
       }
     }
 
+    if (currentVersion < 25) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS candidate_verdicts (
+          identity_key TEXT NOT NULL,
+          requirement_hash TEXT NOT NULL,
+          verdict TEXT NOT NULL,
+          reason TEXT,
+          failed_requirement_id TEXT,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          PRIMARY KEY (identity_key, requirement_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_lookup
+          ON candidate_verdicts(identity_key, requirement_hash);
+        CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_expires
+          ON candidate_verdicts(expires_at);
+      `);
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1566,6 +1585,21 @@ export function getLeadsDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_prospect_contract_cache_expires
         ON prospect_contract_cache(expires_at);
+
+      CREATE TABLE IF NOT EXISTS candidate_verdicts (
+        identity_key TEXT NOT NULL,
+        requirement_hash TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        reason TEXT,
+        failed_requirement_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        PRIMARY KEY (identity_key, requirement_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_lookup
+        ON candidate_verdicts(identity_key, requirement_hash);
+      CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_expires
+        ON candidate_verdicts(expires_at);
     `);
     runMigrations(leadsDb);
     pruneOldBackups(path.join(path.dirname(LEADS_DB_PATH), "backups"));
@@ -2493,6 +2527,176 @@ export function markLeadReviewed(
     .run(reviewStatus, now, leadId);
   invalidateLeadsStatsCache();
   return Number(res.changes || 0) > 0;
+}
+
+export interface PastUserDecision {
+  name: string;
+  title: string;
+  company: string;
+  verdict: 'ACCEPTED' | 'REJECTED';
+  notes?: string;
+  reason?: string;
+}
+
+export function readPastUserDecisions(limit = 10): PastUserDecision[] {
+  try {
+    const db = getLeadsDb();
+    const rows = db
+      .prepare(`
+        SELECT full_name, company, title, review_status, payload 
+        FROM leads 
+        WHERE review_status IN ('ACCEPTED', 'REJECTED') 
+        ORDER BY updated_at DESC 
+        LIMIT ?
+      `)
+      .all(limit) as Array<{
+        full_name?: string;
+        company?: string;
+        title?: string;
+        review_status?: string;
+        payload?: string;
+      }>;
+
+    const decisions: PastUserDecision[] = [];
+    for (const row of rows) {
+      if (!row) continue;
+      let name = (row.full_name || "").trim();
+      let title = (row.title || "").trim();
+      let company = (row.company || "").trim();
+      let notes = "";
+      let reason = "";
+
+      if (row.payload) {
+        try {
+          const lead = JSON.parse(row.payload);
+          if (!name) {
+            name = (lead.profile?.fullName || lead.fullName || lead.name || "").trim();
+          }
+          if (!title) {
+            title = (lead.profile?.currentTitle || lead.currentTitle || lead.title || "").trim();
+          }
+          if (!company) {
+            company = (lead.profile?.currentCompany || lead.currentCompany || lead.company || "").trim();
+          }
+          notes = typeof lead.notes === "string" ? lead.notes.trim() : "";
+          reason = typeof lead.qualification?.reason === "string"
+            ? lead.qualification.reason.trim()
+            : typeof lead.whyThisLead === "string"
+              ? lead.whyThisLead.trim()
+              : "";
+        } catch {}
+      }
+
+      const verdict = (row.review_status === "ACCEPTED" ? "ACCEPTED" : "REJECTED") as 'ACCEPTED' | 'REJECTED';
+      if (name && (title || company)) {
+        decisions.push({
+          name,
+          title,
+          company,
+          verdict,
+          notes: notes || undefined,
+          reason: reason || undefined,
+        });
+      }
+    }
+    return decisions;
+  } catch (err) {
+    console.warn("[db] Failed to read past user decisions:", err);
+    return [];
+  }
+}
+
+export function computeRequirementsFingerprint(
+  requirements?: Array<{ id?: string; text?: string; description?: string; acceptableTerms?: string[]; mustMatch?: boolean; importance?: string }>,
+): string {
+  if (!requirements || requirements.length === 0) {
+    return "default";
+  }
+  const normalized = requirements
+    .map((r) => ({
+      id: r.id || "",
+      text: (r.text || r.description || "").trim().toLowerCase(),
+      mustMatch: Boolean(r.mustMatch || r.importance === "hard"),
+      acceptableTerms: (r.acceptableTerms || [])
+        .map((t) => t.trim().toLowerCase())
+        .sort(),
+    }))
+    .sort((a, b) => (a.id || "").localeCompare(b.id || "") || a.text.localeCompare(b.text));
+
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(normalized))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+export function upsertCandidateVerdict(
+  identityKey: string,
+  requirementHash: string,
+  verdict: "hard_fail" | "soft_fail" | "pass",
+  reason?: string,
+  failedRequirementId?: string,
+  ttlDays: number = 30,
+): void {
+  if (!identityKey || !requirementHash) return;
+  try {
+    const db = getLeadsDb();
+    const now = new Date();
+    const expires = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000);
+    const nowIso = now.toISOString();
+    const expiresIso = expires.toISOString();
+
+    const stmt = getCachedStatement(
+      db,
+      `
+      INSERT INTO candidate_verdicts (
+        identity_key, requirement_hash, verdict, reason, failed_requirement_id, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(identity_key, requirement_hash) DO UPDATE SET
+        verdict = excluded.verdict,
+        reason = excluded.reason,
+        failed_requirement_id = excluded.failed_requirement_id,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+    `,
+    );
+    stmt.run(
+      identityKey,
+      requirementHash,
+      verdict,
+      reason || null,
+      failedRequirementId || null,
+      nowIso,
+      expiresIso,
+    );
+  } catch (err) {
+    console.warn("[db] Failed to upsert candidate verdict:", err);
+  }
+}
+
+export function getCandidateVerdict(
+  identityKey: string,
+  requirementHash: string,
+): { verdict: string; reason?: string; failedRequirementId?: string } | null {
+  if (!identityKey || !requirementHash) return null;
+  try {
+    const db = getLeadsDb();
+    const nowIso = new Date().toISOString();
+    const stmt = getCachedStatement(
+      db,
+      `
+      SELECT verdict, reason, failed_requirement_id as failedRequirementId
+      FROM candidate_verdicts
+      WHERE identity_key = ? AND requirement_hash = ? AND expires_at > ?
+    `,
+    );
+    const row = stmt.get(identityKey, requirementHash, nowIso) as
+      | { verdict: string; reason?: string; failedRequirementId?: string }
+      | undefined;
+    return row || null;
+  } catch {
+    return null;
+  }
 }
 
 const normalizeCacheValue = (value?: string) =>

@@ -1,5 +1,6 @@
 import { companiesMatch } from './signalStore.js';
 import { parseSnippetFreshnessDays, computeFreshnessMultiplier } from './intentSignals.js';
+import type { ProspectRequirement } from './prospectContract.js';
 
 export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
 export type EvidenceQuality = 'weak' | 'partial' | 'good';
@@ -645,6 +646,111 @@ export function computeEpistemicCredibleInterval(
   };
 }
 
+/**
+ * Computes a brief-aware relevance score (1.0 - 10.0) evaluating how strongly
+ * a candidate's title, headline, company, and snippet evidence match the
+ * contract's active requirements and acceptableTerms.
+ */
+export function computeBriefRelevanceScore(
+  lead: Record<string, any>,
+  requirements?: ProspectRequirement[] | null,
+  evidenceText?: string,
+): number {
+  if (!requirements || !Array.isArray(requirements) || requirements.length === 0) {
+    return 5.0;
+  }
+
+  const roleText = [
+    lead.currentTitle,
+    lead.title,
+    lead.jobTitle,
+    lead.headline,
+    lead.profile?.currentTitle,
+    lead.profile?.headline,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const companyText = [
+    lead.currentCompany,
+    lead.company,
+    lead.companyName,
+    lead.profile?.currentCompany,
+    lead.profile?.company,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const otherText = [
+    lead.summary,
+    lead.about,
+    lead.location,
+    evidenceText || '',
+    lead.evidence?.evidenceBlock || '',
+    Array.isArray(lead.evidenceReasons) ? lead.evidenceReasons.join(' ') : '',
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const fullText = `${roleText} ${companyText} ${otherText}`.trim();
+  if (!fullText) return 5.0;
+
+  let totalWeight = 0;
+  let earnedScore = 0;
+
+  for (const req of requirements) {
+    const isHard = req.importance === 'hard';
+    const weight = isHard ? 2.0 : 1.0;
+    totalWeight += weight;
+
+    const terms = (
+      Array.isArray(req.acceptableTerms) && req.acceptableTerms.length > 0
+        ? req.acceptableTerms
+        : [req.description, req.sourcePhrase].filter(Boolean)
+    )
+      .map((t) => String(t).toLowerCase().trim())
+      .filter((t) => t.length > 1);
+
+    if (terms.length === 0) {
+      earnedScore += weight * 5.0;
+      continue;
+    }
+
+    const targetText = req.scope === 'person_role' ? (roleText || fullText)
+      : (req.scope === 'company_type' || req.scope === 'company_industry') ? (companyText || fullText)
+      : fullText;
+
+    let exactMatch = false;
+    for (const term of terms) {
+      if (targetText.includes(term)) {
+        exactMatch = true;
+        break;
+      }
+    }
+
+    if (exactMatch) {
+      earnedScore += weight * 9.0;
+    } else {
+      const docTokens = new Set(targetText.split(/[\s,./\-|·•_()]+/));
+      let matchedTokens = 0;
+      let totalTerms = terms.length;
+      for (const term of terms) {
+        const subTokens = term.split(/[\s,./\-|·•_()]+/).filter((t) => t.length > 2);
+        if (subTokens.some((st) => docTokens.has(st))) {
+          matchedTokens++;
+        }
+      }
+      const ratio = totalTerms > 0 ? matchedTokens / totalTerms : 0;
+      if (ratio >= 0.5) {
+        earnedScore += weight * 7.0;
+      } else if (ratio > 0) {
+        earnedScore += weight * 5.5;
+      } else if (isHard) {
+        earnedScore += weight * 2.0;
+      } else {
+        earnedScore += weight * 4.0;
+      }
+    }
+  }
+
+  const normalized = totalWeight > 0 ? earnedScore / totalWeight : 5.0;
+  return Number(Math.min(10, Math.max(1, normalized)).toFixed(1));
+}
+
 export function computeScoreBreakdown(
   lead: Record<string, any>,
   quality: EvidenceQuality,
@@ -653,10 +759,21 @@ export function computeScoreBreakdown(
     confidence: number;
     ignoredTitle: boolean;
   },
-  audit?: AuditSummary
+  audit?: AuditSummary,
+  requirements?: ProspectRequirement[] | null,
+  evidenceText?: string,
 ): ScoreBreakdown {
   const activeAudit = audit || lead.audit;
-  const fitScore = scoreOrDefault(activeAudit?.functionalRelevance ?? lead.fitScore, 5);
+  const computedBriefFit = requirements && requirements.length > 0
+    ? computeBriefRelevanceScore(lead, requirements, evidenceText)
+    : undefined;
+  const candidateFit = (lead.fitScore !== undefined && lead.fitScore !== 5)
+    ? lead.fitScore
+    : (lead.scoreBreakdown?.fitScore !== undefined && lead.scoreBreakdown?.fitScore !== 5)
+      ? lead.scoreBreakdown.fitScore
+      : (computedBriefFit ?? lead.fitScore);
+  const fitScore = scoreOrDefault(activeAudit?.functionalRelevance ?? candidateFit, 5);
+  lead.fitScore = fitScore;
   const intentScore = scoreOrDefault(lead.intentScore, 5);
   const timingScore = scoreOrDefault(lead.timingScore, 5);
   const eqScore = evidenceQualityScore(quality);

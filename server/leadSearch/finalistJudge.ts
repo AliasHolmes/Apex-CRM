@@ -210,6 +210,14 @@ const clampEnvInt = (
 export function buildFinalistJudgePrompt(
   contract: ProspectContract,
   candidates: FinalistCandidate[],
+  pastDecisions?: Array<{
+    name: string;
+    title?: string;
+    company?: string;
+    verdict: string;
+    notes?: string;
+    reason?: string;
+  }>,
 ) {
   const activeRequirements = contract.requirements;
   const requirementText = activeRequirements
@@ -224,30 +232,26 @@ export function buildFinalistJudgePrompt(
   const batchLen = Math.max(1, candidates.length);
   const configuredMaxItems = clampEnvInt(
     "FINALIST_JUDGE_MAX_EVIDENCE_ITEMS",
-    5,
+    4,
     1,
-    10,
+    8,
   );
   const configuredEvidenceChars = clampEnvInt(
     "FINALIST_JUDGE_EVIDENCE_CHARS",
-    1800,
+    1200,
     200,
-    4800,
+    2400,
   );
   const dynamicMaxItems = process.env.FINALIST_JUDGE_MAX_EVIDENCE_ITEMS
     ? configuredMaxItems
     : batchLen <= 3
-      ? 8
-      : batchLen <= 6
-        ? 6
-        : configuredMaxItems;
+      ? 5
+      : configuredMaxItems;
   const dynamicEvidenceChars = process.env.FINALIST_JUDGE_EVIDENCE_CHARS
     ? configuredEvidenceChars
     : batchLen <= 3
-      ? 3600
-      : batchLen <= 6
-        ? 2400
-        : configuredEvidenceChars;
+      ? 1500
+      : configuredEvidenceChars;
   const candidateText = candidates
     .map((candidate) => {
       const lead = candidate.lead;
@@ -304,12 +308,23 @@ export function buildFinalistJudgePrompt(
       return `### ${candidate.candidateId}${headerFields}${ablatedNote}\nEvidence:\n${evidence}`;
     })
     .join("\n\n");
-  const isAgencyBrief = /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(contract.brief) ||
-    contract.requirements.some(r => (r.scope === 'company_type' || r.scope === 'company_industry') && /\b(agenc|consult|studio|firm|services|integrat)\b/i.test(`${r.description} ${r.acceptableTerms.join(' ')}`));
+  const isAgencyBrief = isAgencyContract(contract);
   const agencyGuidance = isAgencyBrief
     ? `\nClient Services vs Software Products: The contract requires a client-services firm (agency/consultancy/studio/integrator). Pure software products, SaaS platforms, consumer apps, Big Tech employees, and IC roles FAIL company_type or person_role with status: 'fail'.\n`
     : '';
-  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. For hard requirements with status "pass", also return evidenceId and a short verbatim evidenceQuote (5-40 words). Return judgments only.`;
+
+  let tasteDemonstrations = "";
+  if (Array.isArray(pastDecisions) && pastDecisions.length > 0) {
+    const examples = pastDecisions.slice(0, 5).map((d) => {
+      const entity = `"${d.name}" (${[d.title, d.company].filter(Boolean).join(" at ")})`;
+      const notePart = d.notes ? ` - User note: "${d.notes}"` : "";
+      const reasonPart = d.reason ? ` - Evaluation: ${d.reason}` : "";
+      return `- [${d.verdict}] ${entity}${notePart}${reasonPart}`;
+    }).join("\n");
+    tasteDemonstrations = `\nUSER TASTE DEMONSTRATIONS (Learn from past user KEEP/REJECT decisions):\n${examples}\nIncorporate these user preferences when resolving ambiguous or borderline candidates.\n`;
+  }
+
+  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}${tasteDemonstrations}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. For hard requirements with status "pass", also return evidenceId and a short verbatim evidenceQuote (5-40 words). Return judgments only.`;
 }
 
 const normalizePassage = (text: string): string =>
@@ -1168,7 +1183,7 @@ export function checkStrictContradiction(
   const BIG_TECH_REGEX =
     /\b(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm|deepmind|github|instagram|whatsapp|aws|azure|youtube)\b/i;
 
-  if (isAgencyContractOrBrief) {
+  if (isAgencyContract(contract)) {
     const rawCompany = clean(
       lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || "",
       200,
@@ -1195,7 +1210,7 @@ export function checkStrictContradiction(
   // Bare "agency" also matches real estate/insurance/cannabis, "coaching" matches therapy/fitness coach, etc.
   // Fail those unless the contract names the vertical (a brief asking for real estate agencies must still match).
   const domainCluster = deriveDomainCluster(contract.brief || "");
-  const targetCluster = domainCluster !== 'global' ? domainCluster : (isAgencyContractOrBrief ? 'b2b_agency' : '');
+  const targetCluster = domainCluster !== 'global' ? domainCluster : (isAgencyContract(contract) ? 'b2b_agency' : '');
   const wrongVerticalRegex = targetCluster ? getWrongVerticalRegexForCluster(targetCluster) : null;
   if (wrongVerticalRegex) {
     const contractText = `${contract.brief || ""} ${(contract.requirements || [])
@@ -1219,7 +1234,7 @@ export function checkStrictContradiction(
   // 5. Deterministic Anti-Personas: IC Roles (Staff/Principal Engineer, Product Manager)
   if (isOwnerOrFounderQuery) {
     const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200);
-    const classification = classifyTitle(rawTitle);
+    const classification = classifyTitle(rawTitle, contract);
 
     if (classification.isIC) {
       return {
@@ -1230,7 +1245,7 @@ export function checkStrictContradiction(
   }
 
   // 6. Hard Seam: Client Services / Agencies vs Software Products
-  if (isAgencyContractOrBrief) {
+  if (isAgencyContract(contract)) {
     const hasExplicitProductApp = /\b(mobile app|ios app|android app|b2c app|personal trainer app|habit tracker|consumer app|saas platform|software product)\b/i.test(candidateText);
     if (hasExplicitProductApp && !hasStrictAgencyNoun) {
       return {

@@ -1,12 +1,31 @@
 import type { LinkedInProfile } from '../types';
 
 export const normalizeDedupeValue = (value?: string) =>
-  (value || '')
+  (typeof value === 'string' ? value : '')
     .toLowerCase()
     .replace(/^https?:\/\//, '')
     .replace(/^www\./, '')
     .replace(/\/$/, '')
     .trim();
+
+/**
+ * Normalize a company name for conservative matching and deduplication.
+ * Trailing international legal suffixes are removed; descriptive brand words are retained.
+ */
+export function normalizeCompanyName(name?: string): string {
+  let normalized = String(name || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const legalSuffix = /\s+(?:llc|inc|incorporated|ltd|limited|co|company|corp|corporation|gmbh|pty|plc|llp|b\s*v|s\s*a|s\s*r\s*l|s\s*a\s*s|s\s*l|ag|pte\s*ltd|sdn\s*bhd|sp\s*z\s*o\s*o|aps|pty\s*ltd|uk|usa|us|emea|apac|global|hq|holdings|group)$/;
+  while (legalSuffix.test(normalized)) {
+    normalized = normalized.replace(legalSuffix, '').trim();
+  }
+  return normalized;
+}
 
 export function unwrapRedirectUrl(rawUrl?: string): string {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
@@ -154,7 +173,7 @@ export const buildProfileDedupeKeys = (input?: Partial<LinkedInProfile> | Record
     cd.linkedinUrl || record.linkedinUrl || p.linkedinUrl || record.sourceUrl || p.sourceUrl
   );
   const name = normalizeDedupeValue(p.fullName || record.fullName || p.name || record.name);
-  const company = normalizeDedupeValue(p.currentCompany || record.currentCompany || p.company || record.company);
+  const company = normalizeCompanyName(p.currentCompany || record.currentCompany || p.company || record.company);
   const domain = getProfileDomain(input);
 
   const keys = new Set<string>();

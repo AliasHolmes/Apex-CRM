@@ -127,6 +127,7 @@ import { buildRoundDiagnostics } from "./roundDiagnostics.js";
 import {
   buildCollectionCapacity,
   shouldKeepCollectingAfterStall,
+  expectedNewQualified,
 } from "./collectionCapacity.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import {
@@ -305,9 +306,12 @@ export async function executeDiscoverySession(
     cancelledSessions,
   } = options;
 
-  // Clear in-memory provider cooldowns so stale 24-hour quota bans or temporary
-  // rate-limit cooldowns from previous sessions never persist into a new mining session.
-  clearProviderCooldowns();
+  // Clear in-memory provider cooldowns when no other session is concurrently active
+  // so stale 24-hour quota bans or rate-limit cooldowns from previous sessions do not persist,
+  // without wiping active rate-limit backoff for an already-running session.
+  if (!activeSessions || activeSessions.size <= 1) {
+    clearProviderCooldowns();
+  }
 
   const sessionLogs: string[] = [];
   const debugLogs: any[] = [];
@@ -499,7 +503,7 @@ export async function executeDiscoverySession(
   };
 
   const stats = {
-    requested: requestedLimit,
+    requested: Math.min(Math.max(Number(requestedLimit) || 5, 1), 200),
     returned: 0,
     rawCandidates: 0,
     cacheHits: 0,
@@ -582,7 +586,11 @@ export async function executeDiscoverySession(
     });
 
     const query = promptQuery;
-    const excludeList = options.excludeList || [];
+    const excludeList = Array.isArray(options.excludeList)
+      ? options.excludeList
+          .filter((item): item is string => typeof item === "string")
+          .slice(0, 5000)
+      : [];
     if (!query) throw new Error("Search criteria/query is required");
     if (!hasOpenAIKey())
       throw new Error(
@@ -1220,6 +1228,8 @@ export async function executeDiscoverySession(
       );
     } else {
       const maxCandidatePoolLimit = collectionCapacity.candidateCeiling;
+      let effectiveQualifiedBeforeRound = 0;
+      const roundYieldHistory: Array<{ round: number; newQualified: number; providerUnits?: number }> = [];
 
       for (
         let round = initialRound;
@@ -2059,6 +2069,12 @@ export async function executeDiscoverySession(
           return acc;
         }, 0);
 
+        const newQualifiedInRound = Math.max(0, roundEndEffectiveQualified - effectiveQualifiedBeforeRound);
+        effectiveQualifiedBeforeRound = roundEndEffectiveQualified;
+        const roundYieldRuns = stats.queryRuns.filter((run) => run.round === round);
+        const roundUnits = roundYieldRuns.reduce((s: number, r: any) => s + (r.providerUnits || 1), 0) || 1;
+        roundYieldHistory.push({ round, newQualified: newQualifiedInRound, providerUnits: roundUnits });
+
         const uniqueCompanies = new Set(
           qualifiedLeads
             .filter(
@@ -2290,7 +2306,25 @@ export async function executeDiscoverySession(
             maxRounds < configuredRoundCeiling &&
             acceptedLeads.length < collectionCapacity.candidateCeiling
           ) {
-            if (roundEndEffectiveQualified < qualifiedTargetWithCushion) {
+            const expYield = expectedNewQualified(roundYieldHistory, 2);
+            const trailingUnits = roundYieldHistory.slice(-2).reduce((s, r) => s + (r.providerUnits || 1), 0);
+            const trailingYieldPerUnit = trailingUnits > 0 ? (expYield * 2) / trailingUnits : 0;
+            const wouldSuppressExtension = expYield <= 0;
+
+            logEvent(
+              `[MarginalYield] Round ${round}: newQualified=${newQualifiedInRound.toFixed(1)}, providerUnits=${roundUnits}, trailingYieldPerUnit=${trailingYieldPerUnit.toFixed(3)}, wouldSuppressExtension=${wouldSuppressExtension}.`,
+            );
+
+            const suppressDueToMarginalYield =
+              (process.env.LEAD_MARGINAL_YIELD_STOP_ENABLED === "true" || isFlagEnabled.marginalYieldStop()) &&
+              wouldSuppressExtension &&
+              roundYieldHistory.length >= 2;
+
+            if (suppressDueToMarginalYield) {
+              logEvent(
+                `Round ${round}: Dynamic round budget extension suppressed due to marginal yield exhaustion (trailing expected new qualified = 0).`,
+              );
+            } else if (roundEndEffectiveQualified < qualifiedTargetWithCushion) {
               const previousMax = maxRounds;
               // Never exceed the configured/derived ceiling. The previous hard-coded 10
               // silently overrode LEAD_SEARCH_MAX_ROUNDS, which is how a run configured for
@@ -2608,7 +2642,7 @@ export class DiscoverySessionEngine {
         sessionId,
         promptQuery,
         requestedLimit: Math.min(
-          Math.max(Number(request.requestedLimit || 5), 1),
+          Math.max(Number(request.requestedLimit) || 5, 1),
           200,
         ),
         startedAt: Date.now(),
@@ -2621,7 +2655,11 @@ export class DiscoverySessionEngine {
         searchSpec: request.searchSpec,
         discoveryMode: request.discoveryMode,
         discoveryProviderMode: request.discoveryProviderMode,
-        excludeList: request.excludeList,
+        excludeList: Array.isArray(request.excludeList)
+          ? request.excludeList
+              .filter((item): item is string => typeof item === "string")
+              .slice(0, 5000)
+          : undefined,
         savedSearchId: request.savedSearchId,
         parentSessionId: request.parentSessionId,
         deltaBrief: request.deltaBrief,

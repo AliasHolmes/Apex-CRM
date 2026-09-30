@@ -115,5 +115,11 @@ export const isFlagEnabled = {
    * Phase 4.2: Non-overlapping Beta-cost reward for adaptive scheduler.
    * Default OFF for 100% backwards compatibility; enable via LEAD_ADAPTIVE_REWARD_V2=true.
    */
-  adaptiveRewardV2: () => readFlag('LEAD_ADAPTIVE_REWARD_V2', false)
+  adaptiveRewardV2: () => readFlag('LEAD_ADAPTIVE_REWARD_V2', false),
+
+  /**
+   * Phase 5.2: Marginal-yield round extension check.
+   * Default OFF (shadow mode) for safety; enable via LEAD_MARGINAL_YIELD_STOP_ENABLED=true.
+   */
+  marginalYieldStop: () => readFlag('LEAD_MARGINAL_YIELD_STOP_ENABLED', false)
 };

@@ -138,8 +138,105 @@ export function buildCollectionCapacity(input: {
   };
 }
 
+const OPERATOR_KEYWORDS = new Set(['and', 'or', 'not', 'site', 'inurl', 'intitle', 'filetype']);
+const INJECTION_KEYWORDS = new Set([
+  'ignore', 'system', 'prompt', 'instruction', 'instructions', 'override', 'assistant', 'user',
+  'developer', 'rule', 'rules', 'bypass', 'eval', 'execute', 'payload'
+]);
+
+export function sanitizeMinedTerm(raw: string): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const cleaned = raw
+    .trim()
+    .replace(/[<>"'`;{}[\]()\\^$*?~|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length < 3 || cleaned.length > 32) return null;
+  if (!/^[A-Za-z0-9 +.#&/-]+$/.test(cleaned)) return null;
+
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 3) return null;
+
+  for (const w of words) {
+    const lw = w.toLowerCase().replace(/[^a-z]/g, '');
+    if (OPERATOR_KEYWORDS.has(lw) || INJECTION_KEYWORDS.has(lw)) {
+      return null;
+    }
+  }
+  return cleaned;
+}
+
+export function mineQueryRefinements(
+  acceptedLeads: any[],
+  contract?: any,
+  _round = 1,
+): string[] {
+  if (!Array.isArray(acceptedLeads) || acceptedLeads.length === 0) return [];
+
+  // Collect terms to exclude (from contract requirements and brief)
+  const excludedLower = new Set<string>();
+  if (contract?.brief) {
+    for (const token of String(contract.brief).toLowerCase().split(/\s+/)) {
+      if (token.length > 2) excludedLower.add(token);
+    }
+  }
+  if (Array.isArray(contract?.requirements)) {
+    for (const req of contract.requirements) {
+      if (Array.isArray(req.acceptableTerms)) {
+        for (const t of req.acceptableTerms) {
+          excludedLower.add(String(t).toLowerCase().trim());
+        }
+      }
+    }
+  }
+
+  const candidateRawTerms: string[] = [];
+  for (const lead of acceptedLeads) {
+    if (lead.companyAccount?.keywords && Array.isArray(lead.companyAccount.keywords)) {
+      candidateRawTerms.push(...lead.companyAccount.keywords);
+    }
+    if (lead.industry && typeof lead.industry === 'string') {
+      candidateRawTerms.push(lead.industry);
+    }
+    if (lead.currentTitle && typeof lead.currentTitle === 'string') {
+      candidateRawTerms.push(lead.currentTitle);
+    }
+    if (Array.isArray(lead.buyingSignals)) {
+      candidateRawTerms.push(...lead.buyingSignals);
+    }
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const raw of candidateRawTerms) {
+    const sanitized = sanitizeMinedTerm(raw);
+    if (!sanitized) continue;
+    const lower = sanitized.toLowerCase();
+    if (seen.has(lower) || excludedLower.has(lower)) continue;
+    seen.add(lower);
+    result.push(sanitized);
+    if (result.length >= 5) break;
+  }
+
+  return result;
+}
+
+export function expectedNewQualified(
+  roundYieldHistory: Array<{ round: number; newQualified: number; providerUnits?: number }>,
+  window = 2,
+): number {
+  if (!Array.isArray(roundYieldHistory) || roundYieldHistory.length === 0) return 0;
+  const trailing = roundYieldHistory.slice(-window);
+  const sum = trailing.reduce((acc, r) => acc + Math.max(0, Number(r.newQualified) || 0), 0);
+  return sum / trailing.length;
+}
+
 /** A distinct, contract-safe retrieval form for every dynamic collection round. */
-export function collectionRefinementForRound(round: number): string {
+export function collectionRefinementForRound(round: number, minedTerms: string[] = []): string {
+  if (Array.isArray(minedTerms) && minedTerms.length > 0) {
+    return minedTerms[0];
+  }
   const index = clampInteger(round, 3, MAX_COLLECTION_ROUNDS) - 3;
   return RETRIEVAL_REFINEMENTS[index] || RETRIEVAL_REFINEMENTS[RETRIEVAL_REFINEMENTS.length - 1];
 }

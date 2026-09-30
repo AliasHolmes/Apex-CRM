@@ -624,6 +624,20 @@ router.post("/leads/:id/merge", (req, res): any => {
           mergeField(winner.nextAction, duplicate.nextAction) || "NONE",
       };
 
+      // Capture every identity either lead owns before the write. The upsert prunes
+      // winner identities that are not derivable from the merged profile, which would
+      // otherwise drop the duplicate's alternate LinkedIn URL / name+company key and let
+      // a later re-import of the merged-away prospect create a fresh duplicate.
+      const preMergeIdentityKeys = (
+        db
+          .prepare(
+            "SELECT identity_key FROM lead_identities WHERE lead_id IN (?, ?)",
+          )
+          .all(winner.id, duplicateId) as { identity_key: string }[]
+      ).map((row) => row.identity_key);
+
+      // Transfer first so the upsert does not see the duplicate's keys as owned by
+      // another prospect and report a "duplicate" disposition.
       transferLeadIdentities(db, duplicateId, winner.id);
       const mergedWrite = upsertLeadInExistingTransaction(db, mergedLead, {
         requireExisting: true,
@@ -636,6 +650,15 @@ router.post("/leads/:id/merge", (req, res): any => {
         throw new Error(
           "Cannot merge because the winner LinkedIn identity belongs to another prospect.",
         );
+      }
+      const restoreIdentity = db.prepare(
+        `INSERT INTO lead_identities (identity_key, lead_id, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(identity_key) DO UPDATE SET lead_id = excluded.lead_id`,
+      );
+      const restoredAt = new Date().toISOString();
+      for (const identityKey of preMergeIdentityKeys) {
+        restoreIdentity.run(identityKey, winner.id, restoredAt);
       }
       db.prepare("UPDATE outreach_drafts SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
       db.prepare("UPDATE lead_activities SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);

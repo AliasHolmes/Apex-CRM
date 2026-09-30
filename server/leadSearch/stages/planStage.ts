@@ -42,6 +42,7 @@ import {
 } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
 import { summarizeLLM } from "../telemetry.js";
+import { mineQueryRefinements } from "../collectionCapacity.js";
 import type { SessionContext } from "../pipelineTypes.js";
 
 export type PlanStageInput = {
@@ -231,6 +232,15 @@ export async function executePlanStage(
   }
 
   if (planItems.length === 0) {
+    const minedRefinementTerms = mineQueryRefinements(
+      (state as any).acceptedLeads || (state as any).qualifiedLeads || [],
+      config.contract,
+      round,
+    );
+    const failedQueries = ((state as any).queryRuns || [])
+      .filter((r: any) => ((r.acceptedLeads ?? r.acceptedCandidates ?? 0) === 0) && r.query)
+      .map((r: any) => r.query as string);
+
     const strategistPrompt = buildScoutStrategistPrompt({
       query: config.promptQuery,
       spec: searchSpec,
@@ -249,6 +259,8 @@ export async function executePlanStage(
       metroSaturation,
       isRecovery: isRecoveryMode,
       recoveryAttempt: currentRecoveryAttempt,
+      minedRefinementTerms,
+      failedQueries,
       logEvent,
     });
 

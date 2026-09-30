@@ -13,6 +13,7 @@ import { normalizeServerScore, predictiveScoreFromComposite, scoreLeadDeterminis
 import { buildProfileDedupeKeys, hasDuplicateProfile } from '../utils/leadDedupe';
 import { preferNewerCanonical, rebaseLeadChanges } from '@/lib/leadMutations';
 import { ConflictDialog } from '@/components/ConflictDialog';
+import { useToastDispatch } from './ToastContext';
 
 const LEGACY_LEADS_STORAGE_KEY = 'linkedin_scraper_crm_leads';
 
@@ -264,6 +265,13 @@ class LeadDeletedConflictError extends Error {
   }
 }
 
+class LeadIdentityConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LeadIdentityConflictError';
+  }
+}
+
 async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<{ lead: Lead; disposition?: string }> {
   invalidateClientLeadsCache();
   const leadToSend = !allowCreate && !Number.isInteger(lead.revision)
@@ -275,6 +283,11 @@ async function persistLeadPatch(lead: Lead, allowCreate = false): Promise<{ lead
     body: JSON.stringify({ lead: leadToSend, allowCreate }),
   });
   const data = await response.json().catch(() => ({}));
+  if (response.status === 409 && data.code === 'IDENTITY_CONFLICT') {
+    throw new LeadIdentityConflictError(
+      data.error || 'Another prospect already uses that identity.',
+    );
+  }
   if (response.status === 409 && data.lead) {
     throw new LeadPatchConflictError(
       data.lead as Lead,
@@ -333,6 +346,7 @@ interface LeadContextType {
 const LeadContext = createContext<LeadContextType | undefined>(undefined);
 
 export function LeadProvider({ children }: { children: ReactNode }) {
+  const triggerToast = useToastDispatch();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [stats, setStats] = useState<LeadContextStats>(INITIAL_LEAD_STATS);
   const [isHydrated, setIsHydrated] = useState(false);
@@ -621,6 +635,9 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           restoreLeadSubset(new Set([lead.id]), []);
           return false;
         }
+        if (error instanceof LeadIdentityConflictError) {
+          triggerToast(`Change not saved: ${error.message}`, 'error');
+        }
         const stableLead = leadPatchRollbackRef.current.get(lead.id) ?? null;
         restoreLeadSubset(new Set([lead.id]), stableLead ? [stableLead] : []);
         return false;
@@ -635,7 +652,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       }
     });
     return operation;
-  }, [restoreLeadSubset, saveLeadsToStorage]);
+  }, [restoreLeadSubset, saveLeadsToStorage, triggerToast]);
 
   // 3. Callback to add single scraped profile
   const handleLeadAdded = useCallback(async (profile: LinkedInProfile): Promise<{ added: boolean }> => {
@@ -962,7 +979,6 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           updatedLead = {
             ...l,
             profile: { ...l.profile, ...profileUpdates },
-            notes: 'Profile dynamically enriched and verified by background AI pipeline.',
             lastEnrichedAt: new Date().toISOString()
           };
           return updatedLead;

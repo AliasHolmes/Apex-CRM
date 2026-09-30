@@ -77,9 +77,9 @@ export function deriveDomainCluster(queryOrBrief: string): string {
   const clusters: Array<{ id: string; pattern: RegExp }> = [
     { id: 'b2b_agency', pattern: /\b(agenc(?:y|ies)|lead[-\s]?gen|seo|creative|copywriting|performance marketing|growth marketing|media buyer(?:s)?|advertising)\b/gi },
     { id: 'executive_coaching', pattern: /\b(coach(?:es|ing)?|executive coach(?:es)?|mastermind(?:s)?|mentor(?:s|ship)?|management consultan(?:t|ts|cy|cies)|management consulting|leadership advisory|advisory)\b/gi },
-    { id: 'b2b_saas', pattern: /\b(saas|software|platform(?:s)?|cloud|api(?:s)?|fintech|edtech|healthtech|devops|cybersecurity)\b/gi },
+    { id: 'b2b_saas', pattern: /\b(enterprise software|saas|software|platform(?:s)?|cloud|api(?:s)?|fintech|edtech|healthtech|devops|cybersecurity)\b/gi },
     { id: 'local_services', pattern: /\b(dental|dentist(?:s)?|clinic(?:s)?|doctor(?:s)?|plumbing|hvac|roofing|electrician(?:s)?|contractor(?:s)?|realtor(?:s)?|real estate)\b/gi },
-    { id: 'ecommerce_retail', pattern: /\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store(?:s)?)\b/gi },
+    { id: 'ecommerce_retail', pattern: /\b(ecommerce|e-commerce|shopify|d2c|apparel|retail|store(?:s)?|brand(?:s)?)\b/gi },
     { id: 'healthcare_life_sciences', pattern: /\b(biotech|pharma|clinical|healthcare|hospital(?:s)?|medical)\b/gi },
     { id: 'professional_services', pattern: /\b(legal|law firm(?:s)?|attorney(?:s)?|accounting|cpa(?:s)?|tax firm(?:s)?)\b/gi },
     { id: 'manufacturing_industrial', pattern: /\b(manufacturing|industrial|factory|factories|fabrication|plant manager(?:s)?|industrial production)\b/gi },
@@ -87,19 +87,15 @@ export function deriveDomainCluster(queryOrBrief: string): string {
 
   let bestCluster = 'global';
   let bestScore = 0;
-  let isTie = false;
   for (const { id, pattern } of clusters) {
     const matches = text.match(pattern);
     const score = matches ? matches.length : 0;
     if (score > bestScore) {
       bestScore = score;
       bestCluster = id;
-      isTie = false;
-    } else if (score > 0 && score === bestScore) {
-      isTie = true;
     }
   }
-  return isTie ? 'global' : bestCluster;
+  return bestCluster;
 }
 
 export function deriveContractDomainCluster(
@@ -131,16 +127,24 @@ export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | '
   });
 
 /**
- * Quantized semantic centroids for cross-session MAB pooling.
- * Deterministic slot key: slot:<cluster>:<role>:<industry>:<geo>
+ * Phase 3 & 4: Quantized semantic centroids and slot keys for MAB pooling.
+ * String briefs hash to stable 24 buckets; contracts resolve to deterministic slot keys.
  */
+export const CENTROID_COUNT = 24;
+
 export function quantizeBriefToCentroid(briefOrContract: unknown): string {
-  if (!briefOrContract) return 'slot:global:all:all:all';
+  if (!briefOrContract) return 'centroid_global_00';
   if (typeof briefOrContract === 'string') {
-    const text = briefOrContract.toLowerCase().trim();
-    if (!text) return 'slot:global:all:all:all';
+    const text = briefOrContract.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!text) return 'centroid_global_00';
     const cluster = deriveDomainCluster(text);
-    return `slot:${cluster}:all:all:all`;
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    const bucket = String(hash % CENTROID_COUNT).padStart(2, '0');
+    return `centroid_${cluster}_${bucket}`;
   }
   const obj = briefOrContract as Record<string, any>;
   const cluster = deriveContractDomainCluster(obj, obj.brief || '');

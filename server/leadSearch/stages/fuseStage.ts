@@ -238,7 +238,7 @@ export async function executeFuseStage(
 
     const obsEmail = normalizeDedupeValue(observation.raw?.contactDetails?.email || observation.raw?.email);
     const obsName = normalizeDedupeValue(observation.raw?.fullName || observation.raw?.name);
-    const obsComp = normalizeDedupeValue(observation.raw?.currentCompany || observation.raw?.company);
+    const obsComp = normalizeCompanyName(observation.raw?.currentCompany || observation.raw?.company);
 
     const candidateKeys = [
       observation.identityKey,

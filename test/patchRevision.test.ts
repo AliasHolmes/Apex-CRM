@@ -227,4 +227,108 @@ test("Stream 5 - PATCH Revision Validation & Bulk Per-Item Conflicts", async (t)
     assert.equal(body.lead.stage, "CONVERTED");
     assert.equal(body.lead.notes, "Closed deal with Alice");
   });
+
+  await t.test("PATCH /leads/:id allows resetting stage, reviewStatus, nextAction, and notes", async () => {
+    const currentAlice = readStoredLeadById("lead-test-1") as unknown as Lead;
+    const resetAlice = {
+      ...currentAlice,
+      stage: "SCRAPED",
+      reviewStatus: "UNREVIEWED",
+      nextAction: "NONE",
+      notes: "",
+      revision: currentAlice.revision,
+    };
+
+    const res = await fetch(`${baseUrl}/api/leads/lead-test-1`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lead: resetAlice }),
+    });
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(body.lead.stage, "SCRAPED");
+    assert.equal(body.lead.reviewStatus, "UNREVIEWED");
+    assert.equal(body.lead.nextAction, "NONE");
+    assert.equal(body.lead.notes, "");
+  });
+
+  await t.test("POST /leads/:id/merge succeeds when duplicate has identity that winner lacks", async () => {
+    // Seed winner and duplicate
+    const winnerLead = {
+      id: "merge-winner-1",
+      profile: {
+        fullName: "Winner Lead",
+        currentCompany: "Winner Co",
+      },
+      stage: "SCRAPED",
+      revision: 1,
+      createdAt: new Date().toISOString(),
+    };
+    const duplicateLead = {
+      id: "merge-dup-1",
+      profile: {
+        fullName: "Winner Lead Dup",
+        currentCompany: "Winner Co",
+        contactDetails: {
+          email: "unique-dup@example.com",
+          linkedinUrl: "https://linkedin.com/in/winner-dup-123",
+        },
+      },
+      stage: "SCRAPED",
+      revision: 1,
+      createdAt: new Date().toISOString(),
+    };
+    upsertLeadWithIdentity(winnerLead, { requireExisting: false });
+    upsertLeadWithIdentity(duplicateLead, { requireExisting: false });
+
+    const res = await fetch(`${baseUrl}/api/leads/merge-winner-1/merge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duplicateId: "merge-dup-1" }),
+    });
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(body.lead.id, "merge-winner-1");
+    assert.equal(body.lead.profile.contactDetails.email, "unique-dup@example.com");
+    assert.equal(body.deleted, "merge-dup-1");
+
+    // Verify duplicate lead is deleted
+    const dupInDb = readStoredLeadById("merge-dup-1");
+    assert.equal(dupInDb, null);
+
+    // Verify winner now has the transferred email
+    const winnerInDb = readStoredLeadById("merge-winner-1");
+    assert.equal(winnerInDb?.profile?.contactDetails?.email, "unique-dup@example.com");
+  });
+
+  await t.test("PATCH /leads/:id returns 409 IDENTITY_CONFLICT when changing to another lead's identity", async () => {
+    // lead-test-2 exists. Try to patch lead-test-1 with the same name & company as lead-test-2
+    const currentAlice = readStoredLeadById("lead-test-1") as unknown as Lead;
+    const conflictingAlice = {
+      ...currentAlice,
+      profile: {
+        ...currentAlice.profile,
+        fullName: "Bob Jones",
+        currentCompany: "Beta LLC",
+      },
+      revision: currentAlice.revision,
+    };
+
+    const res = await fetch(`${baseUrl}/api/leads/lead-test-1`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lead: conflictingAlice }),
+    });
+    const body = await res.json();
+
+    assert.equal(res.status, 409);
+    assert.equal(body.code, "IDENTITY_CONFLICT");
+    assert.equal(body.conflictingLeadId, "lead-test-2");
+
+    // Verify lead-test-1 was not mutated to Bob Jones
+    const aliceInDb = readStoredLeadById("lead-test-1");
+    assert.equal(aliceInDb?.profile?.fullName, "Alice Smith");
+  });
 });

@@ -133,7 +133,8 @@ describe('free-tier prospect scout', () => {
       { id: 'd', company: 'Beacon', finalSelectionScore: 9.0 }
     ], 3, 2);
 
-    assert.deepEqual(selected.map(item => item.id), ['a', 'b', 'd']);
+    // MMR diversity seeded with 'a' (Acme) promotes distinct-company candidate 'd' (Beacon) ahead of redundant 'b' (Acme)
+    assert.deepEqual(selected.map(item => item.id), ['a', 'd', 'b']);
   });
 
   it('ranks un-keyed candidates using rankLeadForFinalSelection fallback', () => {

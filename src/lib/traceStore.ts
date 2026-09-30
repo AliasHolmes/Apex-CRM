@@ -126,6 +126,7 @@ class MiningTraceStore {
       let isInitialSnapshot = true;
 
       sse.onopen = () => {
+        isInitialSnapshot = true;
         const state = this.ensureSession(sessionId);
         this.sessions.set(sessionId, { ...state, status: 'running' });
         this.notify();
@@ -136,9 +137,12 @@ class MiningTraceStore {
           const data = JSON.parse(event.data);
           const state = this.ensureSession(sessionId);
 
+          // A snapshot replaces local state only when it carries data: after a reconnect to a
+          // session that already finished, the server's live buffers are empty and replacing
+          // would blank the trace the user was looking at.
           let nextLogs = state.logs;
           if (isInitialSnapshot) {
-            if (Array.isArray(data.logs)) {
+            if (Array.isArray(data.logs) && data.logs.length > 0) {
               nextLogs = data.logs.slice(-2000);
             }
           } else if (Array.isArray(data.logs) && data.logs.length > 0) {
@@ -153,7 +157,7 @@ class MiningTraceStore {
 
           let nextEvents = state.traceEvents;
           if (isInitialSnapshot) {
-            if (Array.isArray(data.traceEvents)) {
+            if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
               for (const e of data.traceEvents) {
                 if (e?.id) seen.add(e.id);
               }
@@ -195,7 +199,11 @@ class MiningTraceStore {
 
       sse.addEventListener('end', () => {
         const state = this.getState(sessionId);
-        this.sessions.set(sessionId, { ...state, status: 'completed' });
+        const nextStatus =
+          state.status === 'running' || state.status === 'connecting'
+            ? 'completed'
+            : state.status;
+        this.sessions.set(sessionId, { ...state, status: nextStatus });
         this.notify();
         this.disconnect(sessionId);
       });

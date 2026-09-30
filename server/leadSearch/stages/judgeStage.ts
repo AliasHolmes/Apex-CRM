@@ -30,7 +30,7 @@ import { runGatedCompanyAttribution } from "../companyAttribution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(batchLength: number): number {
-  return Math.max(500, batchLength * 400);
+  return Math.min(950, Math.max(500, batchLength * 350));
 }
 
 export function isEligibleForSafetyNet(

@@ -1,4 +1,5 @@
 import type { ProspectContract, ProspectRequirement, RequirementClass } from './prospectContract.js';
+import { wordBoundaryOrAliasMatches } from './aliasMap.js';
 
 export type RequirementDiagnostic = {
   requirementId: string;
@@ -44,8 +45,8 @@ const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequ
   const text = candidateText(lead);
   const terms = requirement.acceptableTerms.map(normalize).filter(Boolean);
 
-  // 1. Direct substring match against compiled acceptable terms
-  if (terms.some(term => text.includes(term))) return true;
+  // 1. Word-bounded + alias match against compiled acceptable terms
+  if (terms.some(term => wordBoundaryOrAliasMatches(text, term))) return true;
 
   // 2. Multi-Signal Role Evaluation: If scope is person_role, authority verification or executive title satisfies role
   if (requirement.scope === 'person_role') {
@@ -63,7 +64,7 @@ const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequ
     const ind = normalize(lead.industry || '');
     for (const term of terms) {
       const words = term.split(/\s+/).filter(w => w.length >= 4);
-      if (words.some(w => text.includes(w) || comp.includes(w) || ind.includes(w))) {
+      if (words.some(w => wordBoundaryOrAliasMatches(text, w) || wordBoundaryOrAliasMatches(comp, w) || wordBoundaryOrAliasMatches(ind, w))) {
         return true;
       }
     }
@@ -72,7 +73,7 @@ const matchesRequirement = (lead: Record<string, any>, requirement: ProspectRequ
   // 4. Multi-Signal Location Evaluation: Check candidate location field or text directly
   if (requirement.scope === 'person_location') {
     const loc = normalize(lead.location || lead.profile?.location || '');
-    if (terms.some(term => loc.includes(term) || text.includes(term))) return true;
+    if (terms.some(term => wordBoundaryOrAliasMatches(loc, term) || wordBoundaryOrAliasMatches(text, term))) return true;
   }
 
   return false;
@@ -173,7 +174,7 @@ export function buildRoundDiagnostics(params: {
       requirement.acceptableTerms
         .map(normalize)
         .filter(Boolean)
-        .some((term) => normalizedValue.includes(term)),
+        .some((term) => wordBoundaryOrAliasMatches(normalizedValue, term)),
     );
   };
 

@@ -1,4 +1,5 @@
 import type { SearchSpec } from './searchSpec.js';
+import { wordBoundaryOrAliasMatches } from './aliasMap.js';
 
 export type ScoutEvidence = {
   matchedCriteria: string[];
@@ -30,7 +31,7 @@ const haystackForLead = (lead: Record<string, any>) => normalized([
 ].filter(Boolean).join(' '));
 
 const criterionMatches = (label: string, values: string[], haystack: string) => (
-  values.some((value) => haystack.includes(normalized(value))) ? label : ''
+  values.some((value) => wordBoundaryOrAliasMatches(haystack, value)) ? label : ''
 );
 
 /**
@@ -84,7 +85,7 @@ export function buildScoutEvidence(
   };
 }
 
-import { applySigmoidScaling, computeMMRDiversitySelection, normalizeScorePool, computeParetoFrontier, rankLeadForFinalSelection } from './scoring.js';
+import { computeMMRDiversitySelection, computeParetoFrontier, rankLeadForFinalSelection } from './scoring.js';
 
 const candidateKey = (c: any): string => {
   return String(
@@ -111,10 +112,7 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
   maxPerCompany: number,
   logEvent?: (msg: string) => void
 ) {
-  // --- Step 0: Shannon Entropy Normalization & Sigmoid Scaling ---
-  // Widen score distribution when candidates cluster tightly (low entropy),
-  // so MMR and Sigmoid can meaningfully differentiate them.
-  const rawScores = candidates.map(c => {
+  const scoredCandidates = candidates.map((c) => {
     const raw = Number(
       (c as any).finalSelectionScore ??
       (c as any).profile?.finalSelectionScore ??
@@ -124,28 +122,9 @@ export function selectDiversifiedLeads<T extends Record<string, any>>(
       (c as any).effectiveScore ??
       rankLeadForFinalSelection(c)
     );
-    return raw < 1.0 && raw > 0 ? raw * 10 : raw > 10 ? raw / 10 : raw;
-  });
-  const entropyNormalizedScores = normalizeScorePool(rawScores);
-  if (logEvent && rawScores.length >= 2) {
-    const rawAvg = (rawScores.reduce((a, b) => a + b, 0) / rawScores.length).toFixed(2);
-    const normAvg = (entropyNormalizedScores.reduce((a, b) => a + b, 0) / entropyNormalizedScores.length).toFixed(2);
-    logEvent(`[Shannon Entropy] Normalized ${rawScores.length} candidate scores: mean raw=${rawAvg} -> mean normalized=${normAvg}`);
-  }
-  const scoredCandidates = candidates.map((c, i) => {
-    const normalized_score = entropyNormalizedScores[i];
-    const baseScore = typeof normalized_score === 'number' && Number.isFinite(normalized_score)
-      ? normalized_score
-      : rawScores[i] || 5;
-    const finalSelectionScore = applySigmoidScaling(baseScore);
-    const updated: any = { ...c, finalSelectionScore, sigmoidApplied: true };
-    if (updated.scoreBreakdown) {
-      updated.scoreBreakdown = {
-        ...updated.scoreBreakdown,
-        finalScore: finalSelectionScore,
-      };
-    }
-    return updated;
+    const scaled = raw < 1.0 && raw > 0 ? raw * 10 : raw > 10 ? raw / 10 : raw;
+    const finalSelectionScore = clamp10(Number.isFinite(scaled) && scaled > 0 ? scaled : 5);
+    return { ...c, finalSelectionScore };
   }) as T[];
 
   // --- Step 1: Pareto Skyline Optimization ---

@@ -141,15 +141,6 @@ export function computeBayesianIntentDelta(intent: Record<string, any>, cacheAge
   return Number((baseDelta * decayFactor).toFixed(2));
 }
 
-export function applySigmoidScaling(rawScore: number, midpoint = 5.5, steepness = 0.45): number {
-  const clamped = Math.min(Math.max(rawScore, 1), 10);
-  const sigmoid = 1 / (1 + Math.exp(-steepness * (clamped - midpoint)));
-  const minSigmoid = 1 / (1 + Math.exp(-steepness * (1 - midpoint)));
-  const maxSigmoid = 1 / (1 + Math.exp(-steepness * (10 - midpoint)));
-  const scaled = 1 + 9 * ((sigmoid - minSigmoid) / (maxSigmoid - minSigmoid));
-  return Number(scaled.toFixed(2));
-}
-
 /**
  * Kalman filter for fusing sequential score observations of the same lead.
  * Merges a new observed score (newObservation) into an existing estimate
@@ -172,35 +163,6 @@ export function computeKalmanFusedScore(
   const fused = prior + kalmanGain * (obs - prior);
   const safeScore = Number.isFinite(fused) ? fused : prior;
   return Number(Math.min(Math.max(safeScore, 1), 10).toFixed(2));
-}
-
-/**
- * Shannon entropy normalization for a session-wide pool of scores.
- * Widens the score distribution when it is tightly clustered (low entropy)
- * and leaves it untouched when it is already diverse (high entropy).
- *
- * H = -Sum(p_i * log2(p_i)),  p_i = S_i / Sum(S_j)
- * adjustment = alpha * (H_max - H) / H_max,  alpha = 0.15
- */
-export function normalizeScorePool(scores: number[], alpha = 0.15): number[] {
-  if (scores.length < 2) return scores;
-  const total = scores.reduce((s, v) => s + v, 0);
-  if (total === 0) return scores;
-
-  const probs = scores.map(s => s / total);
-  const entropy = -probs.reduce((h, p) => h + (p > 0 ? p * Math.log2(p) : 0), 0);
-  const maxEntropy = Math.log2(scores.length);
-  if (maxEntropy === 0) return scores;
-
-  // Low entropy -> tightly clustered -> amplify spread
-  const spreadFactor = 1 + alpha * ((maxEntropy - entropy) / maxEntropy);
-
-  const mean = total / scores.length;
-  const normalized = scores.map(s => {
-    const adjusted = mean + (s - mean) * spreadFactor;
-    return Number(Math.min(Math.max(adjusted, 1), 10).toFixed(2));
-  });
-  return normalized;
 }
 
 /**

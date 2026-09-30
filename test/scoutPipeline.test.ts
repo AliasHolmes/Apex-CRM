@@ -18,9 +18,11 @@ import {
   buildRetrievalTasks,
   normalizeSearchSpec
 } from '../server/leadSearch/searchSpec.ts';
-import { selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
+import { buildScoutEvidence, selectDiversifiedLeads } from '../server/leadSearch/scoutScoring.ts';
 import { rankLeadForFinalSelection } from '../server/leadSearch/scoring.ts';
 import { executeFuseStage } from '../server/leadSearch/stages/fuseStage.ts';
+import { buildRoundDiagnostics } from '../server/leadSearch/roundDiagnostics.ts';
+import type { ProspectContract } from '../server/leadSearch/prospectContract.ts';
 
 describe('free-tier prospect scout', () => {
   it('preserves an explicitly requested discovery mode over a compiled spec', () => {
@@ -287,4 +289,110 @@ describe('free-tier prospect scout', () => {
     assert.equal(output.candidateItems.length, 1, 'Only unique new candidate Sam Taylor should pass fusion');
     assert.equal(output.candidateItems[0]._linkedinUsername, 'samtaylor');
   });
+
+  it('Phase 1.2: criterionMatches and roundDiagnostics use word-boundary + alias matching (no substring false positives)', () => {
+    const spec = buildFallbackSearchSpec('CTOs and VPs');
+    spec.person.includeTitles = ['cto', 'vp'];
+    spec.person.seniorities = [];
+    spec.person.locations = ['us'];
+
+    const directorLead = {
+      fullName: 'Pat Director',
+      currentTitle: 'Sales Director',
+      currentCompany: 'Status Corp',
+      location: 'Focus City'
+    };
+    const directorEvidence = buildScoutEvidence(directorLead, spec);
+    assert.equal(
+      directorEvidence.matchedCriteria.includes('target title'),
+      false,
+      '"cto" must not substring-match "Sales Director"'
+    );
+    assert.equal(
+      directorEvidence.matchedCriteria.includes('target location'),
+      false,
+      '"us" must not substring-match "Status Corp" or "Focus City"'
+    );
+
+    const svpLead = {
+      fullName: 'Dana Senior',
+      currentTitle: 'SVP of Revenue',
+      currentCompany: 'Acme',
+      location: 'Austin'
+    };
+    const svpEvidence = buildScoutEvidence(svpLead, spec);
+    assert.equal(
+      svpEvidence.matchedCriteria.includes('target title'),
+      false,
+      '"vp" must not substring-match "SVP"'
+    );
+
+    const aliasCtoLead = {
+      fullName: 'Robin Chief',
+      currentTitle: 'Chief Technology Officer',
+      currentCompany: 'Apex',
+      location: 'United States'
+    };
+    const aliasCtoEvidence = buildScoutEvidence(aliasCtoLead, spec);
+    assert.equal(
+      aliasCtoEvidence.matchedCriteria.includes('target title'),
+      true,
+      '"cto" must alias-match "Chief Technology Officer"'
+    );
+    assert.equal(
+      aliasCtoEvidence.matchedCriteria.includes('target location'),
+      true,
+      '"us" must alias-match "United States"'
+    );
+
+    const contract: ProspectContract = {
+      version: 1,
+      policyVersion: 'evidence-contract-v9',
+      brief: 'CTOs in the US',
+      decompositionMode: 'single_stream_identity',
+      identitySpec: { roles: ['cto'], seniorities: [], companyTypes: [], industries: [], locations: ['us'] },
+      intentSpec: { hiringSignals: [], painSignals: [], toolingKeywords: [], growthSignals: [] },
+      authorityRequired: true,
+      requirements: [
+        {
+          id: 'person_role',
+          scope: 'person_role',
+          description: 'Must be CTO',
+          sourcePhrase: 'CTOs',
+          importance: 'hard',
+          evidenceModality: 'structured_profile',
+          queryable: true,
+          requirementClass: 'identity_hard',
+          acceptableTerms: ['cto']
+        }
+      ],
+      exclusions: [],
+      initialQueries: []
+    };
+    const diag = buildRoundDiagnostics({
+      round: 1,
+      rawCandidates: 1,
+      extractedCandidates: 1,
+      leads: [{ fullName: 'Pat Director', currentTitle: 'Operations Coordinator', summary: 'Reports to the factory director' }],
+      contract,
+      targetLimit: 5
+    });
+    assert.equal(diag.requirements[0].pass, 0, '"director" in summary must not satisfy "cto" requirement in roundDiagnostics');
+  });
+
+  it('Phase 1.3: selectDiversifiedLeads preserves 1-10 scores without sigmoid distortion or scoreBreakdown mutation', () => {
+    const candidates = [
+      { id: 'c1', company: 'Alpha', finalSelectionScore: 8.2, scoreBreakdown: { fitScore: 8, intentScore: 8, timingScore: 8, evidenceQualityScore: 8, sourceConfidenceScore: 8, finalScore: 8.2 } },
+      { id: 'c2', company: 'Beta', finalSelectionScore: 7.4, scoreBreakdown: { fitScore: 7, intentScore: 7, timingScore: 7, evidenceQualityScore: 7, sourceConfidenceScore: 7, finalScore: 7.4 } },
+      { id: 'c3', company: 'Gamma', finalSelectionScore: 6.1, scoreBreakdown: { fitScore: 6, intentScore: 6, timingScore: 6, evidenceQualityScore: 6, sourceConfidenceScore: 6, finalScore: 6.1 } }
+    ];
+    const selected = selectDiversifiedLeads(candidates, 3, 1);
+    const byId = new Map(selected.map(s => [s.id, s]));
+    assert.equal(byId.get('c1')?.finalSelectionScore, 8.2);
+    assert.equal(byId.get('c2')?.finalSelectionScore, 7.4);
+    assert.equal(byId.get('c3')?.finalSelectionScore, 6.1);
+    assert.equal(byId.get('c1')?.scoreBreakdown.finalScore, 8.2);
+    assert.equal((byId.get('c1') as any)?.sigmoidApplied, undefined);
+  });
 });
+

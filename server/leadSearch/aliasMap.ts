@@ -109,6 +109,35 @@ const ALL_ALIASES: Record<string, string> = {
   ...COMPANY_ALIASES,
 };
 
+const EXTRA_GENERIC_GEO_NAMES = [
+  'united states', 'united kingdom', 'united arab emirates', 'new zealand', 'south africa',
+  'north america', 'south america', 'latin america', 'europe', 'asia', 'middle east',
+  'australia', 'australian', 'canada', 'canadian', 'british', 'american', 'india', 'germany',
+  'france', 'spain', 'italy', 'netherlands', 'sweden', 'switzerland', 'singapore', 'brazil',
+  'ireland', 'scotland', 'wales', 'england', 'japan', 'south korea', 'mexico', 'israel',
+  'new south wales', 'victoria', 'queensland', 'western australia', 'south australia', 'tasmania',
+  'california', 'texas', 'new york', 'florida', 'illinois', 'massachusetts', 'washington',
+  'colorado', 'georgia', 'ontario', 'quebec', 'british columbia', 'alberta',
+  'sydney', 'melbourne', 'brisbane', 'perth', 'adelaide', 'canberra', 'gold coast',
+  'auckland', 'wellington', 'christchurch',
+  'austin', 'san francisco', 'los angeles', 'san diego', 'san jose', 'chicago', 'boston',
+  'seattle', 'denver', 'miami', 'atlanta', 'dallas', 'houston', 'phoenix', 'philadelphia',
+  'london', 'manchester', 'birmingham', 'edinburgh', 'glasgow', 'bristol', 'leeds',
+  'toronto', 'vancouver', 'montreal', 'calgary', 'ottawa',
+  'berlin', 'munich', 'frankfurt', 'hamburg', 'paris', 'amsterdam', 'rotterdam',
+  'dublin', 'zurich', 'geneva', 'stockholm', 'madrid', 'barcelona', 'milan', 'rome',
+  'dubai', 'abu dhabi', 'tel aviv', 'tokyo', 'seoul', 'mumbai', 'bangalore', 'bengaluru',
+  'delhi', 'new delhi', 'hyderabad', 'pune', 'chennai', 'sao paulo', 'mexico city',
+];
+
+export const GENERIC_GEO_NAMES: ReadonlySet<string> = new Set([
+  ...Object.keys(GEO_ALIASES).filter(k => k.length >= 3 || k === 'us' || k === 'uk' || k === 'au' || k === 'nz' || k === 'ca'),
+  ...Object.values(GEO_ALIASES),
+  ...EXTRA_GENERIC_GEO_NAMES,
+]);
+
+const escapeRegExp = (str: string) => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+
 /** Normalize a single term to its canonical alias (lowercased). */
 export function normalizeAliasTerm(term: unknown): string {
   const l = lower(term);
@@ -130,7 +159,9 @@ export function aliasIncludes(haystack: unknown, needle: unknown): boolean {
   // G4: token-normalize the haystack (not just the needle) so "US" in the
   // haystack matches "United States" needle and vice versa. Keeps the exact
   // fast path first for performance.
-  const rawHay = ` ${lower(haystack)} `;
+  const rawLowerHay = lower(haystack);
+  const punctNormalizedHay = rawLowerHay.replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const rawHay = ` ${rawLowerHay} ${punctNormalizedHay} `;
   const ndl = normalizeAliasTerm(needle);
   if (!ndl) return false;
   if (rawHay.includes(` ${ndl} `)) return true;
@@ -140,10 +171,10 @@ export function aliasIncludes(haystack: unknown, needle: unknown): boolean {
   // "US SaaS founder" normalizes "us" -> "united states" before matching.
   // Multi-word aliases ("chief executive officer" -> "ceo") are replaced at
   // phrase level first (longest-key-first) so abbreviated titles match.
-  let phraseHay = ` ${lower(haystack)} `;
+  let phraseHay = ` ${punctNormalizedHay} `;
   const phraseKeys = Object.keys(ALL_ALIASES).filter(k => k.includes(' ')).sort((a, b) => b.length - a.length);
   for (const key of phraseKeys) {
-    const escaped = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const escaped = escapeRegExp(key);
     phraseHay = phraseHay.replace(new RegExp(` ${escaped} `, 'g'), ` ${ALL_ALIASES[key]} `);
   }
   const hayTokens = phraseHay.split(/[^a-z0-9]+/).filter(Boolean);
@@ -155,10 +186,27 @@ export function aliasIncludes(haystack: unknown, needle: unknown): boolean {
   if (normPhrase && normPhrase !== raw && combinedHay.includes(` ${normPhrase} `)) return true;
   if (combinedHay.includes(` ${ndl} `)) return true;
   if (raw !== ndl && combinedHay.includes(` ${raw} `)) return true;
-  // Fallback substring for long phrases (e.g. "manual outbound")
-  if (raw.length > 8 && combinedHay.includes(raw)) return true;
-  if (ndl.length > 8 && combinedHay.includes(ndl)) return true;
+  // Fallback word-bounded match for long phrases (e.g. "manual outbound")
+  if (raw.length > 8 && new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(raw)}(?=$|[^a-z0-9])`, 'i').test(combinedHay)) return true;
+  if (ndl.length > 8 && new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(ndl)}(?=$|[^a-z0-9])`, 'i').test(combinedHay)) return true;
   return false;
+}
+
+/**
+ * Word-boundary match with alias expansion fallback.
+ * Prevents short tokens ("cto", "vp", "us", "ai") from matching inside longer words
+ * ("director", "svp", "status", "email") while preserving synonym equivalence
+ * ("cto" <-> "Chief Technology Officer", "vp" <-> "Vice President", "us" <-> "United States").
+ */
+export function wordBoundaryOrAliasMatches(haystack: unknown, needle: unknown): boolean {
+  const hay = lower(haystack);
+  const ndl = lower(needle);
+  if (!hay || !ndl) return false;
+  const escaped = escapeRegExp(ndl);
+  if (new RegExp(`(?:^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, 'i').test(hay)) {
+    return true;
+  }
+  return aliasIncludes(hay, ndl);
 }
 
 /** Expand a term into [term, ...aliases] for queryable coverage. */
@@ -178,3 +226,4 @@ export function expandAliasTerm(term: unknown): string[] {
   }
   return Array.from(out);
 }
+

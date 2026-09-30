@@ -38,7 +38,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
-async function importLLM(suffix: string) {
+async function importLLM(suffix: string): Promise<typeof import('../server/services/llm.ts')> {
   return import(`../server/services/llm.ts?t=${Date.now()}-${suffix}`);
 }
 
@@ -542,7 +542,7 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
       });
     };
 
-    const res = await llm.openAIStructured<{ ok: boolean }>(
+    const res: { ok: boolean } = await llm.openAIStructured(
       'Test fallback to Byesu GPT',
       { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
       'Return JSON',

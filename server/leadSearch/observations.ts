@@ -1,4 +1,5 @@
 import { extractLinkedInUsername, normalizeLinkedInUrl } from '../services/linkedinEvidence.js';
+import { GENERIC_GEO_NAMES } from './aliasMap.js';
 
 export type ScoutObservation = {
   title: string;
@@ -110,31 +111,38 @@ const COMPANY_HINT_BLOCKLIST = new Set([
   'trustpilot', 'clutch', 'crunchbase', 'google', 'microsoft', 'apple',
   'linkedin', 'glassdoor', 'seek', 'indeed', 'bing', 'yahoo', 'duckduckgo',
   'ziprecruiter', 'wellfound', 'monster', 'simplyhired', 'workable', 'greenhouse',
-  'lever', 'ashby', 'upwork', 'fiverr', 'n8n', 'zapier', 'make', 'openai',
+  'lever', 'ashby', 'upwork', 'fiverr', 'make',
   'chatgpt', 'claude', 'gemini', 'copilot'
 ]);
 
 const LEGAL_SUFFIX_RE = /\b(?:pty\s+ltd|ltd|limited|inc|incorporated|llc|llp|corp|corporation|gmbh|plc|group|holdings)\.?$/i;
 
+const PAGE_TYPE_PHRASE_RE =
+  /^(?:(?:company|latest|recent|our|open|new|current|active|all|view|see)\s+)?(?:hiring(?:\s+now)?|jobs?|careers?(?:\s+page)?|work(?:\s+with\s+us|\s+here)?|apply(?:\s+now|\s+here)?|vacanc(?:y|ies)|positions?|roles?|openings?|blog|news(?:room)?|articles?|guides?|tutorials?|about(?:\s+us)?|contact(?:\s+us)?|home(?:\s+page)?|experience|education)(?:\s+(?:page|portal|board|hub|center|section|now|here|today))?$/i;
+
+const SENTENCE_NOISE_WORD_RE =
+  /\b(?:hiring|job|jobs|careers|work|apply|vacancy|position|role|blog|news|article|guide|tutorial)\b/i;
+
 export const looksLikeCompanyHint = (value: string) => {
   const candidate = cleanCompanyHint(value);
   if (candidate.length < 3 || candidate.length > 65) return false;
   if (!/[a-z0-9]/i.test(candidate)) return false;
-  // Reject strings starting with a lowercase letter (e.g. "r/curtin", "how to survive...", "index")
-  if (/^[a-z]/.test(candidate)) return false;
   // Reject Reddit sub paths or questions/exclamations
   if (/^\/?r\//i.test(candidate) || /[?!]/.test(candidate)) return false;
   const lower = candidate.toLowerCase();
   if (COMPANY_HINT_BLOCKLIST.has(lower)) return false;
+  if (GENERIC_GEO_NAMES.has(lower)) return false;
   const words = candidate.split(/\s+/).filter(Boolean);
   if (words.length > 5 && !LEGAL_SUFFIX_RE.test(candidate)) return false;
   if (/^(?:we're|i'm|you're|they're|it's|what|how|why|when|where|who|which|must|unlock|managed|building|scaling|guide|complete|ultimate|discover|explore|learn|join|hiring|looking|seeking|find|search|browse|top|best)\b/i.test(candidate)) return false;
+  if (/^[a-z]/.test(candidate) && words.length >= 2 && /^(?:in|on|at|to|for|with|from|by|about|into|through|during|before|after|between|under|is|are|was|were|be|been|being|have|has|had|do|does|did|can|could|should|would|may|might|my|your|our|their|this|that|these|those)\b/.test(candidate)) return false;
   if (/^\d+\+?\s*(?:comments?|jobs?|roles?|results?|profiles?|openings?|positions?)\b/i.test(candidate)) return false;
   // Reject geographic "City, ST" or "City, State, Country" strings
   if (/,\s*(?:[A-Z]{2,3}|australia|united states|usa|uk|united kingdom|canada|new zealand|india|germany|france|singapore)\b/i.test(candidate)) return false;
-  if (/^(?:australia|australian|united states|usa|united kingdom|uk|canada|new zealand|sydney|melbourne|brisbane|perth|adelaide|canberra|gold coast|new south wales|victoria|queensland|western australia|south australia|tasmania|austin|new york|san francisco|los angeles|london|toronto)$/i.test(lower)) return false;
-  if (/\b(hiring|job|jobs|careers|work|apply|vacancy|position|role|blog|news|article|guide|tutorial)\b/i.test(candidate)) return false;
-  if (/\b(connections?|followers?|people also viewed|about|experience|education|located in)\b/i.test(candidate)) return false;
+  // Reject only when the whole candidate is a page-type/job phrase, or when a 5+ word sentence contains noise words
+  if (PAGE_TYPE_PHRASE_RE.test(candidate)) return false;
+  if (words.length > 4 && SENTENCE_NOISE_WORD_RE.test(candidate)) return false;
+  if (/\b(connections?|followers?|people also viewed|located in)\b/i.test(candidate)) return false;
   if (/\b(available at|open to|looking for|seeking|working at)\b/i.test(lower)) return false;
   if (/^[\d\s,.-]+$/.test(candidate)) return false;
   return true;
@@ -206,9 +214,9 @@ export function extractCompanyHintDeterministic(obs: FusedObservation): string {
     if (looksLikeCompanyHint(lastPart)) return lastPart;
   }
 
-  // Strategy 2: "TechFlow AI is hiring..." in the title or opening content (case-sensitive start + required auxiliary verb).
+  // Strategy 2: "TechFlow AI is hiring..." or "eBay is hiring..." in the title or opening content.
   const hiringMatch = `${obs.title}\n${obs.content.slice(0, 240)}`.match(
-    /(?:^|\n)([A-Z][A-Za-z0-9&.' -]{2,50}?)\s+(?:is|are)\s+(?:actively\s+|currently\s+)?(?:hiring|looking for|seeking)\b/
+    /(?:^|\n)([A-Za-z0-9][A-Za-z0-9&.' -]{1,50}?)\s+(?:is|are)\s+(?:actively\s+|currently\s+)?(?:hiring|looking for|seeking)\b/
   );
   const hiringCompany = cleanCompanyHint(hiringMatch?.[1]);
   if (looksLikeCompanyHint(hiringCompany)) return hiringCompany;
@@ -236,9 +244,15 @@ export function extractCompanyHintFromProfile(obs: FusedObservation): string {
   if (looksLikeCompanyHint(rawCompany)) return rawCompany;
 
   const text = `${obs.title}\n${obs.content.slice(0, 800)}`;
-  const atCompany = text.match(/\b(?:at|@)\s+([A-Z][A-Za-z0-9&.' -]{2,60})(?=\s*(?:\||\n|,|\u2013|\u2014|$))/);
+  const atCompany = text.match(/\b(?:at|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60})(?=\s*(?:\||\n|,|\u2013|\u2014|$))/);
   const inlineCompany = cleanCompanyHint(atCompany?.[1]);
   if (looksLikeCompanyHint(inlineCompany)) return inlineCompany;
+
+  const lines = obs.content
+    .split(/\r?\n/)
+    .map(line => cleanCompanyHint(line.replace(/^#+\s*/, '')))
+    .filter(Boolean);
+  if (lines.length >= 2 && looksLikeCompanyHint(lines[1])) return lines[1];
 
   return '';
 }

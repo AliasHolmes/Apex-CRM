@@ -390,7 +390,11 @@ export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
   japanese: 'Japan',
 };
 
-const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string[] => {
+const expandAcceptableTerms = (
+  scope: RequirementScope,
+  terms: string[],
+  options: { agencyBrief?: boolean } = {}
+): string[] => {
   const expanded: string[] = [];
   if (scope === 'person_location') {
     for (const t of terms) {
@@ -477,8 +481,12 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   }
 
   if (scope === 'person_role') {
-    if (terms.some(t => /\b(owner|owners?|firm owner|agency owner|founder|founders?|co-?founder|ceo|chief executive officer|president|managing partner|managing director|principal|partner|proprietor)\b/i.test(t))) {
-      expanded.push('owner', 'owners', 'firm owner', 'agency owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor');
+    if (terms.some(t => /\b(owners?|firm owner|agency owner|founders?|co-?founder|ceo|chief executive officer|president|managing partner|managing director|proprietor)\b/i.test(t))) {
+      const ownerFamily = ['owner', 'owners', 'firm owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'president', 'proprietor'];
+      if (options.agencyBrief || terms.some(t => /\bagency\s+owner\b/i.test(t))) {
+        ownerFamily.push('agency owner');
+      }
+      expanded.push(...ownerFamily);
     }
     if (terms.some(t => /\b(cto|chief technology officer|vp engineering|vice president engineering|vp product|vice president product)\b/i.test(t))) {
       expanded.push('CTO', 'chief technology officer', 'VP Engineering', 'vice president engineering', 'VP Product', 'vice president product', 'founder', 'co-founder', 'CEO');
@@ -495,7 +503,11 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
   }
 
   if (scope === 'company_type' || scope === 'company_industry') {
-    if (terms.some(t => /\b(agenc|firm|consult|service|solution|advisory|studio|partner|integrat|business|provider)/i.test(t))) {
+    const agencyTerms = Boolean(
+      options.agencyBrief ||
+      terms.some(t => /\b(agenc(?:y|ies)|consultanc(?:y|ies)|studios?|integrators?)\b/i.test(t))
+    );
+    if (agencyTerms && terms.some(t => /\b(agenc|firm|consult|service|solution|advisory|studio|partner|integrat|business|provider)/i.test(t))) {
       const isAI = terms.some(t => /\b(ai|artificial intelligence|machine learning|ml)\b/i.test(t));
       if (isAI) {
         expanded.push(
@@ -533,17 +545,23 @@ const expandAcceptableTerms = (scope: RequirementScope, terms: string[]): string
     if (terms.some(t => /\b(saas|software|platform|cloud\s+software)\b/i.test(t))) {
       expanded.push('SaaS', 'software company', 'B2B SaaS', 'software platform', 'cloud software', 'enterprise software', 'software vendor');
     }
-    if (terms.some(t => /\b(clinic|medical|healthcare|hospital|practice|dental)\b/i.test(t))) {
+    if (terms.some(t => /\bhospitals?\b/i.test(t))) {
+      expanded.push('hospital', 'medical center', 'health system');
+    }
+    if (terms.some(t => /\b(clinics?|medical practices?|private practices?|dental)\b/i.test(t))) {
       expanded.push('medical practice', 'private practice', 'clinic', 'healthcare clinic', 'medical center', 'clinical practice', 'healthcare group');
     }
-    if (terms.some(t => /\b(law\s*firm|legal|attorney|accounting|cpa|tax\s*firm)\b/i.test(t))) {
-      expanded.push('law firm', 'legal practice', 'accounting firm', 'cpa firm', 'tax firm', 'advisory firm', 'consulting firm');
+    if (terms.some(t => /\b(law\s*firms?|legal\s+practices?|attorneys?|lawyers?)\b/i.test(t))) {
+      expanded.push('law firm', 'legal practice', 'law practice');
+    }
+    if (terms.some(t => /\b(accounting|cpa|tax\s*firms?|bookkeeping)\b/i.test(t))) {
+      expanded.push('accounting firm', 'cpa firm', 'tax firm');
     }
     if (terms.some(t => /\b(manufacturing|industrial|manufacturer|fabrication|factory|production\s+plant)\b/i.test(t))) {
       expanded.push('manufacturing company', 'manufacturer', 'fabrication facility', 'industrial plant', 'factory', 'production facility');
     }
     if (terms.some(t => /\b(contractor|plumbing|hvac|roofing|electrician)\b/i.test(t))) {
-      expanded.push('contractor', 'clinic', 'dental practice', 'plumbing company', 'hvac contractor', 'roofing contractor', 'electrical contractor', 'local business');
+      expanded.push('contractor', 'plumbing company', 'hvac contractor', 'roofing contractor', 'electrical contractor', 'local business');
     }
   }
 
@@ -601,9 +619,10 @@ export function isRecognizedTool(term: string, cluster?: string): boolean {
  * constraints as hard requirements.
  */
 export function buildDeterministicProspectContract(brief: string, spec: Partial<SearchSpec> = {}): ProspectContract {
+  const agencyBrief = isAgencyContract(brief);
   const requirements: ProspectRequirement[] = [];
   const add = (scope: RequirementScope, terms: string[], importance: 'hard' | 'soft' = 'hard') => {
-    const accepted = expandAcceptableTerms(scope, includeTerms(terms, brief));
+    const accepted = expandAcceptableTerms(scope, includeTerms(terms, brief), { agencyBrief });
     if (!accepted.length) return;
     const reqClass = classifyRequirement(scope, importance, accepted[0]);
     const hardness = assignQueryHardness(reqClass);
@@ -634,7 +653,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
       }
       return;
     }
-    const accepted = expandAcceptableTerms(scope, unique([sourcePhrase, ...acceptableTerms]));
+    const accepted = expandAcceptableTerms(scope, unique([sourcePhrase, ...acceptableTerms]), { agencyBrief });
     const reqClass = classifyRequirement(scope, importance, sourcePhrase);
     const hardness = assignQueryHardness(reqClass);
     requirements.push({
@@ -732,7 +751,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   ]);
 
   if (combinedRoleTerms.length > 0) {
-    const accepted = expandAcceptableTerms('person_role', combinedRoleTerms);
+    const accepted = expandAcceptableTerms('person_role', combinedRoleTerms, { agencyBrief });
     const sourcePhrase = professionMatch
       ? (ownerMatch ? `${professionMatch} ${ownerMatch}` : professionMatch)
       : ownerMatch || (hintedRoles[0] || (spec?.person?.includeTitles?.[0] || 'executive'));
@@ -1315,6 +1334,7 @@ export function normalizeProspectContract(
   brief: string,
   fallback: ProspectContract
 ): ProspectContract {
+  const agencyBrief = isAgencyContract(brief);
   const raw = input && typeof input === 'object' ? input as Record<string, any> : {};
   const rawRequirements = Array.isArray(raw.requirements) ? raw.requirements : [];
   const requirements: ProspectRequirement[] = [];
@@ -1331,7 +1351,7 @@ export function normalizeProspectContract(
       continue;
     }
     const rawTerms = unique(Array.isArray(item?.acceptableTerms) ? item.acceptableTerms : [sourcePhrase]);
-    const terms = expandAcceptableTerms(scope, rawTerms);
+    const terms = expandAcceptableTerms(scope, rawTerms, { agencyBrief });
     if (!terms.length || !sourcePhrase) continue;
     const count = scopeCounts.get(scope) || 0;
     scopeCounts.set(scope, count + 1);
@@ -1564,7 +1584,7 @@ export function normalizeProspectContract(
       evidenceModality: "open_web_signal",
       description: `shows active buying-intent signals (${intentTerms.slice(0, 4).join(", ")})`,
       sourcePhrase: intentTerms[0],
-      acceptableTerms: expandAcceptableTerms("signal", intentTerms),
+      acceptableTerms: expandAcceptableTerms("signal", intentTerms, { agencyBrief }),
       queryable: signalClass !== "system_invariant",
       acceptableEvidenceSources: [],
     });

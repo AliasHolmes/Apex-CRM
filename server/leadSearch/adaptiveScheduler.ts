@@ -98,6 +98,24 @@ export function deriveDomainCluster(queryOrBrief: string): string {
   return bestCluster;
 }
 
+const GENERIC_ORG_WORDS = new Set([
+  'company', 'companies', 'firm', 'firms', 'business', 'businesses', 'startup', 'startups',
+  'organization', 'organizations', 'org', 'orgs', 'the', 'a', 'an', 'of', 'and',
+]);
+
+/** "Freight Forwarding Companies" -> "freight_forwarding". Used as an open-ended cluster id. */
+export function industrySlug(term: unknown): string {
+  return String(term || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word && !GENERIC_ORG_WORDS.has(word))
+    .slice(0, 4)
+    .join('_')
+    .slice(0, 40);
+}
+
 export function deriveContractDomainCluster(
   contractOrSpec: any,
   briefFallback = '',
@@ -114,7 +132,14 @@ export function deriveContractDomainCluster(
   if (Array.isArray(idSpec.includeTitles)) parts.push(...idSpec.includeTitles);
 
   const combined = parts.filter(Boolean).join(' ');
-  return deriveDomainCluster(combined || briefFallback);
+  const known = deriveDomainCluster(combined || briefFallback);
+  if (known !== 'global') return known;
+  // Any other industry gets its own learning scope instead of collapsing into "global".
+  const industryTerm = [
+    ...(Array.isArray(idSpec.industries) ? idSpec.industries : []),
+    ...(Array.isArray(idSpec.companyTypes) ? idSpec.companyTypes : []),
+  ].find((value: unknown) => typeof value === 'string' && value.trim());
+  return (industryTerm && industrySlug(industryTerm)) || 'global';
 }
 
 export const adaptiveScopeKey = (task: Pick<RetrievalTask, 'family' | 'lane' | 'providerPreference'> & { domainCluster?: string; centroid?: string }) =>

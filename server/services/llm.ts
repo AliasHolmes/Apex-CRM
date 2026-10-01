@@ -420,7 +420,7 @@ export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
  * The 115s CLOUDFLARE_MAX_TIMEOUT_MS therefore does not apply to Atria traffic.
  * Timeout scales dynamically with prompt weight and reasoning budget up to this safety ceiling.
  */
-export const ATRIA_MAX_TIMEOUT_MS = 300_000;
+export const ATRIA_MAX_TIMEOUT_MS = 600_000;
 
 /**
  * Bounded concurrency execution queue for all LLM calls.
@@ -556,11 +556,17 @@ export function withSequentialLLMExecution<T>(
   task: () => Promise<T>,
   signal?: AbortSignal | null,
   laneOverride?: LLMStageLane,
+  providerId?: string,
 ): Promise<T> {
   if (signal?.aborted) {
     const abortErr = new Error("LLM request was aborted by caller.");
     abortErr.name = "AbortError";
     return Promise.reject(abortErr);
+  }
+  // When provider-level concurrency is active, execute directly since withProviderFallback
+  // already guarantees per-provider isolation and capacity bounds.
+  if (providerId) {
+    return task();
   }
   // Sharded path behind feature flag; default preserves 100% legacy single-mutex behavior.
   if (isStageQueuesEnabled()) {
@@ -746,6 +752,7 @@ async function fetchWithRetry(
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
   maxRetries = 1,
   isAtria = false,
+  providerId?: string,
 ): Promise<Response> {
   const atriaConfiguredBase = process.env.ATRIA_BASE
     ? cleanBaseUrl(process.env.ATRIA_BASE)
@@ -824,7 +831,7 @@ async function fetchWithRetry(
           ...requestOptions,
           signal: compositeSignal,
         });
-      }, callerSignal);
+      }, callerSignal, undefined, providerId);
 
       if (timer) clearTimeout(timer);
       lastResponse = res;
@@ -1056,8 +1063,147 @@ export function isCircuitBreakingProviderFailure(error: Error): boolean {
 
 export const providerCooldowns = new Map<string, number>();
 
+// --- Provider-Affinity Concurrency & Parallel Execution ---
+// User requirement: Atria (primary) and Byesu (secondary) run concurrently with 1 request each.
+// Atria is prioritized whenever idle.
+
+export function getProviderConcurrencyLimit(providerId: string): number {
+  if (providerId === "atria") {
+    const configured = Number(process.env.ATRIA_CONCURRENT_SLOTS);
+    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 1;
+  }
+  if (providerId === "primary") {
+    const configured = Number(process.env.BYESU_CONCURRENT_SLOTS);
+    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 1;
+  }
+  return 1;
+}
+
+export const providerActiveSlots = new Map<string, number>();
+
+export function getProviderActiveSlots(providerId: string): number {
+  return providerActiveSlots.get(providerId) || 0;
+}
+
+export function acquireProviderSlot(providerId: string): void {
+  const current = providerActiveSlots.get(providerId) || 0;
+  providerActiveSlots.set(providerId, current + 1);
+}
+
+export function releaseProviderSlot(providerId: string): void {
+  const current = providerActiveSlots.get(providerId) || 0;
+  providerActiveSlots.set(providerId, Math.max(0, current - 1));
+  pumpProviderSlotWaitQueue();
+}
+
+type ProviderSlotWaiter = {
+  getCandidates: () => LLMProvider[];
+  resolve: (provider: LLMProvider) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal | null;
+  cleanup?: () => void;
+};
+
+const providerSlotWaitQueue: ProviderSlotWaiter[] = [];
+
+function pumpProviderSlotWaitQueue(): void {
+  for (let i = 0; i < providerSlotWaitQueue.length; i++) {
+    const waiter = providerSlotWaitQueue[i];
+    if (waiter.signal?.aborted) continue;
+    const candidates = waiter.getCandidates();
+    const available = candidates.find(
+      (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
+    );
+    if (available) {
+      providerSlotWaitQueue.splice(i, 1);
+      i--;
+      waiter.cleanup?.();
+      acquireProviderSlot(available.id);
+      waiter.resolve(available);
+    }
+  }
+}
+
+function waitForProviderSlot(
+  getCandidates: () => LLMProvider[],
+  signal?: AbortSignal | null,
+  timeoutMs = resolveDynamicQueueTimeoutMs(),
+): Promise<LLMProvider> {
+  return new Promise<LLMProvider>((resolve, reject) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    let onAbort: (() => void) | null = null;
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const idx = providerSlotWaitQueue.findIndex((w) => w === waiter);
+      if (idx !== -1) providerSlotWaitQueue.splice(idx, 1);
+      const abortErr = new Error("LLM request was aborted by caller.");
+      abortErr.name = "AbortError";
+      reject(abortErr);
+    };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const idx = providerSlotWaitQueue.findIndex((w) => w === waiter);
+      if (idx !== -1) providerSlotWaitQueue.splice(idx, 1);
+      const timeoutErr = new Error("LLM request timed out waiting for provider concurrency slot.");
+      timeoutErr.name = "TimeoutError";
+      reject(timeoutErr);
+    }, timeoutMs);
+
+    const waiter: ProviderSlotWaiter = {
+      getCandidates,
+      resolve: (p) => {
+        if (settled) {
+          releaseProviderSlot(p.id);
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(p);
+      },
+      reject: (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      },
+      signal,
+      cleanup,
+    };
+
+    providerSlotWaitQueue.push(waiter);
+  });
+}
+
 export function clearProviderCooldowns(): void {
   providerCooldowns.clear();
+  providerActiveSlots.clear();
+  providerSlotWaitQueue.length = 0;
 }
 
 async function withProviderFallback<T>(
@@ -1084,37 +1230,68 @@ async function withProviderFallback<T>(
     );
   }
 
+  // Pre-emit skipped events for circuit-broken providers
+  if (executionOptions.circuitBreaker) {
+    for (const provider of providers) {
+      if (executionOptions.circuitBreaker.disabledProviderIds.has(provider.id)) {
+        executionOptions.onProviderAttempt?.({
+          providerId: provider.id,
+          provider: provider.name,
+          model: provider.model,
+          status: "skipped",
+          latencyMs: 0,
+          error: "Session circuit breaker open",
+        });
+      }
+    }
+  }
+
   const failures: Error[] = [];
-  for (const provider of providers) {
+  const triedProviderIds = new Set<string>();
+
+  const getUntriedEligibleProviders = (): LLMProvider[] => {
+    return providers.filter((p) => {
+      if (triedProviderIds.has(p.id)) return false;
+      if (executionOptions.circuitBreaker?.disabledProviderIds.has(p.id)) return false;
+      const cooldownUntil = providerCooldowns.get(p.id);
+      if (cooldownUntil) {
+        if (Date.now() < cooldownUntil) return false;
+        providerCooldowns.delete(p.id);
+      }
+      return true;
+    });
+  };
+
+  while (true) {
     if (executionOptions.signal?.aborted) {
       const cancelError = new Error("LLM request was aborted by caller.");
       cancelError.name = "AbortError";
       throw cancelError;
     }
 
-    if (executionOptions.circuitBreaker?.disabledProviderIds.has(provider.id)) {
-      executionOptions.onProviderAttempt?.({
-        providerId: provider.id,
-        provider: provider.name,
-        model: provider.model,
-        status: "skipped",
-        latencyMs: 0,
-        error: "Session circuit breaker open",
-      });
-      continue;
+    const eligible = getUntriedEligibleProviders();
+    if (eligible.length === 0) {
+      break;
     }
 
-    const cooldownUntil = providerCooldowns.get(provider.id);
-    if (cooldownUntil) {
-      if (Date.now() < cooldownUntil) {
-        // In 30s cooldown; cascade immediately to next provider
-        continue;
-      } else {
-        // Cooldown expired; reinstate provider
-        providerCooldowns.delete(provider.id);
-      }
+    // Check if any untried eligible provider has an immediate slot available (in priority order: Atria, Byesu, etc.)
+    let selectedProvider = eligible.find(
+      (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
+    );
+
+    if (selectedProvider) {
+      acquireProviderSlot(selectedProvider.id);
+    } else {
+      // All untried eligible providers are currently processing concurrent requests.
+      // Wait for a slot to free up among the untried eligible candidates.
+      selectedProvider = await waitForProviderSlot(
+        getUntriedEligibleProviders,
+        executionOptions.signal,
+      );
     }
 
+    triedProviderIds.add(selectedProvider.id);
+    const provider = selectedProvider;
     const startedAt = Date.now();
     let attemptUsage: LLMUsage | undefined;
     const providerExecutionOptions: LLMExecutionOptions = {
@@ -1272,14 +1449,20 @@ async function withProviderFallback<T>(
           (/429|rate[-_ ]?limit|524/i.test(normalized.message) ||
            isFullRequestTimeout)));
       if (isTransientTimeoutOrRateLimit) {
-        const cooldownMs =
+        const configuredCooldown =
           process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
             ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
+            : process.env.LLM_RATE_LIMIT_COOLDOWN_MS !== undefined
+              ? Number(process.env.LLM_RATE_LIMIT_COOLDOWN_MS)
+              : undefined;
+        const cooldownMs =
+          configuredCooldown !== undefined
+            ? configuredCooldown
             : isFullRequestTimeout
-              ? 15_000
+              ? 5_000
               : process.env.LLM_MAX_RETRIES === "0"
-                ? 5_000
-                : 30_000;
+                ? 3_000
+                : 15_000;
         if (cooldownMs > 0) {
           providerCooldowns.set(provider.id, Date.now() + cooldownMs);
           console.warn(
@@ -1290,6 +1473,8 @@ async function withProviderFallback<T>(
       console.warn(
         `[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`,
       );
+    } finally {
+      releaseProviderSlot(provider.id);
     }
   }
 
@@ -1302,6 +1487,7 @@ async function withProviderFallback<T>(
     );
     if (fallbackCandidate) {
       providerCooldowns.delete(fallbackCandidate.id);
+      acquireProviderSlot(fallbackCandidate.id);
       const startedAt = Date.now();
       let attemptUsage: LLMUsage | undefined;
       const providerExecutionOptions: LLMExecutionOptions = {
@@ -1349,6 +1535,8 @@ async function withProviderFallback<T>(
           latencyMs: Date.now() - startedAt,
           error: truncateProviderError(normalized.message),
         });
+      } finally {
+        releaseProviderSlot(fallbackCandidate.id);
       }
     }
   }
@@ -1475,14 +1663,14 @@ export function computeAtriaDynamicTimeoutMs(
   const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
 
   // Scale timeout dynamically with prefill tokens + reasoning/output token budget
-  // Calibrated to Atria vLLM throughput (~35-45 tok/s + queue/prefill overhead)
+  // Calibrated to Atria vLLM throughput (~35-45 tok/s + queue/prefill overhead + reasoning pauses)
   const workloadTimeoutMs =
-    45_000 +
-    Math.round(estimatedInputTokens * 8) +
-    Math.round(Math.max(0, effectiveMaxTokens) * 10);
+    60_000 +
+    Math.round(estimatedInputTokens * 12) +
+    Math.round(Math.max(0, effectiveMaxTokens) * 15);
 
   const minAtriaTimeout = Math.max(
-    90_000,
+    120_000,
     Number(process.env.ATRIA_MIN_TIMEOUT_MS || 0),
     requestedTimeoutMs || 0,
   );
@@ -1624,6 +1812,7 @@ async function sendChatCompletion(
       timeoutForCall,
       options?.maxRetries,
       isAtriaTarget,
+      provider.id,
     );
   } catch (error: any) {
     if (error?.name === "AbortError" || options?.signal?.aborted) {

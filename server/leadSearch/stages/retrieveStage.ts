@@ -23,6 +23,7 @@ import type { QueryRunStats } from "../strategist.js";
 import { ablateQueryTask, createAblationTracker } from "../constraintAblation.js";
 import { classifyQueryComplexity } from "../queryUnderstanding.js";
 import { rewriteZeroYieldQuery } from "../queryRewriter.js";
+import { buildRetrievalCacheKey, readCachedSearch, writeCachedSearch } from "../retrievalCache.js";
 
 export type RetrieveStageInput = {
   round: number;
@@ -148,6 +149,30 @@ export async function executeRetrieveStage(
           const searchStarted = Date.now();
           try {
             const tavilyOptions = plan.item.tavily;
+            const cacheKey = buildRetrievalCacheKey("tavily", plan.executableQuery, {
+              ...tavilyOptions,
+              maxResults: dynamicTavilyMaxResults,
+            });
+            const cachedResult = readCachedSearch(cacheKey);
+            if (cachedResult) {
+              stats.retrievalCacheHits = (stats.retrievalCacheHits || 0) + 1;
+              logEvent(
+                `Round ${round}: Tavily cache hit for "${plan.executableQuery}" (${cachedResult.items.length} results, 0 credits).`,
+              );
+              recordTrace({
+                phase: "search",
+                operation: "tavily_search",
+                status: "success",
+                provider: "tavily",
+                round,
+                query: plan.executableQuery,
+                latencyMs: Date.now() - searchStarted,
+                counts: { rawCandidates: cachedResult.items.length },
+                metadata: { cacheHit: true },
+              });
+              tavilyResultsByIndex.set(index, cachedResult);
+              return;
+            }
             const estimatedCredits =
               tavilyOptions.searchDepth === "advanced" ? 2 : 1;
             if (
@@ -364,6 +389,7 @@ export async function executeRetrieveStage(
                 snippet: item.content || item.raw_content,
               })),
             });
+            writeCachedSearch(cacheKey, res);
             tavilyResultsByIndex.set(index, res);
           } catch (e: any) {
             recordTrace({

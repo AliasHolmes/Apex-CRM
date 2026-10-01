@@ -5,9 +5,11 @@ import {
   markSavedSearchRun,
   updateSavedSearchExcludeList,
   upsertDiscoveredCompanies,
+  computeRequirementsFingerprint,
 } from "../../db.js";
 import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
-import { mapCandidateToPersistedLead } from "../leadMapping.js";
+import { mapCandidateToPersistedLead, stampDiscoveryContext } from "../leadMapping.js";
+import { deriveContractDomainCluster } from "../adaptiveScheduler.js";
 import type { SessionContext } from "../pipelineTypes.js";
 
 export type PersistStageInput = {
@@ -50,6 +52,10 @@ export async function executePersistStage(
   const { sessionId, promptQuery, targetLimit } = config;
 
   const now = new Date().toISOString();
+  stampDiscoveryContext(finalLeads, {
+    requirementsFingerprint: computeRequirementsFingerprint(config.contract?.requirements),
+    domainCluster: deriveContractDomainCluster(config.contract, promptQuery),
+  });
   const mappedLeads: Record<string, any>[] = finalLeads.map((p: any) =>
     mapCandidateToPersistedLead(p, p.id || `lead-${crypto.randomUUID()}`, now),
   );

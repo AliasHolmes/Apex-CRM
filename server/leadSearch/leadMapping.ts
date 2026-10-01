@@ -3,6 +3,25 @@ import { getLeadScore } from "./scoring.js";
 import { buildScopeKey } from "./adaptiveScheduler.js";
 
 /**
+ * Records which brief produced each lead. Without this every lead was persisted with
+ * domainCluster "global", so per-cluster outcome attribution never happened.
+ */
+export function stampDiscoveryContext(
+  leads: any[],
+  context: { requirementsFingerprint: string; domainCluster: string },
+): void {
+  for (const lead of leads) {
+    if (!lead || typeof lead !== "object") continue;
+    if (!lead.discoveryRequirementsFingerprint) {
+      lead.discoveryRequirementsFingerprint = context.requirementsFingerprint;
+    }
+    if (!lead.domainCluster || lead.domainCluster === "global") {
+      lead.domainCluster = context.domainCluster;
+    }
+  }
+}
+
+/**
  * Canonical candidate-to-persisted-lead mapping.
  *
  * Single source of truth used by:
@@ -96,6 +115,7 @@ export function mapCandidateToPersistedLead(
       lane: p.discoveryLane || p.scout?.lane || p.evidence?.discoveryLane || "person",
       provider: p.sourceProvider || "tavily",
     }),
+    discoveryRequirementsFingerprint: p.discoveryRequirementsFingerprint || undefined,
     evidenceReasons: p.evidenceReasons,
     evidence: p.evidence,
     scoreBreakdown: p.scoreBreakdown,

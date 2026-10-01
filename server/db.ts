@@ -28,7 +28,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-export const LATEST_SCHEMA_VERSION = 25;
+export const LATEST_SCHEMA_VERSION = 26;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1282,6 +1282,33 @@ function runMigrations(db: DatabaseSync) {
       `);
     }
 
+    if (currentVersion < 26) {
+      addColumnIfMissing(db, "candidate_verdicts", "evidence_hash", "evidence_hash TEXT");
+      addColumnIfMissing(db, "candidate_verdicts", "qualification_json", "qualification_json TEXT");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS company_profiles (
+          company_key TEXT PRIMARY KEY,
+          company_name TEXT NOT NULL,
+          business_model TEXT NOT NULL,
+          industry TEXT NOT NULL DEFAULT '',
+          primary_offering TEXT NOT NULL DEFAULT '',
+          evidence_quote TEXT NOT NULL DEFAULT '',
+          quote_verified INTEGER NOT NULL DEFAULT 0,
+          source_length INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS company_attribution_verdicts (
+          company_key TEXT NOT NULL,
+          requirement_hash TEXT NOT NULL,
+          result_json TEXT NOT NULL,
+          source_length INTEGER NOT NULL DEFAULT 0,
+          expires_at TEXT NOT NULL,
+          PRIMARY KEY (company_key, requirement_hash)
+        );
+      `);
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1592,6 +1619,8 @@ export function getLeadsDb() {
         verdict TEXT NOT NULL,
         reason TEXT,
         failed_requirement_id TEXT,
+        evidence_hash TEXT,
+        qualification_json TEXT,
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         PRIMARY KEY (identity_key, requirement_hash)
@@ -1600,6 +1629,27 @@ export function getLeadsDb() {
         ON candidate_verdicts(identity_key, requirement_hash);
       CREATE INDEX IF NOT EXISTS idx_candidate_verdicts_expires
         ON candidate_verdicts(expires_at);
+
+      CREATE TABLE IF NOT EXISTS company_profiles (
+        company_key TEXT PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        business_model TEXT NOT NULL,
+        industry TEXT NOT NULL DEFAULT '',
+        primary_offering TEXT NOT NULL DEFAULT '',
+        evidence_quote TEXT NOT NULL DEFAULT '',
+        quote_verified INTEGER NOT NULL DEFAULT 0,
+        source_length INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS company_attribution_verdicts (
+        company_key TEXT NOT NULL,
+        requirement_hash TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        source_length INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT NOT NULL,
+        PRIMARY KEY (company_key, requirement_hash)
+      );
     `);
     runMigrations(leadsDb);
     pruneOldBackups(path.join(path.dirname(LEADS_DB_PATH), "backups"));
@@ -2673,39 +2723,42 @@ export function upsertCandidateVerdict(input: {
   verdict: "hard_fail" | "pass";
   reason?: string;
   failedRequirementId?: string;
+  evidenceHash?: string;
+  qualification?: Record<string, any>;
   ttlDays?: number;
 }): void {
-  const { identityKey, requirementHash, verdict, reason, failedRequirementId, ttlDays = 30 } = input;
+  const { identityKey, requirementHash, verdict, reason, failedRequirementId, evidenceHash, qualification, ttlDays = 30 } = input;
   if (!identityKey || !requirementHash) return;
   try {
     const db = getLeadsDb();
     const now = new Date();
     const expires = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000);
-    const nowIso = now.toISOString();
-    const expiresIso = expires.toISOString();
-
-    const stmt = getCachedStatement(
+    getCachedStatement(
       db,
       `
       INSERT INTO candidate_verdicts (
-        identity_key, requirement_hash, verdict, reason, failed_requirement_id, created_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        identity_key, requirement_hash, verdict, reason, failed_requirement_id,
+        evidence_hash, qualification_json, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(identity_key, requirement_hash) DO UPDATE SET
         verdict = excluded.verdict,
         reason = excluded.reason,
         failed_requirement_id = excluded.failed_requirement_id,
+        evidence_hash = excluded.evidence_hash,
+        qualification_json = excluded.qualification_json,
         created_at = excluded.created_at,
         expires_at = excluded.expires_at
     `,
-    );
-    stmt.run(
+    ).run(
       identityKey,
       requirementHash,
       verdict,
       reason || null,
       failedRequirementId || null,
-      nowIso,
-      expiresIso,
+      evidenceHash || null,
+      qualification ? JSON.stringify(qualification) : null,
+      now.toISOString(),
+      expires.toISOString(),
     );
   } catch (err) {
     console.warn("[db] Failed to upsert candidate verdict:", err);
@@ -2715,23 +2768,165 @@ export function upsertCandidateVerdict(input: {
 export function getCandidateVerdict(
   identityKey: string,
   requirementHash: string,
-): { verdict: string; reason?: string; failedRequirementId?: string } | null {
+  now = new Date(),
+): {
+  verdict: string;
+  reason?: string;
+  failedRequirementId?: string;
+  evidenceHash?: string;
+  qualification?: Record<string, any>;
+} | null {
   if (!identityKey || !requirementHash) return null;
   try {
-    const db = getLeadsDb();
-    const nowIso = new Date().toISOString();
-    const stmt = getCachedStatement(
-      db,
+    const row = getCachedStatement(
+      getLeadsDb(),
       `
-      SELECT verdict, reason, failed_requirement_id as failedRequirementId
+      SELECT verdict, reason, failed_requirement_id AS failedRequirementId,
+             evidence_hash AS evidenceHash, qualification_json AS qualificationJson
       FROM candidate_verdicts
       WHERE identity_key = ? AND requirement_hash = ? AND expires_at > ?
     `,
-    );
-    const row = stmt.get(identityKey, requirementHash, nowIso) as
-      | { verdict: string; reason?: string; failedRequirementId?: string }
+    ).get(identityKey, requirementHash, now.toISOString()) as
+      | { verdict: string; reason?: string; failedRequirementId?: string; evidenceHash?: string; qualificationJson?: string }
       | undefined;
-    return row || null;
+    if (!row) return null;
+    let qualification: Record<string, any> | undefined;
+    try {
+      qualification = row.qualificationJson ? JSON.parse(row.qualificationJson) : undefined;
+    } catch {}
+    return {
+      verdict: row.verdict,
+      reason: row.reason || undefined,
+      failedRequirementId: row.failedRequirementId || undefined,
+      evidenceHash: row.evidenceHash || undefined,
+      qualification,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export type StoredCompanyProfile = {
+  companyKey: string;
+  companyName: string;
+  businessModel: string;
+  industry: string;
+  primaryOffering: string;
+  evidenceQuote: string;
+  quoteVerified: boolean;
+  sourceLength: number;
+};
+
+const normalizeCompanyKey = (key: string) => String(key || "").trim().toLowerCase();
+const addDaysIso = (now: Date, days: number) => new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+
+export function upsertCompanyProfile(profile: StoredCompanyProfile, ttlDays = 90, now = new Date()): void {
+  const key = normalizeCompanyKey(profile.companyKey);
+  if (!key) return;
+  try {
+    getCachedStatement(
+      getLeadsDb(),
+      `
+      INSERT INTO company_profiles (
+        company_key, company_name, business_model, industry, primary_offering, evidence_quote,
+        quote_verified, source_length, updated_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(company_key) DO UPDATE SET
+        company_name = excluded.company_name,
+        business_model = excluded.business_model,
+        industry = excluded.industry,
+        primary_offering = excluded.primary_offering,
+        evidence_quote = excluded.evidence_quote,
+        quote_verified = excluded.quote_verified,
+        source_length = excluded.source_length,
+        updated_at = excluded.updated_at,
+        expires_at = excluded.expires_at
+    `,
+    ).run(
+      key,
+      profile.companyName || key,
+      profile.businessModel,
+      profile.industry || "",
+      profile.primaryOffering || "",
+      profile.evidenceQuote || "",
+      profile.quoteVerified ? 1 : 0,
+      Math.max(0, Math.floor(profile.sourceLength || 0)),
+      now.toISOString(),
+      addDaysIso(now, ttlDays),
+    );
+  } catch (err) {
+    console.warn("[db] Failed to upsert company profile:", err);
+  }
+}
+
+export function getCompanyProfile(companyKey: string, now = new Date()): StoredCompanyProfile | null {
+  const key = normalizeCompanyKey(companyKey);
+  if (!key) return null;
+  try {
+    const row = getCachedStatement(
+      getLeadsDb(),
+      `SELECT company_key, company_name, business_model, industry, primary_offering, evidence_quote,
+              quote_verified, source_length
+       FROM company_profiles WHERE company_key = ? AND expires_at > ?`,
+    ).get(key, now.toISOString()) as Record<string, any> | undefined;
+    if (!row) return null;
+    return {
+      companyKey: row.company_key,
+      companyName: row.company_name,
+      businessModel: row.business_model,
+      industry: row.industry || "",
+      primaryOffering: row.primary_offering,
+      evidenceQuote: row.evidence_quote,
+      quoteVerified: Number(row.quote_verified) === 1,
+      sourceLength: Number(row.source_length || 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function upsertCompanyAttributionVerdict(
+  companyKey: string,
+  requirementHash: string,
+  result: Record<string, any>,
+  sourceLength: number,
+  ttlDays = 30,
+  now = new Date(),
+): void {
+  const key = normalizeCompanyKey(companyKey);
+  if (!key || !requirementHash) return;
+  try {
+    getCachedStatement(
+      getLeadsDb(),
+      `
+      INSERT INTO company_attribution_verdicts (company_key, requirement_hash, result_json, source_length, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(company_key, requirement_hash) DO UPDATE SET
+        result_json = excluded.result_json,
+        source_length = excluded.source_length,
+        expires_at = excluded.expires_at
+    `,
+    ).run(key, requirementHash, JSON.stringify(result), Math.max(0, Math.floor(sourceLength || 0)), addDaysIso(now, ttlDays));
+  } catch (err) {
+    console.warn("[db] Failed to upsert company attribution verdict:", err);
+  }
+}
+
+export function getCompanyAttributionVerdict(
+  companyKey: string,
+  requirementHash: string,
+  now = new Date(),
+): { result: Record<string, any>; sourceLength: number } | null {
+  const key = normalizeCompanyKey(companyKey);
+  if (!key || !requirementHash) return null;
+  try {
+    const row = getCachedStatement(
+      getLeadsDb(),
+      `SELECT result_json, source_length FROM company_attribution_verdicts
+       WHERE company_key = ? AND requirement_hash = ? AND expires_at > ?`,
+    ).get(key, requirementHash, now.toISOString()) as { result_json: string; source_length: number } | undefined;
+    if (!row) return null;
+    return { result: JSON.parse(row.result_json), sourceLength: Number(row.source_length || 0) };
   } catch {
     return null;
   }

@@ -165,23 +165,13 @@ export type CandidateOutcome = {
   reason?: string;
 };
 
-export const FINALIST_JUDGE_SYSTEM_PROMPT = `You are a senior B2B sales intelligence evaluator. Assess each candidate's fit for the role described in the prospect contract.
+export const FINALIST_JUDGE_SYSTEM_PROMPT = `You are a senior B2B sales intelligence evaluator. Assess each candidate's fit for the prospect contract. Apply the same rules to every industry, role and country.
 
 CORE RULES:
-1. Evaluate semantic fit, not exact keyword matching. Real B2B profiles rarely use the exact same phrasing as a search query.
-2. LOCATION equivalence (always apply):
-   - Any city, state, metro area, or region that is physically inside the target country = PASS
-   - "San Francisco CA", "New York", "Boston", "United States", "US", "U.S.", "America" all satisfy "USA"
-   - UK / United Kingdom / England / Scotland / London all satisfy "UK"
-3. ROLE & OWNERSHIP equivalence:
-   - "Founder", "Co-Founder", "Proprietor", "Owner", "Managing Partner", "Managing Director", "Principal", "CEO", "President" satisfy executive leadership and ownership requirements for agencies and businesses.
-   - When a brief seeks agency owners/founders (e.g. "owner/founder", "agency owner", "founder or CEO"), verified Founders, Co-Founders, Owners, CEOs, and Managing Directors of the firm satisfy the person_role requirement.
-4. COMPANY TYPE & CLIENT SERVICES vs SOFTWARE PRODUCTS:
-   - "AI agency", "AI consultancy", "AI services firm", "AI studio", "AI marketing agency", "AI integrator" satisfy an AI agency requirement.
-   - When the contract specifies agencies, consultancies, studios, integrators, or client services: the candidate's firm MUST be a client-services business.
-   - Software products, SaaS platforms, consumer apps, B2C mobile apps (e.g. personal trainer apps, habit trackers, consumer utilities), developer tools, and tech vendor platforms do NOT satisfy an agency requirement. Mark status: "fail" for company_type.
-   - Non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI, etc.) and individual contributor roles (Staff/Principal Engineer, Product Manager) do NOT satisfy agency owner/founder requirements. Mark status: "fail".
-   - ABSENCE OF EVIDENCE IS NOT A FAIL FOR COMPANY TYPE/INDUSTRY: If a candidate's snippet only shows their title and company name (or a brief bio) without describing the company's business model in detail, and does NOT explicitly show a disqualifying model (such as a SaaS product, consumer app, university, government body, or Big Tech employer), you MUST mark company_type / company_industry as "unknown", NEVER "fail".
+1. Evaluate semantic fit, not exact keyword matching. Real profiles rarely use the exact phrasing of a search brief.
+2. LOCATION equivalence: a city, state, province, metro area or region inside the required country or region satisfies it (e.g. "Lyon" satisfies "France", "Lagos" satisfies "Nigeria"). Country abbreviations and demonyms are equivalent to the country name.
+3. ROLE equivalence: titles that hold the same function and seniority in the candidate's industry and country satisfy a role requirement (e.g. "Head of Procurement" and "Procurement Director"). A junior, assistant or deputy variant of a role does not satisfy the senior role, and a person who assists an executive does not hold that executive's role.
+4. COMPANY TYPE & INDUSTRY: a company_type or company_industry requirement passes when the evidence shows the candidate's current employer operates in that category or an obvious sub-category. It fails only when the evidence explicitly shows a different kind of organization (e.g. the employer sells software to hospitals when the contract requires hospitals). If the evidence names the employer but does not describe what it does, mark the requirement "unknown", never "fail".
 5. EVIDENCE rules:
    - For every hard requirement with status "pass", you MUST populate evidenceId (the [eN] tag of the evidence block containing the proof) and evidenceQuote (a short verbatim quote from that evidence, 5-40 words, that supports the verdict).
    - For soft/signal requirements, evidenceId and evidenceQuote are optional.
@@ -189,11 +179,11 @@ CORE RULES:
    - "fail" is used ONLY when evidence explicitly contradicts a hard requirement.
 6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
 7. SIGNAL & SOFT REQUIREMENTS:
-   - For soft/ranking signal requirements (e.g. specific tooling like n8n, hiring triggers, client delivery bottlenecks): assign status "pass" if evidence demonstrates or mentions it, "fail" if explicitly contradicted, or "unknown" if evidence lacks mention.
+   - For soft/ranking signal requirements (e.g. a named tool, a hiring trigger, an expansion, a stated pain point): assign status "pass" if evidence demonstrates or mentions it, "fail" if explicitly contradicted, or "unknown" if evidence lacks mention.
    - Failing or unknown soft requirements do NOT trigger hard_fail.
 8. SCORING SCALE & INTENT CALIBRATION:
    - For semanticFit, authorityFit, and evidenceConfidence, return a score on a 1 to 10 scale (where 10 = perfect match, 8-9 = strong match, 6-7 = good match, 4-5 = moderate match, 1-3 = weak match).
-   - When soft/intent requirements (e.g. tooling, specific pain points) are present in the contract, a candidate who satisfies identity (e.g. agency owner) but has ZERO evidence for the soft/intent requirements MUST be rated moderate (semanticFit 4-6), NOT high (8-10). Reserve 8-10 for candidates who demonstrate both identity AND intent/tooling alignment.
+   - When soft/intent requirements are present in the contract, a candidate who satisfies identity but has ZERO evidence for them MUST be rated moderate (semanticFit 4-6), NOT high (8-10). Reserve 8-10 for candidates who demonstrate both identity AND intent alignment.
 9. PROPORTIONAL REASONING & STRUCTURED OUTPUT: Keep internal reasoning focused on verifying each candidate's evidence against the contract requirements, then emit the JSON judgment block.`;
 
 const clampEnvInt = (
@@ -325,7 +315,7 @@ export function buildFinalistJudgePrompt(
     .join("\n\n");
   const isAgencyBrief = isAgencyContract(contract);
   const agencyGuidance = isAgencyBrief
-    ? `\nClient Services vs Software Products: The contract requires a client-services firm (agency/consultancy/studio/integrator). Pure software products, SaaS platforms, consumer apps, Big Tech employees, and IC roles FAIL company_type or person_role with status: 'fail'.\n`
+    ? `\nCLIENT-SERVICES BRIEF: The contract requires a client-services firm (agency, consultancy, studio or integrator). "AI agency", "AI consultancy", "AI services firm", "AI studio" and "AI integrator" are equivalent descriptions. Pure software products, SaaS platforms, consumer apps, employees of large technology companies (Microsoft, Google, Meta, Apple, Amazon, OpenAI) and individual-contributor roles (Staff/Principal Engineer, Product Manager) FAIL company_type or person_role with status "fail".\n`
     : '';
 
   let tasteDemonstrations = "";

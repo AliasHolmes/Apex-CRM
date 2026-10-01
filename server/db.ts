@@ -2630,14 +2630,15 @@ export function computeRequirementsFingerprint(
     .slice(0, 16);
 }
 
-export function upsertCandidateVerdict(
-  identityKey: string,
-  requirementHash: string,
-  verdict: "hard_fail" | "soft_fail" | "pass",
-  reason?: string,
-  failedRequirementId?: string,
-  ttlDays: number = 30,
-): void {
+export function upsertCandidateVerdict(input: {
+  identityKey: string;
+  requirementHash: string;
+  verdict: "hard_fail" | "pass";
+  reason?: string;
+  failedRequirementId?: string;
+  ttlDays?: number;
+}): void {
+  const { identityKey, requirementHash, verdict, reason, failedRequirementId, ttlDays = 30 } = input;
   if (!identityKey || !requirementHash) return;
   try {
     const db = getLeadsDb();

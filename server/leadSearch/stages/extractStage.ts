@@ -6,6 +6,7 @@ import {
   computeRequirementsFingerprint,
   getCandidateVerdict,
 } from "../../db.js";
+import { candidateVerdictKeyForUrl, isCacheableFingerprint } from "../candidateVerdicts.js";
 import {
   chunkBrightDataBatchItems,
   scrapeBatchAsMarkdown,
@@ -310,8 +311,9 @@ export async function executeExtractStage(
     }
 
     // b) Check candidate verdict cache (cross-session negative memory)
-    const candidateIdentity = identityKey || handleKey;
-    if (candidateIdentity && reqFingerprint) {
+    const candidateIdentity =
+      candidateVerdictKeyForUrl(effectiveUrl) || candidateVerdictKeyForUrl(rawUrl);
+    if (candidateIdentity && isCacheableFingerprint(reqFingerprint)) {
       const cachedVerdict = getCandidateVerdict(candidateIdentity, reqFingerprint);
       if (cachedVerdict?.verdict === "hard_fail") {
         stats.cachedDisqualifications = (stats.cachedDisqualifications || 0) + 1;

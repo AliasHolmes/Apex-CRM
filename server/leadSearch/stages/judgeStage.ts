@@ -24,10 +24,7 @@ import {
   computeRequirementsFingerprint,
   upsertCandidateVerdict,
 } from "../../db.js";
-import {
-  canonicalLinkedInIdentity,
-  getLinkedInHandle,
-} from "../../../src/utils/leadDedupe.js";
+import { candidateVerdictKey, isCacheableFingerprint } from "../candidateVerdicts.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { ProspectContract } from "../prospectContract.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -248,6 +245,7 @@ export async function evaluateIncrementalJudgeBatches(
     candidate: FinalistCandidate,
     status: FinalistOutcomeStatus | undefined,
     failedReqIds: string[],
+    source: "llm" | "deterministic",
   ) => {
     for (const reqId of failedReqIds) {
       if (reqId) {
@@ -256,16 +254,18 @@ export async function evaluateIncrementalJudgeBatches(
       }
     }
 
-    if (status === "hard_fail" && reqFingerprint) {
-      const lead = candidate.lead;
-      const url = lead?.profileUrl || lead?.canonicalUrl || lead?.url || (candidate as any).url;
-      const identityKey = canonicalLinkedInIdentity(url) || (url ? `url:${url}` : "");
-      const handle = getLinkedInHandle(url);
-      const key = identityKey || (handle ? `linkedin:${handle}` : "");
+    // Only LLM verdicts are remembered across sessions: a regex triage mistake must
+    // not hide a candidate for 30 days.
+    if (status === "hard_fail" && source === "llm" && isCacheableFingerprint(reqFingerprint)) {
+      const key = candidateVerdictKey(candidate.lead);
       if (key) {
-        const reason = lead?.qualification?.reason || lead?.judgmentInsight?.reason || "Disqualified by finalist judge";
-        const firstFailedReqId = failedReqIds[0];
-        upsertCandidateVerdict(key, reqFingerprint, "hard_fail", reason, firstFailedReqId);
+        upsertCandidateVerdict({
+          identityKey: key,
+          requirementHash: reqFingerprint,
+          verdict: "hard_fail",
+          reason: judgmentInsights.get(candidate.candidateId)?.reason || "Disqualified by finalist judge",
+          failedRequirementId: failedReqIds[0],
+        });
       }
     }
 
@@ -323,7 +323,7 @@ export async function evaluateIncrementalJudgeBatches(
     const roleReqIds = contract.requirements
       .filter((r) => r.scope === "person_role")
       .map((r) => r.id);
-    recordCandidateJudgeOutcome(candidate, "hard_fail", roleReqIds);
+    recordCandidateJudgeOutcome(candidate, "hard_fail", roleReqIds, "deterministic");
   }
 
   if (triageRejected.length > 0) {
@@ -567,7 +567,7 @@ export async function evaluateIncrementalJudgeBatches(
             }
           }
         }
-        recordCandidateJudgeOutcome(candidate, ins?.status, failedReqIds);
+        recordCandidateJudgeOutcome(candidate, ins?.status, failedReqIds, "llm");
       }
 
       const successfulAttempt = judgeAttempts.find((a) => a.status === "success");
@@ -762,7 +762,7 @@ export async function evaluateIncrementalJudgeBatches(
             (r) => r.scope === "company_type" || r.scope === "company_industry",
           )
           .map((r) => r.id);
-        recordCandidateJudgeOutcome(candidate, "hard_fail", companyReqIds);
+        recordCandidateJudgeOutcome(candidate, "hard_fail", companyReqIds, "deterministic");
       } else {
         activeWaveCandidates.push(candidate);
       }

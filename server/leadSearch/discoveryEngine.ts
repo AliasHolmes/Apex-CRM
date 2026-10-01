@@ -55,6 +55,7 @@ import {
   type LeadSourceProvider,
 } from "./scoring.js";
 import { SignalStore } from "./signalStore.js";
+import { DEFAULT_DECISION_MAKER_ROLES } from "./defaultRoles.js";
 import {
   toLinkedInSearchQuery,
   type QueryRunStats,
@@ -1403,7 +1404,7 @@ export async function executeDiscoverySession(
           const baseRoles =
             roleTerms.length > 0
               ? roleTerms
-              : ["founder", "CEO", "owner", "managing director"];
+              : [...DEFAULT_DECISION_MAKER_ROLES];
 
           const locTerms = (contract?.requirements || [])
             .filter((r: any) => r.scope === "person_location")

@@ -342,6 +342,7 @@ import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, type ProspectContract } from 
 import { looksLikeCompanyHint } from "./observations.js";
 import { normalizeTavilyCountry } from "../services/llm.js";
 import { resolveGeo } from "./queryUnderstanding.js";
+import { DEFAULT_DECISION_MAKER_ROLES } from "./defaultRoles.js";
 
 export const COUNTRY_TO_TAVILY_CODE: Record<string, string> = {
   UK: "united kingdom",
@@ -369,7 +370,7 @@ export const buildFallbackQueryPlan = (
   const effectiveSpec = spec || buildFallbackSearchSpec(query);
   const titles = effectiveSpec.person.includeTitles.length
     ? effectiveSpec.person.includeTitles
-    : ["founder", "owner", "CEO", "managing partner"];
+    : [...DEFAULT_DECISION_MAKER_ROLES];
   // G24: derive the signal term from intentSpec/signal requirements, not the
   // whole brief (which duplicates the brief into the query and blows the bound).
   const specSignal = (effectiveSpec.signals.include || []).find(s => s && s.trim().length >= 2 && s.trim().length <= 40)
@@ -426,7 +427,7 @@ export const buildFallbackQueryPlan = (
 
   const plans: SearchQueryPlanItem[] = [
     {
-      query: `${cleanTopic} ${titles[0] || "founder"}${geoSuffix}`.trim(),
+      query: `${cleanTopic} ${titles[0] || DEFAULT_DECISION_MAKER_ROLES[0]}${geoSuffix}`.trim(),
       family: "persona_title",
       intent: "find_decision_makers",
       expectedSignal: "Decision-maker profiles",

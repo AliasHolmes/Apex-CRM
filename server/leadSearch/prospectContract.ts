@@ -4,6 +4,7 @@ import type { IntentSignalSpec } from './intentSignals.js';
 import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
 import { aliasIncludes } from './aliasMap.js';
+import { DEFAULT_DECISION_MAKER_ROLES, singularizeRole } from './defaultRoles.js';
 
 // Bumped to v9 to invalidate pre-upgrade cached contracts and enforce fresh intelligence compilation
 export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v9';
@@ -723,12 +724,35 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
   // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
   const ROLE_ALT = 'owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|heads?';
+  // Business functions ("procurement directors", "sales VPs") belong to the role, not the company type.
+  const FUNCTION_ALT = 'procurement|purchasing|sales|marketing|growth|engineering|operations|finance|financial|hr|human resources|people|talent|it|information technology|product|supply chain|logistics|legal|compliance|security|data|analytics|customer success|revenue|partnerships|business development|research|clinical|nursing|medical|quality|facilities|training|learning|risk|treasury|tax|audit|communications|design|innovation|digital|strategy';
+  const FUNCTIONAL_AREA_PATTERN = new RegExp(`^(?:${FUNCTION_ALT})$`, 'i');
+  const functionalRoleMatch =
+    clean(brief).match(new RegExp(`\\b(?:${FUNCTION_ALT})\\s+(?:${ROLE_ALT}|managers?|leads?|officers?|buyers?)\\b`, 'i'))?.[0] || '';
   const prepCompanyMatch = clean(brief).match(new RegExp(`\\b(?:${ROLE_ALT})\\b\\s+(?:of|at|in|for)\\s+(?:an?\\s+)?([^,.]+?)(?=\\s+(?:with|in|near|from|located|who|having|\\d+|,|\\.|$))`, 'i'))?.[1]?.trim() || '';
 
   // Pattern B: Direct Prefix "[Company Type] [Role]"
   // e.g. "AI agency owner" -> "AI agency"
   const rawPrefixMatch = clean(brief).match(new RegExp(`\\b([^,.]+?)\\s+(?:${ROLE_ALT})\\b`, 'i'))?.[1]?.trim() || '';
-  const prefixCompanyMatch = rawPrefixMatch.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
+  const prefixCompanyCandidate = rawPrefixMatch.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
+  const prefixCompanyMatch = FUNCTIONAL_AREA_PATTERN.test(prefixCompanyCandidate) ? '' : prefixCompanyCandidate;
+
+  // Open-vocabulary role: "<role phrase> at|of|in|for <organizations>" for any title,
+  // used only when no known role word matched (engineers, nurses, buyers, principals).
+  const OPEN_ROLE_STOP = /\b(?:companies|company|firms?|startups?|agencies|businesses|organizations?|brands?)\b/i;
+  const briefBody = clean(brief).replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
+  const openRoleMatch =
+    briefBody.match(/^(.{2,60}?)\s+(?:at|of|in|for|from|working\s+at|employed\s+at|who)\s+/i)?.[1]?.trim() || '';
+  const openRolePhrase =
+    openRoleMatch &&
+    openRoleMatch.split(/\s+/).length <= 5 &&
+    !OPEN_ROLE_STOP.test(openRoleMatch) &&
+    isCleanRequirementTerm(openRoleMatch)
+      ? openRoleMatch
+      : '';
+  const openCompanyMatch = openRolePhrase
+    ? briefBody.match(/\s(?:at|of|for)\s+(?:an?\s+)?([^,.]+?)(?=\s+(?:in|near|from|located|with|who|having)\b|[,.]|$)/i)?.[1]?.trim() || ''
+    : '';
 
   // Pattern C: Headcount / Employee size
   // e.g. "with 5-50 employees"
@@ -742,19 +766,30 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   // Consolidate all hinted/extracted roles into a unified person_role requirement
   // with an any_of match rule so candidates with any qualifying executive title
   // (e.g. founder, CEO, owner, managing director) qualify without conjunction failures.
-  const combinedRoleTerms = unique([
+  const knownRoleTerms = unique([
+    ...(functionalRoleMatch ? [functionalRoleMatch, singularizeRole(functionalRoleMatch)] : []),
     ...(professionMatch && ownerMatch ? [`${professionMatch} ${ownerMatch}`, `${professionMatch} owner`, `${professionMatch} founder`] : []),
     ...(professionMatch ? [professionMatch, professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`] : []),
     ...(spec?.person?.includeTitles || []),
     ...hintedRoles,
     ...(ownerMatch ? ['owner', 'owners', 'firm owner', 'firm owners'] : []),
   ]);
+  const combinedRoleTerms = knownRoleTerms.length > 0
+    ? knownRoleTerms
+    : openRolePhrase
+      ? unique([openRolePhrase, singularizeRole(openRolePhrase)])
+      : [];
 
   if (combinedRoleTerms.length > 0) {
     const accepted = expandAcceptableTerms('person_role', combinedRoleTerms, { agencyBrief });
-    const sourcePhrase = professionMatch
-      ? (ownerMatch ? `${professionMatch} ${ownerMatch}` : professionMatch)
-      : ownerMatch || (hintedRoles[0] || (spec?.person?.includeTitles?.[0] || 'executive'));
+    const sourcePhrase =
+      functionalRoleMatch ||
+      (professionMatch ? (ownerMatch ? `${professionMatch} ${ownerMatch}` : professionMatch) : '') ||
+      ownerMatch ||
+      hintedRoles[0] ||
+      openRolePhrase ||
+      spec?.person?.includeTitles?.[0] ||
+      'executive';
     const reqClass = classifyRequirement('person_role', 'hard', sourcePhrase);
     const hardness = assignQueryHardness(reqClass);
     requirements.push({
@@ -806,9 +841,14 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     const rawPrefix = segment.match(new RegExp(`\\b([^,.]+?)\\s+(?:${ROLE_ALT})\\b`, 'i'))?.[1]?.trim();
     const prefix = rawPrefix ? rawPrefix.replace(ACTION_VERB_PREFIX_PATTERN, '').trim() : '';
     const cleanSegment = segment.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
-    if (prefix) {
+    if (prefix && !FUNCTIONAL_AREA_PATTERN.test(prefix)) {
       addCompanyType(prefix);
-    } else if (cleanSegment && !roleStopRegex.test(cleanSegment)) {
+    } else if (
+      cleanSegment &&
+      !prefix &&
+      !roleStopRegex.test(cleanSegment) &&
+      !(openRolePhrase && cleanSegment.toLowerCase().startsWith(openRolePhrase.toLowerCase()))
+    ) {
       // Guard: skip segments that look like bare location names (already captured by rawLocMatch)
       const isLikelyLocation =
         extractedLocations.some(
@@ -822,6 +862,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     }
   }
 
+  if (openCompanyMatch) addCompanyType(openCompanyMatch);
   const primaryCompanyType = extractedCompanyTypes[0] || prefixCompanyMatch || prepCompanyMatch || firmMatch;
   if (primaryCompanyType && isCleanCompanyTypeTerm(primaryCompanyType)) {
     addWithAlternatives('company_type', primaryCompanyType, extractedCompanyTypes);
@@ -1084,7 +1125,7 @@ export function buildContractFallbackQueries(
   // Extract single roles (e.g. founder, owner, CEO, managing director)
   const roleReqs = requirements.filter(r => r.scope === 'person_role');
   const extractedRoles = unique(roleReqs.flatMap(r => r.acceptableTerms || []));
-  const defaultRoles = ['founder', 'owner', 'CEO', 'managing director'];
+  const defaultRoles = [...DEFAULT_DECISION_MAKER_ROLES];
   const roles = extractedRoles.length > 0 ? extractedRoles : defaultRoles;
 
   // Extract single locations / geos / metros. Zero default-invention:

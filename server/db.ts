@@ -2530,72 +2530,109 @@ export function markLeadReviewed(
 }
 
 export interface PastUserDecision {
-  name: string;
-  title: string;
-  company: string;
-  verdict: 'ACCEPTED' | 'REJECTED';
-  notes?: string;
+  outcome: "KEEP" | "REJECT";
+  title?: string;
+  company?: string;
+  location?: string;
+  userNotes?: string;
   reason?: string;
 }
 
-export function readPastUserDecisions(limit = 10): PastUserDecision[] {
+const ENGINE_BOILERPLATE_NOTE_PREFIXES = [
+  "discovered via",
+  "linkedin-indexed lead",
+  "imported from",
+  "added via csv",
+];
+
+function isEngineBoilerplateNote(note: string): boolean {
+  const lower = note.toLowerCase().trim();
+  return ENGINE_BOILERPLATE_NOTE_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+export function readPastUserDecisions(options: {
+  requirementsFingerprint?: string;
+  domainCluster?: string;
+  limit?: number;
+} = {}): PastUserDecision[] {
+  const { requirementsFingerprint, domainCluster, limit = 10 } = options;
   try {
     const db = getLeadsDb();
-    const rows = db
-      .prepare(`
-        SELECT full_name, company, title, review_status, payload 
-        FROM leads 
-        WHERE review_status IN ('ACCEPTED', 'REJECTED') 
-        ORDER BY updated_at DESC 
-        LIMIT ?
-      `)
-      .all(limit) as Array<{
-        full_name?: string;
-        company?: string;
-        title?: string;
-        review_status?: string;
-        payload?: string;
-      }>;
+    const fetchDecisions = (whereClause: string, params: any[]) => {
+      return db
+        .prepare(`
+          SELECT company, title, review_status, payload
+          FROM leads
+          WHERE review_status IN ('KEEP', 'REJECT')
+            ${whereClause}
+          ORDER BY updated_at DESC
+          LIMIT ?
+        `)
+        .all(...params, limit) as Array<{
+          company?: string;
+          title?: string;
+          review_status?: string;
+          payload?: string;
+        }>;
+    };
+
+    let rows: Array<{ company?: string; title?: string; review_status?: string; payload?: string }> = [];
+    if (requirementsFingerprint && requirementsFingerprint !== "default") {
+      rows = fetchDecisions(
+        "AND json_extract(payload, '$.discoveryRequirementsFingerprint') = ?",
+        [requirementsFingerprint],
+      );
+    }
+    if (rows.length === 0 && domainCluster && domainCluster !== "global") {
+      rows = fetchDecisions(
+        "AND json_extract(payload, '$.domainCluster') = ?",
+        [domainCluster],
+      );
+    }
+    if (rows.length === 0 && (!requirementsFingerprint || requirementsFingerprint === "default")) {
+      rows = fetchDecisions("", []);
+    }
 
     const decisions: PastUserDecision[] = [];
     for (const row of rows) {
       if (!row) continue;
-      let name = (row.full_name || "").trim();
       let title = (row.title || "").trim();
       let company = (row.company || "").trim();
-      let notes = "";
-      let reason = "";
+      let location: string | undefined;
+      let userNotes: string | undefined;
+      let reason: string | undefined;
 
       if (row.payload) {
         try {
           const lead = JSON.parse(row.payload);
-          if (!name) {
-            name = (lead.profile?.fullName || lead.fullName || lead.name || "").trim();
-          }
           if (!title) {
             title = (lead.profile?.currentTitle || lead.currentTitle || lead.title || "").trim();
           }
           if (!company) {
             company = (lead.profile?.currentCompany || lead.currentCompany || lead.company || "").trim();
           }
-          notes = typeof lead.notes === "string" ? lead.notes.trim() : "";
-          reason = typeof lead.qualification?.reason === "string"
+          location = (lead.profile?.location || lead.location || "").trim() || undefined;
+          const rawNotes = typeof lead.notes === "string" ? lead.notes.trim() : "";
+          if (rawNotes && !isEngineBoilerplateNote(rawNotes)) {
+            userNotes = rawNotes;
+          }
+          const rawReason = typeof lead.qualification?.reason === "string"
             ? lead.qualification.reason.trim()
             : typeof lead.whyThisLead === "string"
               ? lead.whyThisLead.trim()
               : "";
+          if (rawReason) reason = rawReason;
         } catch {}
       }
 
-      const verdict = (row.review_status === "ACCEPTED" ? "ACCEPTED" : "REJECTED") as 'ACCEPTED' | 'REJECTED';
-      if (name && (title || company)) {
+      if (title || company) {
         decisions.push({
-          name,
-          title,
-          company,
-          verdict,
-          notes: notes || undefined,
-          reason: reason || undefined,
+          outcome: row.review_status === "KEEP" ? "KEEP" : "REJECT",
+          title: title || undefined,
+          company: company || undefined,
+          location,
+          userNotes,
+          reason,
         });
       }
     }

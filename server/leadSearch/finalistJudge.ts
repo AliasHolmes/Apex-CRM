@@ -4,6 +4,7 @@ import {
   type ProspectContract,
   type ProspectRequirement,
 } from "./prospectContract.js";
+import type { PastUserDecision } from "../db.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import {
   hasStrictStructuredMatch,
@@ -207,18 +208,32 @@ const clampEnvInt = (
     : fallback;
 };
 
+export type BuildFinalistJudgePromptInput = {
+  contract: ProspectContract;
+  candidates: FinalistCandidate[];
+  pastDecisions?: PastUserDecision[];
+};
+
 export function buildFinalistJudgePrompt(
-  contract: ProspectContract,
-  candidates: FinalistCandidate[],
-  pastDecisions?: Array<{
-    name: string;
-    title?: string;
-    company?: string;
-    verdict: string;
-    notes?: string;
-    reason?: string;
-  }>,
+  inputOrContract: ProspectContract | BuildFinalistJudgePromptInput,
+  candidatesArg?: FinalistCandidate[],
+  pastDecisionsArg?: PastUserDecision[],
 ) {
+  const isObjectInput =
+    !Array.isArray(candidatesArg) &&
+    typeof inputOrContract === "object" &&
+    inputOrContract !== null &&
+    "contract" in inputOrContract &&
+    "candidates" in inputOrContract;
+  const contract = isObjectInput
+    ? (inputOrContract as BuildFinalistJudgePromptInput).contract
+    : (inputOrContract as ProspectContract);
+  const candidates = isObjectInput
+    ? (inputOrContract as BuildFinalistJudgePromptInput).candidates
+    : candidatesArg || [];
+  const pastDecisions = isObjectInput
+    ? (inputOrContract as BuildFinalistJudgePromptInput).pastDecisions
+    : pastDecisionsArg;
   const activeRequirements = contract.requirements;
   const requirementText = activeRequirements
     .map(
@@ -315,13 +330,18 @@ export function buildFinalistJudgePrompt(
 
   let tasteDemonstrations = "";
   if (Array.isArray(pastDecisions) && pastDecisions.length > 0) {
-    const examples = pastDecisions.slice(0, 5).map((d) => {
-      const entity = `"${d.name}" (${[d.title, d.company].filter(Boolean).join(" at ")})`;
-      const notePart = d.notes ? ` - User note: "${d.notes}"` : "";
-      const reasonPart = d.reason ? ` - Evaluation: ${d.reason}` : "";
-      return `- [${d.verdict}] ${entity}${notePart}${reasonPart}`;
-    }).join("\n");
-    tasteDemonstrations = `\nUSER TASTE DEMONSTRATIONS (Learn from past user KEEP/REJECT decisions):\n${examples}\nIncorporate these user preferences when resolving ambiguous or borderline candidates.\n`;
+    const examples = pastDecisions.slice(0, 8).map((decision) => {
+      const outcome = decision.outcome === 'KEEP' ? 'KEEP' : 'REJECT';
+      const parts = [
+        decision.title ? `Title: ${decision.title}` : null,
+        decision.company ? `Company: ${decision.company}` : null,
+        decision.location ? `Location: ${decision.location}` : null,
+        decision.userNotes ? `User note: "${decision.userNotes}"` : null,
+        decision.reason ? `Reason: "${decision.reason}"` : null,
+      ].filter(Boolean).join(' | ');
+      return `- [${outcome}] ${parts || 'Candidate profile'}`;
+    }).join('\n');
+    tasteDemonstrations = `\nPAST USER DECISIONS ON SIMILAR SEARCHES (Learn from past user KEEP/REJECT decisions):\n${examples}\nIncorporate these user preferences when resolving ambiguous or borderline candidates.\n`;
   }
 
   return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}${tasteDemonstrations}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. For hard requirements with status "pass", also return evidenceId and a short verbatim evidenceQuote (5-40 words). Return judgments only.`;

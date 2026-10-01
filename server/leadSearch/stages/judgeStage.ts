@@ -27,6 +27,7 @@ import {
 import { candidateVerdictKey, isCacheableFingerprint } from "../candidateVerdicts.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { ProspectContract } from "../prospectContract.js";
+import { deriveContractDomainCluster } from "../adaptiveScheduler.js";
 import type { QueryRunStats } from "../strategist.js";
 import {
   NON_DECISION_MAKER_REGEX,
@@ -376,7 +377,11 @@ export async function evaluateIncrementalJudgeBatches(
     microBatches.push(currentBatch);
   }
 
-  const pastDecisions = readPastUserDecisions(5);
+  const pastDecisions = readPastUserDecisions({
+    requirementsFingerprint: reqFingerprint,
+    domainCluster: deriveContractDomainCluster(contract, config.promptQuery),
+    limit: 6,
+  });
 
   // Chunk micro-batches into waves according to concurrency
   const waves: FinalistCandidate[][][] = [];

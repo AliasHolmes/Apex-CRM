@@ -10,14 +10,26 @@ import {
 import type { ProspectContract } from "./prospectContract.js";
 import { normalizeDomainUrl } from "./siteProbe.js";
 import { cleanCompanyForDomainSearch } from "./companyIntent.js";
-import { getEnrichmentCacheEntry } from "../db.js";
+import {
+  getEnrichmentCacheEntry,
+  computeRequirementsFingerprint,
+  getCompanyProfile,
+  upsertCompanyProfile,
+  getCompanyAttributionVerdict,
+  upsertCompanyAttributionVerdict,
+  type StoredCompanyProfile,
+} from "../db.js";
 
 export type CompanyBusinessModel =
-  | "client_services_agency"
-  | "software_saas"
-  | "e_commerce"
-  | "other_services"
-  | "unrelated";
+  | "b2b_services"
+  | "consumer_services"
+  | "software_product"
+  | "physical_goods"
+  | "retail_ecommerce"
+  | "healthcare_provider"
+  | "financial_services"
+  | "public_education_nonprofit"
+  | "other";
 
 export type CompanyAttributionVerdict =
   | "verified_fit"
@@ -28,12 +40,14 @@ export type CompanyAttributionResult = {
   companyDomain: string;
   companyName: string;
   businessModel: CompanyBusinessModel;
+  industry?: string;
   primaryOffering: string;
   queryAlignment: "matches_brief" | "adjacent" | "contradicts";
   verbatimEvidenceQuote: string;
   verdict: CompanyAttributionVerdict;
   reason: string;
   quoteVerified?: boolean;
+  fromStoredProfile?: boolean;
 };
 
 export const bulkCompanyAttributionSchema = {
@@ -51,7 +65,11 @@ export const bulkCompanyAttributionSchema = {
           },
           businessModel: {
             type: Type.STRING,
-            description: "client_services_agency, software_saas, e_commerce, other_services, or unrelated",
+            description: "b2b_services, consumer_services, software_product, physical_goods, retail_ecommerce, healthcare_provider, financial_services, public_education_nonprofit, or other",
+          },
+          industry: {
+            type: Type.STRING,
+            description: "The company's industry in 2-5 words (e.g. freight forwarding, hospital, dental clinic, AI automation agency)",
           },
           primaryOffering: {
             type: Type.STRING,
@@ -87,24 +105,25 @@ export const bulkCompanyAttributionSchema = {
   required: ["attributions"],
 };
 
-export const COMPANY_ATTRIBUTION_SYSTEM_PROMPT = `You are a senior B2B company intelligence analyst. Evaluate scraped company website evidence against a prospect search brief, and determine the company's true business model and alignment.
+export const COMPANY_ATTRIBUTION_SYSTEM_PROMPT = `You are a B2B company intelligence analyst. Read scraped company evidence and decide what the company is and whether it is the kind of organization the prospect search brief asks for. Apply the same rules to every industry.
 
 RULES:
-1. BUSINESS MODEL CLASSIFICATION:
-   - "client_services_agency": Company provides bespoke client services, marketing, software development, consulting, automation, or creative services for external client accounts.
-   - "software_saas": Company primarily sells a software product, SaaS platform, consumer app, or developer tool.
-   - "e_commerce": Company sells physical or digital products directly (online shop, retail).
-   - "other_services": Professional services not in tech/digital client-services (e.g. private investigation, translation bureau, law firm, real estate, physical construction, packaging manufacturer).
-   - "unrelated": Non-commercial entity, personal portfolio, or unrelated directory.
+1. BUSINESS MODEL: classify the company as one of:
+   - "b2b_services": services delivered to other organizations (agencies, consultancies, law and accounting firms, logistics providers, contractors, staffing).
+   - "consumer_services": services delivered to individuals (salons, gyms, tutoring, personal care).
+   - "software_product": sells software, SaaS, apps or developer tools.
+   - "physical_goods": manufactures or distributes physical products.
+   - "retail_ecommerce": sells goods directly to buyers online or in stores.
+   - "healthcare_provider": hospitals, clinics, practices and care providers.
+   - "financial_services": banks, insurers, lenders, investment and payment firms.
+   - "public_education_nonprofit": government bodies, schools, universities, charities.
+   - "other": anything else.
+   Also give the company's industry in 2-5 words.
 
-2. CONTRADICTION DETECTION:
-   - Read the user search brief to understand what business model is required:
-     * When brief seeks digital agencies or consultancies, but company is an investigation firm, translation service, packaging manufacturer, or consumer shop -> assign verdict: "disqualifying_contradiction".
-     * When brief seeks software/SaaS, but company is a physical service or client-services agency -> assign verdict: "disqualifying_contradiction".
-     * When brief seeks eCommerce/retail, but company is a consultancy or law firm -> assign verdict: "disqualifying_contradiction".
-     * In general: if the company's confirmed business model directly contradicts what the search brief requested, assign verdict: "disqualifying_contradiction".
-   - If the company's business model matches or is strongly adjacent to the brief's target, assign verdict: "verified_fit".
-   - If the source text is too sparse, generic, parked, or inconclusive, assign verdict: "unverified".
+2. ALIGNMENT with the brief's company type and industry requirements:
+   - "verified_fit": the evidence shows the company is the kind of organization the brief asks for (the same industry or an obvious sub-category of it).
+   - "disqualifying_contradiction": the evidence clearly shows a different kind of organization than the brief requires (for example the brief asks for hospitals and the company sells hospital software, or the brief asks for law firms and the company is a legal-tech vendor).
+   - "unverified": the evidence is sparse, generic, parked, or does not say what the company does.
 
 3. QUOTE CITATION:
    - verbatimEvidenceQuote MUST be an EXACT literal substring from the provided company source text. Do NOT paraphrase or invent quotes. If no clear quote exists, leave it empty.
@@ -201,6 +220,7 @@ export type GatedCompanyAttributionOptions = {
   circuitBreaker?: any;
   timeoutMs?: number;
   batchSize?: number;
+  persistentCache?: boolean;
   openAIStructured?: (
     prompt: string,
     schema: any,
@@ -226,6 +246,26 @@ function buildCompanyAttributionCacheKey(
     .join("|")
     .toLowerCase();
   return `${companyKey.toLowerCase()}::${policyKey}::${briefKey}::${reqKey}`;
+}
+
+/**
+ * Stored company facts are brief-independent. Reusing them never decides fit:
+ * the facts become judge evidence and the finalist judge applies the brief.
+ */
+export function attributionFromStoredProfile(profile: StoredCompanyProfile): CompanyAttributionResult {
+  return {
+    companyDomain: profile.companyKey,
+    companyName: profile.companyName,
+    businessModel: profile.businessModel as CompanyBusinessModel,
+    industry: profile.industry,
+    primaryOffering: profile.primaryOffering,
+    queryAlignment: "adjacent",
+    verbatimEvidenceQuote: profile.quoteVerified ? profile.evidenceQuote : "",
+    verdict: "unverified",
+    reason: "Stored company profile reused; fit is decided by the finalist judge.",
+    quoteVerified: profile.quoteVerified,
+    fromStoredProfile: true,
+  };
 }
 
 function applyAttributionToGroup(
@@ -261,11 +301,11 @@ function applyAttributionToGroup(
     if (verdict === "disqualifying_contradiction") {
       lead._autoFailed = true;
       lead._contradictionReason = `Company Attribution: ${attributionResult.reason} (business model: ${attributionResult.businessModel})`;
-    } else if (verdict === "verified_fit") {
+    } else if (verdict === "verified_fit" || attributionResult.fromStoredProfile) {
       const quoteSnippet = quoteValid && citedQuote ? ` Quote: "${citedQuote}".` : "";
       const attrEvidenceItem = {
         id: "e_company_attr",
-        text: `[COMPANY ATTRIBUTION (${verdict}): ${first.domain || first.companyName}] Business Model: ${attributionResult.businessModel}. Offering: ${attributionResult.primaryOffering}.${quoteSnippet} Reason: ${attributionResult.reason}`,
+        text: `[COMPANY ATTRIBUTION (${verdict}): ${first.domain || first.companyName}] Business Model: ${attributionResult.businessModel}.${attributionResult.industry ? ` Industry: ${attributionResult.industry}.` : ""} Offering: ${attributionResult.primaryOffering}.${quoteSnippet} Reason: ${attributionResult.reason}`,
       };
       const existingEvidence = (target.candidate.evidence || []).filter(
         (item) => item?.id !== "e_company_attr",
@@ -335,6 +375,8 @@ export async function runGatedCompanyAttribution(
   }
 
   const useCache = !options.openAIStructured;
+  const usePersistent = options.persistentCache ?? !options.openAIStructured;
+  const requirementHash = computeRequirementsFingerprint(contract.requirements);
   const uniqueCompanyEntries: Array<[string, CandidateTarget[]]> = [];
   for (const [key, groupTargets] of byCompany.entries()) {
     if (useCache) {
@@ -347,6 +389,19 @@ export async function runGatedCompanyAttribution(
           cached.sourceLength >= currentSourceLen)
       ) {
         applyAttributionToGroup(groupTargets, cached.result, result);
+        continue;
+      }
+    }
+    if (usePersistent) {
+      const currentSourceLen = groupTargets[0]?.sourceText.length || 0;
+      const stored = getCompanyAttributionVerdict(key, requirementHash);
+      if (stored && (stored.result.verdict !== "unverified" || stored.sourceLength >= currentSourceLen)) {
+        applyAttributionToGroup(groupTargets, stored.result as CompanyAttributionResult, result);
+        continue;
+      }
+      const profile = getCompanyProfile(key);
+      if (profile && profile.sourceLength >= currentSourceLen) {
+        applyAttributionToGroup(groupTargets, attributionFromStoredProfile(profile), result);
         continue;
       }
     }
@@ -467,7 +522,8 @@ export async function runGatedCompanyAttribution(
         const attributionResult: CompanyAttributionResult = {
           companyDomain: first.domain,
           companyName: first.companyName,
-          businessModel: attr.businessModel || "unrelated",
+          businessModel: (attr.businessModel || "other") as CompanyBusinessModel,
+          industry: String(attr.industry || "").trim(),
           primaryOffering: String(attr.primaryOffering || "").trim(),
           queryAlignment: attr.queryAlignment || "adjacent",
           verbatimEvidenceQuote: quoteValid ? citedQuote : "",
@@ -488,6 +544,23 @@ export async function runGatedCompanyAttribution(
               sourceLength: first.sourceText.length,
             },
           );
+        }
+
+        if (usePersistent) {
+          upsertCompanyAttributionVerdict(key, requirementHash, attributionResult, first.sourceText.length);
+          // Only quote-verified facts are reused across briefs; sparse or fabricated ones are not.
+          if (attributionResult.quoteVerified) {
+            upsertCompanyProfile({
+              companyKey: key,
+              companyName: first.companyName,
+              businessModel: attributionResult.businessModel,
+              industry: attributionResult.industry || "",
+              primaryOffering: attributionResult.primaryOffering,
+              evidenceQuote: attributionResult.verbatimEvidenceQuote,
+              quoteVerified: true,
+              sourceLength: first.sourceText.length,
+            });
+          }
         }
 
         applyAttributionToGroup(groupTargets, attributionResult, result);

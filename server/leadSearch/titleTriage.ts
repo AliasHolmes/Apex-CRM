@@ -19,7 +19,10 @@ export const SUBORDINATE_ROLE_REGEX =
   /\b(?:assistant|secretary|aide|ea|pa)\s+(?:to|for)\b|\bchief\s+of\s+staff\s+to\b|\boffice\s+of\s+the\s+(?:ceo|founder|president|chairman)\b/i;
 
 export const OWNER_OPERATOR_REGEX =
-  /\b(?:independent|solo|freelance|boutique|advisory|principal|managing|founding|lead)\s+(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|lead|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;
+  /\b(?:independent|solo|freelance|boutique|fractional|advisory|principal|managing|founding)\s+(?:[a-z0-9.&+#-]+\s+){0,2}(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;
+
+/** Titles that are individual-contributor roles even when they contain "consultant" or "specialist". */
+export const STRICT_IC_REGEX = /\b(?:intern|student|trainee|apprentice|volunteer|assistant|coordinator|associate|representative|recruiter|talent acquisition|sourcer|staffing|sdr|bdr|sales development|account executive|customer success|support specialist|individual contributor|staff\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|software\s+engineer(?:\s+ii|\s+iii|\s+iv)?|swe|frontend engineer|backend engineer|full stack engineer|data scientist|data analyst|machine learning engineer|ml engineer|devops engineer|site reliability engineer|sre|qa engineer|test engineer|product manager|associate product manager|apm|project manager|scrum master|business analyst|principal\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+product\s+manager|principal\s+architect|principal\s+scientist|research\s+scientist|applied\s+scientist)\b/i;
 
 export const DM_MIN_CONFIDENCE = 4;
 
@@ -103,13 +106,10 @@ export function classifyTitle(
 
   const isIC = NON_DECISION_MAKER_REGEX.test(cleanTitle);
   if (isIC) {
-    // If the only reason it matched was a standalone consultant/specialist (without other strict IC flags like intern/junior/engineer),
-    // and contract didn't forbid it, don't drop at confidence 2 if it could be an independent practitioner
-    if (isAmbiguousConsultantSpecialist) {
-      const strictICRegex = /\b(?:intern|student|trainee|apprentice|volunteer|assistant|coordinator|associate|representative|recruiter|talent acquisition|sourcer|staffing|sdr|bdr|sales development|account executive|customer success|support specialist|individual contributor|staff\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|software\s+engineer(?:\s+ii|\s+iii|\s+iv)?|swe|frontend engineer|backend engineer|full stack engineer|data scientist|data analyst|machine learning engineer|ml engineer|devops engineer|site reliability engineer|sre|qa engineer|test engineer|product manager|associate product manager|apm|project manager|scrum master|business analyst|principal\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+product\s+manager|principal\s+architect|principal\s+scientist|research\s+scientist|applied\s+scientist)\b/i;
-      if (!strictICRegex.test(cleanTitle)) {
-        return { isIC: true, isExecutive: false, confidence: 3 };
-      }
+    // A bare consultant/specialist title is ambiguous: solo practitioners and agency
+    // owners use it as often as employees do, so the semantic judge decides.
+    if (isAmbiguousConsultantSpecialist && !STRICT_IC_REGEX.test(cleanTitle)) {
+      return { isIC: false, isExecutive: false, confidence: 4 };
     }
     return { isIC: true, isExecutive: false, confidence: 2 };
   }

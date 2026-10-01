@@ -1,6 +1,7 @@
 import {
   EXECUTIVE_OVERRIDE_REGEX,
   classifyTitle,
+  STRICT_IC_REGEX,
 } from './titleTriage.js';
 
 export type DecisionMakerVerification = {
@@ -122,8 +123,6 @@ const STOP_WORDS = new Set([
   'looking', 'target', 'prospects', 'companies', 'leads', 'want', 'need'
 ]);
 
-const QUALIFIED_CONSULTANT_PREFIXES = /\b(principal|senior|managing|strategy|technical|security|healthcare|medical|financial|lead|chief)\b/i;
-
 export function verifyDecisionMakerFromEvidence(input: {
   query: string;
   fullName?: string;
@@ -151,8 +150,7 @@ export function verifyDecisionMakerFromEvidence(input: {
   const seniorityPositive = POSITIVE_SENIORITY_PATTERNS.some(pattern => pattern.test(seniorityText));
   const rawWeakMatches = collectMatches(profileIdentityText, WEAK_TITLE_PATTERNS);
   const weakMatches = rawWeakMatches.filter(label => {
-    if (label === 'consultant' && QUALIFIED_CONSULTANT_PREFIXES.test(profileIdentityText)) return false;
-    if (label === 'specialist' && QUALIFIED_CONSULTANT_PREFIXES.test(profileIdentityText)) return false;
+    if ((label === 'consultant' || label === 'specialist') && !STRICT_IC_REGEX.test(profileIdentityText)) return false;
     return true;
   });
   const hasStudentOrgConflict = /\b(student|campus|university|college)\s+(club|organization|society|association)\b/.test(profileIdentityText);

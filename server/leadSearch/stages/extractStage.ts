@@ -153,16 +153,16 @@ export function parseDeterministicLinkedInProfile(
   const rawTitle = cleanSnippetNoise(item?.title || "");
   if (!rawTitle) return null;
 
-  // Strip trailing " | LinkedIn..." or " - LinkedIn..." or " – LinkedIn..."
+  // Strip trailing " | LinkedIn..." or " - LinkedIn..." or " \u2013 LinkedIn..."
   const withoutLinkedIn = rawTitle
-    .replace(/(?:\s+[-–—]|\s*[|·•—])\s*LinkedIn.*$/i, "")
+    .replace(/(?:\s+[-\u2013\u2014]|\s*[|\u00b7\u2022\u2014])\s*LinkedIn.*$/i, "")
     .trim();
   if (!withoutLinkedIn) return null;
 
-  // Split by standard SERP title separators: " - ", " – ", " — ", " | ", " · ", " • "
+  // Split by standard SERP title separators: " - ", " \u2013 ", " \u2014 ", " | ", " \u00b7 ", " \u2022 "
   // Requires whitespace around hyphens so hyphenated words like "Co-Founder" or "Vice-President" are preserved
   const parts = withoutLinkedIn
-    .split(/(?:\s+[-–—]\s+|\s*[|·•—]\s*)/)
+    .split(/(?:\s+[-\u2013\u2014]\s+|\s*[|\u00b7\u2022\u2014]\s*)/)
     .map((p) => p.trim())
     .filter(Boolean);
 
@@ -207,7 +207,7 @@ export function parseDeterministicLinkedInProfile(
   let location: string | undefined;
   const snippet = cleanSnippetNoise(item?.content || item?.raw_content || "");
   const locMatch = snippet.match(
-    /(?:Location:\s*|based in\s+|^)([A-Za-z\s,.-]{3,40}?)(?:\s*\.\s*|\s*·|\s*Experience|\s*Current|\s*Past|\s*Education|$)/i,
+    /(?:Location:\s*|based in\s+|^)([A-Za-z\s,.-]{3,40}?)(?:\s*\.\s*|\s*\u00b7|\s*Experience|\s*Current|\s*Past|\s*Education|$)/i,
   );
   if (locMatch?.[1]) {
     const candidateLoc = locMatch[1].trim();

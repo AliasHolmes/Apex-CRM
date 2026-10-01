@@ -725,11 +725,11 @@ export function computeBriefRelevanceScore(
     if (exactMatch) {
       earnedScore += weight * 9.0;
     } else {
-      const docTokens = new Set(targetText.split(/[\s,./\-|·•_()]+/));
+      const docTokens = new Set(targetText.split(/[\s,./\-|\u00b7\u2022_()]+/));
       let matchedTokens = 0;
       let totalTerms = terms.length;
       for (const term of terms) {
-        const subTokens = term.split(/[\s,./\-|·•_()]+/).filter((t) => t.length > 2);
+        const subTokens = term.split(/[\s,./\-|\u00b7\u2022_()]+/).filter((t) => t.length > 2);
         if (subTokens.some((st) => docTokens.has(st))) {
           matchedTokens++;
         }

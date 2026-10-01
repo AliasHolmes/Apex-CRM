@@ -12,7 +12,7 @@ const testDbPath = path.join(
 process.env.APEX_DB_PATH = testDbPath;
 
 // Import after APEX_DB_PATH is set
-const { getLeadsDb, closeLeadsDb, readLeadsSummary, upsertLeadWithIdentity, deleteLead } =
+const { getLeadsDb, closeLeadsDb, readLeadsSummary, upsertLeadWithIdentity, deleteLead, LATEST_SCHEMA_VERSION } =
   await import("../server/db.js");
 
 test.after(() => {
@@ -25,10 +25,10 @@ test.after(() => {
 });
 
 test("Stream 1: FTS Integrity, Schema v23, and Zero Fan-out Joins", async (t) => {
-  await t.test("Schema version is 23 and company index exists", () => {
+  await t.test("Schema version is current and company index exists", () => {
     const db = getLeadsDb();
     const versionRow = db.prepare("PRAGMA user_version").get() as { user_version: number };
-    assert.equal(versionRow.user_version, 24, "Schema version must be 24");
+    assert.equal(versionRow.user_version, LATEST_SCHEMA_VERSION, "Schema version must match LATEST_SCHEMA_VERSION");
 
     const indexRow = db
       .prepare(

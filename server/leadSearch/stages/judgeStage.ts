@@ -11,7 +11,7 @@ import {
 import {
   openAIStructured,
   DEFAULT_PRIMARY_MODEL,
-  isAtriaPrimary,
+  describeLLMRoute,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -49,6 +49,18 @@ export function computeJudgeDynamicMaxTokens(
   const jsonOutputBudget = safeBatch * perCandidateTokens + 300;
   const reasoningBuffer = hasReasoningModel ? 1500 : 400;
   return Math.min(8000, Math.max(1500, jsonOutputBudget + reasoningBuffer));
+}
+
+/** How many candidates fit one judge call on a provider with a hard output cap. */
+export function computeJudgeBatchCapacity(
+  outputTokenCap: number,
+  requirementCount = 4,
+  hasReasoningModel = false,
+): number {
+  if (!Number.isFinite(outputTokenCap)) return Number.MAX_SAFE_INTEGER;
+  const perCandidate = Math.max(1, requirementCount) * 65 + 60;
+  const overhead = 300 + (hasReasoningModel ? 1500 : 400);
+  return Math.max(1, Math.floor((outputTokenCap - overhead) / perCandidate));
 }
 
 export function isEligibleForSafetyNet(
@@ -354,10 +366,19 @@ export async function evaluateIncrementalJudgeBatches(
   // Dynamic token-weight micro-batching: pack up to ~4,500 evidence tokens per batch (1-12 candidates),
   // or honor FINALIST_JUDGE_MICRO_BATCH_SIZE when explicitly configured.
   const explicitBatchSize = Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 0);
-  const maxBatchCandidates =
+  const configuredMaxBatchCandidates =
     Number.isFinite(explicitBatchSize) && explicitBatchSize > 0
       ? Math.max(1, Math.min(12, Math.floor(explicitBatchSize)))
       : 10;
+  const firstPassRoute = describeLLMRoute("fast");
+  const maxBatchCandidates = Math.min(
+    configuredMaxBatchCandidates,
+    computeJudgeBatchCapacity(
+      firstPassRoute.outputTokenCap,
+      contract?.requirements?.length || 4,
+      firstPassRoute.reasoning,
+    ),
+  );
   const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 4500);
   const judgeConcurrency = Math.max(
     1,
@@ -500,7 +521,7 @@ export async function evaluateIncrementalJudgeBatches(
     const dynamicMaxTokens = computeJudgeDynamicMaxTokens(
       batch.length,
       contract?.requirements?.length || 4,
-      isAtriaPrimary(),
+      describeLLMRoute(depth > 0 ? "reasoning" : "fast").reasoning,
     );
     const estimatedInputTokens = estimateTokenCount(judgePrompt);
 

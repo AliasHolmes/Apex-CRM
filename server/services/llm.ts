@@ -300,6 +300,58 @@ function getConfiguredLLMProviders(): LLMProvider[] {
   );
 }
 
+export const GROQ_MAX_OUTPUT_TOKENS = 950;
+const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i;
+
+export function isReasoningProvider(provider: { id: string; model: string }): boolean {
+  return provider.id === "atria" || REASONING_MODEL_REGEX.test(provider.model);
+}
+
+export function parseFastProviderIds(raw?: string): string[] {
+  return String(raw || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * The "fast" tier only reorders when the user names fast providers
+ * (LLM_FAST_PROVIDER_IDS). Otherwise every tier keeps the configured priority.
+ */
+export function orderProvidersForTier<T extends { id: string }>(
+  providers: T[],
+  tier: LLMRoutingTier | undefined,
+  fastProviderIds: string[],
+): T[] {
+  if (tier !== "fast" || fastProviderIds.length === 0) return providers;
+  const rank = (provider: T) => {
+    const index = fastProviderIds.indexOf(provider.id);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  };
+  return providers
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => rank(a.provider) - rank(b.provider) || a.index - b.index)
+    .map(({ provider }) => provider);
+}
+
+export function describeLLMRoute(tier?: LLMRoutingTier): {
+  providerId: string | null;
+  reasoning: boolean;
+  outputTokenCap: number;
+} {
+  const first = orderProvidersForTier(
+    getConfiguredLLMProviders(),
+    tier,
+    parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS),
+  )[0];
+  if (!first) return { providerId: null, reasoning: false, outputTokenCap: Number.POSITIVE_INFINITY };
+  return {
+    providerId: first.id,
+    reasoning: isReasoningProvider(first),
+    outputTokenCap: first.id === "groq" ? GROQ_MAX_OUTPUT_TOKENS : Number.POSITIVE_INFINITY,
+  };
+}
+
 export function getLLMProviderSummaries(): LLMProviderSummary[] {
   return getLLMProviderCandidates().map(({ apiKey, headers, ...provider }) => ({
     ...provider,
@@ -1021,24 +1073,11 @@ async function withProviderFallback<T>(
     throw cancelError;
   }
 
-  let providers = getConfiguredLLMProviders();
-  if (executionOptions.routingTier === "fast" || executionOptions.metadata?.stage === "extraction") {
-    providers = [...providers].sort((a, b) => {
-      const aIsReasoning = a.id === "atria";
-      const bIsReasoning = b.id === "atria";
-      if (aIsReasoning && !bIsReasoning) return 1;
-      if (!aIsReasoning && bIsReasoning) return -1;
-      return 0;
-    });
-  } else if (executionOptions.routingTier === "reasoning") {
-    providers = [...providers].sort((a, b) => {
-      const aIsReasoning = a.id === "atria";
-      const bIsReasoning = b.id === "atria";
-      if (aIsReasoning && !bIsReasoning) return -1;
-      if (!aIsReasoning && bIsReasoning) return 1;
-      return 0;
-    });
-  }
+  let providers = orderProvidersForTier(
+    getConfiguredLLMProviders(),
+    executionOptions.routingTier,
+    parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS),
+  );
   if (providers.length === 0) {
     throw new Error(
       "No LLM provider available. Configure ATRIA_API_KEY, OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY in .env.",
@@ -1518,7 +1557,7 @@ async function sendChatCompletion(
   const isByesuTarget = provider.id === "primary";
   const effectiveMaxTokens =
     provider.id === "groq"
-      ? Math.min(options?.maxTokens || 400, 950)
+      ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
       : isAtriaTarget
         ? computeAtriaDynamicMaxTokens(
             options?.maxTokens,
@@ -1549,8 +1588,7 @@ async function sendChatCompletion(
     sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
     sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
   }
-  const isReasoningCapable =
-    /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i.test(provider.model);
+  const isReasoningCapable = REASONING_MODEL_REGEX.test(provider.model);
   const effectiveReasoningEffort =
     options?.reasoningEffort ?? (options?.responseFormat ? "low" : undefined);
   const callStartedAt = Date.now();
@@ -2503,7 +2541,7 @@ export async function openAIStructured<T>(
 
       const retryMaxTokens =
         provider.id === "groq"
-          ? Math.min(options?.maxTokens || 400, 950)
+          ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
           : provider.id === "atria"
             ? Math.max(
                 Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),

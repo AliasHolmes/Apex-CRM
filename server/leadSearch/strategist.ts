@@ -148,6 +148,7 @@ export function toLinkedInSearchQuery(item: SearchQueryPlanItem) {
 }
 
 import type { DatasetFilter, DatasetFilterLeaf } from '../services/brightdata.js';
+import { resolveCountryCode } from './geo.js';
 
 function normalizeCountryToCode(raw: string): string | null {
   if (!raw) return null;
@@ -155,27 +156,7 @@ function normalizeCountryToCode(raw: string): string | null {
   if (trimmed.length === 2 && /^[a-z]{2}$/.test(trimmed)) {
     return trimmed.toUpperCase();
   }
-  const map: Record<string, string> = {
-    "united states": "US",
-    usa: "US",
-    "united kingdom": "GB",
-    uk: "GB",
-    canada: "CA",
-    germany: "DE",
-    france: "FR",
-    israel: "IL",
-    australia: "AU",
-    india: "IN",
-    singapore: "SG",
-    netherlands: "NL",
-    switzerland: "CH",
-    sweden: "SE",
-    spain: "ES",
-    italy: "IT",
-    brazil: "BR",
-    japan: "JP",
-  };
-  return map[trimmed] || null;
+  return resolveCountryCode(trimmed);
 }
 
 export function toDatasetFilter(

@@ -5,6 +5,8 @@ import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
 import { aliasIncludes } from './aliasMap.js';
 import { DEFAULT_DECISION_MAKER_ROLES, singularizeRole } from './defaultRoles.js';
+import { COUNTRY_CANONICAL_MAP } from './geo.js';
+export { COUNTRY_CANONICAL_MAP };
 
 // Bumped to v9 to invalidate pre-upgrade cached contracts and enforce fresh intelligence compilation
 export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v9';
@@ -345,50 +347,6 @@ export const COUNTRY_TO_METROS: Record<string, string[]> = {
   japan: ["Tokyo", "Osaka", "Yokohama"],
   japanese: ["Tokyo", "Osaka", "Yokohama"],
   jp: ["Tokyo", "Osaka", "Yokohama"],
-};
-
-export const COUNTRY_CANONICAL_MAP: Record<string, string> = {
-  usa: 'USA',
-  'united states': 'USA',
-  us: 'USA',
-  'u.s.': 'USA',
-  'u.s.a.': 'USA',
-  america: 'USA',
-  american: 'USA',
-  'united states of america': 'USA',
-  uk: 'UK',
-  'united kingdom': 'UK',
-  britain: 'UK',
-  british: 'UK',
-  'great britain': 'UK',
-  england: 'UK',
-  canada: 'Canada',
-  canadian: 'Canada',
-  australia: 'Australia',
-  australian: 'Australia',
-  au: 'Australia',
-  'new zealand': 'New Zealand',
-  newzealand: 'New Zealand',
-  nz: 'New Zealand',
-  germany: 'Germany',
-  german: 'Germany',
-  france: 'France',
-  french: 'France',
-  netherlands: 'Netherlands',
-  dutch: 'Netherlands',
-  singapore: 'Singapore',
-  ireland: 'Ireland',
-  irish: 'Ireland',
-  spain: 'Spain',
-  spanish: 'Spain',
-  italy: 'Italy',
-  italian: 'Italy',
-  switzerland: 'Switzerland',
-  swiss: 'Switzerland',
-  sweden: 'Sweden',
-  swedish: 'Sweden',
-  japan: 'Japan',
-  japanese: 'Japan',
 };
 
 const expandAcceptableTerms = (

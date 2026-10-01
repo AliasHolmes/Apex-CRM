@@ -110,5 +110,26 @@ The execution model for Phase 5 LinkedIn post SERP research (`linkedinPostIntent
 The persistence rule in `upsertLeadInExistingTransaction` (`server/db.ts`) that protects human-managed CRM state (`stage`, `reviewStatus`, `nextAction`, `notes`) during engine re-persistence. When a discovery session re-encounters an existing lead, objective profile and score fields are refreshed while human workflow fields remain untouched unless `forceOverwrite: true` is explicitly supplied.
 
 ### Binary Outcome Feedback (`lead_outcomes`)
-The closed-loop disposition table (schema v23) recording `positive` (`KEEP`, `VERIFIED`, `CONVERTED`, `CLOSED_WON`, `MEETING BOOKED`, `REPLIED`) and `negative` (`REJECT`, `REJECTED`, `LOST`, `UNQUALIFIED`) transitions. Outcome events update both the global outcome rate boost in `scoreAdaptiveArm` and cluster-scoped `query_performance` counters via top-level `discoveryFamily` and `discoveryLane` attribution.
+The closed-loop disposition table (schema v23/v24 with `scope_key` attribution) recording `positive` (`KEEP`, `VERIFIED`, `CONVERTED`, `CLOSED_WON`, `MEETING BOOKED`, `REPLIED`) and `negative` (`REJECT`, `REJECTED`, `LOST`, `UNQUALIFIED`) transitions. Outcome events update both the global outcome rate boost in `scoreAdaptiveArm` and cluster-scoped `query_performance` counters via top-level `discoveryFamily` and `discoveryLane` attribution.
+
+### Provider-Affinity Dual Concurrency
+The dual-provider concurrency model implemented in `withProviderFallback` (`server/services/llm.ts`). It enforces independent single-request concurrency limits per provider (`ATRIA_CONCURRENT_SLOTS=1` and `BYESU_CONCURRENT_SLOTS=1`). When Atria is idle, requests are dispatched to Atria as the prioritized primary model. If Atria is currently busy processing an in-flight prompt, incoming concurrent tasks overflow to Byesu without blocking or colliding on Atria. This achieves real 2-task parallel execution without tripping provider 429 rate limits or Cloudflare 524 gateway timeouts.
+
+### Dynamic Atria Reasoning Headroom
+The dynamic timeout calculation (`computeAtriaDynamicTimeoutMs`) designed for chain-of-thought models. It elevates the maximum timeout ceiling to 600,000ms (10 minutes) with a 120,000ms floor, scaling dynamically based on input token length (`12ms/tok`) and requested reasoning budget (`15ms/tok`). This prevents complex evaluation prompts from aborting prematurely while the model is thinking.
+
+### Industry-Agnostic Engine
+The generalized discovery architecture (`prospectContract.ts`, `defaultRoles.ts`, `geo.ts`, `scoring.ts`, `adaptiveScheduler.ts`) that removes hardcoded client-services/agency/SaaS constraints. Roles, seniority levels, and business domains are extracted dynamically for any vertical (e.g. healthcare, legal, manufacturing, biotechnology). Agency-specific qualification rules and executive authority scoring apply only when explicitly requested in the user's brief.
+
+### Universal ISO Country Resolution (`geo.ts`)
+The standardized geographic coordinate system utilizing ECMAScript's native `Intl.DisplayNames`. It automatically recognizes and normalizes all 249 ISO 3166-1 alpha-2 countries and regions while guarding against English two-letter pronoun collisions (`us`, `in`, `me`, `am`, `at`), ensuring global brief coverage without synthetic US anchor invention.
+
+### Candidate Verdict Cache (`candidate_verdicts`)
+The persistent SQLite Schema v26 cache storing LLM pass and hard-fail evaluations indexed by canonical LinkedIn identity key (`identity_key`), requirement hash (`requirement_hash`), and evidence hash (`evidence_hash`). When a prospect candidate is re-encountered in subsequent rounds with identical qualification evidence, previous judge determinations are reused in 0ms without re-invoking the judge LLM.
+
+### Company Profile & Attribution Persistence (`company_profiles`, `company_attribution_verdicts`)
+The persistent company taxonomy tables in SQLite Schema v26. `company_profiles` stores verified business models, industry classifications, offerings, and verified evidence quotes for scraped company domains. `company_attribution_verdicts` stores per-brief qualification verdicts, eliminating duplicate LLM company-fit evaluations across multiple candidates from the same organization.
+
+### Cross-Round Retrieval Cache (`retrievalCache.ts`)
+A query-hash-keyed cache layer built on `search_cache` with configurable TTL (`LEAD_RETRIEVAL_CACHE_TTL_DAYS`, default 3 days). Identical search queries (e.g. initial persona or location searches) are retrieved in 0ms from SQLite rather than consuming external search provider credits or network latency.
 

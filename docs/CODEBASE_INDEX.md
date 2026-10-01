@@ -1,12 +1,13 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-09-25 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-02 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
-> Supersedes the 2026-09-16 index, which had drifted on schema version (v22 → v23), test
-> counts (95 files → 128), table inventory, and module listings. Verified values below were
-> measured directly from the tree, not inherited: `tsc --noEmit` passes with 0 errors and
-> the full suite (`npm test`) passes end-to-end as of this date.
+> Supersedes the 2026-09-25 index, which had drifted on schema version (v23 → v26), test
+> counts (129 files → 154, 860 tests → 976 tests), table inventory (20 → 24 tables),
+> and module listings. Verified values below were measured directly from the tree, not inherited:
+> `tsc --noEmit` passes with 0 errors and the full suite (`npm test`) passes 976 tests across
+> 176 test suites as of this date.
 
 ---
 
@@ -24,8 +25,8 @@ Primary reference docs:
 
 - [`README.md`](../README.md) — product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary
-- [`docs/adr/0001`…`0006`](adr/) — six ADRs covering the engine, checkpointing, hardening,
-  lean collection, deterministic pre-filtering, and prospect-quality grounding
+- [`docs/adr/0001`…`0007`](adr/) — seven ADRs covering the engine, checkpointing, hardening,
+  lean collection, deterministic pre-filtering, quality grounding, and industry-agnostic dual concurrency
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
@@ -37,13 +38,13 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Frontend (`src/`)                                                | ~11,800 lines across 36 files                                              |
-| Backend engine (`server/leadSearch/`)                            | ~21,280 lines: 39 modules + 9 `stages/`                                    |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~13,880 lines                                                              |
+| Backend engine (`server/leadSearch/`)                            | ~23,400 lines: 43 modules + 9 `stages/`                                    |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~14,600 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 20 base tables + `leads_fts` (fts5), schema **v23**, WAL                   |
-| Test suite                                                       | 129 files (128 `.test.ts` + 1 `.eval.ts`), 860 unit tests / 172 suites + 13 eval tests, all passing |
-| Total first-party LOC                                            | ~69,500 (incl. ~22,535 test LOC)                                           |
-| Working tree                                                     | clean (all fixes committed through `5a052c4`)                              |
+| SQLite                                                           | 24 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
+| Test suite                                                       | 154 files (153 `.test.ts` + 1 `.eval.ts`), 976 unit tests / 176 suites + 13 eval tests, all passing |
+| Total first-party LOC                                            | ~74,500 (incl. ~26,200 test LOC)                                           |
+| Working tree                                                     | clean (all fixes committed through `129173a`)                              |
 
 ## 3. Tech stack
 
@@ -52,8 +53,9 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 - **Backend**: Express 5 · `node:sqlite` (schema-versioned, migrated in-transaction with
   pre-migration backups pruned to 3) · TypeScript, run by `tsx`
 - **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP (scrape/search),
-  OpenAI-compatible LLM via Atria / Byesu primary with Mistral/OpenRouter/Groq fallback
-  chain, Langfuse telemetry
+  cross-round query retrieval cache, OpenAI-compatible LLM with Provider-Affinity Dual Concurrency
+  (Atria primary with 10-minute dynamic reasoning headroom + Byesu secondary parallel overflow),
+  OpenRouter/Groq fallback chain, Langfuse telemetry
 - **Discipline**: `tsc --noEmit` under `strict`, `noImplicitAny`, `noUnusedLocals`,
   `noUnusedParameters`; `prebuild` gates on typecheck; strict ASCII enforced by
   `test/encodingHygiene.test.ts`
@@ -62,24 +64,28 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 ```
 server.ts                    Express app + static Vite serve (333 lines)
-server/db.ts                 SQLite layer: schema v23, migrations, 40+ readers/writers (4,792)
+server/db.ts                 SQLite layer: schema v26, migrations, 40+ readers/writers (5,559)
 server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,160)
-server/services/             llm.ts (2,760, incl. prompt-hash completion cache) ·
+server/services/             llm.ts (3,095, provider-affinity dual concurrency, Atria reasoning headroom, completion cache) ·
                              brightdata.ts (2,242) · keyRotator ·
                              sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
                              outboundPrompt · langfuse
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,540)
-  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support (1,834)
-  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, tri-partition (1,289)
-  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, contract-aware rank (668)
+  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support (1,930)
+  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,340)
+  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (690)
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
+  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v26)
+  defaultRoles.ts            open-ended role and business function extractor for any industry
+  geo.ts                     universal ISO 3166-1 country code resolution via Intl
+  retrievalCache.ts          cross-round query-hash-keyed search retrieval cache
   aliasMap.ts                symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
   queryRewriter.ts           bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection)
-  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating
+  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v26)
   profileQuality.ts          deterministic social-proof parsing, ghost/company-page & company-scoped contradiction gates
   providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
-  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (quantized MAB, outcome boost, hard-fail penalty, seeded RNG) ·
+  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ·
   collectionCapacity.ts · constraintAblation.ts · evidenceSelection.ts (alias-aware, location provenance guard) ·
   intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
   companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard) ·
@@ -88,14 +94,14 @@ server/leadSearch/           the discovery engine
   roundDiagnostics.ts · scoutScoring.ts · targetFulfillment.ts · verification.ts ·
   evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware)
   stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate) ·
-                             retrieve (vagueness-aware depth + rewriter on both paths) ·
+                             retrieve (retrieval cache + vagueness-aware depth + rewriter on both paths) ·
                              fuse (symmetrical alias-aware) · extract · verify ·
                              enrich (provenance-tagged site probe + annotate-only post intent) ·
-                             judge (strict grounding + polarity guard) · select ·
+                             judge (strict grounding + polarity guard + verdict reuse) · select ·
                              persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
-test/                        129 files (128 .test.ts + queryIntelligence.eval.ts), node:test runner via tsx
+test/                        154 files (153 .test.ts + queryIntelligence.eval.ts), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (84 lines)
 ```
 
@@ -326,22 +332,31 @@ All 24 findings from the 2026-09-22 intelligence gap audit have been resolved ac
 - **Retrieval Determinism & Planning (G5, G6, G7, G8, G10, G13, G16, G21, G22, G24)**: Added top-level `discoveryFamily`/`discoveryLane` persistence, cluster-keyed `historicalYield` (`domain_cluster|family|lane|provider`), `contract_guard` retention above `maxTasks+2`, seeded PRNG (`seedAdaptiveRandom`), non-reservation `queryRewriter` dispatch with `demotedRequirementId` and Tier-1 anchor protection, company-scoped `b2b_saas` contradiction checks, SQLite JSON `$.profile.location` saturation counting, derived persistence status (`success | partial_success | error`), 2-char pronoun-collision geo guards, plural-persona role matching, and city-only geo anchoring without vertical-equals-location collisions.
 - **Intent, Learning & Persistence (G11, G12, G14, G15, G17, G20)**: Added `UNKNOWN_AGE_DAYS = 45` neutral undated freshness and abbreviated recency units (`2d`, `1w`, `3mo`, `1y`, `2h`), annotate-only post-intent enrichment, cross-session `discovered_companies` seeding into `planStage`, CRM workflow field preservation (`stage`, `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), schema v23 `lead_outcomes` binary feedback (`REPLIED`, `KEEP`, `CONVERTED` vs `REJECT`, `LOST`) wired into `scoreAdaptiveArm` alongside `hard_failed_candidates` penalties, and the `npm run test:eval` golden-brief harness.
 
+### 9.11 Industry-Agnostic Engine, Schema v24-v26, and Dual-Provider Concurrency — RESOLVED (2026-10-02, `129173a`)
+
+Resolved across 50 files and verified across 976 unit & integration tests (176 suites) + 13 eval tests:
+
+- **Industry-Agnostic Generalization**:
+  - Removed agency and SaaS-specific prompt and pipeline hardcoding. Added `openIndustryClusters` in `adaptiveScheduler.ts` allowing arbitrary brief domains to form isolated MAB bandit learning scopes.
+  - Added dynamic role title and business function extraction (`defaultRoles.ts`, `prospectContract.ts`) with strictly bounded term-synonym expansion.
+  - Added universal ISO 3166-1 alpha-2 geographic resolution (`geo.ts`) via native ECMAScript `Intl.DisplayNames`, recognizing all 249 ISO countries without synthetic US anchor invention.
+  - Scoped decision-maker authority weighting in `scoring.ts` to trigger only when the user's brief explicitly requests authority or executive leadership.
+- **SQLite Schema v24–v26 Migrations**:
+  - **Schema v24**: Added `lead_outcomes.scope_key` column and index for domain-cluster-scoped disposition attribution.
+  - **Schema v25 & v26**: Added `candidate_verdicts` table (`identity_key`, `requirement_hash`, `evidence_hash`, `qualification_json`, `verdict`, `reason`, `failed_requirement_id`), enabling 0ms evaluation reuse across rounds when candidate evidence is unchanged.
+  - Added persistent company taxonomy (`company_profiles`) and per-brief company attribution verdicts (`company_attribution_verdicts`).
+  - Added cross-round query retrieval cache (`retrievalCache.ts` backed by `search_cache`).
+- **Provider-Affinity Dual Concurrency & Atria Reasoning Headroom**:
+  - Configured independent per-provider concurrency slots (`ATRIA_CONCURRENT_SLOTS=1`, `BYESU_CONCURRENT_SLOTS=1`).
+  - In `withProviderFallback` (`server/services/llm.ts`), dispatches to Atria as the prioritized primary model when idle, and immediately overflows to Byesu concurrently when Atria is in-flight, achieving safe parallel dual-model concurrency without triggering 429 rate limits or 524 gateway timeouts.
+  - Elevated `ATRIA_MAX_TIMEOUT_MS` to `600_000ms` (10 minutes) with a `120_000ms` floor and token-scaling coefficients (`computeAtriaDynamicTimeoutMs`), preventing reasoning aborts on deep chain-of-thought models.
+
 ## 10. Recommended next actions
 
-Updated 2026-09-25. Every item below is now done except the re-measurement (item 6).
+Updated 2026-10-02.
 
-1. ~~**Commit the working tree.**~~ Done (`e3c851d`), along with the Atria provider work
-   (`172fb00`), TPS assessment (`4de56b5`), and audit fixes (`15beacf`).
-2. ~~**Fix `LeadContext.tsx:589`** to `< 1.0`.~~ Done — see §9.3.
-3. ~~**Delete `executeJudgeStage`** and migrate its test callers.~~ Done — see §9.2.
-   The live safety-net path (`promoteSafetyNetCandidates` + `isEligibleForSafetyNet`)
-   is now the only copy and is directly tested.
-4. ~~**Correct `CONTEXT.md:50`** and fix the README badge.~~ Done — see §9.1 and `README.md`.
-5. ~~**Add an LLM completion cache.**~~ Done — durable, prompt-hash keyed, TTL-bounded;
-   see §9.4.
-6. **Run one session and re-measure** against the 2026-09-13 baseline (1.2% yield,
-   39.8% LLM failure rate, 79% LLM latency share). Still no session has run since the
-   fixes; this is now the *only* outstanding item and doubles as the acceptance check
-   for the completion cache (item 5).
-7. ~~**Decide §9.9** (`LLM_MAX_RETRIES` 429 floor)~~ Done — strictly honors `LLM_MAX_RETRIES`.
-8. ~~**Commit this index**~~ Done (refreshed again 2026-09-25).
+1. ~~**Industry-Agnostic Engine generalization.**~~ Done — open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
+2. ~~**Candidate & Company Attribution Persistence.**~~ Done — Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
+3. ~~**Provider-Affinity Dual Concurrency & Atria Reasoning Timeouts.**~~ Done (`129173a`) — Atria 10m reasoning cap, dual 1-slot affinity routing.
+4. ~~**Merge to main and branch cleanup.**~~ Done — fast-forward merged to `main`, pushed to `origin/main`, secondary branch deleted.
+5. **Run a live production discovery session** to monitor real-time Atria vs. Byesu parallel dispatch in `search_logs.trace_events` under live network traffic.

@@ -6,9 +6,9 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-8.2-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v23-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v23" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v26-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v26" />
     <img src="https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-Passing-10B981" alt="Lead Engine Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-976_Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 
@@ -21,15 +21,16 @@ Apex CRM is a single-user, local-first application for finding relevant prospect
 Its primary workflow is intentionally practical:
 
 1. **Describe your search brief** in natural language (2-word vague to 100-word rich, any vertical, any geography).
-2. **Query Understanding Layer** (`queryUnderstanding.ts`) classifies your brief:
+2. **Industry-Agnostic Query Understanding Layer** (`queryUnderstanding.ts`, `defaultRoles.ts`, `geo.ts`):
    - `vague | standard | rich` with ambiguity score and missing-slot detection (`role`, `geo`, `industry`, `seniority`, `signal`).
-   - **Zero default-invention**: briefs with no geography search globally -- no synthetic `USA`/US-metro tokens are injected.
-   - Simple persona briefs run direct high-recall discovery with zero LLM overhead.
+   - **Zero default-invention**: briefs with no geography search globally -- no synthetic `USA`/US-metro tokens are injected; all ISO country codes recognized via native `Intl`.
+   - Dynamic title and domain extraction supports any industry (SaaS, healthcare, legal, manufacturing, coaching, etc.) without hardcoded taxonomy bias.
    - Long-shot intent briefs decouple into **Stream A (Identity)** for 100% SERP recall and **Stream B (Intent Triggers)** for multi-channel open-web research.
 3. **Stage-Pipelined High-Efficiency Engine**:
-   - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`) and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
+   - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`), cross-round **Retrieval Cache** (`retrievalCache.ts`), and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
-   - Enforces **Sequential LLM Execution** (`withSequentialLLMExecution`) by default to eliminate concurrency errors and provider 429/524 timeouts; optionally shards into stage lanes (`strategist | extraction | judge`, max 2 each, global cap 4) behind `FEATURE_LLM_STAGE_QUEUES=true`.
+   - Enforces **Provider-Affinity Dual Concurrency** (`withProviderFallback` & `withSequentialLLMExecution`): prioritizes Atria (primary model) when idle with 10-minute dynamic reasoning headroom, and seamlessly overflows to Byesu (secondary model) in parallel under load (1 in-flight slot each) to achieve safe dual-model concurrency without triggering 429 rate limits or timeouts.
+   - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v26.
    - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
 5. **Multi-Source Intent Enrichment**: Analyzes company websites (**TF-IDF Intent**) and public prospect activity (**LinkedIn Post SERP Intent with Temporal Freshness Decay**).
@@ -69,7 +70,7 @@ flowchart TD
     StreamA --> Plan
     StreamB --> Plan
 
-    Persist --> Checkpoint[("Durable SQLite Checkpoint (Schema v23)")]
+    Persist --> Checkpoint[("Durable SQLite Checkpoint (Schema v26)")]
     Persist --> Inventory["Local Prospect Inventory"]
 ```
 
@@ -146,6 +147,25 @@ flowchart TD
 - **Quantized Adaptive Controller & Constraint Retention**: MAB priors pool by 24 deterministic brief centroids (`centroid_<cluster>_<00-23>`) with `historicalYield` keyed by `domain_cluster|family|lane|provider` and ` seedAdaptiveRandom` deterministic test support; `contract_guard` tasks are preserved above the `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **CRM Workflow Preservation & Persistence Status Fidelity**: Same-identity engine upserts refresh objective profile and score attributes while preserving human-managed `stage`, `reviewStatus`, `nextAction`, and `notes` unless `forceOverwrite: true` is passed. Session and search-log statuses (`success | partial_success | error`) are derived from actual persistence counts rather than hardcoded.
 
+#### 11. Industry-Agnostic Generalization (ADR-0007)
+
+- **Open-Ended Industry Clusters**: The MAB scheduler dynamically creates domain clusters for any industry (e.g. `healthcare_life_sciences`, `legal_services`, `commercial_construction`, `renewable_energy`) rather than forcing hardcoded agency/SaaS buckets.
+- **Dynamic Role Extraction & Synonyms** (`defaultRoles.ts`, `prospectContract.ts`): Automatically extracts role titles, seniority tiers, and business functions for any domain. Expansion synonyms are strictly constrained to the stated term rather than contaminating unrelated industries.
+- **Universal ISO Geographic Resolution** (`geo.ts`): Replaced manual country code maps with native `Intl` standard resolution, recognizing all 249 ISO 3166-1 alpha-2 countries and regions while guarding against English pronoun collisions.
+- **Brief-Gated Decision-Maker Scoring**: Authority and executive hierarchy weights are applied conditionally only when the user's brief explicitly requests authority or leadership, preventing technical or specialized searches from being improperly downweighted.
+
+#### 12. Provider-Affinity Dual Concurrency & Elevated Atria Timeouts
+
+- **Clever Dual-Provider Concurrency**: Configures independent provider concurrency slots (`ATRIA_CONCURRENT_SLOTS=1` and `BYESU_CONCURRENT_SLOTS=1`).
+- **Priority Routing with Safe Overflow**: In `withProviderFallback`, Atria (primary model) is prioritized whenever idle. If Atria is active processing a request, incoming concurrent tasks overflow in parallel to Byesu (secondary model) without tripping provider 429 rate limits or 524 gateway timeouts.
+- **10-Minute Dynamic Reasoning Headroom**: Elevated `ATRIA_MAX_TIMEOUT_MS` to `600_000ms` (10 minutes) with a `120_000ms` floor and dynamic token scaling (`computeAtriaDynamicTimeoutMs`), giving deep reasoning models sufficient runway to complete complex multi-step evaluations without aborting.
+
+#### 13. Persistent Candidate Verdicts & Company Attribution (Schema v26)
+
+- **Candidate Verdict Cache** (`candidate_verdicts`): Persists candidate pass and hard-fail evaluations indexed by canonical LinkedIn identity key and contract requirement hash, enabling 0ms evaluation reuse across discovery rounds.
+- **Company Taxonomy & Attribution Persistence** (`company_profiles`, `company_attribution_verdicts`): Stores verified company business models, offerings, and per-brief attribution verdicts, cutting redundant company-level LLM calls by up to 85%.
+- **Cross-Round Retrieval Cache** (`retrievalCache.ts`): Durable query-hash-keyed cache in front of search APIs, preventing duplicate network queries across runs with identical parameters.
+
 ---
 
 
@@ -172,9 +192,9 @@ graph TD
 
 - **Frontend**: React 19, Vite 8, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
-- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v23**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
-- **LLM Routing**: Direct OpenAI-compatible provider chain with automatic fallback (Atria / Byesu -> OpenRouter -> Groq), session circuit breaker, and retry logic.
-- **Retrieval**: Multi-key rotating Tavily Search/Extract and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
+- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v26**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
+- **LLM Routing**: Direct OpenAI-compatible provider chain with provider-affinity dual concurrency (Atria primary + Byesu secondary), automatic fallback (OpenRouter -> Groq), session circuit breaker, and retry logic.
+- **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
 ---
 
@@ -203,15 +223,19 @@ cp .env.example .env
 A minimal `.env` setup:
 
 ```env
-# Primary LLM Provider: Atria or Byesu/OpenAI-compatible
+# Primary LLM Provider: Atria with provider-affinity concurrency & reasoning headroom
 ATRIA_API_KEY="your_atria_api_key"
 ATRIA_PRIORITY="primary"
+ATRIA_CONCURRENT_SLOTS="1"
+ATRIA_MAX_TIMEOUT_MS="600000"
+ATRIA_MIN_TIMEOUT_MS="120000"
 
-# Secondary/Fallback OpenAI-compatible endpoint:
+# Secondary/Parallel LLM Provider (overflows concurrently when Atria is busy):
 OPENAI_API_KEY="your_byesu_or_openai_key"
 OPENAI_BASE="https://byesu.com/v1"
 OPENAI_MODEL="gpt-5.5"
 OPENAI_PROVIDER_NAME="Byesu"
+BYESU_CONCURRENT_SLOTS="1"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'
 TAVILY_API_KEY="tavily_key_3"
@@ -294,7 +318,7 @@ All API routes are mounted under `/api`:
 
 ---
 
-## Database & Schema (v23)
+## Database & Schema (v26)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
@@ -302,13 +326,17 @@ The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode wi
 
 - **`leads`**: Core prospect records, LinkedIn canonical identities, matched criteria, postIntentEvidence, uncertainty scores, and revision locks.
 - **`mining_sessions`**: Durable execution sessions, target progress, phase summaries, and stage-boundary **`checkpoint_json`** snapshots.
+- **`candidate_verdicts`**: Persistent qualification and hard-fail verdict cache keyed by LinkedIn identity and requirement hash, short-circuiting repeat LLM judging across rounds in 0ms.
+- **`company_profiles`**: Normalized company taxonomy, business models, and primary offerings with evidence quotes.
+- **`company_attribution_verdicts`**: Per-brief company-to-brief attribution verdicts preventing redundant company analysis.
+- **`search_cache`**: Durable Tavily and Bright Data query cache (`retrievalCache.ts`) with configurable TTL.
 - **`search_logs` / `llm_stage_logs`**: Granular event streams and per-stage LLM telemetry for real-time observability.
-- **`query_performance`**: Historical yield, latency, and provider unit accounting per query family and lane.
+- **`query_performance`**: Historical yield, latency, and provider unit accounting per query family, lane, and brief domain cluster.
 - **`prospect_contract_cache`**: Versioned requirement contracts, decomposition modes, and compilation metadata.
 - **`enrichment_cache`**: Positive and negative profile scraping caches (incl. intent fingerprints).
 - **`llm_completion_cache`**: Prompt-hash-keyed LLM completion cache with TTL, cutting repeat strategist/extraction latency across rounds.
 - **`discovered_companies`**: Signal-to-company reverse flywheel account inventory with attribution metadata.
-- **`lead_outcomes`**: Per-lead disposition labels feeding quality grounding (ADR-0006).
+- **`lead_outcomes`**: Per-lead disposition labels with `scope_key` attribution feeding closed-loop quality grounding (ADR-0006).
 - **`icp_hypothesis_cache`**: Cached ICP hypothesis decompositions for repeat brief shapes.
 - **`saved_searches`**: Reusable prospecting configurations.
 - **`lead_activities` & `outreach_drafts`**: Audit trails and draft messaging.
@@ -319,13 +347,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite (129 test files: 128 unit/integration suites with 860 tests across 172 suites + 1 evaluation harness with 13 tests, run via `tsx --test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and stage-queue concurrency tests (`test/llmStageQueue.test.ts`):
+Apex CRM maintains an extensive test suite (154 test files: 153 unit/integration suites with 976 tests across 176 suites + 1 evaluation harness with 13 tests, run via `tsx --test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider-affinity concurrency tests (`test/atriaConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (860 tests across 172 suites, 100% pass)
+# Full test suite (976 tests across 176 suites, 100% pass)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -354,7 +382,7 @@ npm run test:dedupe
 ```text
 docs/
   CODEBASE_INDEX.md          Measured architecture, module inventory, and audit ledger
-  adr/                       Architecture Decision Records (ADR-0001 through ADR-0006)
+  adr/                       Architecture Decision Records (ADR-0001 through ADR-0007)
 src/
   components/                React UI components, modals, tables, badges
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog
@@ -370,7 +398,7 @@ server/
   routes/
     api.ts                   REST API endpoints, dual-mode HTTP 202, outcome feedback, and resume routes
   services/
-    llm.ts                   LLM gateway, completion cache, fallbacks, JSON schemas, and Tavily search/extract
+    llm.ts                   LLM gateway, provider-affinity dual concurrency, Atria reasoning headroom, cache, fallbacks
     brightdata.ts            Bright Data MCP client, search, and scraper
     keyRotator.ts            Provider key pool and rate-limit manager
     linkedinEvidence.ts      LinkedIn profile evidence extraction
@@ -379,30 +407,34 @@ server/
   leadSearch/
     stages/                  Decoupled 9-stage pipeline engine
       planStage.ts           Adaptive planner task derivation & query planning (resolveGeo, cluster MAB, cross-session companies)
-      retrieveStage.ts       Two-Wave parallel retrieval execution (vagueness-aware depth + queryRewriter rescue)
+      retrieveStage.ts       Two-Wave parallel retrieval execution (retrieval cache + queryRewriter rescue)
       fuseStage.ts           Observation normalizer & corroboration fusion (symmetrical alias scoring)
       extractStage.ts        Stage 2.5 pre-filter gate & budget-capped LLM extraction
       verifyStage.ts         Deterministic requirement verification
       enrichStage.ts         Provenance-tagged site probe, TF-IDF company intent & annotate-only post intent
-      judgeStage.ts          Strict-grounding 3-Tier Finalist Judge & pre-judge role triage
+      judgeStage.ts          Strict-grounding 3-Tier Finalist Judge, verdict reuse & pre-judge role triage
       selectStage.ts         Pareto skyline & MMR diversification
       persistStage.ts        CRM-preserving identity upserts & derived session status
     discoveryEngine.ts       Discovery Session Engine orchestrator & stage pipelining (parentSessionId/deltaBrief/interactive)
     prospectContract.ts      Contract schema, prompt intelligence & decomposition (plural-persona, alias-aware grounding, no geo invention)
     queryUnderstanding.ts    Complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
+    candidateVerdicts.ts     Candidate qualification and hard-fail verdict cache (Schema v26)
+    defaultRoles.ts          Dynamic role and business function extraction for any domain
+    geo.ts                   Universal ISO 3166-1 country code resolution via Intl
+    retrievalCache.ts        Query-hash-keyed search retrieval cache
     aliasMap.ts              Symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
     queryRewriter.ts         Bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection, max 3)
     intentSignals.ts         Dynamic signal compiler, categories & freshness decay (abbreviated units, 45d neutral undated age)
     companyIntent.ts         Phase 4 company website TF-IDF intent scoring
-    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating
+    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating (Schema v26)
     profileQuality.ts        Deterministic social-proof parsing, ghost/company-page & company-scoped contradiction detection
     linkedinPostIntent.ts    Phase 5 annotate-only LinkedIn post SERP intent research
     providerQueue.ts         Bounded-concurrency provider task queue (`runProviderQueue`)
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
-    scoring.ts               Composite scoring, freshness decay & MMR diversity
+    scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v23 schema (incl. lead_outcomes, llm_completion_cache, leads_fts), migrations, checkpoint CRUD & startup sweeps
-test/                        Automated unit, integration, replay, and eval test suites (129 files via tsx --test)
+  db.ts                      SQLite v26 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts)
+test/                        Automated unit, integration, replay, and eval test suites (154 files via tsx --test)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

@@ -14,6 +14,10 @@ export const NON_DECISION_MAKER_REGEX =
 export const EXECUTIVE_OVERRIDE_REGEX =
   /\b(?:(?<!product\s+|process\s+|content\s+|component\s+)owner|co-owner|founder|co-founder|ceo|chief executive|managing partner|general partner|proprietor|president|principal(?!\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?(?:engineer|architect|scientist|developer|designer|product manager))\b|partner|chair|chairwoman|chairman|director|vp|vice president|head of|chief|cto|cmo|coo|cfo|cro|cio|cpo)\b/i;
 
+/** Roles that serve an executive rather than hold the authority ("Executive Assistant to the CEO"). */
+export const SUBORDINATE_ROLE_REGEX =
+  /\b(?:assistant|secretary|aide|ea|pa)\s+(?:to|for)\b|\bchief\s+of\s+staff\s+to\b|\boffice\s+of\s+the\s+(?:ceo|founder|president|chairman)\b/i;
+
 export const OWNER_OPERATOR_REGEX =
   /\b(?:independent|solo|freelance|boutique|advisory|principal|managing|founding|lead)\s+(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|lead|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;
 
@@ -37,6 +41,10 @@ export function classifyTitle(
   const cleanTitle = (title || "").trim();
   if (!cleanTitle) {
     return { isIC: false, isExecutive: false, confidence: 5 };
+  }
+
+  if (SUBORDINATE_ROLE_REGEX.test(cleanTitle)) {
+    return { isIC: true, isExecutive: false, confidence: 2 };
   }
 
   // Phase 4: alias-aware normalization -- expand standalone acronyms (MD, VP)

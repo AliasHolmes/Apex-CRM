@@ -1,6 +1,7 @@
 import type { ProspectContract, ProspectRequirement } from './prospectContract.js';
 import { isFlagEnabled } from './featureFlags.js';
 import { aliasIncludes } from './aliasMap.js';
+import { SUBORDINATE_ROLE_REGEX } from './titleTriage.js';
 
 export type SelectedEvidence = {
   evidence: Array<{ id: string; text: string }>;
@@ -125,10 +126,10 @@ export function hasStrictStructuredMatch(lead: Record<string, any>, requirement:
   // in New York. Location stays a judge decision unless the profile states it.
   return structuredFieldsForRequirement(lead, requirement, { includeQueryFallback: false })
     .filter(value => value !== undefined && value !== null)
-    .some(value => {
-      const text = String(value);
-      return requirement.acceptableTerms.some(term => hasWholeTerm(text, term));
-    });
+    .map(value => String(value))
+    // "Executive Assistant to the CEO" names the role without holding it.
+    .filter(text => requirement.scope !== 'person_role' || !SUBORDINATE_ROLE_REGEX.test(text))
+    .some(text => requirement.acceptableTerms.some(term => hasWholeTerm(text, term)));
 }
 
 const sourceEvidencePieces = (lead: Record<string, any>, evidenceText?: string) => unique([

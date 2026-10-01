@@ -578,11 +578,10 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   const recoveryDirective = params.isRecovery
     ? `\nRECOVERY DIRECTIVE (Attempt ${params.recoveryAttempt || 1}/2):
 Prior rounds had low yield or missed specific criteria.
-- Pivot to fresh, unvisited metropolitan hubs and tech clusters (e.g. ${unvisitedMetros.slice(0, 6).join(", ") || "Austin, Denver, Manchester UK, Melbourne, Vancouver"}).
-- Rotate leadership title synonyms (e.g. "managing director", "principal", "managing partner", "executive director", "co-founder").
-- Explore adjacent client-service vertical phrasing (e.g. "AI consulting", "AI solutions", "machine learning agency").
+${unvisitedMetros.length ? `- Pivot to fresh, unvisited metropolitan hubs (e.g. ${unvisitedMetros.slice(0, 6).join(", ")}).\n` : ""}- Rotate title synonyms from the contract's person_role acceptable terms.
+- Explore adjacent phrasings of the brief's company type or industry (synonyms and sub-categories, never a different industry).
 - Maintain single-concept clarity: NEVER concatenate multiple roles or locations into a single bloated query.
-- When targeting non-US locations, ALWAYS include the country name in queries (e.g. "Birmingham UK", "London UK") to prevent US location ambiguity.
+- When a city name exists in more than one country, ALWAYS include the country name in queries (e.g. "Birmingham UK", "Lagos Nigeria").
 - NEVER append generic terms like "profile", "public profile", or "professional profile".`
     : "";
 
@@ -778,11 +777,11 @@ Prior round summary: ${roundSummaryStr}
 Historical family/provider yield: ${performanceStr}
 
 Rules:
-- Query syntax: 3 to 6 words. NEVER use boolean words (AND, OR, NOT), site:, or "LinkedIn". Quotes ONLY for multi-word phrases (e.g. "AI agency"). Negative keywords allowed (-saas, -recruiter).
-- Geographies & Titles: Rotate executive variants (founder, CEO, owner, managing partner) and use metro hubs sparingly (max 2 queries should include city names). Never let city names push out core technical or intent terms.
+- Query syntax: 3 to 6 words. NEVER use boolean words (AND, OR, NOT), site:, or "LinkedIn". Quotes ONLY for multi-word phrases (e.g. "freight forwarder"). Negative keywords allowed (e.g. -recruiter).
+- Geographies & Titles: Rotate the title variants listed in the contract's person_role acceptable terms and use metro hubs sparingly (max 2 queries should include city names). Never let city names push out core technical or intent terms.
 - Lanes & Intent Retention Rule:
-  * When the brief or contract specifies explicit intent, tooling, or pain signals (e.g. toolingKeywords like n8n/APIs or painSignals like delivery bottlenecks): at least 2 of the 4 queries MUST combine identity/role terms with an intent or tooling qualifier (e.g. "agency owner n8n", "agency CEO API integrations").
-  * NEVER generate 100% bare identity-only queries across all 4 tasks (e.g. do NOT output 4 generic queries like "agency owner Austin").
+  * When the brief or contract specifies explicit intent, tooling, or pain signals (e.g. a named tool, a hiring trigger, or a stated pain point): at least 2 of the 4 queries MUST combine identity/role terms with an intent or tooling qualifier (e.g. "<role> <tool>", "<role> <hiring trigger>").
+  * NEVER generate 100% bare identity-only queries across all 4 tasks (e.g. do NOT output 4 generic queries like "<role> <city>").
   * Use lane "person" for identity+intent queries, "account" for company exploration, or "signal" (for open_web_signal requirements e.g. hiring/tooling, use lane: "signal" and search open web). Use >=2 lanes when brief allows.
 - Providers: "tavily" (precision person), "brightdata" (volume Google SERP), "corroborate" (both). In hybrid mode, assign >=2 brightdata or corroborate tasks.
 - Depth: Default to "basic". Never assume Pro-only datasets or browser automation.

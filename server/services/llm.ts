@@ -2967,7 +2967,7 @@ export const searchSpecSchema = {
 // -----------------------------------------------------------------------------
 
 /** Minimal prompt for Step 1 - query generation only. */
-export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce concise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Always use clean natural language keyword phrases (3 to 6 words) without raw boolean operator words (AND/OR/NOT) or site: operators. Balanced double quotes around multi-word roles or niches (e.g. "AI agency") and hyphenated negative exclusions (e.g. -platform) are permitted. Output only valid JSON.`;
+export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search strategist. Your sole task is to produce concise, targeted search query plan objects that surface LinkedIn profiles matching the user's lead criteria. Always use clean natural language keyword phrases (3 to 6 words) without raw boolean operator words (AND/OR/NOT) or site: operators. Balanced double quotes around multi-word roles or niches (e.g. "freight forwarder") and hyphenated negative exclusions (e.g. -platform) are permitted. Output only valid JSON.`;
 
 /** Focused prompt for Step 3 - initial scouting only. Deep enrichment and email
  * discovery deliberately happen after manual selection. */

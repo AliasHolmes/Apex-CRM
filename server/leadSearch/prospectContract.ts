@@ -1316,6 +1316,9 @@ export const prospectContractSchema = {
   required: ['authorityRequired', 'requirements', 'exclusions', 'initialQueries']
 };
 
+const AGENCY_CONTRACT_RULE =
+  '\n- This brief targets client-services firms (agencies, consultancies, studios, integrators): enforce a strict hard seam against software products. Exclude employees of large technology companies, individual contributor roles (Staff/Principal Engineer, Product Manager), and pure software products/SaaS/apps. Ensure company_type acceptableTerms specify client-services firms.';
+
 export const buildProspectContractPrompt = (brief: string, suppliedSpec?: unknown) => `You compile a strict prospecting contract and first retrieval plan.
 
 User brief:
@@ -1325,18 +1328,17 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - Understand natural conversational phrasing: The brief may start with conversational command phrases like "Find", "Show me", "Search for", "Get me", "Look for", "Bring up", "Give me", "Target", "I want". These are conversational instructions and are NEVER a company name, company type, or requirement source phrase. Ignore them completely.
 - Classify decompositionMode as 'single_stream_identity' (for short/simple persona briefs without explicit buying triggers) or 'dual_stream_intent' (for briefs with hiring, tooling, pain, or expansion triggers).
 - For dual_stream_intent briefs: decouple identitySpec (roles, locations, companyTypes, industries) from intentSpec (toolingKeywords, hiringSignals, painSignals, growthSignals).
-- In initialQueries, for dual_stream_intent briefs, ensure at least 2 queries combine identity with intent/tooling qualifiers (e.g. "agency owner n8n"), while maintaining person-lane queries for core role/location coverage.
-- For open_web_signal / intent requirements (e.g. hiring for n8n, Zapier, Make.com, AI agents, workflow automation), generate dedicated signal-lane queries searching the open web.
+- In initialQueries, for dual_stream_intent briefs, ensure at least 2 queries combine identity with intent/tooling qualifiers (e.g. "<role> <tool or trigger named in the brief>"), while maintaining person-lane queries for core role/location coverage.
+- For open_web_signal / intent requirements (e.g. hiring for a named role, adopting or replacing a named tool, opening a new site, raising funding), generate dedicated signal-lane queries searching the open web.
 - When the brief describes active behavior or buying triggers (posting on LinkedIn, seeking help, needing a hand, bottlenecks, evaluating tools, hiring), ALWAYS emit at least one soft requirement with scope 'signal' and evidenceModality 'open_web_signal' capturing those triggers. Never leave a dual_stream_intent brief with zero signal requirements.
-- Comma-or-conjunction separated company niches (e.g. "marketing, lead-generation, SEO, or creative agencies") MUST be unified under a single company_type requirement whose acceptableTerms list all distinct expanded forms (e.g. ["marketing agency", "lead-generation agency", "SEO agency", "creative agency"]).
-- When targeting agencies, consultancies, studios, or client services: enforce a strict hard seam against software products. Exclude non-agency employers (Big Tech: Microsoft, Google, Meta, Apple, Amazon, OpenAI), individual contributor roles (Staff/Principal Engineer, Product Manager), and pure software products/SaaS/apps. Ensure company_type acceptableTerms specify client services firms.
+- Comma-or-conjunction separated company niches (e.g. "logistics, freight forwarding, or customs brokerage companies") MUST be unified under a single company_type requirement whose acceptableTerms list all distinct expanded forms (e.g. ["logistics company", "freight forwarder", "customs broker"]).${isAgencyContract(brief) ? AGENCY_CONTRACT_RULE : ''}
 - Multiple requested roles (e.g. "founders, CEOs, or operations directors") MUST be unified into a single person_role requirement with matchRule: "any_of" and groupId: "person_role_group".
 - Headcount / employee size ranges (e.g. "with 2 to 15 employees" or "(3 to 20 employees)") MUST be extracted as a company_size requirement with evidenceModality: "inferred" and importance: "soft".
 - A hard requirement must be explicitly stated in the user brief or supplied search spec. Its sourcePhrase must be an exact contiguous phrase from the brief when it comes from the brief.
 - At most 4 hard requirements (e.g. person_role, company_type, person_location) and at most 7 soft requirements.
 - For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
 - acceptableTerms are short alternatives for the same stated requirement, never broader personas.
-- Strict single-role and single-geo query constraint: Each query in initialQueries must target EXACTLY ONE role (e.g. founder OR CEO OR owner) and at most ONE location/metro (e.g. Australia OR London). NEVER concatenate multiple synonym roles in a single query (e.g. FORBIDDEN: 'owner founder CEO managing director'). Distribute different roles and locations across distinct queries instead.
+- Strict single-role and single-geo query constraint: Each query in initialQueries must target EXACTLY ONE role (e.g. one of the stated titles) and at most ONE location/metro (e.g. one country or one city). NEVER concatenate multiple synonym roles in a single query (e.g. FORBIDDEN: 'procurement director head of procurement purchasing manager'). Distribute different roles and locations across distinct queries instead.
 - Queries in initialQueries must NEVER contain negative exclusion operators (e.g. -Microsoft, -Google, -software, -SaaS). Exclusions belong strictly in the contract exclusions list, not in search queries.
 - Do not use Google dorks, site:, or the word LinkedIn in initialQueries.
 - coveredRequirementIds may reference only the returned requirement ids.

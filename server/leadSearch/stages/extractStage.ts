@@ -130,101 +130,90 @@ export function formatExperienceBlock(experiences: any[]): string {
 export interface DeterministicParsedProfile {
   fullName: string;
   currentTitle: string;
+  headline: string;
   currentCompany: string;
   location?: string;
+  extractionConfidence: number;
+}
+
+// Search engines separate name, headline and company with spaced dashes. Pipes and
+// middots appear INSIDE headlines ("Founder | AI Automation | Speaker"), so they
+// are never field separators.
+const SERP_DASH_SEPARATOR = /\s+[-\u2013\u2014]\s+/;
+const ROLE_WORD_REGEX =
+  /\b(?:founder|co-founder|owner|ceo|cto|cfo|coo|cmo|cro|chief|president|director|head|vp|vice president|manager|lead|partner|principal|engineer|developer|designer|consultant|specialist|advisor|analyst|architect|officer|executive|recruiter|associate|assistant|intern|student|coach|strategist|marketer|scientist|researcher|editor|writer|producer)\b/i;
+const PLACE_LIKE_REGEX = /^[A-Z][A-Za-z.' -]+(?:,\s*[A-Z][A-Za-z.' -]+){1,3}$/;
+
+export function extractSerpLocation(snippet: string): string | undefined {
+  if (!snippet) return undefined;
+  const explicit = snippet.match(
+    /(?:[Ll]ocation:\s*|\b[Bb]ased in\s+)([A-Z][A-Za-z.' -]{1,38}(?:,\s*[A-Z][A-Za-z.' -]{1,38}){0,2})/,
+  );
+  if (explicit?.[1]) return explicit[1].trim().replace(/[.\s]+$/, "");
+  const leading = snippet.split(/\s*[\u00b7\u2022|]\s*|\.\s+/)[0]?.trim() || "";
+  if (leading.length <= 60 && PLACE_LIKE_REGEX.test(leading)) return leading;
+  return undefined;
 }
 
 /**
- * Deterministically parses standard Google / Tavily LinkedIn SERP profile results in 0ms without LLM.
- * Example title formats:
- * - "Jane Doe - Founder & CEO - Acme Corp | LinkedIn"
- * - "John Smith - Co-Founder at NextGen AI | LinkedIn"
- * - "Dr. Alice Brown - VP of Engineering - ScaleOps | LinkedIn: Log In or Sign Up"
+ * Deterministically parses LinkedIn profile search results without an LLM.
+ * Returns null whenever the title shape is ambiguous so the LLM extractor reads the snippet.
  */
 export function parseDeterministicLinkedInProfile(
   item: any,
 ): DeterministicParsedProfile | null {
   const url = String(item?.url || "").trim();
-  // Must be a LinkedIn personal profile (/in/)
-  if (!/linkedin\.com\/in\/[^/?#]+/i.test(url)) {
-    return null;
-  }
+  if (!/linkedin\.com\/in\/[^/?#]+/i.test(url)) return null;
 
   const rawTitle = cleanSnippetNoise(item?.title || "");
   if (!rawTitle) return null;
-
-  // Strip trailing " | LinkedIn..." or " - LinkedIn..." or " \u2013 LinkedIn..."
   const withoutLinkedIn = rawTitle
-    .replace(/(?:\s+[-\u2013\u2014]|\s*[|\u00b7\u2022\u2014])\s*LinkedIn.*$/i, "")
+    .replace(/(?:\s+[-\u2013\u2014]|\s*[|\u00b7\u2022])\s*LinkedIn.*$/i, "")
     .trim();
   if (!withoutLinkedIn) return null;
 
-  // Split by standard SERP title separators: " - ", " \u2013 ", " \u2014 ", " | ", " \u00b7 ", " \u2022 "
-  // Requires whitespace around hyphens so hyphenated words like "Co-Founder" or "Vice-President" are preserved
   const parts = withoutLinkedIn
-    .split(/(?:\s+[-\u2013\u2014]\s+|\s*[|\u00b7\u2022\u2014]\s*)/)
+    .split(SERP_DASH_SEPARATOR)
     .map((p) => p.trim())
     .filter(Boolean);
+  if (parts.length < 2) return null;
 
-  let fullName = "";
-  let currentTitle = "";
+  const fullName = parts[0];
+  let headline = "";
   let currentCompany = "";
-
   if (parts.length >= 3) {
-    fullName = parts[0];
-    currentTitle = parts[1];
-    currentCompany = parts.slice(2).join(" - ");
-  } else if (parts.length === 2) {
-    fullName = parts[0];
-    const secondPart = parts[1];
-    const atSplit = secondPart.split(/\s+(?:at|@)\s+/i);
-    if (atSplit.length >= 2) {
-      currentTitle = atSplit[0].trim();
-      currentCompany = atSplit.slice(1).join(" at ").trim();
-    } else {
-      currentTitle = secondPart;
-      currentCompany = "";
-    }
+    headline = parts.slice(1, -1).join(" - ");
+    currentCompany = parts[parts.length - 1];
   } else {
-    return null;
+    const second = parts[1];
+    const atSplit = second.split(/\s+(?:at|@)\s+/i);
+    if (atSplit.length >= 2) {
+      headline = atSplit[0].trim();
+      currentCompany = atSplit.slice(1).join(" at ").trim();
+    } else if (ROLE_WORD_REGEX.test(second)) {
+      headline = second;
+    } else {
+      // "Jane Doe - Acme Corp": the second field is usually the employer, not a title.
+      return null;
+    }
   }
+  const currentTitle = headline.split(/\s*[|\u00b7\u2022]\s*/)[0].trim();
 
-  // Validate fullName: 1-4 words, 2-50 chars, no obvious non-name words
-  if (!fullName || fullName.length < 2 || fullName.length > 50) return null;
+  if (fullName.length < 2 || fullName.length > 50) return null;
   if (/\b(?:company|inc|llc|ltd|gmbh|jobs?|hiring|posts?|profile|updates?)\b/i.test(fullName)) return null;
   if (/\d/.test(fullName)) return null;
   const nameWords = fullName.split(/\s+/).filter(Boolean);
   if (nameWords.length < 1 || nameWords.length > 5) return null;
-
-  // Validate currentTitle: 2-80 chars
   if (!currentTitle || currentTitle.length < 2 || currentTitle.length > 80) return null;
-
-  if (currentCompany.length > 80) {
-    currentCompany = currentCompany.slice(0, 80).trim();
-  }
-
-  // Extract location from snippet if present
-  let location: string | undefined;
-  const snippet = cleanSnippetNoise(item?.content || item?.raw_content || "");
-  const locMatch = snippet.match(
-    /(?:Location:\s*|based in\s+|^)([A-Za-z\s,.-]{3,40}?)(?:\s*\.\s*|\s*\u00b7|\s*Experience|\s*Current|\s*Past|\s*Education|$)/i,
-  );
-  if (locMatch?.[1]) {
-    const candidateLoc = locMatch[1].trim();
-    if (
-      !/^(?:view|see|experienced|working|passionate|specializing|director|founder|ceo)/i.test(
-        candidateLoc,
-      )
-    ) {
-      location = candidateLoc;
-    }
-  }
+  if (currentCompany.length > 80) currentCompany = currentCompany.slice(0, 80).trim();
 
   return {
     fullName,
     currentTitle,
+    headline: headline.slice(0, 160),
     currentCompany,
-    location,
+    location: extractSerpLocation(cleanSnippetNoise(item?.content || item?.raw_content || "")),
+    extractionConfidence: parts.length >= 3 ? 8 : 6,
   };
 }
 
@@ -569,13 +558,13 @@ export async function executeExtractStage(
         currentTitle: parsed.currentTitle,
         currentCompany: parsed.currentCompany,
         company: parsed.currentCompany,
-        headline: parsed.currentTitle,
+        headline: parsed.headline || parsed.currentTitle,
         location: parsed.location || "",
         contactDetails: {
           linkedinUrl: normalizedUrl ? `https://${normalizedUrl}` : canonicalUrl,
           website: "",
         },
-        extractionConfidence: 9,
+        extractionConfidence: parsed.extractionConfidence,
         sourceProvider: item.sourceProvider || "tavily",
         sourceRound: round,
         evidenceReasons: [

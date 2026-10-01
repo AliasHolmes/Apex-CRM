@@ -550,6 +550,16 @@ export function isAgencyContract(contractOrBrief: ProspectContract | string): bo
   return /\b(agenc(y|ies)?|consultan(cy|cies|t|ts)?|consulting|studios?|integrat(or|ors)?|client\s+services?|advisory\s+firm)\b/i.test(text);
 }
 
+/**
+ * Decision-maker bonuses, penalties and gates only apply when the brief asks for authority.
+ * For briefs that target engineers, nurses or buyers they would rank the wrong people first.
+ */
+export function isAuthorityRelevant(
+  contract: { authorityRequired?: boolean } | null | undefined,
+): boolean {
+  return contract?.authorityRequired !== false;
+}
+
 export const TOOL_LEXICONS_BY_CLUSTER: Record<string, RegExp> = {
   b2b_agency: /\b(n8n|zapier|make|hubspot|salesforce|supabase|airtable|notion|clickup|monday|asana|trello|slack|go\s?high\s?level|ghl|semrush|ahrefs|google\s?ads|meta\s?ads|mailchimp|activecampaign|klaviyo|figma|canva|webflow|wordpress)\b/i,
   b2b_saas: /\b(react|python|aws|gcp|azure|docker|kubernetes|terraform|datadog|stripe|segment|amplitude|mixpanel|postman|github|gitlab|jira|confluence|vercel|netlify|supabase|firebase)\b/i,

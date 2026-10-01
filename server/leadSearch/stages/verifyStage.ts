@@ -24,6 +24,7 @@ import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceMeta } from "./extractStage.js";
 import type { QueryRunStats } from "../strategist.js";
 import type { SearchSpec } from "../searchSpec.js";
+import { isAuthorityRelevant } from "../prospectContract.js";
 
 export type PostFilterLead = {
   lead: any;
@@ -123,6 +124,7 @@ export async function executeVerifyStage(
     counts: { provisionalLeads: provisionalLeads.length },
   });
 
+  const authorityRelevant = isAuthorityRelevant(ctx.config.contract);
   const postFilterLeads: PostFilterLead[] = [];
   let borderlineAdmittedThisRound = 0;
   for (const lead of provisionalLeads) {
@@ -261,7 +263,7 @@ export async function executeVerifyStage(
       lead,
       evidenceMeta.evidenceQuality,
       evidenceMeta.sourceProvider,
-      dmVerification,
+      authorityRelevant ? dmVerification : undefined,
       undefined,
       ctx.config.contract?.requirements,
       evidenceMeta.evidenceBlock,
@@ -278,12 +280,14 @@ export async function executeVerifyStage(
       20,
     );
 
-    const dmGate = evaluateDecisionMakerGate({
-      ignoredTitle: dmVerification.ignoredTitle,
-      confidence: dmVerification.confidence,
-      effectiveScore: effectiveScore(lead),
-      minScore,
-    });
+    const dmGate = authorityRelevant
+      ? evaluateDecisionMakerGate({
+          ignoredTitle: dmVerification.ignoredTitle,
+          confidence: dmVerification.confidence,
+          effectiveScore: effectiveScore(lead),
+          minScore,
+        })
+      : { pass: true };
     if (!dmGate.pass) {
       noteRejection("not_decision_maker", queryRun);
       continue;

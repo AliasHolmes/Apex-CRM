@@ -48,6 +48,7 @@ import type { PostFilterLead } from "./verifyStage.js";
 import type { EvidenceMeta } from "./extractStage.js";
 import type { QueryRunStats } from "../strategist.js";
 import type { ProspectContract } from "../prospectContract.js";
+import { isAuthorityRelevant } from "../prospectContract.js";
 import type { SearchSpec } from "../searchSpec.js";
 
 export type EnrichmentTarget = {
@@ -115,6 +116,7 @@ export async function executeEnrichStage(
     leadQueryRuns,
     trackableBrightDataSearch: _trackableBrightDataSearch,
   } = input;
+  const authorityRelevant = isAuthorityRelevant(contract);
 
   let brightDataProviderDisabled = input.brightDataProviderDisabled;
   let brightDataTransportRetryAfter = input.brightDataTransportRetryAfter;
@@ -237,7 +239,7 @@ export async function executeEnrichStage(
         lead,
         evidenceMeta.evidenceQuality,
         evidenceMeta.sourceProvider,
-        lead.decisionMakerVerification,
+        authorityRelevant ? lead.decisionMakerVerification : undefined,
         undefined,
         contract?.requirements,
         evidenceMeta.evidenceBlock,
@@ -1091,12 +1093,14 @@ export async function executeEnrichStage(
         evidenceText: lead.evidence?.snippets?.join(" ") || "",
       });
     lead.decisionMakerVerification = finalDecisionMaker;
-    const dmGate = evaluateDecisionMakerGate({
-      ignoredTitle: finalDecisionMaker.ignoredTitle,
-      confidence: finalDecisionMaker.confidence,
-      effectiveScore: sharedEffectiveScore(lead),
-      minScore: minScore || 5,
-    });
+    const dmGate = authorityRelevant
+      ? evaluateDecisionMakerGate({
+          ignoredTitle: finalDecisionMaker.ignoredTitle,
+          confidence: finalDecisionMaker.confidence,
+          effectiveScore: sharedEffectiveScore(lead),
+          minScore: minScore || 5,
+        })
+      : { pass: true };
     if (!dmGate.pass) {
       noteRejection("not_decision_maker", queryRun);
       continue;
@@ -1114,7 +1118,7 @@ export async function executeEnrichStage(
           : lead.evidence?.sourceProvider === "brightdata"
             ? "brightdata"
             : "tavily",
-        finalDecisionMaker,
+        authorityRelevant ? finalDecisionMaker : undefined,
         undefined,
         contract?.requirements,
         lead.evidence?.evidenceBlock,

@@ -1,6 +1,7 @@
 import { companiesMatch } from './signalStore.js';
 import { parseSnippetFreshnessDays, computeFreshnessMultiplier } from './intentSignals.js';
 import type { ProspectRequirement } from './prospectContract.js';
+import { wordBoundaryOrAliasMatches } from './aliasMap.js';
 
 export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
 export type EvidenceQuality = 'weak' | 'partial' | 'good';
@@ -710,26 +711,22 @@ export function computeBriefRelevanceScore(
       continue;
     }
 
-    const targetText = req.scope === 'person_role' ? (roleText || fullText)
-      : (req.scope === 'company_type' || req.scope === 'company_industry') ? (companyText || fullText)
-      : fullText;
+    const targetText = req.scope === 'person_role'
+      ? (roleText || fullText)
+      : (req.scope === 'company_type' || req.scope === 'company_industry')
+        ? `${companyText} ${otherText}`.trim() || fullText
+        : fullText;
 
-    let exactMatch = false;
-    for (const term of terms) {
-      if (targetText.includes(term)) {
-        exactMatch = true;
-        break;
-      }
-    }
+    const exactMatch = terms.some((term) => wordBoundaryOrAliasMatches(targetText, term));
 
     if (exactMatch) {
       earnedScore += weight * 9.0;
     } else {
-      const docTokens = new Set(targetText.split(/[\s,./\-|\u00b7\u2022_()]+/));
+      const docTokens = new Set(targetText.split(/[^a-z0-9]+/).filter(Boolean));
       let matchedTokens = 0;
-      let totalTerms = terms.length;
+      const totalTerms = terms.length;
       for (const term of terms) {
-        const subTokens = term.split(/[\s,./\-|\u00b7\u2022_()]+/).filter((t) => t.length > 2);
+        const subTokens = term.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
         if (subTokens.some((st) => docTokens.has(st))) {
           matchedTokens++;
         }
@@ -767,13 +764,11 @@ export function computeScoreBreakdown(
   const computedBriefFit = requirements && requirements.length > 0
     ? computeBriefRelevanceScore(lead, requirements, evidenceText)
     : undefined;
-  const candidateFit = (lead.fitScore !== undefined && lead.fitScore !== 5)
-    ? lead.fitScore
-    : (lead.scoreBreakdown?.fitScore !== undefined && lead.scoreBreakdown?.fitScore !== 5)
-      ? lead.scoreBreakdown.fitScore
-      : (computedBriefFit ?? lead.fitScore);
-  const fitScore = scoreOrDefault(activeAudit?.functionalRelevance ?? candidateFit, 5);
-  lead.fitScore = fitScore;
+  if (computedBriefFit !== undefined) lead._briefFitScore = computedBriefFit;
+  const fitScore = scoreOrDefault(
+    activeAudit?.functionalRelevance ?? computedBriefFit ?? lead._briefFitScore ?? lead.fitScore,
+    5,
+  );
   const intentScore = scoreOrDefault(lead.intentScore, 5);
   const timingScore = scoreOrDefault(lead.timingScore, 5);
   const eqScore = evidenceQualityScore(quality);

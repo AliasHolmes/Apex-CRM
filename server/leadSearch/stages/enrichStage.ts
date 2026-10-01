@@ -109,7 +109,7 @@ export async function executeEnrichStage(
     enrichmentCap,
     profileConcurrency,
     ttlDays,
-    contract: _contract,
+    contract,
     searchSpec,
     stats,
     leadQueryRuns,
@@ -238,6 +238,9 @@ export async function executeEnrichStage(
         evidenceMeta.evidenceQuality,
         evidenceMeta.sourceProvider,
         lead.decisionMakerVerification,
+        undefined,
+        contract?.requirements,
+        evidenceMeta.evidenceBlock,
       );
       lead.scoreOverride = lead.scoreBreakdown.finalScore;
       // Evidence changed, so the acceptance loop must re-derive the score
@@ -1112,6 +1115,9 @@ export async function executeEnrichStage(
             ? "brightdata"
             : "tavily",
         finalDecisionMaker,
+        undefined,
+        contract?.requirements,
+        lead.evidence?.evidenceBlock,
       );
       lead.scoreOverride = lead.scoreBreakdown.finalScore;
       lead._scoreCurrent = true;

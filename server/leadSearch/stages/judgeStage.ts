@@ -23,8 +23,9 @@ import {
   readPastUserDecisions,
   computeRequirementsFingerprint,
   upsertCandidateVerdict,
+  getCandidateVerdict,
 } from "../../db.js";
-import { candidateVerdictKey, isCacheableFingerprint } from "../candidateVerdicts.js";
+import { candidateVerdictKey, computeEvidenceHash, isCacheableFingerprint } from "../candidateVerdicts.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
 import type { ProspectContract } from "../prospectContract.js";
 import { deriveContractDomainCluster } from "../adaptiveScheduler.js";
@@ -242,6 +243,20 @@ export async function evaluateIncrementalJudgeBatches(
 
   const reqFingerprint = computeRequirementsFingerprint(contract?.requirements);
 
+  const passVerdictTtlDays = Math.min(
+    Math.max(Number(process.env.LEAD_PASS_VERDICT_TTL_DAYS ?? 14) || 14, 1),
+    60,
+  );
+  const applyQualification = (lead: any, qualification: Qualification, fallbackReason?: string) => {
+    lead.qualification = qualification;
+    lead.whyThisLead = qualification.reason || fallbackReason;
+    lead.finalSelectionScore = qualification.finalScore;
+    if (lead.scoreBreakdown) {
+      lead.scoreBreakdown.finalScore = qualification.finalScore;
+    }
+    lead.scoreOverride = qualification.finalScore;
+  };
+
   const recordCandidateJudgeOutcome = (
     candidate: FinalistCandidate,
     status: FinalistOutcomeStatus | undefined,
@@ -349,10 +364,38 @@ export async function evaluateIncrementalJudgeBatches(
     Math.min(4, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
   );
 
+  const reusedQualified: any[] = [];
+  const candidatesToJudge: FinalistCandidate[] = [];
+  for (const candidate of vettedCandidates) {
+    const identityKey = isCacheableFingerprint(reqFingerprint) ? candidateVerdictKey(candidate.lead) : "";
+    const evidenceHash = identityKey ? computeEvidenceHash(candidate.evidence) : "";
+    const cached = identityKey && evidenceHash ? getCandidateVerdict(identityKey, reqFingerprint) : null;
+    if (cached?.verdict === "pass" && cached.evidenceHash === evidenceHash && cached.qualification) {
+      const qualification = cached.qualification as Qualification;
+      applyQualification(candidate.lead, qualification, cached.reason);
+      const insight = {
+        status: qualification.verdict as FinalistOutcomeStatus,
+        score: qualification.finalScore,
+        reason: qualification.reason,
+      };
+      judgmentInsights.set(candidate.candidateId, insight);
+      candidate.lead.judgmentInsight = insight;
+      reusedQualified.push(candidate.lead);
+      continue;
+    }
+    candidatesToJudge.push(candidate);
+  }
+  if (reusedQualified.length > 0) {
+    qualifiedCandidates.push(...reusedQualified);
+    logEvent(
+      `Round ${round} Judge: reused ${reusedQualified.length} stored qualification(s) with unchanged evidence; 0 LLM tokens spent.`,
+    );
+  }
+
   const microBatches: FinalistCandidate[][] = [];
   let currentBatch: FinalistCandidate[] = [];
   let currentBatchTokens = 0;
-  for (const cand of vettedCandidates) {
+  for (const cand of candidatesToJudge) {
     const evText = Array.isArray(cand.evidence)
       ? cand.evidence
           .slice(0, 6)
@@ -389,7 +432,7 @@ export async function evaluateIncrementalJudgeBatches(
     waves.push(microBatches.slice(i, i + judgeConcurrency));
   }
 
-  let cumulativeQualified = input.currentQualifiedCount || 0;
+  let cumulativeQualified = (input.currentQualifiedCount || 0) + reusedQualified.length;
 
   const fallbackResilientCandidates = (
     candidatesToFallback: FinalistCandidate[],
@@ -535,13 +578,22 @@ export async function evaluateIncrementalJudgeBatches(
           validation.qualifications.get(candidate.candidateId);
         if (!qualification) return [];
         const lead = candidate.lead;
-        lead.qualification = qualification;
-        lead.whyThisLead = qualification.reason || outcome.reason;
-        lead.finalSelectionScore = qualification.finalScore;
-        if (lead.scoreBreakdown) {
-          lead.scoreBreakdown.finalScore = qualification.finalScore;
+        applyQualification(lead, qualification, outcome.reason);
+        if (isCacheableFingerprint(reqFingerprint) && qualification.qualificationSource !== "deterministic") {
+          const identityKey = candidateVerdictKey(lead);
+          const evidenceHash = computeEvidenceHash(candidate.evidence);
+          if (identityKey && evidenceHash) {
+            upsertCandidateVerdict({
+              identityKey,
+              requirementHash: reqFingerprint,
+              verdict: "pass",
+              reason: qualification.reason,
+              evidenceHash,
+              qualification,
+              ttlDays: passVerdictTtlDays,
+            });
+          }
         }
-        lead.scoreOverride = qualification.finalScore;
         return [lead];
       });
 

@@ -195,7 +195,15 @@ export function parseDeterministicLinkedInProfile(
       headline = second;
     } else {
       // "Jane Doe - Acme Corp": the second field is usually the employer, not a title.
-      return null;
+      // P4: parse "Name - Company" without LLM only when snippet confirms an associated role word near the name; otherwise defer to LLM, preserving commit 739cece safeguards and tests.
+      const snippet = cleanSnippetNoise(item?.content || item?.raw_content || "");
+      const roleMatch = snippet.match(ROLE_WORD_REGEX);
+      if (roleMatch && snippet.toLowerCase().includes(fullName.toLowerCase())) {
+        currentCompany = second;
+        headline = roleMatch[0];
+      } else {
+        return null;
+      }
     }
   }
   const currentTitle = headline.split(/\s*[|\u00b7\u2022]\s*/)[0].trim();
@@ -939,6 +947,22 @@ export async function executeExtractStage(
     logEvent(
       `Round ${round}: capped extraction evidence to top ${neededEvidenceBlocks}/${evidenceBlocks.length} blocks (${isLateRoundDiet ? `late-round diet: target needed ${remainingToTarget}` : `pool needed: ${neededPoolRemaining}`}).`,
     );
+    const trimmedItems = activeCandidateItems.slice(neededEvidenceBlocks);
+    for (const item of trimmedItems) {
+      const url = item.url || "";
+      const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
+      const username = item._linkedinUsername || extractLinkedInUsername(url);
+      if (normalizedUrl) {
+        seenCandidateKeys.delete(normalizedUrl);
+        seenCandidateKeys.delete(`url:${normalizedUrl}`);
+        seenCandidateKeys.delete(`linkedin:${normalizedUrl}`);
+      }
+      if (username) {
+        seenCandidateKeys.delete(username);
+        seenCandidateKeys.delete(`linkedin:${username}`);
+      }
+      if (url) seenCandidateKeys.delete(url);
+    }
     evidenceBlocks = evidenceBlocks.slice(0, neededEvidenceBlocks);
   }
 

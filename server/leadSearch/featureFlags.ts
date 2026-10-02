@@ -93,9 +93,9 @@ export const isFlagEnabled = {
   transientNegativeCache: () => true,
 
   /**
-   * Optimization 7: Proactive Token Regulator & Load Shedder
-   * Meters sliding-window token rates to prevent 429 rate limits.
-   * Enforced globally via withSequentialLLMExecution; active unconditionally.
+   * Proactive Token Regulator: Graduated architectural invariant
+   * Monitors and regulates token consumption proactively across discovery stages.
+   * Permanent architectural invariant; active unconditionally.
    */
   proactiveTokenRegulator: () => true,
 
@@ -104,12 +104,6 @@ export const isFlagEnabled = {
    * Interleaves two-way triage and micro-batch qualification into the discovery loop.
    */
   progressiveQualification: () => readFlag('PROGRESSIVE_QUALIFICATION_ENABLED'),
-
-  /**
-   * Phase 1.5: Sharded LLM stage queues (strategist|extraction|judge).
-   * Default OFF for 100% backwards compatibility; enable via FEATURE_LLM_STAGE_QUEUES=true.
-   */
-  llmStageQueues: () => readFlag('FEATURE_LLM_STAGE_QUEUES', false),
 
   /**
    * Phase 4.2: Non-overlapping Beta-cost reward for adaptive scheduler.

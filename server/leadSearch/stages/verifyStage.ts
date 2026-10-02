@@ -160,6 +160,22 @@ export async function executeVerifyStage(
       continue;
     }
 
+    // P3: Deprioritize or drop non-LinkedIn leads before attribution unless accompanied by verified company domain
+    const hasLinkedIn = Boolean(
+      lead.contactDetails?.linkedinUrl ||
+      /linkedin\.com\/in\/[^/?#]+/i.test(lead.sourceUrl || "")
+    );
+    const hasCompanyDomain = Boolean(
+      lead.contactDetails?.website ||
+      lead.companyDomain ||
+      lead.companyEntityResolution?.companyDomain ||
+      lead.profile?.contactDetails?.website
+    );
+    if (!hasLinkedIn && !hasCompanyDomain) {
+      noteRejection("missing_identity", queryRun);
+      continue;
+    }
+
     const hasCompany = Boolean(
       (lead?.currentCompany || lead?.company || lead?.profile?.currentCompany || lead?.organization || "").trim() ||
       (lead?.companyEntityResolution?.verified && lead?.companyEntityResolution?.companyName)

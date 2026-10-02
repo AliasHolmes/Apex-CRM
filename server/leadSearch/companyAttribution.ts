@@ -1,7 +1,6 @@
 import {
   openAIStructured,
   Type,
-  runWithLlmStageLane,
 } from "../services/llm.js";
 import {
   verifyEvidencePassage,
@@ -227,6 +226,10 @@ export type GatedCompanyAttributionOptions = {
     systemInstruction?: string,
     options?: any,
   ) => Promise<any>;
+  sessionId?: string;
+  round?: number;
+  recordTrace?: (trace: any) => void;
+  concurrency?: number;
 };
 
 const companyAttributionCache = new Map<
@@ -425,9 +428,18 @@ export async function runGatedCompanyAttribution(
     ),
   );
   const structuredFn = options.openAIStructured || openAIStructured;
+  const batches: Array<Array<[string, CandidateTarget[]]>> = [];
   for (let i = 0; i < uniqueCompanyEntries.length; i += BATCH_SIZE) {
-    if (options.signal?.aborted) break;
-    const batch = uniqueCompanyEntries.slice(i, i + BATCH_SIZE);
+    batches.push(uniqueCompanyEntries.slice(i, i + BATCH_SIZE));
+  }
+
+  const attributionConcurrency = Math.max(1, Math.min(2, options.concurrency || 2));
+  let nextBatchIdx = 0;
+  const workers = Array.from({ length: Math.min(attributionConcurrency, batches.length) }, async () => {
+    while (nextBatchIdx < batches.length) {
+      if (options.signal?.aborted) break;
+      const currentIdx = nextBatchIdx++;
+      const batch = batches[currentIdx];
 
     const promptText = [
       `Search brief: "${contract.brief}"`,
@@ -465,24 +477,24 @@ export async function runGatedCompanyAttribution(
 
     try {
       const dynamicAttributionTokens = Math.max(1200, batch.length * 400);
-      const response = (await runWithLlmStageLane("judge", () =>
-        structuredFn(
-          promptText,
-          bulkCompanyAttributionSchema,
-          COMPANY_ATTRIBUTION_SYSTEM_PROMPT,
-          {
-            temperature: 0.0,
-            maxTokens: dynamicAttributionTokens,
-            signal: options.signal,
-            circuitBreaker: options.circuitBreaker,
-            timeoutMs: options.timeoutMs ?? 45_000,
-            metadata: {
-              stage: "company_attribution",
-              itemCount: batch.length,
-              promptSize: promptText.length,
-            },
+      const response = (await structuredFn(
+        promptText,
+        bulkCompanyAttributionSchema,
+        COMPANY_ATTRIBUTION_SYSTEM_PROMPT,
+        {
+          temperature: 0.0,
+          maxTokens: dynamicAttributionTokens,
+          signal: options.signal,
+          circuitBreaker: options.circuitBreaker,
+          timeoutMs: options.timeoutMs ?? 45_000,
+          metadata: {
+            stage: "company_attribution",
+            sessionId: options.sessionId,
+            round: options.round,
+            itemCount: batch.length,
+            promptSize: promptText.length,
           },
-        ),
+        },
       )) as { attributions?: any[] } | null | undefined;
 
       const rawAttributions = Array.isArray(response?.attributions)
@@ -572,7 +584,22 @@ export async function runGatedCompanyAttribution(
         );
       }
     }
-  }
+    
+    if (options.recordTrace) {
+      options.recordTrace({
+        phase: "company_attribution",
+        operation: "batch_complete",
+        status: "success",
+        round: options.round,
+        metadata: {
+          sessionId: options.sessionId,
+          batchSize: batch.length,
+        }
+      });
+    }
+    }
+  });
+  await Promise.all(workers);
 
   return result;
 }

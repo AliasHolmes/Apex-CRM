@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import "dotenv/config";
+import dotenv from "dotenv";
+if (!process.env.NODE_TEST_CONTEXT) {
+  dotenv.config();
+}
 import http from "http";
 import express from "express";
 import compression from "compression";

@@ -1,5 +1,4 @@
 import crypto from "crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   ApiKeyPool,
   KeyRotationError,
@@ -49,6 +48,7 @@ export type LLMProviderAttempt = {
   status: "success" | "error" | "skipped";
   statusCode?: number;
   latencyMs: number;
+  queueWaitMs?: number;
   error?: string;
 };
 
@@ -139,11 +139,6 @@ const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_ATRIA_BASE = "https://api.atria-asi.ai/v1";
 const DEFAULT_ATRIA_MODEL = "Atria-Dawn-Preview";
 
-const DEFAULT_TOKEN_HARBOR_BASE = "https://tokenharbor.ai/v1";
-const DEFAULT_TOKEN_HARBOR_MODEL = "deepseek-v4.1-flash:free";
-// NOTE: the Token Harbor API key is intentionally NOT defaulted here. It must come from
-// process.env.TOKEN_HARBOR_API_KEY (see buildProviders below). A key was previously hardcoded
-// as a source literal - it was never read, but it remains in git history and must be rotated.
 // Auto-reverts after exactly 7 days from configuration (Sep 19, 2026 00:00:00 +06:00)
 const DEFAULT_TOKEN_HARBOR_EXPIRATION_MS = new Date(
   "2026-10-19T00:00:00+06:00",
@@ -181,7 +176,10 @@ function cleanBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function getOpenRouterHeaders(): Record<string, string> {
+function getOpenRouterHeaders(baseUrl?: string): Record<string, string> {
+  if (baseUrl && !baseUrl.includes("openrouter.ai")) {
+    return {};
+  }
   const headers: Record<string, string> = {
     "X-Title": process.env.OPENROUTER_APP_TITLE || "Apex CRM",
   };
@@ -222,32 +220,17 @@ function getAtriaProvider(): LLMProvider | null {
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
-  const tokenHarborKey = process.env.TOKEN_HARBOR_API_KEY || "";
-  const tokenHarborProvider: LLMProvider | null =
-    isTokenHarborActive() && tokenHarborKey
-      ? {
-          id: "tokenharbor",
-          name: "Token Harbor (DeepSeek V4.1 Flash)",
-          baseUrl: cleanBaseUrl(
-            process.env.TOKEN_HARBOR_BASE || DEFAULT_TOKEN_HARBOR_BASE,
-          ),
-          model: process.env.TOKEN_HARBOR_MODEL || DEFAULT_TOKEN_HARBOR_MODEL,
-          apiKey: tokenHarborKey,
-        }
-      : null;
-
   const atria = getAtriaProvider();
   const atriaPromoted = isAtriaPromoted();
 
-  if (atria && atriaPromoted) {
-    // 1) Atria (Primary)
+  // Tier 1: Primary Pair (Atria Primary, Byesu Secondary)
+  if (atria && (atriaPromoted || !process.env.BYESU_API_KEY && !process.env.OPENAI_API_KEY)) {
     direct.push(atria);
-  } else if (tokenHarborProvider && !atriaPromoted) {
-    // Legacy trial: Token Harbor ahead of Byesu only when Atria is not promoted
-    direct.push(tokenHarborProvider);
+  } else if (atria) {
+    // Default: Atria is primary
+    direct.push(atria);
   }
 
-  // 2) Byesu (Secondary when Atria is primary)
   direct.push({
     id: "primary",
     name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
@@ -256,19 +239,7 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
     apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
   });
 
-  // 3) OpenRouter / Mistral (Tertiary)
-  direct.push({
-    id: "openrouter",
-    name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
-    baseUrl: cleanBaseUrl(
-      process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE,
-    ),
-    model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
-    apiKey: process.env.OPENROUTER_API_KEY || "",
-    headers: getOpenRouterHeaders(),
-  });
-
-  // 4) Groq (Quaternary)
+  // Tier 2: Failsafe Pair (Groq Failsafe 1, OpenRouter/Mistral Failsafe 2)
   direct.push({
     id: "groq",
     name: "Groq",
@@ -277,15 +248,17 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
     apiKey: process.env.GROQ_API_KEY || "",
   });
 
-  // 5) TokenHarbor / others (quinary when Atria is promoted)
-  if (tokenHarborProvider && atriaPromoted) {
-    direct.push(tokenHarborProvider);
-  }
-
-  // Atria appended last when not promoted
-  if (atria && !atriaPromoted) {
-    direct.push(atria);
-  }
+  const openRouterBase = cleanBaseUrl(
+    process.env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE,
+  );
+  direct.push({
+    id: "openrouter",
+    name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
+    baseUrl: openRouterBase,
+    model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+    apiKey: process.env.OPENROUTER_API_KEY || "",
+    headers: getOpenRouterHeaders(openRouterBase),
+  });
 
   return direct;
 }
@@ -300,8 +273,27 @@ function getConfiguredLLMProviders(): LLMProvider[] {
   );
 }
 
-export const GROQ_MAX_OUTPUT_TOKENS = 950;
+export const GROQ_MAX_OUTPUT_TOKENS = Number(
+  process.env.GROQ_MAX_OUTPUT_TOKENS || 950,
+);
 const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i;
+
+export const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
+  strategist: "medium",
+  extraction: "low",
+  intent_signals: "low",
+  company_attribution: "low",
+  judge: "medium",
+  contract: "medium",
+  post_intent: "low",
+  enrich: "low",
+};
+
+let atriaRejectsReasoningEffort = false;
+
+export function resetAtriaReasoningEffortRefusal(): void {
+  atriaRejectsReasoningEffort = false;
+}
 
 export function isReasoningProvider(provider: { id: string; model: string }): boolean {
   return provider.id === "atria" || REASONING_MODEL_REGEX.test(provider.model);
@@ -315,8 +307,8 @@ export function parseFastProviderIds(raw?: string): string[] {
 }
 
 /**
- * The "fast" tier only reorders when the user names fast providers
- * (LLM_FAST_PROVIDER_IDS). Otherwise every tier keeps the configured priority.
+ * Reorders within tiers only: Primary tier (Atria, Byesu) remains primary,
+ * Failsafe tier (Groq, OpenRouter) remains failsafe.
  */
 export function orderProvidersForTier<T extends { id: string }>(
   providers: T[],
@@ -435,45 +427,8 @@ export const ATRIA_MAX_TIMEOUT_MS = 600_000;
  */
 export type LLMStageLane = 'strategist' | 'extraction' | 'judge' | 'general';
 
-function isStageQueuesEnabled(): boolean {
-  const raw = String(process.env.FEATURE_LLM_STAGE_QUEUES || '').trim().toLowerCase();
-  return ['1', 'true', 'yes', 'on'].includes(raw);
-}
-
-function getMaxLlmConcurrency(): number {
-  const configured = Number(process.env.LLM_CONCURRENT_SLOTS);
-  return Number.isFinite(configured) && configured >= 1
-    ? Math.min(Math.floor(configured), 4)
-    : 1;
-}
-
-function getLaneConcurrency(): number {
-  const configured = Number(process.env.LLM_LANE_SLOTS);
-  return Number.isFinite(configured) && configured >= 1
-    ? Math.min(Math.floor(configured), 2)
-    : 2;
-}
-
-function getGlobalShardedCap(): number {
-  const configured = Number(process.env.LLM_GLOBAL_SLOTS);
-  return Number.isFinite(configured) && configured >= 1
-    ? Math.min(Math.floor(configured), 4)
-    : 4;
-}
-
-// AsyncLocalStorage lane context (falls back to 'general' outside a lane scope)
-const laneStorage = new AsyncLocalStorage<LLMStageLane>();
-
-export function runWithLlmStageLane<T>(lane: LLMStageLane, fn: () => Promise<T>): Promise<T> {
-  return laneStorage.run(lane, fn);
-}
-
-function currentLane(): LLMStageLane {
-  try {
-    return laneStorage.getStore() || 'general';
-  } catch {
-    return 'general';
-  }
+export function runWithLlmStageLane<T>(_lane: LLMStageLane, fn: () => Promise<T>): Promise<T> {
+  return fn();
 }
 
 let activeLlmSlots = 0;
@@ -482,13 +437,6 @@ const llmWaitQueue: Array<{
   onAbort: () => void;
   refreshTimer?: () => void;
 }> = [];
-
-// Sharded lane state (only used when FEATURE_LLM_STAGE_QUEUES=true)
-const laneActive: Record<LLMStageLane, number> = { strategist: 0, extraction: 0, judge: 0, general: 0 };
-const laneQueues: Record<LLMStageLane, Array<{ run: () => void; onAbort: () => void; refreshTimer?: () => void }>> = {
-  strategist: [], extraction: [], judge: [], general: [],
-};
-let shardedGlobalActive = 0;
 
 function resolveDynamicQueueTimeoutMs(): number {
   const configured = Number(process.env.LLM_QUEUE_TIMEOUT_MS);
@@ -507,8 +455,7 @@ function resolveDynamicQueueTimeoutMs(): number {
 }
 
 function pumpLlmQueue() {
-  const maxSlots = getMaxLlmConcurrency();
-  while (activeLlmSlots < maxSlots && llmWaitQueue.length > 0) {
+  while (activeLlmSlots < 1 && llmWaitQueue.length > 0) {
     const next = llmWaitQueue.shift();
     if (next) {
       activeLlmSlots++;
@@ -520,42 +467,10 @@ function pumpLlmQueue() {
   }
 }
 
-function pumpShardedQueues() {
-  const laneCap = getLaneConcurrency();
-  const globalCap = getGlobalShardedCap();
-  const lanes: LLMStageLane[] = ['strategist', 'extraction', 'judge', 'general'];
-  let progressed = true;
-  while (progressed && shardedGlobalActive < globalCap) {
-    progressed = false;
-    for (const lane of lanes) {
-      if (shardedGlobalActive >= globalCap) break;
-      if (laneActive[lane] >= laneCap) continue;
-      const next = laneQueues[lane].shift();
-      if (next) {
-        laneActive[lane]++;
-        shardedGlobalActive++;
-        progressed = true;
-        next.run();
-      }
-    }
-  }
-  for (const lane of lanes) {
-    for (const waiter of laneQueues[lane]) {
-      waiter.refreshTimer?.();
-    }
-  }
-}
-
-function releaseShardedSlot(lane: LLMStageLane) {
-  laneActive[lane] = Math.max(0, laneActive[lane] - 1);
-  shardedGlobalActive = Math.max(0, shardedGlobalActive - 1);
-  pumpShardedQueues();
-}
-
 export function withSequentialLLMExecution<T>(
   task: () => Promise<T>,
   signal?: AbortSignal | null,
-  laneOverride?: LLMStageLane,
+  _laneOverride?: LLMStageLane,
   providerId?: string,
 ): Promise<T> {
   if (signal?.aborted) {
@@ -567,10 +482,6 @@ export function withSequentialLLMExecution<T>(
   // already guarantees per-provider isolation and capacity bounds.
   if (providerId) {
     return task();
-  }
-  // Sharded path behind feature flag; default preserves 100% legacy single-mutex behavior.
-  if (isStageQueuesEnabled()) {
-    return withShardedLLMExecution(task, signal, laneOverride || currentLane());
   }
 
   return new Promise<T>((resolve, reject) => {
@@ -650,94 +561,11 @@ export function withSequentialLLMExecution<T>(
       signal.addEventListener("abort", handleAbort, { once: true });
     }
 
-    const maxSlots = getMaxLlmConcurrency();
-    if (activeLlmSlots < maxSlots) {
+    if (activeLlmSlots < 1) {
       activeLlmSlots++;
       executeTask();
     } else {
       llmWaitQueue.push(waitEntry);
-    }
-  });
-}
-
-function withShardedLLMExecution<T>(
-  task: () => Promise<T>,
-  signal?: AbortSignal | null,
-  lane: LLMStageLane = 'general',
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    let waitEntry: { run: () => void; onAbort: () => void; refreshTimer?: () => void } | null = null;
-    let queueTimer: NodeJS.Timeout | null = null;
-
-    const armQueueTimer = () => {
-      if (settled) return;
-      if (queueTimer) clearTimeout(queueTimer);
-      const queueTimeoutMs = resolveDynamicQueueTimeoutMs();
-      queueTimer = setTimeout(() => {
-        if (settled) return;
-        handleAbort("LLM request timed out waiting in execution queue.");
-      }, queueTimeoutMs);
-    };
-    armQueueTimer();
-
-    const cleanupAbort = () => {
-      if (queueTimer) {
-        clearTimeout(queueTimer);
-        queueTimer = null;
-      }
-      if (signal && waitEntry?.onAbort) {
-        signal.removeEventListener("abort", waitEntry.onAbort);
-      }
-    };
-
-    const handleAbort = (reason?: unknown) => {
-      if (settled) return;
-      settled = true;
-      cleanupAbort();
-      const idx = laneQueues[lane].findIndex((entry) => entry === waitEntry);
-      if (idx !== -1) laneQueues[lane].splice(idx, 1);
-      const msg = typeof reason === "string" ? reason : "LLM request was aborted by caller.";
-      const abortErr = new Error(msg);
-      abortErr.name = msg.includes("timed out") ? "TimeoutError" : "AbortError";
-      reject(abortErr);
-    };
-
-    const executeTask = async () => {
-      cleanupAbort();
-      if (settled || signal?.aborted) {
-        releaseShardedSlot(lane);
-        if (!settled) {
-          settled = true;
-          const abortErr = new Error("LLM request was aborted by caller.");
-          abortErr.name = "AbortError";
-          reject(abortErr);
-        }
-        return;
-      }
-      try {
-        const result = await task();
-        settled = true;
-        resolve(result);
-      } catch (err) {
-        settled = true;
-        reject(err);
-      } finally {
-        releaseShardedSlot(lane);
-      }
-    };
-
-    waitEntry = { run: executeTask, onAbort: handleAbort, refreshTimer: armQueueTimer };
-    if (signal) signal.addEventListener("abort", handleAbort, { once: true });
-
-    const laneCap = getLaneConcurrency();
-    const globalCap = getGlobalShardedCap();
-    if (laneActive[lane] < laneCap && shardedGlobalActive < globalCap) {
-      laneActive[lane]++;
-      shardedGlobalActive++;
-      executeTask();
-    } else {
-      laneQueues[lane].push(waitEntry);
     }
   });
 }
@@ -1085,6 +913,10 @@ export function getProviderActiveSlots(providerId: string): number {
   return providerActiveSlots.get(providerId) || 0;
 }
 
+export function isProviderSlotFree(providerId: string): boolean {
+  return getProviderActiveSlots(providerId) < getProviderConcurrencyLimit(providerId);
+}
+
 export function acquireProviderSlot(providerId: string): void {
   const current = providerActiveSlots.get(providerId) || 0;
   providerActiveSlots.set(providerId, current + 1);
@@ -1101,38 +933,49 @@ type ProviderSlotWaiter = {
   resolve: (provider: LLMProvider) => void;
   reject: (error: Error) => void;
   signal?: AbortSignal | null;
+  isInteractive?: boolean;
+  enqueuedAt: number;
   cleanup?: () => void;
 };
 
 const providerSlotWaitQueue: ProviderSlotWaiter[] = [];
+let isPumpingSlots = false;
 
-function pumpProviderSlotWaitQueue(): void {
-  for (let i = 0; i < providerSlotWaitQueue.length; i++) {
-    const waiter = providerSlotWaitQueue[i];
-    if (waiter.signal?.aborted) continue;
-    const candidates = waiter.getCandidates();
-    const available = candidates.find(
-      (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
-    );
-    if (available) {
-      providerSlotWaitQueue.splice(i, 1);
-      i--;
-      waiter.cleanup?.();
-      acquireProviderSlot(available.id);
-      waiter.resolve(available);
+export function pumpProviderSlotWaitQueue(): void {
+  if (isPumpingSlots) return;
+  isPumpingSlots = true;
+  try {
+    for (let i = 0; i < providerSlotWaitQueue.length; i++) {
+      const waiter = providerSlotWaitQueue[i];
+      if (waiter.signal?.aborted) continue;
+      const candidates = waiter.getCandidates();
+      const available = candidates.find(
+        (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
+      );
+      if (available) {
+        providerSlotWaitQueue.splice(i, 1);
+        i--;
+        waiter.cleanup?.();
+        acquireProviderSlot(available.id);
+        waiter.resolve(available);
+      }
     }
+  } finally {
+    isPumpingSlots = false;
   }
 }
 
-function waitForProviderSlot(
+export function waitForProviderSlot(
   getCandidates: () => LLMProvider[],
   signal?: AbortSignal | null,
   timeoutMs = resolveDynamicQueueTimeoutMs(),
+  isInteractive = false,
 ): Promise<LLMProvider> {
   return new Promise<LLMProvider>((resolve, reject) => {
     let settled = false;
     let timer: NodeJS.Timeout | null = null;
     let onAbort: (() => void) | null = null;
+    const enqueuedAt = Date.now();
 
     const cleanup = () => {
       if (timer) {
@@ -1193,17 +1036,171 @@ function waitForProviderSlot(
         reject(err);
       },
       signal,
+      isInteractive,
+      enqueuedAt,
       cleanup,
     };
 
-    providerSlotWaitQueue.push(waiter);
+    if (isInteractive) {
+      const insertIdx = providerSlotWaitQueue.findIndex((w) => !w.isInteractive);
+      if (insertIdx === -1) {
+        providerSlotWaitQueue.push(waiter);
+      } else {
+        providerSlotWaitQueue.splice(insertIdx, 0, waiter);
+      }
+    } else {
+      providerSlotWaitQueue.push(waiter);
+    }
   });
+}
+
+export type ProviderHealthStatus = "healthy" | "cooling_down" | "out" | "half_open";
+
+export type ProviderHealthRecord = {
+  status: ProviderHealthStatus;
+  consecutiveFatalFailures: number;
+  outUntil?: number;
+  cooldownUntil?: number;
+  outReason?: string;
+  halfOpenActive?: boolean;
+};
+
+export const providerHealthState = new Map<string, ProviderHealthRecord>();
+
+export function getProviderHealth(providerId: string): ProviderHealthRecord {
+  let record = providerHealthState.get(providerId);
+  if (!record) {
+    record = {
+      status: "healthy",
+      consecutiveFatalFailures: 0,
+    };
+    providerHealthState.set(providerId, record);
+  }
+  const now = Date.now();
+  if (record.status === "out" && record.outUntil && now >= record.outUntil) {
+    record.status = "half_open";
+    record.halfOpenActive = false;
+  } else if (record.status === "cooling_down" && record.cooldownUntil && now >= record.cooldownUntil) {
+    record.status = "healthy";
+    record.cooldownUntil = undefined;
+  }
+  return record;
+}
+
+export function isProviderOut(providerId: string, breaker?: LLMSessionCircuitBreaker): boolean {
+  if (breaker?.disabledProviderIds?.has(providerId as any)) return true;
+  const health = getProviderHealth(providerId);
+  if (health.status === "out") return true;
+  if (health.status === "half_open" && health.halfOpenActive) return true;
+  const cooldownUntil = providerCooldowns.get(providerId);
+  if (cooldownUntil && Date.now() < cooldownUntil) {
+    return true;
+  }
+  return false;
+}
+
+export function getProviderHealthSummaries(): Record<
+  string,
+  { status: ProviderHealthStatus; consecutiveFatalFailures: number; outReason?: string }
+> {
+  const summaries: Record<string, any> = {};
+  for (const p of getDirectLLMProviderCandidates()) {
+    const h = getProviderHealth(p.id);
+    summaries[p.id] = {
+      status: h.status,
+      consecutiveFatalFailures: h.consecutiveFatalFailures,
+      outReason: h.outReason,
+    };
+  }
+  return summaries;
+}
+
+export function recordProviderSuccess(providerId: string, breaker?: LLMSessionCircuitBreaker): void {
+  const record = getProviderHealth(providerId);
+  record.status = "healthy";
+  record.consecutiveFatalFailures = 0;
+  record.outUntil = undefined;
+  record.cooldownUntil = undefined;
+  record.outReason = undefined;
+  record.halfOpenActive = false;
+  providerCooldowns.delete(providerId);
+  if (breaker) {
+    const pid = providerId as LLMProvider["id"];
+    breaker.disabledProviderIds.delete(pid);
+    const prev = Number(breaker.failureCounts[pid] || 0);
+    breaker.failureCounts[pid] = Math.max(0, prev - 1);
+  }
+}
+
+export function recordProviderFailure(providerId: string, error: Error, breaker?: LLMSessionCircuitBreaker): void {
+  const record = getProviderHealth(providerId);
+  const status = error instanceof LLMProviderError ? error.status : undefined;
+  const isAuth = status === 401 || status === 403;
+  const isQuota = isExhaustedQuotaError(
+    status,
+    error.message,
+    error instanceof LLMProviderError ? error.errorCode : undefined,
+  );
+  const isFatal = isAuth || isQuota || isCircuitBreakingProviderFailure(error);
+
+  if (isAuth || isQuota) {
+    record.status = "out";
+    record.outUntil = Date.now() + 24 * 3600 * 1000;
+    record.outReason = isAuth ? "Authentication failure" : "Quota exhausted (429 code 1300)";
+    record.halfOpenActive = false;
+    if (breaker) breaker.disabledProviderIds.add(providerId as LLMProvider["id"]);
+    console.warn(`[llm] ${providerId} marked OUT: ${record.outReason}.`);
+    return;
+  }
+
+  if (isFatal) {
+    const pid = providerId as LLMProvider["id"];
+    if (breaker) {
+      breaker.failureCounts[pid] =
+        (breaker.failureCounts[pid] || 0) + 1;
+    }
+    record.consecutiveFatalFailures++;
+    if (record.status === "half_open") {
+      record.status = "out";
+      record.outUntil = Date.now() + 60_000;
+      record.outReason = `Half-open probe failed: ${truncateProviderError(error.message)}`;
+      record.halfOpenActive = false;
+      if (breaker) breaker.disabledProviderIds.add(pid);
+      console.warn(`[llm] ${providerId} probe failed; staying OUT for 60s.`);
+      return;
+    }
+    const threshold = breaker?.failureThreshold || 3;
+    if (record.consecutiveFatalFailures >= threshold) {
+      record.status = "out";
+      record.outUntil = Date.now() + 60_000;
+      record.outReason = `${record.consecutiveFatalFailures} consecutive fatal failures`;
+      record.halfOpenActive = false;
+      if (breaker) breaker.disabledProviderIds.add(pid);
+      console.warn(
+        `[llm] ${providerId} reached failure threshold (${record.consecutiveFatalFailures}); marked OUT for 60s re-test.`,
+      );
+      return;
+    }
+  }
+
+  const isFullRequestTimeout = !hasUntrustedMessage(error) && /timed out after/i.test(error.message);
+  const cooldownMs = isFullRequestTimeout ? 5_000 : 15_000;
+  record.status = "cooling_down";
+  record.cooldownUntil = Date.now() + cooldownMs;
+  providerCooldowns.set(providerId, Date.now() + cooldownMs);
+  const timer = setTimeout(() => pumpProviderSlotWaitQueue(), cooldownMs);
+  if (typeof timer.unref === "function") timer.unref();
 }
 
 export function clearProviderCooldowns(): void {
   providerCooldowns.clear();
-  providerActiveSlots.clear();
-  providerSlotWaitQueue.length = 0;
+  for (const health of providerHealthState.values()) {
+    if (health.status === "cooling_down") {
+      health.status = "healthy";
+      health.cooldownUntil = undefined;
+    }
+  }
+  pumpProviderSlotWaitQueue();
 }
 
 async function withProviderFallback<T>(
@@ -1213,105 +1210,75 @@ async function withProviderFallback<T>(
   ) => Promise<T>,
   executionOptions: LLMExecutionOptions = {},
 ): Promise<T> {
+  const startedCallAt = Date.now();
   if (executionOptions.signal?.aborted) {
     const cancelError = new Error("LLM request was aborted by caller.");
     cancelError.name = "AbortError";
     throw cancelError;
   }
 
-  let providers = orderProvidersForTier(
-    getConfiguredLLMProviders(),
-    executionOptions.routingTier,
-    parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS),
-  );
-  if (providers.length === 0) {
+  const allConfigured = getConfiguredLLMProviders();
+  if (allConfigured.length === 0) {
     throw new Error(
-      "No LLM provider available. Configure ATRIA_API_KEY, OPENAI_API_KEY/BYESU_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY in .env.",
+      "No LLM provider available. Configure ATRIA_API_KEY, OPENAI_API_KEY/BYESU_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in .env.",
     );
   }
 
-  // Pre-emit skipped events for circuit-broken providers
-  if (executionOptions.circuitBreaker) {
-    for (const provider of providers) {
-      if (executionOptions.circuitBreaker.disabledProviderIds.has(provider.id)) {
-        executionOptions.onProviderAttempt?.({
-          providerId: provider.id,
-          provider: provider.name,
-          model: provider.model,
-          status: "skipped",
-          latencyMs: 0,
-          error: "Session circuit breaker open",
-        });
-      }
+  const fastIds = parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
+  const primaryTier = orderProvidersForTier(
+    allConfigured.filter((p) => p.id === "atria" || p.id === "primary"),
+    executionOptions.routingTier,
+    fastIds,
+  );
+  const failsafeTier = orderProvidersForTier(
+    allConfigured.filter((p) => p.id === "groq" || p.id === "openrouter"),
+    executionOptions.routingTier,
+    fastIds,
+  );
+
+  const isBackgroundSession = Boolean(executionOptions.metadata?.sessionId);
+  const isInteractive = Boolean(
+    executionOptions.metadata?.isInteractive ||
+    executionOptions.metadata?.priority === "high",
+  );
+
+  const maxAtriaCeiling = Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
+    ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
+    : ATRIA_MAX_TIMEOUT_MS;
+  const overallCallBudgetMs = executionOptions.timeoutMs
+    ? executionOptions.timeoutMs * 2
+    : maxAtriaCeiling * 2;
+
+  let executionStartedAt = startedCallAt;
+
+  const checkCallBudget = () => {
+    if (Date.now() - executionStartedAt > overallCallBudgetMs) {
+      const budgetErr = new Error(`LLM call exceeded overall time budget of ${Math.round(overallCallBudgetMs / 1000)}s.`);
+      budgetErr.name = "TimeoutError";
+      (budgetErr as any).isNonRetryable = true;
+      (budgetErr as any).isFatalTimeout = true;
+      throw budgetErr;
     }
-  }
-
-  const failures: Error[] = [];
-  const triedProviderIds = new Set<string>();
-
-  const getUntriedEligibleProviders = (): LLMProvider[] => {
-    return providers.filter((p) => {
-      if (triedProviderIds.has(p.id)) return false;
-      if (executionOptions.circuitBreaker?.disabledProviderIds.has(p.id)) return false;
-      const cooldownUntil = providerCooldowns.get(p.id);
-      if (cooldownUntil) {
-        if (Date.now() < cooldownUntil) return false;
-        providerCooldowns.delete(p.id);
-      }
-      return true;
-    });
   };
 
-  while (true) {
-    if (executionOptions.signal?.aborted) {
-      const cancelError = new Error("LLM request was aborted by caller.");
-      cancelError.name = "AbortError";
-      throw cancelError;
-    }
-
-    const eligible = getUntriedEligibleProviders();
-    if (eligible.length === 0) {
-      break;
-    }
-
-    // Check if any untried eligible provider has an immediate slot available (in priority order: Atria, Byesu, etc.)
-    let selectedProvider = eligible.find(
-      (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
-    );
-
-    if (selectedProvider) {
-      acquireProviderSlot(selectedProvider.id);
-    } else {
-      // All untried eligible providers are currently processing concurrent requests.
-      // Wait for a slot to free up among the untried eligible candidates.
-      selectedProvider = await waitForProviderSlot(
-        getUntriedEligibleProviders,
-        executionOptions.signal,
-      );
-    }
-
-    triedProviderIds.add(selectedProvider.id);
-    const provider = selectedProvider;
-    const startedAt = Date.now();
+  const executeAttempt = async (
+    provider: LLMProvider,
+    queueWaitMs = 0,
+  ): Promise<{ ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean }> => {
+    checkCallBudget();
+    const attemptStartedAt = Date.now();
     let attemptUsage: LLMUsage | undefined;
-    const providerExecutionOptions: LLMExecutionOptions = {
+    const opts: LLMExecutionOptions = {
       ...executionOptions,
       onUsage: (usage) => {
         attemptUsage = usage;
         executionOptions.onUsage?.(usage);
       },
     };
+
     try {
-      const result = await operation(provider, providerExecutionOptions);
-      if (executionOptions.circuitBreaker) {
-        const prevFailures = Number(
-          executionOptions.circuitBreaker.failureCounts[provider.id] || 0,
-        );
-        executionOptions.circuitBreaker.failureCounts[provider.id] = Math.max(
-          0,
-          prevFailures - 1,
-        );
-      }
+      const val = await operation(provider, opts);
+      recordProviderSuccess(provider.id, executionOptions.circuitBreaker);
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
@@ -1325,17 +1292,12 @@ async function withProviderFallback<T>(
             }
           : undefined,
         status: "success",
-        latencyMs: Date.now() - startedAt,
+        latencyMs: Date.now() - attemptStartedAt,
+        queueWaitMs,
       });
-      return result;
+      return { ok: true, val };
     } catch (error: any) {
-      const normalized =
-        error instanceof Error ? error : new Error(String(error));
-      failures.push(normalized);
-      // Only genuine cancellation aborts the whole fallback chain. This previously also
-      // matched `normalized.message.includes("aborted")`; because parse-failure messages
-      // echo model output, one completion containing the word "aborted" was enough to
-      // abandon every remaining provider instead of cascading to them.
+      const normalized = error instanceof Error ? error : new Error(String(error));
       const cause = (normalized as { cause?: { name?: string } }).cause;
       const isAbort =
         executionOptions.signal?.aborted ||
@@ -1345,207 +1307,249 @@ async function withProviderFallback<T>(
       if (isAbort) {
         throw normalized;
       }
-      const attemptElapsedMs = Date.now() - startedAt;
-      const expectedMaxTimeoutMs =
-        provider.id === "atria"
-          ? Math.max(
-              ATRIA_MAX_TIMEOUT_MS,
-              Number(process.env.ATRIA_MAX_TIMEOUT_MS || ATRIA_MAX_TIMEOUT_MS),
-            )
-          : Number(executionOptions.timeoutMs || 0) > 0
-            ? Number(executionOptions.timeoutMs)
-            : CLOUDFLARE_MAX_TIMEOUT_MS;
-      const isOsSleepWakeGap = attemptElapsedMs > expectedMaxTimeoutMs + 60_000;
-      if (isOsSleepWakeGap) {
-        console.warn(
-          `[llm] Detected OS sleep/wake suspension (${Math.round(attemptElapsedMs / 1000)}s elapsed on ${provider.name}); pausing 3s for network stack recovery before fallback...`,
-        );
-        await sleepWithSignal(3_000, executionOptions.signal);
-      }
-      const errStatus =
-        normalized instanceof LLMProviderError ? normalized.status : undefined;
+
+      const attemptElapsedMs = Date.now() - attemptStartedAt;
+      const errStatus = normalized instanceof LLMProviderError ? normalized.status : undefined;
+      const isTimeout =
+        !hasUntrustedMessage(normalized) &&
+        (/timed?\s*out|timeout/i.test(normalized.message) || errStatus === 524 || errStatus === 408);
+
       console.error(
-        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${provider.model}\x1b[0m \u00b7 \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m`,
+        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${provider.model}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m`,
       );
+
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
         model: provider.model,
         actualModel: attemptUsage?.model || provider.model,
         status: "error",
-        statusCode:
-          normalized instanceof LLMProviderError
-            ? normalized.status
-            : undefined,
+        statusCode: errStatus,
         latencyMs: attemptElapsedMs,
+        queueWaitMs,
         error: truncateProviderError(normalized.message),
       });
 
-      const breaker = executionOptions.circuitBreaker;
+      recordProviderFailure(provider.id, normalized, executionOptions.circuitBreaker);
+      return { ok: false, err: normalized, isTimeout };
+    }
+  };
 
-      if (provider.id === "tokenharbor") {
-        const statusCode =
-          normalized instanceof LLMProviderError ? normalized.status : undefined;
-        const msg = normalized.message || "";
-        const isAuthOrQuotaExhausted =
-          statusCode === 401 ||
-          statusCode === 402 ||
-          /balance_zero|unauthorized|invalid[_-]?api[_-]?key|payment required|confidence_level_required/i.test(msg);
-        if (isAuthOrQuotaExhausted) {
-          retireTokenHarborEarly();
-          if (breaker) {
-            breaker.disabledProviderIds.add("tokenharbor");
-          }
-          console.warn(
-            `[llm] Token Harbor trial ended or quota exhausted (${truncateProviderError(msg)}). Auto-retiring Token Harbor; cascading permanently to Byesu.`,
-          );
-        }
-      }
+  const acquireSlot = async (candidates: LLMProvider[]): Promise<{ provider: LLMProvider; queueWaitMs: number }> => {
+    const immediate = candidates.find(
+      (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
+    );
+    if (immediate) {
+      acquireProviderSlot(immediate.id);
+      return { provider: immediate, queueWaitMs: 0 };
+    }
+    const queueWaitStart = Date.now();
+    const provider = await waitForProviderSlot(
+      () => candidates.filter((p) => !isProviderOut(p.id)),
+      executionOptions.signal,
+      resolveDynamicQueueTimeoutMs(),
+      isInteractive,
+    );
+    executionStartedAt = Date.now();
+    return { provider, queueWaitMs: Date.now() - queueWaitStart };
+  };
 
-      const isExhaustedQuota =
-        (normalized instanceof LLMProviderError &&
-          isExhaustedQuotaError(
-            normalized.status,
-            normalized.message,
-            normalized.errorCode,
-          )) ||
-        isExhaustedQuotaError(
-          normalized instanceof LLMProviderError ? normalized.status : 429,
-          normalized.message,
-        );
+  let lastPrimaryError: Error | undefined;
 
-      if (isExhaustedQuota) {
-        if (breaker) {
-          breaker.disabledProviderIds.add(provider.id);
-        }
-        providerCooldowns.set(provider.id, Date.now() + 24 * 3600 * 1000);
-        console.warn(
-          `[llm] ${provider.name} disabled for the rest of this mining session due to exhausted quota (HTTP 429 code 1300).`,
-        );
-      } else if (
-        breaker &&
-        !isOsSleepWakeGap &&
-        isCircuitBreakingProviderFailure(normalized)
-      ) {
-        const failuresForProvider =
-          Number(breaker.failureCounts[provider.id] || 0) + 1;
-        breaker.failureCounts[provider.id] = failuresForProvider;
-        if (failuresForProvider >= breaker.failureThreshold) {
-          breaker.disabledProviderIds.add(provider.id);
-          console.warn(
-            `[llm] ${provider.name} disabled for the rest of this mining session after ${failuresForProvider} availability failures.`,
-          );
-        }
-      }
-      const isFullRequestTimeout =
-        !hasUntrustedMessage(normalized) &&
-        /LLM request timed out after/i.test(normalized.message);
-      const isTransientTimeoutOrRateLimit =
-        !isExhaustedQuota &&
-        !isOsSleepWakeGap &&
-        ((normalized instanceof LLMProviderError &&
-          (normalized.status === 429 || normalized.status === 524)) ||
-        (!hasUntrustedMessage(normalized) &&
-          (/429|rate[-_ ]?limit|524/i.test(normalized.message) ||
-           isFullRequestTimeout)));
-      if (isTransientTimeoutOrRateLimit) {
-        const configuredCooldown =
-          process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined
-            ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
-            : process.env.LLM_RATE_LIMIT_COOLDOWN_MS !== undefined
-              ? Number(process.env.LLM_RATE_LIMIT_COOLDOWN_MS)
-              : undefined;
-        const cooldownMs =
-          configuredCooldown !== undefined
-            ? configuredCooldown
-            : isFullRequestTimeout
-              ? 5_000
-              : process.env.LLM_MAX_RETRIES === "0"
-                ? 3_000
-                : 15_000;
-        if (cooldownMs > 0) {
-          providerCooldowns.set(provider.id, Date.now() + cooldownMs);
-          console.warn(
-            `[llm] ${provider.name} rate/gateway limited (${normalized.message}). Placed on ${Math.round(cooldownMs / 1000)}s temporary cooldown, cascading immediately to next provider...`,
-          );
-        }
-      }
-      console.warn(
-        `[llm] ${provider.name} failed; trying next configured provider if available: ${normalized.message}`,
+  // 1. PRIMARY TIER
+  if (primaryTier.length > 0) {
+    let eligiblePrimaries = primaryTier.filter((p) => !isProviderOut(p.id, executionOptions.circuitBreaker));
+
+    // Cooldown starvation recovery: if all primaries are filtered out only by temporary cooldowns,
+    // clear the cooldowns rather than starving with 0 attempts
+    if (eligiblePrimaries.length === 0) {
+      const nonBroken = primaryTier.filter(
+        (p) => !executionOptions.circuitBreaker?.disabledProviderIds.has(p.id as any) &&
+               getProviderHealth(p.id).status !== "out",
       );
+      if (nonBroken.length > 0) {
+        for (const p of nonBroken) {
+          providerCooldowns.delete(p.id);
+          const h = getProviderHealth(p.id);
+          if (h.status === "cooling_down") {
+            h.status = "healthy";
+            h.cooldownUntil = undefined;
+          }
+        }
+        eligiblePrimaries = nonBroken;
+      }
+    }
+
+    if (eligiblePrimaries.length > 0) {
+      const { provider: firstProvider, queueWaitMs: firstWaitMs } = await acquireSlot(eligiblePrimaries);
+      let firstResult: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
+      try {
+        firstResult = await executeAttempt(firstProvider, firstWaitMs);
+      } finally {
+        releaseProviderSlot(firstProvider.id);
+      }
+
+      if (firstResult.ok) {
+        return firstResult.val;
+      }
+      lastPrimaryError = firstResult.err;
+
+      // First primary failed. Check if partner in primary pair is available
+      const remainingPrimaries = primaryTier.filter(
+        (p) => p.id !== firstProvider.id && !isProviderOut(p.id, executionOptions.circuitBreaker),
+      );
+
+      if (remainingPrimaries.length > 0) {
+        const { provider: secondProvider, queueWaitMs: secondWaitMs } = await acquireSlot(remainingPrimaries);
+        let secondResult: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
+        try {
+          secondResult = await executeAttempt(secondProvider, secondWaitMs);
+        } finally {
+          releaseProviderSlot(secondProvider.id);
+        }
+
+        if (secondResult.ok) {
+          return secondResult.val;
+        }
+        lastPrimaryError = secondResult.err;
+
+        // Both primaries failed once on this call!
+        const stillEligible = primaryTier.filter((p) => !isProviderOut(p.id, executionOptions.circuitBreaker));
+        if (stillEligible.length > 0) {
+          // In-pair retry: send to the provider that did NOT time out
+          const didFirstTimeout = firstResult.isTimeout;
+          const didSecondTimeout = secondResult.isTimeout;
+
+          if (didFirstTimeout && didSecondTimeout) {
+            const bothTimeoutErr = new Error(
+              `Both primary providers timed out (${firstResult.err.message} | ${secondResult.err.message}).`,
+            );
+            (bothTimeoutErr as any).isNonRetryable = true;
+            (bothTimeoutErr as any).isFatalTimeout = true;
+            throw bothTimeoutErr;
+          }
+
+          const retryCandidate = !didFirstTimeout && stillEligible.some((p) => p.id === firstProvider.id)
+            ? firstProvider
+            : !didSecondTimeout && stillEligible.some((p) => p.id === secondProvider.id)
+              ? secondProvider
+              : stillEligible[0];
+
+          if (retryCandidate) {
+            console.warn(`[llm] Both primaries errored; sending 1 in-pair retry to ${retryCandidate.name}...`);
+            const { provider: retryProvider, queueWaitMs: retryWaitMs } = await acquireSlot([retryCandidate]);
+            let retryResult: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
+            try {
+              retryResult = await executeAttempt(retryProvider, retryWaitMs);
+            } finally {
+              releaseProviderSlot(retryProvider.id);
+            }
+
+            if (retryResult.ok) {
+              return retryResult.val;
+            }
+            lastPrimaryError = retryResult.err;
+          }
+        }
+      }
+    }
+  }
+
+  // At this point, all primary attempts for this call have failed (or all primaries are OUT).
+  const areAllPrimariesOut =
+    primaryTier.length > 0 &&
+    primaryTier.every((p) => isProviderOut(p.id, executionOptions.circuitBreaker));
+
+  // If this is a background mining session and NOT an interactive call:
+  if (isBackgroundSession && !isInteractive) {
+    if (areAllPrimariesOut) {
+      console.warn(
+        `[llm] Both Atria and Byesu are confirmed OUT. Background mining session pausing for primary pair recovery (failsafe reserved for interactive calls)...`,
+      );
+      const atriaHealth = getProviderHealth("atria");
+      const byesuHealth = getProviderHealth("primary");
+      const earliestReTest = Math.min(
+        atriaHealth.outUntil || Date.now() + 60_000,
+        byesuHealth.outUntil || Date.now() + 60_000,
+      );
+      const waitMs = Math.max(1_000, Math.min(60_000, earliestReTest - Date.now()));
+      await sleepWithSignal(waitMs, executionOptions.signal);
+      return withProviderFallback(operation, executionOptions);
+    }
+    // In background session: primaries had a per-call error, but are not permanently OUT.
+    // Throw back to engine rather than escalating to failsafe.
+    if (lastPrimaryError) {
+      throw lastPrimaryError;
+    }
+  }
+
+  // 2. FAILSAFE TIER (Interactive calls, or background mining sessions when failsafe allowed, or standalone / test calls)
+  let failsafeEligible = failsafeTier.filter(
+    (p) => !isProviderOut(p.id, executionOptions.circuitBreaker),
+  );
+
+  // Cooldown starvation recovery for failsafes
+  if (failsafeEligible.length === 0 && failsafeTier.length > 0) {
+    const nonBroken = failsafeTier.filter(
+      (p) => !executionOptions.circuitBreaker?.disabledProviderIds.has(p.id as any) &&
+             getProviderHealth(p.id).status !== "out",
+    );
+    if (nonBroken.length > 0) {
+      for (const p of nonBroken) {
+        providerCooldowns.delete(p.id);
+      }
+      failsafeEligible = nonBroken;
+    }
+  }
+
+  if (failsafeEligible.length === 0) {
+    if (lastPrimaryError) {
+      throw lastPrimaryError;
+    }
+    throw new Error(
+      "All configured LLM providers failed or are unavailable.",
+    );
+  }
+
+  if (primaryTier.length > 0) {
+    console.warn(`[llm] Primary providers unavailable. Failsafe activated.`);
+    void sendDirectLangfuseTrace({
+      stage: "failsafe_activation",
+      status: "error",
+      model: "system",
+      provider: "system",
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      latencyMs: 0,
+      errorMessage: "llm_failsafe_activated",
+      messages: [{ role: "system", content: "llm_failsafe_activated" }],
+    });
+  }
+
+  const failsafeFailures: Error[] = lastPrimaryError ? [lastPrimaryError] : [];
+
+  for (const failsafeProvider of failsafeEligible) {
+    checkCallBudget();
+    const { provider, queueWaitMs } = await acquireSlot([failsafeProvider]);
+    let result: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
+    try {
+      result = await executeAttempt(provider, queueWaitMs);
     } finally {
       releaseProviderSlot(provider.id);
     }
-  }
 
-  // Cooldown-starvation recovery: if all non-circuit-broken providers were skipped solely due to
-  // overlapping temporary cooldowns (failures.length === 0), reinstate the highest-priority
-  // available provider (e.g., Atria or Byesu) rather than failing with 0 attempts.
-  if (failures.length === 0) {
-    const fallbackCandidate = providers.find(
-      (p) => !executionOptions.circuitBreaker?.disabledProviderIds.has(p.id),
-    );
-    if (fallbackCandidate) {
-      providerCooldowns.delete(fallbackCandidate.id);
-      acquireProviderSlot(fallbackCandidate.id);
-      const startedAt = Date.now();
-      let attemptUsage: LLMUsage | undefined;
-      const providerExecutionOptions: LLMExecutionOptions = {
-        ...executionOptions,
-        onUsage: (usage) => {
-          attemptUsage = usage;
-          executionOptions.onUsage?.(usage);
-        },
-      };
-      try {
-        const result = await operation(
-          fallbackCandidate,
-          providerExecutionOptions,
-        );
-        executionOptions.onProviderAttempt?.({
-          providerId: fallbackCandidate.id,
-          provider: fallbackCandidate.name,
-          model: fallbackCandidate.model,
-          actualModel: attemptUsage?.model || fallbackCandidate.model,
-          tokens: attemptUsage
-            ? {
-                input: attemptUsage.inputTokens,
-                output: attemptUsage.outputTokens,
-                total: attemptUsage.totalTokens,
-              }
-            : undefined,
-          status: "success",
-          latencyMs: Date.now() - startedAt,
-        });
-        return result;
-      } catch (error: any) {
-        const normalized =
-          error instanceof Error ? error : new Error(String(error));
-        failures.push(normalized);
-        executionOptions.onProviderAttempt?.({
-          providerId: fallbackCandidate.id,
-          provider: fallbackCandidate.name,
-          model: fallbackCandidate.model,
-          actualModel: attemptUsage?.model || fallbackCandidate.model,
-          status: "error",
-          statusCode:
-            normalized instanceof LLMProviderError
-              ? normalized.status
-              : undefined,
-          latencyMs: Date.now() - startedAt,
-          error: truncateProviderError(normalized.message),
-        });
-      } finally {
-        releaseProviderSlot(fallbackCandidate.id);
-      }
+    if (result.ok) {
+      return result.val;
     }
+    failsafeFailures.push(result.err);
   }
 
   const failureErr = new Error(
-    `All configured LLM providers failed: ${formatProviderFailures(failures)}`,
+    `All configured LLM providers failed: ${formatProviderFailures(failsafeFailures)}`,
   );
-  if (failures.length > 0) {
-    const lastErr = failures[failures.length - 1];
+  if (failsafeFailures.length > 0) {
+    const lastErr = failsafeFailures[failsafeFailures.length - 1];
     (failureErr as any).cause = lastErr;
     if (lastErr instanceof LLMProviderError && lastErr.status) {
       (failureErr as any).status = lastErr.status;
@@ -1777,8 +1781,16 @@ async function sendChatCompletion(
     sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
   }
   const isReasoningCapable = REASONING_MODEL_REGEX.test(provider.model);
+  const isFailsafe = provider.id === "groq" || provider.id === "openrouter";
+  const stage = String(options?.metadata?.stage || "").toLowerCase();
+  const stageEffort = stage && TASK_REASONING_EFFORT[stage] ? TASK_REASONING_EFFORT[stage] : undefined;
   const effectiveReasoningEffort =
-    options?.reasoningEffort ?? (options?.responseFormat ? "low" : undefined);
+    options?.reasoningEffort ?? stageEffort ?? (options?.responseFormat ? "low" : undefined);
+  const shouldSendReasoningEffort =
+    !isFailsafe &&
+    Boolean(effectiveReasoningEffort) &&
+    (isAtriaTarget ? !atriaRejectsReasoningEffort : isReasoningCapable);
+
   const callStartedAt = Date.now();
   try {
     res = await fetchWithRetry(
@@ -1803,7 +1815,7 @@ async function sendChatCompletion(
           ...(options?.responseFormat
             ? { response_format: options.responseFormat }
             : {}),
-          ...(effectiveReasoningEffort && isReasoningCapable
+          ...(shouldSendReasoningEffort
             ? { reasoning_effort: effectiveReasoningEffort }
             : {}),
         }),
@@ -1846,27 +1858,101 @@ async function sendChatCompletion(
       const parsed = JSON.parse(rawText);
       errorCode = parsed?.error?.code ?? parsed?.code;
     } catch {}
-    const err = truncateProviderError(rawText);
-    void sendDirectLangfuseTrace({
-      sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
-      stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
-      round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-      model: provider.model,
-      provider: provider.name,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      latencyMs: Date.now() - callStartedAt,
-      status: "error",
-      errorMessage: err,
-      messages,
-    });
-    throw new LLMProviderError(
-      provider,
-      res.status,
-      `chat completion error ${res.status}: ${err}`,
-      errorCode,
-    );
+
+    // Lazy detection: if Atria rejects reasoning_effort with HTTP 400, cache the refusal and retry once without it
+    if (
+      isAtriaTarget &&
+      res.status === 400 &&
+      shouldSendReasoningEffort &&
+      /reasoning_effort|reasoning effort/i.test(rawText)
+    ) {
+      console.warn(
+        `[llm] Atria rejected reasoning_effort. Caching refusal and retrying without reasoning_effort...`,
+      );
+      atriaRejectsReasoningEffort = true;
+      try {
+        res = await fetchWithRetry(
+          `${provider.baseUrl}/chat/completions`,
+          {
+            method: "POST",
+            headers: {
+              ...(provider.headers || {}),
+              ...sessionHeaders,
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${provider.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: provider.model,
+              messages,
+              stream: false,
+              temperature:
+                options?.temperature !== undefined ? options.temperature : 0.1,
+              max_tokens: effectiveMaxTokens,
+              ...(options?.responseFormat
+                ? { response_format: options.responseFormat }
+                : {}),
+            }),
+            signal: options?.signal,
+          },
+          timeoutForCall,
+          options?.maxRetries,
+          isAtriaTarget,
+          provider.id,
+        );
+      } catch (retryError: any) {
+        if (retryError?.name === "AbortError" || options?.signal?.aborted) {
+          throw retryError;
+        }
+        void sendDirectLangfuseTrace({
+          sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+          stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+          round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+          model: provider.model,
+          provider: provider.name,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          latencyMs: Date.now() - callStartedAt,
+          status: "error",
+          errorMessage: retryError instanceof Error ? retryError.message : String(retryError),
+          messages,
+        });
+        throw new LLMProviderError(
+          provider,
+          undefined,
+          retryError instanceof Error ? retryError.message : String(retryError),
+        );
+      }
+    }
+
+    if (!res.ok) {
+      const errText = res.bodyUsed ? rawText : await res.text();
+      try {
+        const parsed = JSON.parse(errText);
+        errorCode = parsed?.error?.code ?? parsed?.code;
+      } catch {}
+      const err = truncateProviderError(errText);
+      void sendDirectLangfuseTrace({
+        sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+        stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+        round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+        model: provider.model,
+        provider: provider.name,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        latencyMs: Date.now() - callStartedAt,
+        status: "error",
+        errorMessage: err,
+        messages,
+      });
+      throw new LLMProviderError(
+        provider,
+        res.status,
+        `chat completion error ${res.status}: ${err}`,
+        errorCode,
+      );
+    }
   }
 
     const data = await res.json();
@@ -3160,7 +3246,7 @@ export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search stra
 
 /** Focused prompt for Step 3 - initial scouting only. Deep enrichment and email
  * discovery deliberately happen after manual selection. */
-export const EXTRACTION_SYSTEM_PROMPT = `You are a B2B prospect scouting extraction engine. Extract only facts directly supported by source evidence and return valid JSON matching the schema exactly.
+export const EXTRACTION_SYSTEM_PROMPT = `You are a B2B prospect scouting extraction engine. Extract candidates with verified identity/profile and exclude anonymous background mentions or passing citations. Only extract an individual if they have an identifiable professional profile/identity mentioned as the subject of the snippet. Extract only facts directly supported by source evidence and return valid JSON matching the schema exactly.
 Rules: Never invent data. Use empty strings for missing fields. Do not score or judge relevance. Do not infer or generate email addresses. Do not invent employment history, company size, funding, intent, or timing. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If current employment is unclear from the evidence, set extractionConfidence below 6. If reasoning is visible, keep it outside the final JSON markers.`;
 
 // -----------------------------------------------------------------------------

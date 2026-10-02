@@ -223,7 +223,7 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls[1].body.model, 'openrouter-test-model');
   });
 
-  it('falls back to Groq after primary and OpenRouter fail', async () => {
+  it('falls back to OpenRouter after primary and Groq fail', async () => {
     process.env.BYESU_API_KEY = 'test-byesu-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
@@ -245,23 +245,23 @@ describe('LLM gateway and provider fallback', () => {
       }
 
       return new Response(JSON.stringify({
-        choices: [{ message: { content: 'groq ok' } }]
+        choices: [{ message: { content: 'openrouter ok' } }]
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
     const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'groq ok');
-    assert.equal(res.provider, 'Groq');
+    assert.equal(res.text, 'openrouter ok');
+    assert.equal(res.provider, 'OpenRouter');
     assert.equal(calls.length, 3);
-    assert.equal(calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
-    assert.equal(calls[1].auth, 'Bearer test-openrouter-key');
-    assert.equal(calls[1].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
-    assert.equal(calls[2].url, 'https://api.groq.com/openai/v1/chat/completions');
-    assert.equal(calls[2].auth, 'Bearer test-groq-key');
-    assert.equal(calls[2].body.model, 'llama-3.3-70b-versatile');
+    assert.equal(calls[1].url, 'https://api.groq.com/openai/v1/chat/completions');
+    assert.equal(calls[1].auth, 'Bearer test-groq-key');
+    assert.equal(calls[1].body.model, 'llama-3.3-70b-versatile');
+    assert.equal(calls[2].url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.equal(calls[2].auth, 'Bearer test-openrouter-key');
+    assert.equal(calls[2].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
   });
 
-  it('uses default Llama models for OpenRouter and Groq fallbacks when env overrides are omitted', async () => {
+  it('uses default Llama models for Groq and OpenRouter fallbacks when env overrides are omitted', async () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
@@ -281,16 +281,16 @@ describe('LLM gateway and provider fallback', () => {
       }
 
       return new Response(JSON.stringify({
-        choices: [{ message: { content: 'groq ok' } }]
+        choices: [{ message: { content: 'openrouter ok' } }]
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
     const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'groq ok');
-    assert.equal(res.provider, 'Groq');
+    assert.equal(res.text, 'openrouter ok');
+    assert.equal(res.provider, 'OpenRouter');
     assert.equal(calls.length, 3);
-    assert.equal(calls[1].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
-    assert.equal(calls[2].body.model, 'llama-3.3-70b-versatile');
+    assert.equal(calls[1].body.model, 'llama-3.3-70b-versatile');
+    assert.equal(calls[2].body.model, 'meta-llama/llama-3.3-70b-instruct:free');
   });
 
   it('reports configured and unconfigured providers without exposing keys', async () => {
@@ -304,8 +304,8 @@ describe('LLM gateway and provider fallback', () => {
       summaries.map((provider: any) => ({ id: provider.id, configured: provider.configured })),
       [
         { id: 'primary', configured: true },
-        { id: 'openrouter', configured: false },
         { id: 'groq', configured: true },
+        { id: 'openrouter', configured: false },
       ]
     );
     assert.equal('apiKey' in summaries[0], false);
@@ -683,61 +683,15 @@ describe('LLM gateway and provider fallback', () => {
     delete process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD;
   });
 
-  it('uses Token Harbor DeepSeek V4.1 Flash as primary when active and configured', async () => {
+  it('guarantees Token Harbor is retired and omitted from provider candidates', async () => {
     process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
     process.env.OPENAI_API_KEY = 'test-primary-key';
 
-    const llm = await importLLM('th-primary');
-    llm.resetTokenHarborRetirement();
+    const llm = await importLLM('th-retired');
+    const ids = llm.getLLMProviderSummaries().map((p: any) => p.id);
 
-    assert.equal(llm.isTokenHarborActive(), true);
-
-    let capturedUrl = '';
-    let capturedOptions: any = null;
-
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url.toString();
-      capturedOptions = options;
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'th ok' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'th ok');
-    assert.equal(res.provider, 'Token Harbor (DeepSeek V4.1 Flash)');
-    assert.equal(capturedUrl, 'https://tokenharbor.ai/v1/chat/completions');
-    assert.equal(capturedOptions.headers['Authorization'], 'Bearer test-th-key');
-    const body = JSON.parse(capturedOptions.body);
-    assert.equal(body.model, 'deepseek-v4.1-flash:free');
-  });
-
-  it('falls back to Byesu when Token Harbor fails', async () => {
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
-    process.env.LLM_MAX_RETRIES = '0';
-
-    const llm = await importLLM('th-fallback-byesu');
-    llm.resetTokenHarborRetirement();
-
-    const calls: string[] = [];
-    globalThis.fetch = async (url) => {
-      const urlStr = url.toString();
-      calls.push(urlStr);
-      if (urlStr.includes('tokenharbor.ai')) {
-        return new Response('th error', { status: 500 });
-      }
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'byesu fallback ok' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'byesu fallback ok');
-    assert.equal(res.provider, 'Byesu');
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0], 'https://tokenharbor.ai/v1/chat/completions');
-    assert.equal(calls[1], 'https://byesu.com/v1/chat/completions');
+    assert.equal(ids.includes('tokenharbor'), false);
+    assert.equal(ids[0], 'primary');
   });
 
   it('automatically reverts to Byesu when Token Harbor expiration date has passed', async () => {
@@ -761,48 +715,6 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(res.text, 'byesu active');
     assert.equal(res.provider, 'Byesu');
     assert.equal(capturedUrl, 'https://byesu.com/v1/chat/completions');
-  });
-
-  it('early retires Token Harbor permanently on 401 or 402', async () => {
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
-    process.env.LLM_MAX_RETRIES = '0';
-
-    const llm = await importLLM('th-early-retire');
-    llm.resetTokenHarborRetirement();
-
-    globalThis.fetch = async (url) => {
-      const urlStr = url.toString();
-      if (urlStr.includes('tokenharbor.ai')) {
-        return new Response(JSON.stringify({
-          error: { message: 'Your Token Harbor balance is at $0.', code: 'balance_zero' }
-        }), { status: 402, headers: { 'Content-Type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'byesu recovered' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const res1 = await llm.openAIText('test 1');
-    assert.equal(res1.text, 'byesu recovered');
-    assert.equal(res1.provider, 'Byesu');
-    // Token Harbor should now be retired
-    assert.equal(llm.isTokenHarborActive(), false);
-
-    // Second call should not even attempt Token Harbor
-    const calls: string[] = [];
-    globalThis.fetch = async (url) => {
-      calls.push(url.toString());
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'byesu direct' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const res2 = await llm.openAIText('test 2');
-    assert.equal(res2.text, 'byesu direct');
-    assert.equal(res2.provider, 'Byesu');
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0], 'https://byesu.com/v1/chat/completions');
   });
 
   it('isTokenHarborActive returns false when TOKEN_HARBOR_ENABLED is false or key is empty', async () => {

@@ -4,6 +4,7 @@ import {
   type ProspectContract,
   type ProspectRequirement,
 } from "./prospectContract.js";
+import { resolveCountryCode } from "./geo.js";
 import type { PastUserDecision } from "../db.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import {
@@ -604,12 +605,27 @@ const normalizeAssessment = (
     }
   }
 
+  let quoteSupportsRequirement = true;
+  if (quoteValid && status === "pass" && requirement.scope === "person_role" && evidenceQuote) {
+    const quoteLower = evidenceQuote.toLowerCase();
+    const hasRoleInQuote = (requirement.acceptableTerms || []).some(term => {
+      const escaped = term.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+      return new RegExp(`\\b${escaped}\\b`, "i").test(quoteLower);
+    }) || /\b(founder|co-founder|cofounder|ceo|owner|director|partner|head|president|lead|manager|chief|officer|principal|vp)\b/i.test(quoteLower);
+
+    if (!hasRoleInQuote) {
+      quoteSupportsRequirement = false;
+    }
+  }
+
+  const effectiveValid = quoteValid && quoteSupportsRequirement;
+
   return {
     requirementId: requirement.id,
-    status: quoteValid ? status : "unknown",
+    status: effectiveValid ? status : "unknown",
     fabricatedPass: status === "pass" && !quoteValid && Boolean(evidenceQuote),
-    evidenceId: quoteValid ? matchedEvidenceId || undefined : undefined,
-    evidenceQuote: quoteValid ? evidenceQuote || undefined : undefined,
+    evidenceId: effectiveValid ? matchedEvidenceId || undefined : undefined,
+    evidenceQuote: effectiveValid ? evidenceQuote || undefined : undefined,
     reason: reasonText || undefined,
   };
 };
@@ -745,6 +761,17 @@ export function validateFinalistJudgments(
     contextHardTotal = ungroupedHardReqs.filter(r => r.scope !== 'person_role').length + groupContextTotal;
 
     const ablatedReqId = candidate.lead?._ablatedRequirementId;
+    if (ablatedReqId) {
+      const ablatedReq = contract.requirements.find(r => r.id === ablatedReqId);
+      if (ablatedReq) {
+        if (ablatedReq.scope === 'person_role' && identityHardTotal > 0) {
+          identityHardTotal--;
+        } else if (ablatedReq.scope !== 'person_role' && contextHardTotal > 0) {
+          contextHardTotal--;
+        }
+      }
+    }
+
     for (const contractReq of ungroupedHardReqs) {
       if (ablatedReqId && contractReq.id === ablatedReqId) {
         continue;
@@ -768,11 +795,13 @@ export function validateFinalistJudgments(
     }
 
     for (const [_, groupReqs] of anyOfGroups) {
-      const isIdentityGroup = groupReqs.some(r => r.scope === 'person_role');
-      const groupAssessments = groupReqs.map(gr => requirements.find(r => r.requirementId === gr.id)).filter(Boolean);
+      const activeGroupReqs = ablatedReqId ? groupReqs.filter(r => r.id !== ablatedReqId) : groupReqs;
+      if (activeGroupReqs.length === 0) continue;
+      const isIdentityGroup = activeGroupReqs.some(r => r.scope === 'person_role');
+      const groupAssessments = activeGroupReqs.map(gr => requirements.find(r => r.requirementId === gr.id)).filter(Boolean);
       if (groupAssessments.some(a => a?.fabricatedPass)) fabricatedHardPass = true;
       if (isIdentityGroup) {
-        for (const gr of groupReqs) {
+        for (const gr of activeGroupReqs) {
           const rawReq = assessmentById.get(gr.id) as any;
           const rawClaimedPass = typeof rawReq?.status === 'string' && ['pass', 'qualified', 'passed'].includes(rawReq.status.trim().toLowerCase());
           const normReq = requirements.find(r => r.requirementId === gr.id);
@@ -1198,17 +1227,19 @@ export function checkStrictContradiction(
       lead.currentCompany || lead.company || lead.profile?.currentCompany || lead.organization || "",
       200,
     ).toLowerCase();
-    const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200).toLowerCase();
 
+    const isAgencyCompany = /\b(agency|agencies|consultancy|consulting|partner|partners|services|solutions|studio|integrator)\b/i.test(rawCompany);
     const bigTechCompanyMatch = rawCompany.match(BIG_TECH_REGEX);
-    const bigTechTitleMatch = rawTitle.match(/(?:@|at|\bin\b|[-|,]\s*)\s*(microsoft|google|meta|apple|amazon|openai|netflix|nvidia|bytedance|salesforce|oracle|uber|airbnb|stripe|palantir|cisco|adobe|intel|ibm|deepmind|github|instagram|whatsapp|aws|azure|youtube)\b/i);
-    const matchedBigTech = bigTechCompanyMatch?.[1] || bigTechTitleMatch?.[1];
-
-    if (matchedBigTech) {
+    
+    if (bigTechCompanyMatch) {
       return {
-        reason: `Candidate is employed by non-agency tech enterprise: '${matchedBigTech}'`,
+        reason: `Candidate is employed by non-agency tech enterprise: '${bigTechCompanyMatch[1]}'`,
         requirementId: companyHardReq ? companyHardReq.id : "company_type",
       };
+    }
+    
+    if (!isAgencyCompany) {
+      // additional checks if needed, but here we just moved bigTech match out
     }
   }
 
@@ -1273,15 +1304,41 @@ export function checkStrictContradiction(
     const rawLoc = clean(`${lead.location || ""} ${lead.profile?.location || ""}`, 300).toLowerCase();
     if (rawLoc.trim().length > 0) {
       const acceptable = locReq.acceptableTerms.map((t) => t.toLowerCase());
-      const hasAnyAcceptable = acceptable.some((term) => rawLoc.includes(term));
+      const hasAnyAcceptable = acceptable.some((term) => {
+        const escaped = term.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+        return new RegExp(`\\b${escaped}\\b`, "i").test(rawLoc);
+      });
       const hasRemoteTag = /\b(remote|telecommute|worldwide|global|anywhere)\b/i.test(rawLoc);
 
-      // Explicit contradiction ONLY if candidate explicitly states a foreign country
-      // AND has ZERO target terms AND NO remote indicators:
-      const hasForeignCountry = /\b(india|united kingdom|uk|england|scotland|london|australia|germany|france|netherlands|brazil|nigeria|philippines|pakistan)\b/i.test(rawLoc);
-      const isTargetUS = acceptable.some((t) => ["us", "usa", "united states", "america"].includes(t));
+      // Check country contradiction via geo.ts across all target countries.
+      const targetCountryCodes = new Set<string>();
+      for (const t of acceptable) {
+        const code = resolveCountryCode(t);
+        if (code) targetCountryCodes.add(code);
+      }
 
-      if (isTargetUS && hasForeignCountry && !hasAnyAcceptable && !hasRemoteTag) {
+      // Check candidate's country:
+      let candidateCountryCode: string | null = resolveCountryCode(rawLoc);
+      if (!candidateCountryCode) {
+        const segments = rawLoc.split(/[,|\-/]/).map((s) => s.trim()).filter(Boolean);
+        for (const seg of segments) {
+          const code = resolveCountryCode(seg);
+          if (code) {
+            candidateCountryCode = code;
+            break;
+          }
+        }
+      }
+      if (!candidateCountryCode) {
+        const match = rawLoc.match(/\b(india|united kingdom|uk|england|scotland|london|australia|germany|france|netherlands|brazil|nigeria|philippines|pakistan|canada|ireland|spain|italy)\b/i);
+        if (match) {
+          candidateCountryCode = resolveCountryCode(match[1]);
+        }
+      }
+
+      const isContradiction = targetCountryCodes.size > 0 && candidateCountryCode && !targetCountryCodes.has(candidateCountryCode);
+
+      if (isContradiction && !hasAnyAcceptable && !hasRemoteTag) {
         return {
           reason: `Location '${rawLoc}' explicitly contradicts target '${locReq.acceptableTerms.join(", ")}'`,
           requirementId: locReq.id,

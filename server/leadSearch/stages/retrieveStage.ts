@@ -24,6 +24,7 @@ import { ablateQueryTask, createAblationTracker } from "../constraintAblation.js
 import { classifyQueryComplexity } from "../queryUnderstanding.js";
 import { rewriteZeroYieldQuery } from "../queryRewriter.js";
 import { buildRetrievalCacheKey, readCachedSearch, writeCachedSearch } from "../retrievalCache.js";
+import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
 
 export type RetrieveStageInput = {
   round: number;
@@ -155,9 +156,21 @@ export async function executeRetrieveStage(
             });
             const cachedResult = readCachedSearch(cacheKey);
             if (cachedResult) {
+              // P13: Filter out URLs/slugs matching existing CRM leads when replaying cached search results
+              const filteredItems = (cachedResult.items || []).filter((it: any) => {
+                const url = it.url || "";
+                const username = extractLinkedInUsername(url);
+                if (username) {
+                  if (state.existingKeys.has(`linkedin:${username}`) || state.existingKeys.has(username)) {
+                    return false;
+                  }
+                }
+                return true;
+              });
+              const resultToUse = { ...cachedResult, items: filteredItems };
               stats.retrievalCacheHits = (stats.retrievalCacheHits || 0) + 1;
               logEvent(
-                `Round ${round}: Tavily cache hit for "${plan.executableQuery}" (${cachedResult.items.length} results, 0 credits).`,
+                `Round ${round}: Tavily cache hit for "${plan.executableQuery}" (${filteredItems.length} un-seen / ${cachedResult.items.length} total results, 0 credits).`,
               );
               recordTrace({
                 phase: "search",
@@ -167,10 +180,10 @@ export async function executeRetrieveStage(
                 round,
                 query: plan.executableQuery,
                 latencyMs: Date.now() - searchStarted,
-                counts: { rawCandidates: cachedResult.items.length },
+                counts: { rawCandidates: filteredItems.length },
                 metadata: { cacheHit: true },
               });
-              tavilyResultsByIndex.set(index, cachedResult);
+              tavilyResultsByIndex.set(index, resultToUse);
               return;
             }
             const estimatedCredits =
@@ -212,10 +225,11 @@ export async function executeRetrieveStage(
             const isPersonLane = !plan.item.lane || plan.item.lane === "person";
             const rawContentEnabled =
               process.env.TAVILY_RAW_CONTENT_PERSON_LANE === "true" && isPersonLane;
+            const includeRawContent = !isPersonLane || rawContentEnabled;
             const res = await ports.tavilySearch(plan.executableQuery, {
               ...tavilyOptions,
               maxResults: dynamicTavilyMaxResults,
-              ...(rawContentEnabled ? { includeRawContent: true } : {}),
+              includeRawContent,
               signal: signal || state.abortController.signal,
             });
             let resultsCount = res.items?.length || 0;
@@ -271,6 +285,7 @@ export async function executeRetrieveStage(
                   queryRuns[index].providerUnits += 1;
                   const ablatedRes = await ports.tavilySearch(ablated.ablatedQuery, {
                     ...tavilyOptions,
+                    includeRawContent,
                     signal: signal || state.abortController.signal,
                   });
                   const ablatedCount = ablatedRes.items?.length || 0;

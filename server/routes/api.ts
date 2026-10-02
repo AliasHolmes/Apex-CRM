@@ -62,6 +62,8 @@ import {
   openAIText,
   STRATEGIST_SYSTEM_PROMPT,
   getLLMProviderSummaries,
+  getProviderHealthSummaries,
+  isProviderSlotFree,
   getTavilyKeyStatus,
 } from "../services/llm.js";
 import { buildOutboundPrompt } from "../services/outboundPrompt.js";
@@ -769,6 +771,33 @@ router.post("/leads/bulk", (req, res): any => {
     const committedLeads = writeResults
       .filter((result) => result.disposition === "created" || result.disposition === "updated")
       .map((result) => result.lead);
+
+    if (req.body?.forceOverwrite === true) {
+      for (const lead of committedLeads) {
+        if (lead.stage) {
+          insertLeadActivity({
+            leadId: lead.id,
+            type: "stage_change",
+            fromValue: "",
+            toValue: lead.stage,
+            actor: "user"
+          });
+
+          if (lead.stage === "SEQUENCE ACTIVE") {
+            recordLeadOutcome(lead.id, "sequenced" as any, "");
+          } else if (lead.stage === "REPLIED") {
+            recordLeadOutcome(lead.id, "replied" as any, "");
+          } else if (lead.stage === "MEETING BOOKED") {
+            recordLeadOutcome(lead.id, "meeting_booked" as any, "");
+          } else if (lead.stage === "CONVERTED") {
+            recordLeadOutcome(lead.id, "converted" as any, "");
+          } else if (lead.stage === "LOST") {
+            recordLeadOutcome(lead.id, "lost" as any, "");
+          }
+        }
+      }
+    }
+
     res.json({
       apiVersion: 1,
       success: true,
@@ -833,6 +862,7 @@ router.get("/key-rotation-status", (_req, res) => {
 
 router.get("/llm-health", async (req, res) => {
   const configuredProviders = getLLMProviderSummaries();
+  const healthSummaries = getProviderHealthSummaries();
   const force = req.query.force === "true";
 
   if (!force && _llmHealthCache && Date.now() < _llmHealthCache.expiresAt) {
@@ -840,11 +870,35 @@ router.get("/llm-health", async (req, res) => {
       ..._llmHealthCache.result,
       cached: true,
       configuredProviders,
+      healthSummaries,
+    });
+  }
+
+  // If not forced and we have healthy status, report from providerHealthState directly
+  // when primary provider is busy to avoid consuming provider slots during active sessions
+  const primaryConfigured = configuredProviders.find(
+    (p) => (p.id === "atria" || p.id === "primary") && p.configured,
+  );
+  const isSlotAvailable = primaryConfigured ? isProviderSlotFree(primaryConfigured.id) : false;
+
+  if (!force && primaryConfigured && !isSlotAvailable) {
+    return res.json({
+      mode: "direct-fallback",
+      provider: primaryConfigured.name,
+      model: primaryConfigured.model,
+      ok: healthSummaries[primaryConfigured.id]?.status !== "out",
+      cached: false,
+      configuredProviders,
+      healthSummaries,
+      note: "Reported from providerHealthState without live probe (provider busy)",
     });
   }
 
   try {
-    const response = await openAIText("Reply with exactly ok");
+    const response = await openAIText("Reply with exactly ok", undefined, {
+      timeoutMs: 5000,
+      metadata: { isInteractive: true, priority: "high" },
+    });
     const isOk = response.text.trim().toLowerCase().includes("ok");
     const result: Record<string, any> = {
       mode: "direct-fallback",
@@ -853,15 +907,17 @@ router.get("/llm-health", async (req, res) => {
       model: response.model,
       ok: isOk,
       cached: false,
+      healthSummaries: getProviderHealthSummaries(),
       ...(isOk ? {} : { error: `Unexpected response: ${response.text}` }),
     };
     _llmHealthCache = { result, expiresAt: Date.now() + LLM_HEALTH_CACHE_MS };
-    res.json({ ...result, configuredProviders });
+    res.json({ ...result, configuredProviders, healthSummaries: getProviderHealthSummaries() });
   } catch (error: any) {
     _llmHealthCache = null; // Do not cache failures
     res.json({
       mode: "direct-fallback",
       configuredProviders,
+      healthSummaries: getProviderHealthSummaries(),
       ok: false,
       cached: false,
       error: error.message || String(error),
@@ -1172,7 +1228,7 @@ router.get("/search-logs/:id/live", (req, res): any => {
     apiVersion: 1,
     logs,
     traceEvents,
-    session: readMiningSessionById(req.params.id),
+    session: readMiningSessionSummaryById(req.params.id),
   });
 });
 
@@ -1352,13 +1408,17 @@ router.delete("/mining-sessions/resumable", (req, res): any => {
 
 router.get("/mining-sessions/active", (_req, res): any => {
   try {
-    const sessionId = discoveryEngine.getActiveSessionId();
+    const activeSessionIds = discoveryEngine.getActiveSessionIds();
+    const sessionId = activeSessionIds.length > 0 ? activeSessionIds[0] : null;
     if (sessionId) {
+      const activeSessions = activeSessionIds.map(id => readMiningSessionSummaryById(id)).filter(Boolean);
       return res.json({
         apiVersion: 1,
         active: true,
         sessionId,
-        session: readMiningSessionById(sessionId),
+        session: activeSessions[0],
+        sessionIds: activeSessionIds,
+        activeSessions
       });
     }
     return res.json({ apiVersion: 1, active: false });
@@ -1373,7 +1433,9 @@ router.get("/mining-sessions/active", (_req, res): any => {
 router.get("/mining-sessions/:sessionId", (req, res): any => {
   if (!isSafeSessionId(req.params.sessionId))
     return res.status(400).json({ error: "Invalid sessionId." });
-  const session = readMiningSessionById(req.params.sessionId);
+  const session = req.query.full === "true"
+    ? readMiningSessionById(req.params.sessionId)
+    : readMiningSessionSummaryById(req.params.sessionId);
   if (!session)
     return res.status(404).json({ error: "Mining session not found." });
   res.json({ apiVersion: 1, session });
@@ -1445,6 +1507,13 @@ router.post(
       return res
         .status(409)
         .json({ error: `Session is already active: ${sessionId}`, sessionId });
+    }
+
+    const maxConcurrent = Number(process.env.APEX_MAX_CONCURRENT_SESSIONS) || 1;
+    if (discoveryEngine.getActiveSessionIds().length >= maxConcurrent) {
+      return res
+        .status(429)
+        .json({ error: "Maximum concurrent mining sessions reached." });
     }
 
     const checkpoint = readMiningSessionCheckpoint(sessionId);
@@ -1716,7 +1785,28 @@ router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
   }
 });
 // 3. Multi-Purpose: Discover qualified lists of LinkedIn-indexed leads
-router.post("/find-leads", async (req, res): Promise<any> => {
+const findLeadsRateLimiterWindows = new Map<string, { count: number; resetAt: number }>();
+const findLeadsRateLimiter = (req: any, res: any, next: any): any => {
+  const ip = req.ip || req.connection?.remoteAddress || "unknown";
+  const now = Date.now();
+  const entry = findLeadsRateLimiterWindows.get(ip);
+  if (!entry || now >= entry.resetAt) {
+    findLeadsRateLimiterWindows.set(ip, { count: 1, resetAt: now + 60_000 });
+    return next();
+  }
+  if (entry.count >= 3) {
+    const retryAfter = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+    res.setHeader("Retry-After", String(retryAfter));
+    return res.status(429).json({
+      error: `Rate limit exceeded. Max 3 requests per 60 seconds. Retry in ${retryAfter}s.`,
+      retryAfter,
+    });
+  }
+  entry.count += 1;
+  return next();
+};
+
+router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> => {
   const suppliedSessionId =
     typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
   if (suppliedSessionId && !isSafeSessionId(suppliedSessionId)) {
@@ -1802,8 +1892,8 @@ router.post("/find-leads", async (req, res): Promise<any> => {
         sessionId: targetSessionId,
         promptQuery,
         requestedLimit,
-        discoveryProviderMode:
-          req.body?.discoveryMode || req.body?.discoveryProviderMode,
+        discoveryProviderMode: req.body?.discoveryProviderMode,
+        discoveryMode: req.body?.discoveryMode,
         searchSpec: req.body?.searchSpec,
         excludeList: mergedExcludeList,
         savedSearchId,
@@ -1849,8 +1939,8 @@ router.post("/find-leads", async (req, res): Promise<any> => {
       sessionId: targetSessionId,
       promptQuery,
       requestedLimit,
-      discoveryProviderMode:
-        req.body?.discoveryMode || req.body?.discoveryProviderMode,
+      discoveryProviderMode: req.body?.discoveryProviderMode,
+      discoveryMode: req.body?.discoveryMode,
       searchSpec: req.body?.searchSpec,
       excludeList: mergedExcludeList,
       savedSearchId,
@@ -2160,7 +2250,9 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
       styleExemplars,
     });
 
-    const { text: rawText } = await openAIText(prompt, APEX_SYSTEM_PROMPT);
+    const { text: rawText } = await openAIText(prompt, APEX_SYSTEM_PROMPT, {
+      metadata: { isInteractive: true, priority: "high" },
+    });
 
     if (!rawText) {
       throw new Error("Failed to generate outreach copy.");
@@ -2278,7 +2370,9 @@ ${leadsContext}${searchContext}
 
 Answer the user's question about their CRM pipeline, leads, outreach strategy, or any sales-related query. Be direct, concise, and actionable. Format responses in markdown.`;
 
-    const { text: reply } = await openAIText(query, systemPrompt);
+    const { text: reply } = await openAIText(query, systemPrompt, {
+      metadata: { isInteractive: true, priority: "high" },
+    });
 
     res.json({
       text: reply || "I could not generate a response. Please try again.",

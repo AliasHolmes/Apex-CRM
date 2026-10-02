@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { getRecoveryCandidateCeiling, getQueryExecutionCeiling } from '../server/leadSearch/collectionCapacity.ts';
 import { finalistCandidateFromLead, partitionCandidatesByStrictEvidence, validateFinalistJudgments } from '../server/leadSearch/finalistJudge.ts';
 import { buildDeterministicProspectContract } from '../server/leadSearch/prospectContract.ts';
-import { candidateStableId } from '../server/leadSearch/targetFulfillment.ts';
+import { candidateStableId } from '../server/leadSearch/discoveryEngine.ts';
 
 describe('Target Fulfillment Engine Mechanics', () => {
   it('computes target-scaled ceilings correctly', () => {

@@ -2192,6 +2192,7 @@ export type LeadWriteOptions = {
   requireExisting?: boolean;
   perItemConflict?: boolean;
   forceOverwrite?: boolean;
+  isEngineWrite?: boolean;
 };
 
 export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
@@ -2269,6 +2270,25 @@ export function upsertLeadInExistingTransaction(
       "SELECT lead_id FROM lead_identities WHERE identity_key = ?",
     ).get(identityKey) as { lead_id?: string } | undefined;
     if (identity?.lead_id && identity.lead_id !== incomingLeadId) {
+      // B23: Skip name_company duplicate if LinkedIn URLs conflict
+      if (identityKey.startsWith('name_company:')) {
+        const canonicalRow = getCachedStatement(
+          db,
+          "SELECT payload FROM leads WHERE id = ?",
+        ).get(identity.lead_id) as { payload: string } | undefined;
+        if (canonicalRow) {
+          const canonicalLead = JSON.parse(canonicalRow.payload);
+          const incomingLinkedIn = canonicalLinkedInIdentity(
+            lead?.profile?.contactDetails?.linkedinUrl || lead?.contactDetails?.linkedinUrl || lead?.linkedinUrl || lead?.sourceUrl || lead?.url
+          );
+          const existingLinkedIn = canonicalLinkedInIdentity(
+            canonicalLead?.profile?.contactDetails?.linkedinUrl || canonicalLead?.contactDetails?.linkedinUrl || canonicalLead?.linkedinUrl || canonicalLead?.sourceUrl || canonicalLead?.url
+          );
+          if (incomingLinkedIn && existingLinkedIn && incomingLinkedIn !== existingLinkedIn) {
+            continue; // Different people at the same company with the same name
+          }
+        }
+      }
       const canonicalRow = getCachedStatement(
         db,
         "SELECT payload, revision FROM leads WHERE id = ?",
@@ -2328,6 +2348,10 @@ export function upsertLeadInExistingTransaction(
       storedLead.nextAction = existingLead.nextAction;
     }
     if (existingLead.notes && !lead.notes) {
+      storedLead.notes = existingLead.notes;
+    }
+    // B22: Engine writes always preserve existing human notes
+    if (options.isEngineWrite && existingLead.notes && !isEngineBoilerplateNote(existingLead.notes)) {
       storedLead.notes = existingLead.notes;
     }
   }
@@ -2555,28 +2579,6 @@ export function upsertLeads(
   options: LeadWriteOptions = {},
 ) {
   return upsertLeadsWithIdentity(leads, options).map((result) => result.lead);
-}
-
-export function bulkPersistLeads(
-  leads: Record<string, any>[],
-  options: LeadWriteOptions = {},
-): LeadWriteResult[] {
-  const results = upsertLeadsWithIdentity(leads, options);
-  invalidateLeadsStatsCache();
-  return results;
-}
-
-export function markLeadReviewed(
-  leadId: string,
-  reviewStatus: string,
-): boolean {
-  const db = getLeadsDb();
-  const now = new Date().toISOString();
-  const res = db
-    .prepare("UPDATE leads SET review_status = ?, updated_at = ? WHERE id = ?")
-    .run(reviewStatus, now, leadId);
-  invalidateLeadsStatsCache();
-  return Number(res.changes || 0) > 0;
 }
 
 export interface PastUserDecision {
@@ -3616,6 +3618,34 @@ export function insertSearchLog(log: any) {
     `,
     );
     cullStmt.run(retentionLimit);
+
+    // P12: Prune llm_stage_logs and completed checkpoints beyond retention limit
+    getCachedStatement(
+      db,
+      `
+      DELETE FROM llm_stage_logs
+      WHERE search_log_id NOT IN (
+        SELECT id FROM search_logs
+        ORDER BY timestamp DESC
+        LIMIT ?
+      )
+    `,
+    ).run(retentionLimit);
+
+    getCachedStatement(
+      db,
+      `
+      UPDATE mining_sessions
+      SET checkpoint_json = NULL
+      WHERE status IN ('success', 'error', 'cancelled')
+        AND checkpoint_json IS NOT NULL
+        AND id NOT IN (
+          SELECT id FROM mining_sessions
+          ORDER BY updated_at DESC
+          LIMIT ?
+        )
+    `,
+    ).run(retentionLimit);
   } catch (err) {
     console.error("Failed to write search log to DB:", err);
   }

@@ -192,7 +192,13 @@ export function mineQueryRefinements(
 
   const candidateRawTerms: string[] = [];
   for (const lead of acceptedLeads) {
-    if (lead.companyAccount?.keywords && Array.isArray(lead.companyAccount.keywords)) {
+    if (Array.isArray(lead.tags)) {
+      candidateRawTerms.push(...lead.tags);
+    }
+    if (Array.isArray(lead.keywords)) {
+      candidateRawTerms.push(...lead.keywords);
+    }
+    if (Array.isArray(lead.companyAccount?.keywords)) {
       candidateRawTerms.push(...lead.companyAccount.keywords);
     }
     if (lead.industry && typeof lead.industry === 'string') {

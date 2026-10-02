@@ -9,10 +9,10 @@ import {
 import { buildFinalistJudgePrompt } from '../server/leadSearch/finalistJudge.js';
 import { buildStrategistPrompt } from '../server/leadSearch/searchSpec.js';
 
-test('Component 1: PROSPECT_CONTRACT_POLICY_VERSION is bumped to evidence-contract-v9', () => {
-  assert.equal(PROSPECT_CONTRACT_POLICY_VERSION, 'evidence-contract-v9');
+test('Component 1: PROSPECT_CONTRACT_POLICY_VERSION is bumped to evidence-contract-v10', () => {
+  assert.equal(PROSPECT_CONTRACT_POLICY_VERSION, 'evidence-contract-v10');
   const contract = buildDeterministicProspectContract('Find agency owners who use n8n', {});
-  assert.equal(contract.policyVersion, 'evidence-contract-v9');
+  assert.equal(contract.policyVersion, 'evidence-contract-v10');
 });
 
 test('Component 2: buildFinalistJudgePrompt includes both hard and soft requirements', () => {

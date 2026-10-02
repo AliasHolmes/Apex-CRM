@@ -8,8 +8,8 @@ import { DEFAULT_DECISION_MAKER_ROLES, singularizeRole } from './defaultRoles.js
 import { COUNTRY_CANONICAL_MAP } from './geo.js';
 export { COUNTRY_CANONICAL_MAP };
 
-// Bumped to v9 to invalidate pre-upgrade cached contracts and enforce fresh intelligence compilation
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v9';
+// Bumped to v10 to invalidate pre-upgrade cached contracts and enforce fresh intelligence compilation without bare brand names
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v10';
 
 export type RequirementScope =
   | 'person_role'
@@ -201,7 +201,7 @@ export const BUSINESS_ARCHETYPES: Record<string, BusinessArchetype> = {
       'AI partner', 'AI integrator'
     ],
     roleExpansions: ['owner', 'owners', 'firm owner', 'agency owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'principal', 'president', 'proprietor'],
-    exclusions: ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'DeepMind', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product', 'recruiter'],
+    exclusions: ['Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product', 'recruiter'],
     seamDescription: 'client services required; SaaS/products fail'
   },
   b2b_saas: {
@@ -887,14 +887,13 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const defaultExclusions = archetype
     ? archetype.exclusions.filter(e => !e.startsWith('-'))
     : isAgency
-      ? ['Microsoft', 'Google', 'Meta', 'Apple', 'Amazon', 'OpenAI', 'DeepMind', 'Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product']
+      ? ['Staff Engineer', 'Principal Engineer', 'Principal Product Manager', 'SaaS', 'Software Product']
       : [];
 
   const exclusions = unique([
     ...defaultExclusions,
     ...(spec?.person?.excludeTitles || []),
-    ...(spec?.exclusions?.companies || []),
-    ...(spec?.exclusions?.domains || [])
+    ...(spec?.exclusions?.companies || [])
   ].filter(e => !e.startsWith('-')));
 
   // Deduplicate requirements of the same scope.
@@ -1307,7 +1306,7 @@ ${suppliedSpec ? `User-supplied editable search spec (these are immutable constr
 - For each requirement, specify evidenceModality: 'structured_profile' for title/role/location/industry, 'open_web_signal' for hiring/funding/technology/pain triggers, 'inferred' for company size.
 - acceptableTerms are short alternatives for the same stated requirement, never broader personas.
 - Strict single-role and single-geo query constraint: Each query in initialQueries must target EXACTLY ONE role (e.g. one of the stated titles) and at most ONE location/metro (e.g. one country or one city). NEVER concatenate multiple synonym roles in a single query (e.g. FORBIDDEN: 'procurement director head of procurement purchasing manager'). Distribute different roles and locations across distinct queries instead.
-- Queries in initialQueries must NEVER contain negative exclusion operators (e.g. -Microsoft, -Google, -software, -SaaS). Exclusions belong strictly in the contract exclusions list, not in search queries.
+- Queries in initialQueries must NEVER contain negative exclusion operators (e.g. -software, -SaaS). Exclusions belong strictly in the contract exclusions list, not in search queries.
 - Do not use Google dorks, site:, or the word LinkedIn in initialQueries.
 - coveredRequirementIds may reference only the returned requirement ids.
 Return only the requested JSON.`;
@@ -1516,10 +1515,11 @@ export function normalizeProspectContract(
     }
   }
   const normalizedRequirements = dedupedNormalized;
+  const BARE_BRAND_NAMES = new Set(['microsoft', 'google', 'meta', 'apple', 'amazon', 'openai', 'deepmind']);
   const exclusions = unique([
     ...(Array.isArray(raw.exclusions) ? raw.exclusions : []),
     ...fallback.exclusions
-  ], 30);
+  ].filter(e => !BARE_BRAND_NAMES.has(String(e).trim().toLowerCase())), 30);
   const initial = Array.isArray(raw.initialQueries) ? raw.initialQueries : [];
   const initialQueries = enforceContractQueries(initial, {
     ...fallback,

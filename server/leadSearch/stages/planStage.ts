@@ -193,7 +193,7 @@ export async function executePlanStage(
   const discoveredCompanies = readDiscoveredCompanyNames(25).filter(looksLikeCompanyHint);
   const knownCompanyEntities = Array.from(
     new Set([...crmCompanies, ...signalCompanies, ...discoveredCompanies]),
-  );
+  ).slice(0, 30);
 
   const envTasks = Number(process.env.LEAD_ADAPTIVE_TASKS_PER_ROUND);
   const prevAccepted = Number(

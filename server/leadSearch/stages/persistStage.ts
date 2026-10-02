@@ -65,7 +65,7 @@ export async function executePersistStage(
   const persistStarted = Date.now();
 
   try {
-    const writeResults = upsertLeadsWithIdentity(mappedLeads);
+    const writeResults = upsertLeadsWithIdentity(mappedLeads, { isEngineWrite: true });
     const persistedLeads = writeResults.map((result) => result.lead);
     for (let i = 0; i < finalLeads.length; i++) {
       const res = writeResults[i];
@@ -147,6 +147,9 @@ export async function executePersistStage(
       `Stop reason corrected: collection met early target threshold, but judging yielded ${mappedLeads.length}/${targetLimit} leads - recording partial_fulfillment.`,
     );
   }
+
+  // B17: Add fulfillmentStatus field (separate from stopReason)
+  stats.fulfillmentStatus = mappedLeads.length >= targetLimit ? "complete" : "partial";
 
   // G16: derive log/session status from persistence reality instead of
   // hardcoding success -- a failed persist must not read as a clean session.

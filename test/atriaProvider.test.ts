@@ -64,17 +64,17 @@ describe('Atria provider registration', () => {
     assert.equal(ids.includes('atria'), false);
   });
 
-  it('appends Atria last by default so supplying a key never re-routes a session', async () => {
+  it('promotes Atria as primary by default when configured', async () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.OPENAI_API_KEY = 'test-primary-key';
 
     const llm = await importLLM('atria-fallback-order');
     const ids = llm.getLLMProviderSummaries().map((p: any) => p.id);
 
-    assert.equal(ids[0], 'primary');
-    assert.equal(ids[ids.length - 1], 'atria');
-    assert.equal(llm.getPrimaryLLMProvider(), 'Byesu');
-    assert.equal(llm.getPrimaryLLMModel(), 'gpt-5.5');
+    assert.equal(ids[0], 'atria');
+    assert.equal(ids[1], 'primary');
+    assert.equal(llm.getPrimaryLLMProvider(), 'Atria');
+    assert.equal(llm.getPrimaryLLMModel(), 'Atria-Dawn-Preview');
   });
 
   it('promotes Atria to the front when ATRIA_PRIORITY=primary', async () => {
@@ -300,15 +300,8 @@ describe('truncation errors are never retried', () => {
     }
   });
 
-  it('does not classify "timed out" as transient (documented gap, not a regression)', () => {
-    // TRANSIENT_LLM_ERROR matches `timeout` / `etimedout` but NOT the two-word form
-    // "timed out", even though llm.ts:874 treats `/LLM request timed out after/i` as a
-    // gateway-limit condition and llm.ts:529 tests the same string. Severity is limited
-    // because sendChatCompletion already retries timeouts in its own fetch-error path, so
-    // this outer layer is a second retry rather than the only one. Pinned here so the
-    // inconsistency is visible rather than silently inherited; changing it alters retry
-    // behaviour engine-wide and should be a deliberate decision.
-    assert.equal(isTransientLLMError(new Error('LLM request timed out after 30000ms')), false);
+  it('classifies "timed out" as transient (fixed in B15)', () => {
+    assert.equal(isTransientLLMError(new Error('LLM request timed out after 30000ms')), true);
   });
 });
 
@@ -328,17 +321,14 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
     }
   });
 
-  it('guarantees exact consecutive provider priority: Atria -> Byesu -> OpenRouter -> Groq -> TokenHarbor', async () => {
+  it('guarantees exact consecutive provider priority: Atria -> Byesu -> Groq -> OpenRouter', async () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    delete process.env.TOKEN_HARBOR_ENABLED;
 
     const llm = await importLLM('consecutive-priority');
-    llm.resetTokenHarborRetirement();
 
     const ids = llm
       .getLLMProviderSummaries()
@@ -348,9 +338,8 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
     assert.deepEqual(ids, [
       'atria',
       'primary',
-      'openrouter',
       'groq',
-      'tokenharbor',
+      'openrouter',
     ]);
     assert.equal(llm.getPrimaryLLMProvider(), 'Atria');
     assert.equal(llm.isAtriaPrimary(), true);
@@ -451,15 +440,12 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
     );
   });
 
-  it('keeps Byesu ahead of TokenHarbor when ATRIA_PRIORITY=primary even if ATRIA_API_KEY is unset', async () => {
+  it('keeps Byesu as primary when ATRIA_API_KEY is unset', async () => {
     delete process.env.ATRIA_API_KEY;
-    process.env.ATRIA_PRIORITY = 'primary';
     process.env.OPENAI_API_KEY = 'test-primary-key';
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    delete process.env.TOKEN_HARBOR_ENABLED;
+    process.env.GROQ_API_KEY = 'test-groq-key';
 
     const llm = await importLLM('atria-absent-priority');
-    llm.resetTokenHarborRetirement();
 
     const ids = llm
       .getLLMProviderSummaries()
@@ -467,7 +453,7 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
       .map((p: any) => p.id);
 
     assert.equal(ids[0], 'primary', 'Byesu must remain primary when Atria key is missing');
-    assert.ok(ids.indexOf('primary') < ids.indexOf('tokenharbor'), 'Byesu must precede TokenHarbor');
+    assert.ok(ids.indexOf('primary') < ids.indexOf('groq'), 'Byesu must precede Groq');
   });
 
   it('computeAtriaDynamicMaxTokens scales flexibly without being locked to a static ceiling for large chunks', async () => {

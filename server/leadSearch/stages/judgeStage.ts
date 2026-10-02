@@ -570,8 +570,10 @@ export async function evaluateIncrementalJudgeBatches(
           `Incremental Judge: Batch ${batchIndex + 1} yielded 0 judgments; splitting ${batch.length} candidates.`,
         );
         const mid = Math.ceil(batch.length / 2);
-        const left = await evaluateSingleBatch(batch.slice(0, mid), batchIndex, depth + 1);
-        const right = await evaluateSingleBatch(batch.slice(mid), batchIndex, depth + 1);
+        const [left, right] = await Promise.all([
+          evaluateSingleBatch(batch.slice(0, mid), batchIndex, depth + 1),
+          evaluateSingleBatch(batch.slice(mid), batchIndex, depth + 1),
+        ]);
         return [...left, ...right];
       }
 
@@ -759,16 +761,10 @@ export async function evaluateIncrementalJudgeBatches(
           `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); splitting ${batch.length} candidates${isTokenOrSizeError ? " immediately without doomed retry" : ""}.`,
         );
         const mid = Math.ceil(batch.length / 2);
-        const left = await evaluateSingleBatch(
-          batch.slice(0, mid),
-          batchIndex,
-          depth + 1,
-        );
-        const right = await evaluateSingleBatch(
-          batch.slice(mid),
-          batchIndex,
-          depth + 1,
-        );
+        const [left, right] = await Promise.all([
+          evaluateSingleBatch(batch.slice(0, mid), batchIndex, depth + 1),
+          evaluateSingleBatch(batch.slice(mid), batchIndex, depth + 1),
+        ]);
         return [...left, ...right];
       }
       if (retries < 1) {
@@ -802,6 +798,10 @@ export async function evaluateIncrementalJudgeBatches(
           circuitBreaker: llmCircuitBreaker,
           timeoutMs: 45_000,
           batchSize: Math.max(6, maxBatchCandidates),
+          sessionId: config.sessionId,
+          round,
+          recordTrace,
+          concurrency: 2,
         },
       );
       if (attrSummary.attributedCount > 0) {

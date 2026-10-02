@@ -158,7 +158,7 @@ export function classifyKeyRotationError(error: unknown): FailureClassification 
     statusCode === 401 ||
     statusCode === 402 ||
     statusCode === 403 ||
-    /unauthorized|forbidden|invalid token|invalid api key|api[_ -]?token|credit|quota|billing|payment|balance|usage limit|limit exceeded/.test(lower)
+    /\b(unauthorized|forbidden|invalid token|invalid api key|missing api[_ -]?token|insufficient credits?|out of credits?|quota exceeded|exceeded your quota|billing details?|payment required|insufficient balance|usage limit exceeded)\b/.test(lower)
   ) {
     return { kind: 'exhausted', statusCode, message };
   }

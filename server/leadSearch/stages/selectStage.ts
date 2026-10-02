@@ -222,7 +222,7 @@ export async function executeSelectStage(
       lane,
       provider,
       runs: 1,
-      outcomeRuns: 1,
+      outcomeRuns: run.judgedCandidates > 0 ? 1 : 0,
       rawCandidates: run.rawCandidates || 0,
       uniqueCandidates: run.uniqueCandidates || 0,
       extractedCandidates: run.extractedLeads || 0,

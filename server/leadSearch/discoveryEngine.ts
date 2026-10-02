@@ -119,6 +119,7 @@ import {
   type ProspectContract,
 } from "./prospectContract.js";
 import { ablateSearchSpec } from "./constraintAblation.js";
+import { resolveGeo } from "./queryUnderstanding.js";
 import {
   finalistCandidateFromLead,
   triPartitionCandidatesByEvidence,
@@ -398,11 +399,15 @@ export async function executeDiscoverySession(
     // serialized payload exceeds ~2MB, persist summary fields only - the
     // summaries (provider/cost/phase) carry the aggregate signal anyway.
     let events = trace.events;
-    // Estimate: average trace event serializes to ~800 bytes
-    if (events.length > 2000 || (events.length > 1000 && events.length * 800 > 2_000_000)) {
-      console.warn(
-        `[find-leads] ${sessionId}: trace_events exceeded 2MB; persisting summary-only.`,
-      );
+    try {
+      const serialized = JSON.stringify(events);
+      if (Buffer.byteLength(serialized, 'utf8') > 2_000_000) {
+        console.warn(
+          `[find-leads] ${sessionId}: trace_events exceeded 2MB (${Buffer.byteLength(serialized, 'utf8')} bytes); persisting summary-only.`,
+        );
+        events = [];
+      }
+    } catch {
       events = [];
     }
     return {
@@ -966,6 +971,7 @@ export async function executeDiscoverySession(
     };
     const leadQueryRuns = new LeadQueryRunTracker();
     const seenCandidateKeys = new Set<string>();
+    const seenPersonIdentifiers = new Set<string>();
     const seenQueryTexts = new Set<string>();
     const evidenceByUrl = new Map<string, EvidenceMeta>();
     let brightDataReady = shouldAttemptBrightData();
@@ -973,6 +979,8 @@ export async function executeDiscoverySession(
     let brightDataTransportRetryAfter = 0;
     const urlRetryQueue = new Set<string>();
     let previousRoundSummary: Record<string, any> = {};
+    let intentExtraRoundsRun = 0;
+    let previousIntentCorroboratedCount = 0;
     const llmCircuitBreaker = createLLMSessionCircuitBreaker();
     const failedExtractionRoundsBeforeStop = Math.min(
       Math.max(
@@ -1178,6 +1186,8 @@ export async function executeDiscoverySession(
             seenCandidateKeys.add(`linkedin:${normalized}`);
             seenCandidateKeys.add(`url:${normalized}`);
           }
+          const personKey = normalized || username || stableId || linkedinUrl;
+          if (personKey) seenPersonIdentifiers.add(personKey);
         }
       }
       if (Array.isArray(cp.qualifiedLeads)) {
@@ -1237,6 +1247,9 @@ export async function executeDiscoverySession(
         round <= maxRounds && acceptedLeads.length < maxCandidatePoolLimit;
         round++
       ) {
+        // ARCHITECTURE NOTE: Speculative planning overlap (running next round's strategist while judging finishes)
+        // is deferred because Atria (1 slot) + Byesu (1 slot) cap means running strategist speculatively
+        // would starve attribution or judging slots.
         if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
           stats.stopReason = "timeout";
           break;
@@ -1381,6 +1394,10 @@ export async function executeDiscoverySession(
 
         const { roundCandidateKeys } = fuseResult;
         let candidateItems = [...fuseResult.candidateItems];
+        for (const item of candidateItems) {
+          const key = item._normalizedUrl || item._linkedinUsername || item.url;
+          if (key) seenPersonIdentifiers.add(key);
+        }
 
         // Dynamic In-Round Replenishment:
         // If CRM duplicates starve candidateItems below the desired batch threshold,
@@ -1432,13 +1449,10 @@ export async function executeDiscoverySession(
             }
           }
           if (!targetCountry) {
-            const briefLower = String(contract?.brief || promptQuery || "").toLowerCase();
-            for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
-              const regex = new RegExp(`\\b${cKey}\\b`, "i");
-              if (regex.test(briefLower)) {
-                targetCountry = cName;
-                break;
-              }
+            const rawBrief = String(contract?.brief || promptQuery || "");
+            const geoRes = resolveGeo(rawBrief);
+            if (geoRes.countryAnchor) {
+              targetCountry = geoRes.countryAnchor;
             }
           }
 
@@ -1552,7 +1566,9 @@ export async function executeDiscoverySession(
           if (saturatedGeos.size >= candidateLocations.length) {
             saturatedGeos.clear();
           }
-          const maxReplenishPasses = 4;
+          const maxReplenishPasses = 2;
+          const replenishTasks: Array<{ query: string; loc: string }> = [];
+          
           for (let pass = 1; pass <= maxReplenishPasses && candidateItems.length < desiredBatchThreshold; pass++) {
             let replenishQuery = "";
             let chosenLoc = "";
@@ -1573,134 +1589,144 @@ export async function executeDiscoverySession(
               }
               if (replenishQuery) break;
             }
+            if (replenishQuery) {
+              replenishTasks.push({ query: replenishQuery, loc: chosenLoc });
+            }
+          }
 
-            if (!replenishQuery) break;
-
+          if (replenishTasks.length > 0) {
             const reasonNote = crmDuplicatesEncountered
               ? "CRM duplicates starved batch"
               : "Low provider yield starved batch";
             logEvent(
-              `[Dynamic Replenishment] Round ${round}: ${reasonNote} (${candidateItems.length}/${desiredBatchThreshold}). Running replenishment pass ${pass}/${maxReplenishPasses} for "${replenishQuery}".`,
+              `[Dynamic Replenishment] Round ${round}: ${reasonNote} (${candidateItems.length}/${desiredBatchThreshold}). Running ${replenishTasks.length} concurrent replenishment passes.`,
             );
 
-            const replenishStart = Date.now();
-            try {
-              const execReplenishQuery = toLinkedInSearchQuery({
-                query: replenishQuery,
-                lane: "person",
-              });
-              const cachedReplenish = getSearchCacheEntry(execReplenishQuery);
-              let rawReplenishItems: any[];
-              if (cachedReplenish && cachedReplenish.results.length > 0) {
-                stats.cacheHits++;
-                rawReplenishItems = cachedReplenish.results;
-              } else {
-                recordProviderUsage("tavily", 1);
-                const replenishRes = await tavilySearch(execReplenishQuery, {
-                  searchDepth: "basic",
-                  maxResults: 15,
-                  includeDomains: ["linkedin.com"],
-                  signal: sessionAbortController.signal,
-                  ...(tavilyCountry ? { country: tavilyCountry } : {}),
+            await Promise.all(replenishTasks.map(async (task, pIdx) => {
+              const { query: replenishQuery, loc: chosenLoc } = task;
+              const pass = pIdx + 1;
+              const replenishStart = Date.now();
+              try {
+                const execReplenishQuery = toLinkedInSearchQuery({
+                  query: replenishQuery,
+                  lane: "person",
                 });
-                rawReplenishItems = replenishRes.items || [];
-                if (rawReplenishItems.length > 0) {
-                  upsertSearchCacheEntry(execReplenishQuery, rawReplenishItems, "tavily", ttlDays);
-                  stats.cacheWrites++;
-                }
-              }
-
-              let addedCount = 0;
-              const replenishRun: QueryRunStats = {
-                round,
-                query: replenishQuery,
-                family: "replenishment_metro",
-                intent: "find_decision_makers",
-                rawCandidates: rawReplenishItems.length,
-                uniqueCandidates: 0,
-                evidenceBlocks: 0,
-                extractedLeads: 0,
-                acceptedLeads: 0,
-                rejectionReasons: {},
-                lane: "person",
-                providerPreference: "tavily",
-                searchLatencyMs: Date.now() - replenishStart,
-                providerUnits: cachedReplenish ? 0 : 1,
-                qualifiedFinalists: 0,
-                rescuedFinalists: 0,
-                returnedFinalists: 0,
-              };
-
-              for (const item of rawReplenishItems) {
-                let url = item.url;
-                let username = extractLinkedInUsername(url);
-                let normalizedUrl = normalizeLinkedInUrl(url);
-                if (!username || !normalizedUrl) {
-                  const recoveredUrl = extractLinkedInProfileUrlFromResult(item);
-                  if (recoveredUrl) {
-                    url = recoveredUrl;
-                    username = extractLinkedInUsername(url);
-                    normalizedUrl = normalizeLinkedInUrl(url);
+                const cachedReplenish = getSearchCacheEntry(execReplenishQuery);
+                let rawReplenishItems: any[];
+                if (cachedReplenish && cachedReplenish.results.length > 0) {
+                  stats.cacheHits++;
+                  rawReplenishItems = cachedReplenish.results;
+                } else {
+                  recordProviderUsage("tavily", 1);
+                  const replenishRes = await tavilySearch(execReplenishQuery, {
+                    searchDepth: "basic",
+                    maxResults: 15,
+                    includeDomains: ["linkedin.com"],
+                    signal: sessionAbortController.signal,
+                    ...(tavilyCountry ? { country: tavilyCountry } : {}),
+                  });
+                  rawReplenishItems = replenishRes.items || [];
+                  if (rawReplenishItems.length > 0) {
+                    upsertSearchCacheEntry(execReplenishQuery, rawReplenishItems, "tavily", ttlDays);
+                    stats.cacheWrites++;
                   }
                 }
-                if (!username || !normalizedUrl) continue;
 
-                const candidateKeys = [
-                  `linkedin:${username}`,
-                  username,
-                  `linkedin:${normalizedUrl}`,
-                  `url:${normalizedUrl}`,
-                  normalizedUrl,
-                ];
+                let addedCount = 0;
+                const replenishRun: QueryRunStats = {
+                  round,
+                  query: replenishQuery,
+                  family: "replenishment_metro",
+                  intent: "find_decision_makers",
+                  rawCandidates: rawReplenishItems.length,
+                  uniqueCandidates: 0,
+                  evidenceBlocks: 0,
+                  extractedLeads: 0,
+                  acceptedLeads: 0,
+                  rejectionReasons: {},
+                  lane: "person",
+                  providerPreference: "tavily",
+                  searchLatencyMs: Date.now() - replenishStart,
+                  providerUnits: cachedReplenish ? 0 : 1,
+                  qualifiedFinalists: 0,
+                  rescuedFinalists: 0,
+                  returnedFinalists: 0,
+                };
 
-                if (candidateKeys.some((k) => existingKeys.has(k))) {
-                  incrementRejection(stats.rejectionReasons, "duplicate_existing_lead");
-                  stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
-                  continue;
+                for (const item of rawReplenishItems) {
+                  let url = item.url;
+                  let username = extractLinkedInUsername(url);
+                  let normalizedUrl = normalizeLinkedInUrl(url);
+                  if (!username || !normalizedUrl) {
+                    const recoveredUrl = extractLinkedInProfileUrlFromResult(item);
+                    if (recoveredUrl) {
+                      url = recoveredUrl;
+                      username = extractLinkedInUsername(url);
+                      normalizedUrl = normalizeLinkedInUrl(url);
+                    }
+                  }
+                  if (!username || !normalizedUrl) continue;
+
+                  const candidateKeys = [
+                    `linkedin:${username}`,
+                    username,
+                    `linkedin:${normalizedUrl}`,
+                    `url:${normalizedUrl}`,
+                    normalizedUrl,
+                  ];
+
+                  if (candidateKeys.some((k) => existingKeys.has(k))) {
+                    incrementRejection(stats.rejectionReasons, "duplicate_existing_lead");
+                    stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
+                    continue;
+                  }
+
+                  if (candidateKeys.some((k) => seenCandidateKeys.has(k) || roundCandidateKeys.has(k))) {
+                    continue;
+                  }
+
+                  for (const k of candidateKeys) {
+                    roundCandidateKeys.add(k);
+                    seenCandidateKeys.add(k);
+                  }
+
+                  item.sourceProvider = "tavily";
+                  item._normalizedUrl = normalizedUrl;
+                  item._linkedinUsername = username;
+                  item._sourceQuery = replenishQuery;
+                  item._sourceRound = round;
+                  item._queryFamily = "replenishment_metro";
+                  item._queryIntent = "find_decision_makers";
+                  item._expectedSignal = "Replenished decision maker";
+                  item._sourceProviders = ["tavily"];
+                  item._lanes = ["person"];
+                  item._queryRun = replenishRun;
+
+                  candidateItems.push(item);
+                  addedCount++;
+                  const repKey = normalizedUrl || username || item.url;
+                  if (repKey) seenPersonIdentifiers.add(repKey);
+                  if (candidateItems.length >= desiredBatchThreshold) break;
                 }
 
-                if (candidateKeys.some((k) => seenCandidateKeys.has(k) || roundCandidateKeys.has(k))) {
-                  continue;
+                replenishRun.uniqueCandidates = addedCount;
+
+                if (addedCount === 0 && rawReplenishItems.length > 0 && chosenLoc) {
+                  saturatedGeos.add(chosenLoc.toLowerCase());
                 }
 
-                for (const k of candidateKeys) {
-                  roundCandidateKeys.add(k);
-                }
-
-                item.sourceProvider = "tavily";
-                item._normalizedUrl = normalizedUrl;
-                item._linkedinUsername = username;
-                item._sourceQuery = replenishQuery;
-                item._sourceRound = round;
-                item._queryFamily = "replenishment_metro";
-                item._queryIntent = "find_decision_makers";
-                item._expectedSignal = "Replenished decision maker";
-                item._sourceProviders = ["tavily"];
-                item._lanes = ["person"];
-                item._queryRun = replenishRun;
-
-                candidateItems.push(item);
-                addedCount++;
-                if (candidateItems.length >= desiredBatchThreshold) break;
+                logEvent(
+                  `[Dynamic Replenishment] Pass ${pass}/${maxReplenishPasses} added ${addedCount} candidate(s); batch now at ${candidateItems.length}/${desiredBatchThreshold}.`,
+                );
+                stats.queryRuns.push(replenishRun);
+              } catch (err: any) {
+                logEvent(`[Dynamic Replenishment] Pass ${pass} failed: ${err.message}`);
               }
-
-              replenishRun.uniqueCandidates = addedCount;
-
-              if (addedCount === 0 && rawReplenishItems.length > 0 && chosenLoc) {
-                saturatedGeos.add(chosenLoc.toLowerCase());
-              }
-
-              logEvent(
-                `[Dynamic Replenishment] Pass ${pass}/${maxReplenishPasses} added ${addedCount} candidate(s); batch now at ${candidateItems.length}/${desiredBatchThreshold}.`,
-              );
-              stats.queryRuns.push(replenishRun);
-            } catch (err: any) {
-              logEvent(`[Dynamic Replenishment] Pass ${pass} failed: ${err.message}`);
-            }
+            }));
           }
         }
 
-        rawResultsCount = seenCandidateKeys.size + roundCandidateKeys.size;
+        rawResultsCount = seenPersonIdentifiers.size;
         stats.rawCandidates = rawResultsCount;
 
         const extractResult = await executeExtractStage(sessionCtx, {
@@ -2007,6 +2033,7 @@ export async function executeDiscoverySession(
         // Invalidate previous generation if post-judging diagnostics or ablation demand recovery
         if (
           previousRoundSummary.shouldRecover &&
+          combinedMissingHardIds.length > 0 &&
           (sessionState.recoveryAttempts || 0) < 2
         ) {
           planningGeneration.value++;
@@ -2160,10 +2187,8 @@ export async function executeDiscoverySession(
             .join(" ");
           const hasIntentSignals = Boolean(
             (lead.signals && lead.signals.length > 0) ||
-              lead.intent_evidence ||
               lead.companyIntentEvidence ||
-              lead.linkedinPostIntentEvidence ||
-              lead.scout?.hasBuyingSignal ||
+              lead.postIntentEvidence ||
               (dynamicIntentRegex &&
                 combinedLeadText &&
                 dynamicIntentRegex.test(combinedLeadText)),
@@ -2176,39 +2201,40 @@ export async function executeDiscoverySession(
         const intentThresholdMet =
           !hasIntentRequirements || intentCorroboratedCount >= requiredIntentCount;
 
-        if (
-          !intentThresholdMet &&
-          round < maxRounds &&
-          acceptedLeads.length < collectionCapacity.candidateCeiling
-        ) {
-          logEvent(
-            `Round ${round}: Candidate target reached (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit}), but intent threshold unmet (${intentCorroboratedCount}/${targetLimit} leads with signal corroboration < ${requiredIntentCount} needed). Continuing to Round ${round + 1} for intent recovery.`,
-          );
-          previousRoundSummary.shouldRecover = true;
-          const intentReqIds = (contract.requirements || [])
-            .filter((r) => r.scope === "signal")
-            .map((r) => r.id);
-          previousRoundSummary.missingSoftSignalIds = Array.from(
-            new Set([
-              ...(previousRoundSummary.missingSoftSignalIds || []),
-              ...intentReqIds,
-            ]),
-          );
-        } else if (
-          roundEndEffectiveQualified >= targetLimit &&
-          uniqueCompanies >= minCompanyDiversity
-        ) {
-          logEvent(
-            `Round ${round}: Target fulfilled early with high diversity (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit} effective qualified, ${uniqueCompanies} unique companies >= ${minCompanyDiversity}${hasIntentRequirements ? `, ${intentCorroboratedCount} intent-corroborated` : ""}). Stopping discovery loop early.`,
-          );
-          stats.stopReason = "target_fulfilled_early";
-          break;
-        } else if (roundEndEffectiveQualified >= qualifiedTargetWithCushion) {
-          logEvent(
-            `Round ${round}: Verified judge target reached (${roundEndEffectiveQualified.toFixed(1)}/${qualifiedTargetWithCushion} effective qualified leads with ${cushionMultiplier}x cushion${hasIntentRequirements ? `, ${intentCorroboratedCount} intent-corroborated` : ""}). Stopping discovery loop early.`,
-          );
-          stats.stopReason = "target_fulfilled_early";
-          break;
+        const isTargetReached =
+          (roundEndEffectiveQualified >= targetLimit && uniqueCompanies >= minCompanyDiversity) ||
+          (roundEndEffectiveQualified >= qualifiedTargetWithCushion);
+
+        if (isTargetReached) {
+          const allowExtraIntentRound =
+            !intentThresholdMet &&
+            intentExtraRoundsRun < 1 &&
+            intentCorroboratedCount > previousIntentCorroboratedCount &&
+            round < maxRounds &&
+            acceptedLeads.length < collectionCapacity.candidateCeiling;
+
+          if (allowExtraIntentRound) {
+            intentExtraRoundsRun++;
+            logEvent(
+              `Round ${round}: Candidate target reached (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit}), attempting 1 extra round for intent recovery (${intentCorroboratedCount}/${requiredIntentCount} needed, rising from ${previousIntentCorroboratedCount}). Continuing to Round ${round + 1}.`,
+            );
+            previousRoundSummary.shouldRecover = true;
+            const intentReqIds = (contract.requirements || [])
+              .filter((r) => r.scope === "signal")
+              .map((r) => r.id);
+            previousRoundSummary.missingSoftSignalIds = Array.from(
+              new Set([
+                ...(previousRoundSummary.missingSoftSignalIds || []),
+                ...intentReqIds,
+              ]),
+            );
+          } else {
+            logEvent(
+              `Round ${round}: Target fulfilled early (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit} effective qualified, ${uniqueCompanies} unique companies >= ${minCompanyDiversity}${hasIntentRequirements ? `, ${intentCorroboratedCount}/${requiredIntentCount} intent-corroborated` : ""}). Stopping discovery loop early.`,
+            );
+            stats.stopReason = "target_fulfilled_early";
+            break;
+          }
         } else if (!isFlagEnabled.progressiveQualification()) {
           if (
             acceptedLeads.length >= collectionCapacity.candidateCeiling ||
@@ -2253,17 +2279,17 @@ export async function executeDiscoverySession(
             }
           } else {
             consecutiveStalledRounds++;
+            const missingHardCount = (previousRoundSummary?.missingHardRequirementIds?.length || 0);
             const canRecover =
               Boolean(
-                previousRoundSummary?.shouldRecover ||
-                (previousRoundSummary?.missingHardRequirementIds?.length || 0) >
-                  0,
+                previousRoundSummary?.shouldRecover &&
+                missingHardCount > 0,
               ) && (sessionState.recoveryAttempts || 0) < 2;
 
             if (consecutiveStalledRounds >= 2 && acceptedLeads.length > 0) {
               if (canRecover && round < maxRounds) {
                 logEvent(
-                  `Round ${round}: 2 consecutive stalled rounds, but criteria are missing and recovery attempts remain (${sessionState.recoveryAttempts}/2). Continuing to recovery plan.`,
+                  `Round ${round}: 2 consecutive stalled rounds, but criteria are missing [${previousRoundSummary?.missingHardRequirementIds?.join(", ")}] and recovery attempts remain (${sessionState.recoveryAttempts || 0}/2). Continuing to recovery plan.`,
                 );
               } else if (
                 shouldKeepCollectingAfterStall({
@@ -2581,6 +2607,10 @@ export class DiscoverySessionEngine {
   getActiveSessionId(): string | null {
     const first = this.activeSessions.keys().next().value;
     return first || null;
+  }
+
+  getActiveSessionIds(): string[] {
+    return Array.from(this.activeSessions.keys());
   }
 
   getLiveTrace(sessionId: string): MiningTraceEvent[] | null {

@@ -126,7 +126,7 @@ export function incrementCounter(
 }
 
 const TRANSIENT_LLM_ERROR =
-  /rate.?limit|429|timeout|etimedout|econnreset|fetch failed|socket hang up|5\d\d|bad gateway|service unavailable|overloaded/i;
+  /\b(rate.?limit|429|timeout|timed?\s*out|etimedout|econnreset|5\d\d)\b|fetch failed|socket hang up|bad gateway|service unavailable|overloaded/i;
 
 /**
  * Errors that are structurally non-transient and must never be retried, even when the

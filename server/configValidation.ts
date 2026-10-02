@@ -67,11 +67,11 @@ export function validateEngineConfig(): string[] {
     String(process.env.PROVIDER_CREDIT_RESERVATION || "")
       .trim()
       .toLowerCase() === "true" &&
-    !process.env.TAVILY_MONTHLY_LIMIT &&
-    !process.env.BRIGHTDATA_MONTHLY_LIMIT
+    !process.env.TAVILY_MONTHLY_CREDIT_BUDGET &&
+    !process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET
   ) {
     warnings.push(
-      "PROVIDER_CREDIT_RESERVATION=true but no TAVILY_MONTHLY_LIMIT/BRIGHTDATA_MONTHLY_LIMIT configured; monthly caps are inactive.",
+      "PROVIDER_CREDIT_RESERVATION=true but no TAVILY_MONTHLY_CREDIT_BUDGET/BRIGHTDATA_MONTHLY_REQUEST_BUDGET configured; monthly caps are inactive.",
     );
   }
 

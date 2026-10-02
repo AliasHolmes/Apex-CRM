@@ -1200,7 +1200,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           const response = await fetch('/api/leads/bulk', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ leads: batch, requireExisting: true, perItemConflict: true })
+            body: JSON.stringify({ leads: batch, requireExisting: true, perItemConflict: true, forceOverwrite: true })
           });
           const data = await response.json().catch(() => ({}));
           return { response, data };

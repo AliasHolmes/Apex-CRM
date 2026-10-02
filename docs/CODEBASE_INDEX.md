@@ -145,17 +145,19 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
 Cross-cutting invariants:
 
-- **`withSequentialLLMExecution`** (`llm.ts`) serializes every LLM call through one
-  queue by default to prevent provider 429/524 collisions. Behind
-  `FEATURE_LLM_STAGE_QUEUES=true` it shards into `strategist | extraction |
-  judge | general` lanes (max 2 each, global cap 4) with backoff preserved.
+- **Provider-Affinity Dual Concurrency** (`llm.ts`) routes LLM calls to Atria (primary,
+  1 concurrent slot) and Byesu (secondary, 1 concurrent slot, runs in parallel with Atria).
+  When both are busy, calls wait in queue with Atria affinity as slots become free. Failsafe 1
+  (Groq, 950 output token cap) and Failsafe 2 (OpenRouter/Mistral) activate only when both
+  primary and secondary providers are out. Dynamic reasoning effort: low for extraction/retrieval,
+  medium for strategist, high for finalist judge.
   `ExecuteDiscoveryOptions` supports `parentSessionId`/`deltaBrief` follow-ups
   and `interactive=false` headless expander fallback. The MAB pools priors by
   24 quantized brief centroids while preserving all `contract_guard` tasks above the
   `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **Stage-boundary checkpoints** (`mining_sessions.checkpoint_json`, 512KB guard) power
   1-click resume; resume rebuilds `seenCandidateKeys` and _replaces_ checkpoint counters.
-- **Per-provider circuit breaker** with cooldown ladders and key rotation.
+- **Per-provider circuit breaker** with cooldown ladders, key rotation, and health probes.
 
 ## 6. Configuration surface
 
@@ -186,7 +188,7 @@ env-overridable.
   and qualified-yield baseline)
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
   (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12),
-  `fuzzyQuoteGrounding`, `profileQuality`, `siteProbe`, `adaptiveScheduler`
+  `attributionSpotCheck` (3), `fuzzyQuoteGrounding`, `profileQuality`, `siteProbe`, `adaptiveScheduler`
 - **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (29), `keyRotator`,
   `tavilyRotation`, `kalmanStability`, `serverResilience`, `sessionStreamHubPruning`
 - **Persistence**: `leadPersistence` (incl. G15 CRM workflow preservation), `leadDedupe`,

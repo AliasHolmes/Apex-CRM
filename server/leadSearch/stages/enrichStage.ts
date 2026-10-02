@@ -567,7 +567,9 @@ export async function executeEnrichStage(
         isAuthwalledUrl(t.url),
       );
 
-      for (const target of authwalledTargets) {
+      const enrichConcurrency = 3;
+      let targetIdx = 0;
+      const processTarget = async (target: any) => {
         // 1. If lead was already discovered via brightdata_dataset, it's already pre-enriched
         if (
           target.lead.sourceProvider === "brightdata" &&
@@ -577,7 +579,7 @@ export async function executeEnrichStage(
           target.enriched = true;
           target.highValue = true;
           refreshLeadEvidence(target);
-          continue;
+          return;
         }
 
         // 2. Tier 2: Fast exact URL lookup in gd_l1viktl72bvl7bjuj0 (<1s)
@@ -642,7 +644,19 @@ export async function executeEnrichStage(
           target.enriched = true;
           refreshLeadEvidence(target);
         }
-      }
+      };
+
+      const workers = Array.from(
+        { length: Math.min(enrichConcurrency, authwalledTargets.length) },
+        async () => {
+          while (targetIdx < authwalledTargets.length) {
+            if (state.abortController.signal.aborted) break;
+            const target = authwalledTargets[targetIdx++];
+            await processTarget(target);
+          }
+        }
+      );
+      await Promise.all(workers);
     }
 
     const publicTargetsToScrape = uncachedTargets.filter(
@@ -1008,7 +1022,10 @@ export async function executeEnrichStage(
         stats.siteProbe.attempted += targetsToProbe.length;
         const probeStarted = Date.now();
         try {
-          state.freeTierBudget.reserveTavilySearch("basic");
+          const reserved = state.freeTierBudget.reserveTavilySearch("basic");
+          if (!reserved) {
+            logEvent(`Round ${round}: site probe skipped - Tavily budget exhausted.`);
+          } else {
           const probeResults = await probeCompanySites(targetsToProbe, {
             abortSignal: state.abortController.signal,
             onProviderUsage: (units) => {
@@ -1063,6 +1080,7 @@ export async function executeEnrichStage(
               succeeded: probeSucceeded,
             },
           });
+          }
         } catch (err: any) {
           logEvent(
             `WARN: Company site probe failed in round ${round}: ${err.message || String(err)}`,
@@ -1129,8 +1147,7 @@ export async function executeEnrichStage(
     const score = effectiveScore(lead);
     const passesScore =
       score >= minScore ||
-      Boolean(lead._borderlineEvidence) ||
-      score >= minScore - 1.0;
+      Boolean(lead._borderlineEvidence);
     if (!passesScore) {
       noteRejection("score_below_minimum", queryRun);
       continue;

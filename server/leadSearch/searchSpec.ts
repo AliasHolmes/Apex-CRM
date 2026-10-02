@@ -596,7 +596,7 @@ ${unvisitedMetros.length ? `- Pivot to fresh, unvisited metropolitan hubs (e.g. 
 
   const knownCompaniesNote =
     params.knownCompanyEntities && params.knownCompanyEntities.length > 0
-      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these; optionally use negative operators e.g. -"TopAgency"): ${params.knownCompanyEntities.slice(0, 10).join(", ")}`
+      ? `\nEXISTING CRM & RECENTLY EXPLORED COMPANIES (pivot to fresh companies and adjacent tech hubs, do NOT target these; optionally use negative operators e.g. -"TopAgency"): ${params.knownCompanyEntities.slice(0, 30).join(", ")}`
       : "";
 
   if (

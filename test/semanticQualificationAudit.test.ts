@@ -23,8 +23,9 @@ describe('Semantic Qualification & Hard Seam Verification', () => {
       assert.equal(isAgencyContract('AI agency owner from first-world countries'), true);
       assert.equal(isAgencyContract('B2B SaaS Founder in Austin'), false);
 
-      assert.ok(agencyContract.exclusions.some(e => /microsoft/i.test(e)));
-      assert.ok(agencyContract.exclusions.some(e => /openai/i.test(e)));
+      // B2: Bare brand names are no longer in contract exclusions to allow partner/consultancy agencies
+      assert.equal(agencyContract.exclusions.some(e => /microsoft/i.test(e)), false);
+      assert.equal(agencyContract.exclusions.some(e => /openai/i.test(e)), false);
       assert.ok(agencyContract.exclusions.some(e => /staff engineer/i.test(e)));
       assert.ok(agencyContract.exclusions.some(e => /principal engineer/i.test(e)));
       assert.ok(agencyContract.exclusions.some(e => /saas/i.test(e)));

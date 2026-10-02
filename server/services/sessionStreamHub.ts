@@ -114,9 +114,14 @@ class SessionStreamHub {
 
       // If session remains missing after a 5-second grace period (20 ticks * 250ms), close cleanly
       if (broadcast.missingTicks >= 20) {
+        const newLogCount = Math.max(0, Math.min(totalLogs - broadcast.lastLogTotal, logs.length));
+        const newTraceCount = Math.max(0, Math.min(totalTraces - broadcast.lastTraceTotal, traceEvents.length));
+        const pendingLogs = newLogCount > 0 ? logs.slice(logs.length - newLogCount) : [];
+        const pendingTrace = newTraceCount > 0 ? traceEvents.slice(traceEvents.length - newTraceCount) : [];
+
         const frame: SessionStreamFrame = {
-          logs: ["Session not found or expired."],
-          traceEvents: [],
+          logs: [...pendingLogs, "Session not found or expired."],
+          traceEvents: pendingTrace,
           session: null,
         };
         for (const subscriber of Array.from(broadcast.subscribers)) {

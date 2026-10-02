@@ -309,3 +309,120 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
     assert.equal(llm.getProviderActiveSlots('atria'), 0);
   });
 });
+
+describe('Multi-Provider 4-Tier Concurrency & Policy (Atria -> Byesu -> Groq -> OpenRouter)', () => {
+  beforeEach(() => {
+    for (const key of MANAGED_KEYS) {
+      envSnapshot[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.LLM_COMPLETION_CACHE = 'false';
+    process.env.ATRIA_API_KEY = 'mock-atria-key';
+    process.env.BYESU_API_KEY = 'mock-byesu-key';
+    process.env.GROQ_API_KEY = 'mock-groq-key';
+    process.env.OPENROUTER_API_KEY = 'mock-openrouter-key';
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const key of MANAGED_KEYS) {
+      if (envSnapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = envSnapshot[key] as string;
+    }
+  });
+
+  it('waits in queue when both primaries are busy rather than spilling over to failsafe', async () => {
+    const llm = await importLLM('multi-busy-wait');
+    llm.clearProviderCooldowns();
+
+    const usedProviders: string[] = [];
+    const requestsBodies: any[] = [];
+
+    globalThis.fetch = async (url: any, opts: any) => {
+      const urlStr = String(url);
+      const body = JSON.parse(opts.body);
+      requestsBodies.push(body);
+
+      let providerId = 'unknown';
+      if (urlStr.includes('atria')) providerId = 'atria';
+      else if (urlStr.includes('byesu')) providerId = 'primary';
+      else if (urlStr.includes('groq')) providerId = 'groq';
+      else if (urlStr.includes('openrouter')) providerId = 'openrouter';
+
+      usedProviders.push(providerId);
+
+      // Hold call for 50ms
+      await new Promise((r) => setTimeout(r, 50));
+      return jsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
+      });
+    };
+
+    // Fire 3 simultaneous calls:
+    // Call 1 -> Atria (slot 1)
+    // Call 2 -> Byesu (slot 1)
+    // Call 3 -> Must wait in queue for free primary slot, NEVER escalate to Groq!
+    const [r1, r2, r3] = await Promise.all([
+      llm.openAIStructured<{ ok: boolean }>('Req 1', { type: 'object' }),
+      llm.openAIStructured<{ ok: boolean }>('Req 2', { type: 'object' }),
+      llm.openAIStructured<{ ok: boolean }>('Req 3', { type: 'object' }),
+    ]);
+
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true);
+    assert.equal(r3.ok, true);
+
+    // Verify all 3 went to primaries (Atria / Byesu), zero calls went to Groq or OpenRouter
+    assert.ok(
+      usedProviders.every((p) => p === 'atria' || p === 'primary'),
+      `Expected all requests to be served by primary pair, got: ${usedProviders.join(', ')}`,
+    );
+    assert.ok(!(usedProviders as string[]).includes('groq'), 'Failsafe Groq was wrongly invoked when primaries were only busy!');
+    assert.ok(!(usedProviders as string[]).includes('openrouter'), 'Failsafe OpenRouter was wrongly invoked!');
+  });
+
+  it('dispatches interactive requests to failsafe when primaries are genuinely out', async () => {
+    const llm = await importLLM('multi-failsafe-interactive');
+    llm.clearProviderCooldowns();
+
+    // Mark primaries out
+    const atriaHealth = llm.getProviderHealth('atria');
+    atriaHealth.status = 'out';
+    atriaHealth.outUntil = Date.now() + 60000;
+    atriaHealth.outReason = 'fatal_error';
+
+    const byesuHealth = llm.getProviderHealth('primary');
+    byesuHealth.status = 'out';
+    byesuHealth.outUntil = Date.now() + 60000;
+    byesuHealth.outReason = 'fatal_error';
+
+    const requestedUrls: string[] = [];
+    const requestedBodies: any[] = [];
+
+    globalThis.fetch = async (url: any, opts: any) => {
+      const urlStr = String(url);
+      requestedUrls.push(urlStr);
+      const parsedBody = JSON.parse(opts.body);
+      requestedBodies.push(parsedBody);
+
+      return jsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: '{"status":"failsafe-ok"}' } }],
+      });
+    };
+
+    // Interactive call: should escalate to Groq (failsafe 1)
+    const result = await llm.openAIStructured<{ status: string }>(
+      'Interactive query',
+      { type: 'object' },
+      undefined,
+      { metadata: { isInteractive: true, priority: 'high' } },
+    );
+
+    assert.equal(result.status, 'failsafe-ok');
+    assert.ok(requestedUrls[0].includes('api.groq.com'), `Expected Groq url, got ${requestedUrls[0]}`);
+
+    // Verify reasoning_effort is NEVER sent to failsafe providers
+    assert.equal(requestedBodies[0].reasoning_effort, undefined);
+  });
+});
+

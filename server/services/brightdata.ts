@@ -1855,6 +1855,7 @@ export type BrightDataSearchOptions = {
   cursor?: string;
   timeoutMs?: number;
   engine?: "google" | "bing" | "yandex";
+  forceEngine?: boolean;
   allowBingFallback?: boolean;
   onEngineAttempt?: (engine: "google" | "bing" | "yandex") => void;
   onBingFallback?: (event: { query: string; resultsCount: number }) => void;
@@ -2055,16 +2056,39 @@ export function buildBrightDataSearchArguments(
 }
 
 let googleSerpChallengeCount = 0;
-let stickyBingActive = false;
+let stickyBingActiveSince = 0;
 const GOOGLE_CHALLENGE_STICKY_THRESHOLD = 2;
 
 export function resetStickyBingFallback() {
   googleSerpChallengeCount = 0;
-  stickyBingActive = false;
+  stickyBingActiveSince = 0;
 }
 
 export function isStickyBingActive(): boolean {
-  return stickyBingActive;
+  if (stickyBingActiveSince > 0) {
+    if (Date.now() - stickyBingActiveSince > 15 * 60 * 1000) {
+      stickyBingActiveSince = 0;
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+export async function attemptGoogleRecovery(): Promise<boolean> {
+  if (!isStickyBingActive()) return false;
+  if (Date.now() - stickyBingActiveSince < 10 * 60 * 1000) return false;
+  
+  try {
+    const results = await brightDataSearch("test", { engine: "google", forceEngine: true, timeoutMs: 8000 });
+    if (Array.isArray(results)) {
+       resetStickyBingFallback();
+       return true;
+    }
+  } catch(err) {
+    // Ignore
+  }
+  return false;
 }
 
 export async function brightDataSearch(
@@ -2095,7 +2119,7 @@ export async function brightDataSearch(
     (process.env.BRIGHTDATA_DEFAULT_SEARCH_ENGINE as "google" | "bing" | "yandex") ||
     "google";
   let engine = options?.engine || defaultEngine;
-  if (stickyBingActive && engine === "google") {
+  if (isStickyBingActive() && engine === "google" && !options?.forceEngine) {
     engine = "bing";
   }
 
@@ -2128,6 +2152,11 @@ export async function brightDataSearch(
           );
         }
 
+        const effectiveTimeoutMs =
+          activeEngine === "google" && allowBingFallback
+            ? Math.min(timeoutMs, Number(process.env.BRIGHTDATA_GOOGLE_CHALLENGE_TIMEOUT_MS || 20_000))
+            : timeoutMs;
+
         const toolResult = await withHardTimeout(
           client.callTool(
             {
@@ -2138,9 +2167,9 @@ export async function brightDataSearch(
               }),
             },
             undefined,
-            { timeout: timeoutMs },
+            { timeout: effectiveTimeoutMs },
           ),
-          timeoutMs,
+          effectiveTimeoutMs,
           `Bright Data search_engine (${activeEngine})`,
         );
 
@@ -2189,9 +2218,9 @@ export async function brightDataSearch(
       try {
         const searchResults = await runSearch(engine);
         if (engine === "google" && searchResults && searchResults.length > 0) {
-          if (googleSerpChallengeCount > 0 || stickyBingActive) {
+          if (googleSerpChallengeCount > 0 || isStickyBingActive()) {
             googleSerpChallengeCount = 0;
-            stickyBingActive = false;
+            stickyBingActiveSince = 0;
           }
         }
         return searchResults;
@@ -2205,9 +2234,9 @@ export async function brightDataSearch(
         if (engine === "google" && isBotChallenge) {
           googleSerpChallengeCount++;
           if (googleSerpChallengeCount >= GOOGLE_CHALLENGE_STICKY_THRESHOLD) {
-            stickyBingActive = true;
+            stickyBingActiveSince = Date.now();
             console.warn(
-              `[brightdata] Google SERP bot challenges reached threshold (${googleSerpChallengeCount}). Activated sticky Bing fallback for session.`,
+              `[brightdata] Google SERP bot challenges reached threshold (${googleSerpChallengeCount}). Activated sticky Bing fallback.`,
             );
           }
         }

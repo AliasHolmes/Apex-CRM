@@ -391,8 +391,7 @@ export default function ScrapeWorkspace() {
 
     watchTimer = setInterval(() => {
       pollCount += 1;
-      // Hard cap (~40 min at 3s) so the watcher can never leak indefinitely.
-      if (pollCount > 800 || requestController.signal.aborted) {
+      if (requestController.signal.aborted) {
         const aborted = requestController.signal.aborted;
         cleanupDiscoveryUi();
         if (aborted) {

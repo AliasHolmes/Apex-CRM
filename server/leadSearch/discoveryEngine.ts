@@ -552,11 +552,6 @@ export async function executeDiscoverySession(
         deferred: string[];
       },
     },
-    rerank: {
-      poolTarget: 0,
-      poolSize: 0,
-      returned: 0,
-    },
   };
 
   type EvidenceMeta = {
@@ -803,7 +798,6 @@ export async function executeDiscoverySession(
         Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 0) || undefined,
     });
     let rerankPoolTarget = collectionCapacity.rerankPoolTarget;
-    stats.rerank.poolTarget = rerankPoolTarget;
     let maxRounds = collectionCapacity.maxRounds;
     // Ceiling for the in-loop budget extension below. When the operator pinned
     // LEAD_SEARCH_MAX_ROUNDS the configured value is authoritative and extension is
@@ -1056,16 +1050,16 @@ export async function executeDiscoverySession(
       profileEnrichmentStage,
       profileConcurrency,
       profileMaxPerSearch,
-      // Both were previously clamped with Math.min(..., 1), which pinned them to 1 and made
-      // the env vars inert no matter what was configured. 2 is the recommended maximum in
-      // configValidation.ts; the default stays 1 so behaviour is unchanged unless opted in.
+      // Ceilings match the recommended maximums in configValidation.ts and the per-provider
+      // slot capacity (ATRIA_CONCURRENT_SLOTS + BYESU_CONCURRENT_SLOTS); the default stays 1
+      // so behaviour is unchanged unless opted in.
       extractionConcurrency: Math.min(
         Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1),
-        2,
+        6,
       ),
       judgeConcurrency: Math.min(
         Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 1), 1),
-        4,
+        8,
       ),
     };
 
@@ -1325,7 +1319,6 @@ export async function executeDiscoverySession(
                   ),
                 ))
           : rerankPoolTarget;
-        stats.rerank.poolTarget = roundStagePoolTarget;
 
         const currentGen = planningGeneration.value;
         const planResult = await executePlanStage(sessionCtx, {

@@ -246,8 +246,6 @@ export async function executeSelectStage(
 
   const leadsFound = finalLeads.length;
   stats.returned = leadsFound;
-  stats.rerank = stats.rerank || {};
-  stats.rerank.returned = leadsFound;
 
   if (leadsFound >= targetLimit) {
     stats.stopReason = 'target_reached';

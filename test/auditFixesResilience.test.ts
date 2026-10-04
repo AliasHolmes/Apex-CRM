@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  withSequentialLLMExecution,
   openAIText,
 } from "../server/services/llm.js";
 import {
@@ -25,49 +24,6 @@ import { LeadQueryRunTracker } from "../server/leadSearch/pipelineTypes.js";
 import { normalizeProspectContract } from "../server/leadSearch/prospectContract.js";
 
 describe("Queue Invariants & Abort Mechanics", () => {
-  it("immediately aborts a queued request when callerSignal aborts, without waiting for preceding tasks", async () => {
-    let task1Running = true;
-    const task1 = withSequentialLLMExecution(async () => {
-      await new Promise((r) => setTimeout(r, 100));
-      task1Running = false;
-      return "task1-done";
-    });
-
-    const ac2 = new AbortController();
-    let task2Executed = false;
-    const task2Promise = withSequentialLLMExecution(async () => {
-      task2Executed = true;
-      return "task2-done";
-    }, ac2.signal);
-
-    let task3Executed = false;
-    const task3Promise = withSequentialLLMExecution(async () => {
-      task3Executed = true;
-      return "task3-done";
-    });
-
-    // Abort task 2 immediately while task 1 is still running
-    assert.equal(task1Running, true);
-    ac2.abort();
-
-    await assert.rejects(task2Promise, (err: any) => {
-      assert.equal(err.name, "AbortError");
-      return true;
-    });
-
-    // Task 1 should complete normally
-    const res1 = await task1;
-    assert.equal(res1, "task1-done");
-
-    // Task 3 should execute and succeed
-    const res3 = await task3Promise;
-    assert.equal(res3, "task3-done");
-
-    // Task 2 must NOT have executed its payload
-    assert.equal(task2Executed, false);
-    assert.equal(task3Executed, true);
-  });
-
   it("does not starve queued request timeout budget while waiting for preceding requests in queue", async () => {
     const originalFetch = globalThis.fetch;
     const oldKey = process.env.OPENAI_API_KEY;

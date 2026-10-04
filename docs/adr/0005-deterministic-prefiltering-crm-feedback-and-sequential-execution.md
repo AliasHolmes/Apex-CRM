@@ -49,7 +49,7 @@ We introduce six coordinated architectural enhancements across data persistence,
 
 ### 7. Amendment (Intelligence Upgrade): Optional Stage-Lane Sharding
 
-> **Superseded by [ADR-0007](0007-industry-agnostic-pipeline-and-dual-provider-concurrency.md).** Stage-lane sharding, `FEATURE_LLM_STAGE_QUEUES`, `LLM_LANE_SLOTS` / `LLM_GLOBAL_SLOTS` and the `AsyncLocalStorage` lane context were removed. LLM concurrency is now provider-affinity (one request each for Atria and Byesu). `runWithLlmStageLane` is retained only as a no-op passthrough. The text below is kept as the historical record.
+> **Superseded by [ADR-0007](0007-industry-agnostic-pipeline-and-dual-provider-concurrency.md).** `withSequentialLLMExecution`, stage-lane sharding, `FEATURE_LLM_STAGE_QUEUES`, `LLM_LANE_SLOTS` / `LLM_GLOBAL_SLOTS` and `runWithLlmStageLane` were retired. LLM concurrency is now provider-affinity (`withProviderFallback`, one request each for Atria and Byesu). The text below is kept as the historical record.
 - Behind `FEATURE_LLM_STAGE_QUEUES=true`, the queue shards into `strategist | extraction | judge | general` lanes (max 2 each, global cap 4, `LLM_LANE_SLOTS` / `LLM_GLOBAL_SLOTS` tunable) with `AsyncLocalStorage` lane context (`runWithLlmStageLane`). Default `false` preserves 100% legacy single-mutex behavior.
 - Per-provider 429/524 backoff, key rotation, 60s queue timeout, and abort propagation are preserved in every lane.
 - Role triage (`titleTriage.ts`) now expands acronyms (`MD`, `VP`, `CTO`, `CRO`) before matching so abbreviated executives are not mis-triaged.

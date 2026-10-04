@@ -1,29 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  withSequentialLLMExecution,
   acquireProviderSlot,
   releaseProviderSlot,
   getProviderActiveSlots,
   waitForProviderSlot,
 } from "../server/services/llm.js";
-
-test("sequential LLM execution preserves serial order", async () => {
-  const order: number[] = [];
-  const p1 = withSequentialLLMExecution(async () => {
-    await new Promise((r) => setTimeout(r, 40));
-    order.push(1);
-    return 1;
-  });
-  const p2 = withSequentialLLMExecution(async () => {
-    order.push(2);
-    return 2;
-  });
-  const [r1, r2] = await Promise.all([p1, p2]);
-  assert.equal(r1, 1);
-  assert.equal(r2, 2);
-  assert.deepEqual(order, [1, 2]);
-});
 
 test("slot waiting queue resolves in FIFO order on slot release", async () => {
   const dummyProvider = {

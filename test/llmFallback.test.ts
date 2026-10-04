@@ -442,48 +442,6 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(llm.CLOUDFLARE_MAX_TIMEOUT_MS, 115_000);
   });
 
-  it('guarantees strict sequential execution through withSequentialLLMExecution', async () => {
-    const llm = await importLLM('sequential');
-    const events: string[] = [];
-
-    const task1 = () =>
-      llm.withSequentialLLMExecution(async () => {
-        events.push('start:1');
-        await new Promise((r) => setTimeout(r, 40));
-        events.push('end:1');
-        return 1;
-      });
-
-    const task2 = () =>
-      llm.withSequentialLLMExecution(async () => {
-        events.push('start:2');
-        await new Promise((r) => setTimeout(r, 20));
-        events.push('end:2');
-        return 2;
-      });
-
-    const task3 = () =>
-      llm.withSequentialLLMExecution(async () => {
-        events.push('start:3');
-        await new Promise((r) => setTimeout(r, 10));
-        events.push('end:3');
-        return 3;
-      });
-
-    // Launch all three concurrently:
-    const results = await Promise.all([task1(), task2(), task3()]);
-    assert.deepEqual(results, [1, 2, 3]);
-    // Must be completely sequential: 1 ends before 2 starts, 2 ends before 3 starts
-    assert.deepEqual(events, [
-      'start:1',
-      'end:1',
-      'start:2',
-      'end:2',
-      'start:3',
-      'end:3',
-    ]);
-  });
-
   it('does NOT trip permanent circuit breaker on Cloudflare 524 gateway timeout', async () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';

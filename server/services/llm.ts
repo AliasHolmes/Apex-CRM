@@ -422,24 +422,6 @@ export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
  */
 export const ATRIA_MAX_TIMEOUT_MS = 600_000;
 
-/**
- * Legacy global single-slot queue. Provider calls bypass it (sendChatCompletion always passes
- * a providerId); concurrency is the per-provider slots in withProviderFallback (Atria 1 +
- * Byesu 1, in parallel). runWithLlmStageLane is a passthrough kept for API compatibility.
- */
-export type LLMStageLane = 'strategist' | 'extraction' | 'judge' | 'general';
-
-export function runWithLlmStageLane<T>(_lane: LLMStageLane, fn: () => Promise<T>): Promise<T> {
-  return fn();
-}
-
-let activeLlmSlots = 0;
-const llmWaitQueue: Array<{
-  run: () => void;
-  onAbort: () => void;
-  refreshTimer?: () => void;
-}> = [];
-
 function resolveDynamicQueueTimeoutMs(): number {
   const configured = Number(process.env.LLM_QUEUE_TIMEOUT_MS);
   if (Number.isFinite(configured) && configured > 0 && configured < 5_000) {
@@ -449,127 +431,11 @@ function resolveDynamicQueueTimeoutMs(): number {
     ? (Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
         ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
         : ATRIA_MAX_TIMEOUT_MS)
-    : CLOUDFLARE_MAX_TIMEOUT_MS;
+  : CLOUDFLARE_MAX_TIMEOUT_MS;
   return Math.max(
     Number.isFinite(configured) && configured > 0 ? configured : 60_000,
     providerCeiling + 15_000,
   );
-}
-
-function pumpLlmQueue() {
-  while (activeLlmSlots < 1 && llmWaitQueue.length > 0) {
-    const next = llmWaitQueue.shift();
-    if (next) {
-      activeLlmSlots++;
-      next.run();
-    }
-  }
-  for (const waiter of llmWaitQueue) {
-    waiter.refreshTimer?.();
-  }
-}
-
-export function withSequentialLLMExecution<T>(
-  task: () => Promise<T>,
-  signal?: AbortSignal | null,
-  _laneOverride?: LLMStageLane,
-  providerId?: string,
-): Promise<T> {
-  if (signal?.aborted) {
-    const abortErr = new Error("LLM request was aborted by caller.");
-    abortErr.name = "AbortError";
-    return Promise.reject(abortErr);
-  }
-  // When provider-level concurrency is active, execute directly since withProviderFallback
-  // already guarantees per-provider isolation and capacity bounds.
-  if (providerId) {
-    return task();
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    let waitEntry: { run: () => void; onAbort: () => void; refreshTimer?: () => void } | null = null;
-    let queueTimer: NodeJS.Timeout | null = null;
-
-    const armQueueTimer = () => {
-      if (settled) return;
-      if (queueTimer) clearTimeout(queueTimer);
-      const queueTimeoutMs = resolveDynamicQueueTimeoutMs();
-      queueTimer = setTimeout(() => {
-        if (settled) return;
-        handleAbort("LLM request timed out waiting in execution queue.");
-      }, queueTimeoutMs);
-    };
-    armQueueTimer();
-
-    const cleanupAbort = () => {
-      if (queueTimer) {
-        clearTimeout(queueTimer);
-        queueTimer = null;
-      }
-      if (signal && waitEntry?.onAbort) {
-        signal.removeEventListener("abort", waitEntry.onAbort);
-      }
-    };
-
-    const handleAbort = (reason?: unknown) => {
-      if (settled) return;
-      settled = true;
-      cleanupAbort();
-      const idx = llmWaitQueue.findIndex((entry) => entry === waitEntry);
-      if (idx !== -1) {
-        llmWaitQueue.splice(idx, 1);
-      }
-      const msg = typeof reason === "string" ? reason : "LLM request was aborted by caller.";
-      const abortErr = new Error(msg);
-      abortErr.name = msg.includes("timed out") ? "TimeoutError" : "AbortError";
-      reject(abortErr);
-    };
-
-    const executeTask = async () => {
-      cleanupAbort();
-      if (settled || signal?.aborted) {
-        activeLlmSlots = Math.max(0, activeLlmSlots - 1);
-        pumpLlmQueue();
-        if (!settled) {
-          settled = true;
-          const abortErr = new Error("LLM request was aborted by caller.");
-          abortErr.name = "AbortError";
-          reject(abortErr);
-        }
-        return;
-      }
-
-      try {
-        const result = await task();
-        settled = true;
-        resolve(result);
-      } catch (err) {
-        settled = true;
-        reject(err);
-      } finally {
-        activeLlmSlots = Math.max(0, activeLlmSlots - 1);
-        pumpLlmQueue();
-      }
-    };
-
-    waitEntry = {
-      run: executeTask,
-      onAbort: handleAbort,
-      refreshTimer: armQueueTimer,
-    };
-
-    if (signal) {
-      signal.addEventListener("abort", handleAbort, { once: true });
-    }
-
-    if (activeLlmSlots < 1) {
-      activeLlmSlots++;
-      executeTask();
-    } else {
-      llmWaitQueue.push(waitEntry);
-    }
-  });
 }
 
 /**
@@ -582,7 +448,7 @@ async function fetchWithRetry(
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
   maxRetries?: number,
   isAtria = false,
-  providerId?: string,
+  _providerId?: string,
 ): Promise<Response> {
   const atriaConfiguredBase = process.env.ATRIA_BASE
     ? cleanBaseUrl(process.env.ATRIA_BASE)
@@ -648,30 +514,28 @@ async function fetchWithRetry(
     let timer: NodeJS.Timeout | undefined;
 
     try {
-      const res = await withSequentialLLMExecution(async () => {
-        controller = new AbortController();
-        timer = setTimeout(() => controller?.abort(), effectiveTimeoutMs);
-        let compositeSignal = controller.signal;
-        if (callerSignal) {
-          if (callerSignal.aborted) {
-            clearTimeout(timer);
-            const abortErr = new Error("LLM request was aborted by caller.");
-            abortErr.name = "AbortError";
-            throw abortErr;
-          }
-          if (typeof AbortSignal.any === "function") {
-            compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
-          } else {
-            callerSignal.addEventListener("abort", () => controller?.abort(), {
-              once: true,
-            });
-          }
+      controller = new AbortController();
+      timer = setTimeout(() => controller?.abort(), effectiveTimeoutMs);
+      let compositeSignal = controller.signal;
+      if (callerSignal) {
+        if (callerSignal.aborted) {
+          clearTimeout(timer);
+          const abortErr = new Error("LLM request was aborted by caller.");
+          abortErr.name = "AbortError";
+          throw abortErr;
         }
-        return await fetch(url, {
-          ...requestOptions,
-          signal: compositeSignal,
-        });
-      }, callerSignal, undefined, providerId);
+        if (typeof AbortSignal.any === "function") {
+          compositeSignal = AbortSignal.any([controller.signal, callerSignal]);
+        } else {
+          callerSignal.addEventListener("abort", () => controller?.abort(), {
+            once: true,
+          });
+        }
+      }
+      const res = await fetch(url, {
+        ...requestOptions,
+        signal: compositeSignal,
+      });
 
       if (timer) clearTimeout(timer);
       lastResponse = res;

@@ -163,7 +163,7 @@ class MiningTraceStore {
                 if (e?.id) seen.add(e.id);
               }
               nextEvents = data.traceEvents.slice(-2000);
-              if (nextEvents.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
+              if (nextEvents.some((e: MiningTraceEvent) => e.phase === 'persistence' && e.operation === 'upsert_leads' && e.status === 'success')) {
                 onPersistenceEvent?.();
               }
             }
@@ -178,7 +178,7 @@ class MiningTraceStore {
             }
             if (newEvents.length > 0) {
               nextEvents = [...state.traceEvents, ...newEvents].slice(-2000);
-              if (newEvents.some((e: MiningTraceEvent) => e.phase === 'persistence')) {
+              if (newEvents.some((e: MiningTraceEvent) => e.phase === 'persistence' && e.operation === 'upsert_leads' && e.status === 'success')) {
                 onPersistenceEvent?.();
               }
             }

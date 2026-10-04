@@ -970,10 +970,10 @@ export async function executeDiscoverySession(
         }
       }
       recordTrace({
-        phase: "persistence",
+        phase: "candidate_processing",
         operation: "checkpoint_leads",
         status: "success",
-        provider: "sqlite",
+        provider: "system",
         counts: { candidates: candidates.length },
         metadata: { checkpointStage: stageLabel },
       });

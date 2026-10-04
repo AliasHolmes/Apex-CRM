@@ -1,13 +1,12 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-10-02 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-05 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
-> Supersedes the 2026-09-25 index, which had drifted on schema version (v23 → v26), test
-> counts (129 files → 154, 860 tests → 976 tests), table inventory (20 → 24 tables),
-> and module listings. Verified values below were measured directly from the tree, not inherited:
-> `tsc --noEmit` passes with 0 errors and the full suite (`npm test`) passes 976 tests across
-> 176 test suites as of this date.
+> Supersedes the 2026-10-02 index, which had drifted on test counts (154 → 161 files,
+> 976 → 1034 tests), line counts, and config keys (144 → 133). Verified values below were
+> measured directly from the tree, not inherited: `tsc --noEmit` passes with 0 errors and
+> the full suite (`npm test`) passes 1034 tests across 184 suites as of this date.
 
 ---
 
@@ -38,13 +37,13 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Frontend (`src/`)                                                | ~11,800 lines across 36 files                                              |
-| Backend engine (`server/leadSearch/`)                            | ~23,400 lines: 43 modules + 9 `stages/`                                    |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~14,600 lines                                                              |
+| Backend engine (`server/leadSearch/`)                            | ~24,250 lines: 42 modules + 9 `stages/`                                    |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,700 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 24 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
-| Test suite                                                       | 154 files (153 `.test.ts` + 1 `.eval.ts`), 976 unit tests / 176 suites + 13 eval tests, all passing |
-| Total first-party LOC                                            | ~74,500 (incl. ~26,200 test LOC)                                           |
-| Working tree                                                     | clean (all fixes committed through `129173a`)                              |
+| Test suite                                                       | 161 files (160 `.test.ts` + 1 `.eval.ts`), 1034 unit tests / 184 suites + 13 eval tests, all passing |
+| Total first-party LOC                                            | ~77,800 (incl. ~26,000 test LOC)                                           |
+| Working tree                                                     | clean (all fixes committed through `1e94831`)                              |
 
 ## 3. Tech stack
 
@@ -63,7 +62,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (333 lines)
+server.ts                    Express app + static Vite serve (335 lines)
 server/db.ts                 SQLite layer: schema v26, migrations, 40+ readers/writers (5,559)
 server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,160)
 server/services/             llm.ts (3,095, provider-affinity dual concurrency, Atria reasoning headroom, completion cache) ·
@@ -101,7 +100,7 @@ server/leadSearch/           the discovery engine
                              persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
-test/                        154 files (153 .test.ts + queryIntelligence.eval.ts), node:test runner via tsx
+test/                        161 files (160 .test.ts + queryIntelligence.eval.ts), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (84 lines)
 ```
 
@@ -161,7 +160,7 @@ Cross-cutting invariants:
 
 ## 6. Configuration surface
 
-144 keys in `.env` (mirrored by `.env.example`). Notable:
+133 keys in `.env` (135 mirrored by `.env.example`). Notable:
 
 - `EVIDENCE_GROUNDING_MODE` (`.env.example` = `"strict"`) — enforces verbatim, alias, or
   polarity-guarded fuzzy quote citations on every `pass` verdict (`"legacy"`/`"permissive"`
@@ -180,8 +179,8 @@ env-overridable.
 
 ## 7. Test suite
 
-129 files / 860 unit & integration tests (172 suites) via `npm test` + 13 eval tests via
-`npm run test:eval` (verified passing 2026-09-25). Composition:
+160 files / 1034 unit & integration tests (184 suites) via `npm test` + 13 eval tests via
+`npm run test:eval` (verified passing 2026-10-05). Composition:
 
 - **Query & intelligence eval**: `queryIntelligence.eval` (13 suites covering 30+ gold briefs,
   pronoun-collision guard G21, plural-persona extraction G22, city-only geo anchoring G24,
@@ -355,7 +354,7 @@ Resolved across 50 files and verified across 976 unit & integration tests (176 s
 
 ## 10. Recommended next actions
 
-Updated 2026-10-02.
+Updated 2026-10-05.
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done — open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done — Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.

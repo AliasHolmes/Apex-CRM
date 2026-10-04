@@ -17,13 +17,16 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {
-        ignored: ['**/.apex-data/**']
+        ignored: ['**/.apex-data/**', '**/test/**', '**/docs/**']
       },
     },
     optimizeDeps: {
       include: [
         'react',
         'react-dom',
+        '@tanstack/react-virtual',
+        'react-markdown',
+        'remark-gfm',
         'lucide-react',
         'motion/react',
         'papaparse',

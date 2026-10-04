@@ -99,3 +99,18 @@ test("resume releases its session claim when the run fails before starting", asy
   assert.equal(discoveryEngine.isActive(sessionId), false, "the failed resume left the session claimed forever");
   assert.equal(discoveryEngine.getLiveLogs(sessionId), null);
 });
+
+test("intermediate checkpoint trace events do not mislabel as database persistence", () => {
+  const recorder = new MiningTelemetryRecorder("session-chk-1", "test", 5);
+  recorder.record({
+    phase: "candidate_processing",
+    operation: "checkpoint_leads",
+    status: "success",
+    provider: "system",
+  });
+  const events = recorder.getEvents();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].phase, "candidate_processing");
+  assert.notEqual(events[0].phase, "persistence");
+});
+

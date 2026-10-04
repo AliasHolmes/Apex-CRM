@@ -349,6 +349,29 @@ export const COUNTRY_TO_METROS: Record<string, string[]> = {
   jp: ["Tokyo", "Osaka", "Yokohama"],
 };
 
+/**
+ * Major cities the query planner routinely emits that COUNTRY_TO_METROS does not list.
+ * Kept separate so the replenishment rotation (which iterates COUNTRY_TO_METROS) is unchanged.
+ */
+const EXTRA_KNOWN_METROS = [
+  "Atlanta", "Dallas", "Houston", "Phoenix", "Philadelphia", "Washington", "San Diego",
+  "San Jose", "Tampa", "Orlando", "Nashville", "Portland", "Minneapolis", "Detroit",
+  "Charlotte", "Raleigh", "Salt Lake City", "Las Vegas", "Pittsburgh", "Columbus",
+  "Edmonton", "Winnipeg", "Hamilton", "Quebec City", "Halifax", "Victoria", "Waterloo",
+];
+
+export const ALL_KNOWN_METROS: string[] = Array.from(
+  new Set([...Object.values(COUNTRY_TO_METROS).flat(), ...EXTRA_KNOWN_METROS]),
+);
+
+const KNOWN_METRO_RE = new RegExp(
+  `\\b(?:${ALL_KNOWN_METROS.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+  "i",
+);
+
+/** True when the query names a known city (whole-word, case-insensitive). */
+export const namesKnownMetro = (query: string): boolean => KNOWN_METRO_RE.test(query || "");
+
 const expandAcceptableTerms = (
   scope: RequirementScope,
   terms: string[],
@@ -1770,6 +1793,10 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
         const alreadyHasContext = contextReqs.some(cr => {
           if (includesAny(query, cr.acceptableTerms)) return true;
           if (cr.scope === 'person_location') {
+            // A location is a location: a city from ANY country satisfies the any_of group's
+            // slot. Appending acceptableTerms[0] to a query that already names a city produced
+            // contradictory strings such as "Dallas Canada" for a "Canada and USA" brief.
+            if (namesKnownMetro(query)) return true;
             for (const term of cr.acceptableTerms) {
               const cleanTerm = term.toLowerCase().trim();
               const metros = COUNTRY_TO_METROS[cleanTerm];

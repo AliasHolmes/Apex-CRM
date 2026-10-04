@@ -74,6 +74,75 @@ export function isEligibleForSafetyNet(
   return true;
 }
 
+export type PrimaryAdmission = { admit: boolean; reason?: string };
+
+/**
+ * Primary-admission gate: decides whether a judged lead may count toward the target.
+ *
+ * Why it exists: the judge treats an `unknown` on any context requirement as
+ * `qualified_partial` (15% score discount), on the theory that snippets routinely omit
+ * context such as location. That is sound for incidental context but wrong for the
+ * requirement that *defines* the brief. For "AI service provider agency owner", the company
+ * type is the brief; admitting a founder whose company type is unknown fills the quota with
+ * people who are not what was asked for (observed: 7 of 20 leads in one session).
+ *
+ * Rules (a hard `company_type` requirement must exist for either to apply):
+ *  1. It must be positively proven (`pass`). Absence of evidence is not admission. For an
+ *     `any_of` group, one passing member suffices.
+ *  2. A fresh company attribution that is neither `verified_fit` nor `matches_brief`
+ *     overrides a judge `pass` (the two disagreed on one lead: the judge passed a company
+ *     the attribution stage had classed as an adjacent software product). Stored-profile
+ *     attributions are skipped: they carry placeholder "adjacent/unverified" values by design.
+ *
+ * Requirements the engine deliberately relaxed (ablation rescue) are not enforced.
+ */
+export function evaluatePrimaryAdmission(
+  lead: any,
+  qualification: Pick<Qualification, "requirements"> | undefined | null,
+  contract: ProspectContract,
+): PrimaryAdmission {
+  const ablatedId = lead?._ablatedRequirementId;
+  const defining = (contract?.requirements || []).filter(
+    (r: any) =>
+      r.importance === "hard" && r.scope === "company_type" && r.id !== ablatedId,
+  );
+  if (defining.length === 0) return { admit: true };
+
+  const statusOf = (id: string) =>
+    (qualification?.requirements || []).find((a: any) => a.requirementId === id)
+      ?.status;
+
+  const groups = new Map<string, any[]>();
+  for (const req of defining as any[]) {
+    const key =
+      req.groupId && req.matchRule === "any_of" ? `g:${req.groupId}` : `r:${req.id}`;
+    groups.set(key, [...(groups.get(key) || []), req]);
+  }
+  for (const members of groups.values()) {
+    if (!members.some((m) => statusOf(m.id) === "pass")) {
+      return {
+        admit: false,
+        reason: `Company type is the defining requirement of this brief and was not proven (${members.map((m) => statusOf(m.id) || "missing").join("/")}).`,
+      };
+    }
+  }
+
+  const attr = lead?.companyAttribution;
+  if (
+    attr &&
+    !attr.fromStoredProfile &&
+    attr.verdict !== "verified_fit" &&
+    attr.queryAlignment &&
+    attr.queryAlignment !== "matches_brief"
+  ) {
+    return {
+      admit: false,
+      reason: `Company attribution found the company ${attr.queryAlignment} to the brief (${attr.businessModel || "unknown model"}); judge pass overridden.`,
+    };
+  }
+  return { admit: true };
+}
+
 export type SafetyNetPromotionResult = {
   /** Number of leads actually pushed onto `qualifiedLeads`. */
   promoted: number;
@@ -386,6 +455,7 @@ export async function evaluateIncrementalJudgeBatches(
   );
 
   const reusedQualified: any[] = [];
+  let withheldByAdmissionGate = 0;
   const candidatesToJudge: FinalistCandidate[] = [];
   for (const candidate of vettedCandidates) {
     const identityKey = isCacheableFingerprint(reqFingerprint) ? candidateVerdictKey(candidate.lead) : "";
@@ -393,6 +463,18 @@ export async function evaluateIncrementalJudgeBatches(
     const cached = identityKey && evidenceHash ? getCandidateVerdict(identityKey, reqFingerprint) : null;
     if (cached?.verdict === "pass" && cached.evidenceHash === evidenceHash && cached.qualification) {
       const qualification = cached.qualification as Qualification;
+      const reuseAdmission = evaluatePrimaryAdmission(candidate.lead, qualification, contract);
+      if (!reuseAdmission.admit) {
+        const withheld = {
+          status: "unknown" as FinalistOutcomeStatus,
+          score: -1,
+          reason: reuseAdmission.reason || "Withheld by primary admission gate.",
+        };
+        judgmentInsights.set(candidate.candidateId, withheld);
+        candidate.lead.judgmentInsight = withheld;
+        withheldByAdmissionGate++;
+        continue;
+      }
       applyQualification(candidate.lead, qualification, cached.reason);
       const insight = {
         status: qualification.verdict as FinalistOutcomeStatus,
@@ -405,6 +487,11 @@ export async function evaluateIncrementalJudgeBatches(
       continue;
     }
     candidatesToJudge.push(candidate);
+  }
+  if (withheldByAdmissionGate > 0) {
+    logEvent(
+      `Round ${round} Judge: admission gate withheld ${withheldByAdmissionGate} stored qualification(s) whose defining company-type requirement was never proven.`,
+    );
   }
   if (reusedQualified.length > 0) {
     qualifiedCandidates.push(...reusedQualified);
@@ -601,6 +688,20 @@ export async function evaluateIncrementalJudgeBatches(
           validation.qualifications.get(candidate.candidateId);
         if (!qualification) return [];
         const lead = candidate.lead;
+        const admission = evaluatePrimaryAdmission(lead, qualification, contract);
+        if (!admission.admit) {
+          const withheld = {
+            status: "unknown" as FinalistOutcomeStatus,
+            score: -1,
+            reason: admission.reason || "Withheld by primary admission gate.",
+          };
+          judgmentInsights.set(candidate.candidateId, withheld);
+          withheldByAdmissionGate++;
+          logEvent(
+            `Round ${round} Admission gate withheld ${String(lead.fullName || lead.currentCompany || candidate.candidateId)}: ${withheld.reason}`,
+          );
+          return [];
+        }
         applyQualification(lead, qualification, outcome.reason);
         if (isCacheableFingerprint(reqFingerprint) && qualification.qualificationSource !== "deterministic") {
           const identityKey = candidateVerdictKey(lead);

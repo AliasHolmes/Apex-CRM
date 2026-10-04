@@ -41,9 +41,9 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,700 lines                                                              |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 24 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
-| Test suite                                                       | 161 files (160 `.test.ts` + 1 `.eval.ts`), 1034 unit tests / 184 suites + 13 eval tests, all passing |
-| Total first-party LOC                                            | ~77,800 (incl. ~26,000 test LOC)                                           |
-| Working tree                                                     | clean (all fixes committed through `1e94831`)                              |
+| Test suite                                                       | 162 files (161 `.test.ts` + 1 `.eval.ts`), 1043 unit tests / 185 suites + 13 eval tests, all passing |
+| Total first-party LOC                                            | ~78,000 (incl. ~26,100 test LOC)                                           |
+| Working tree                                                     | clean (all fixes committed through `1e7dda2`)                              |
 
 ## 3. Tech stack
 
@@ -179,7 +179,7 @@ env-overridable.
 
 ## 7. Test suite
 
-160 files / 1034 unit & integration tests (184 suites) via `npm test` + 13 eval tests via
+161 files / 1043 unit & integration tests (185 suites) via `npm test` + 13 eval tests via
 `npm run test:eval` (verified passing 2026-10-05). Composition:
 
 - **Query & intelligence eval**: `queryIntelligence.eval` (13 suites covering 30+ gold briefs,

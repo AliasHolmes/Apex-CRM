@@ -48,4 +48,4 @@ We introduce three coordinated architectural improvements across retrieval, pers
 - **Positive**: Atria remains the primary model without suffering 429 rate limits or reasoning timeouts.
 - **Positive**: True parallel 2-request concurrency is achieved safely by splitting load across Atria and Byesu rather than overloading a single provider.
 - **Positive**: Candidate and company verdict caches eliminate redundant LLM calls across rounds.
-- **Positive**: 976 unit and integration tests passing across 176 test suites with 0 regressions.
+- **Positive**: Full test suite passing across all unit, integration, and evaluation suites with 0 regressions.

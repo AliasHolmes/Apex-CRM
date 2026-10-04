@@ -5,8 +5,12 @@ Generated: 2026-10-05 · Scope: all first-party code under `src/`, `server/`, `s
 
 > Supersedes the 2026-10-02 index, which had drifted on test counts (154 → 161 files,
 > 976 → 1034 tests), line counts, and config keys (144 → 133). Verified values below were
-> measured directly from the tree, not inherited: `tsc --noEmit` passes with 0 errors and
-> the full suite (`npm test`) passes 1034 tests across 184 suites as of this date.
+> measured directly from the tree, not inherited: `tsc --noEmit` passes with 0 errors,
+> the full suite (`npm test`) passes 1047 tests across 184 suites, and `npm run test:eval`
+> passes 13 tests, as of this date. Two commits landed after the prior index — `35f29bd`
+> (primary admission gate, contradictory-geo guard) and `767f65e` (student-founder triage,
+> SERP tagline sanitization, multi-country replenishment decoupling) — and are folded into
+> §4, §5, §7 below.
 
 ---
 
@@ -36,14 +40,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | ~11,800 lines across 36 files                                              |
-| Backend engine (`server/leadSearch/`)                            | ~24,250 lines: 42 modules + 9 `stages/`                                    |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,700 lines                                                              |
+| Frontend (`src/`)                                                | ~11,785 lines across 36 files                                             |
+| Backend engine (`server/leadSearch/`)                            | ~24,420 lines: 42 modules + 9 `stages/`                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,610 lines                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 24 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
-| Test suite                                                       | 162 files (161 `.test.ts` + 1 `.eval.ts`), 1043 unit tests / 185 suites + 13 eval tests, all passing |
-| Total first-party LOC                                            | ~78,000 (incl. ~26,100 test LOC)                                           |
-| Working tree                                                     | clean (all fixes committed through `1e7dda2`)                              |
+| SQLite                                                           | 23 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
+| Test suite                                                       | 163 files (161 `.test.ts` + 1 `.eval.ts` + 1 helper), 1047 unit tests / 184 suites + 13 eval tests, all passing |
+| Total first-party LOC                                            | ~78,100 (incl. ~26,200 test LOC)                                          |
+| Working tree                                                     | clean except this file — last commit `767f65e`, sole pending change is `docs/CODEBASE_INDEX.md` |
 
 ## 3. Tech stack
 
@@ -63,17 +67,17 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 ```
 server.ts                    Express app + static Vite serve (335 lines)
-server/db.ts                 SQLite layer: schema v26, migrations, 40+ readers/writers (5,559)
-server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,160)
-server/services/             llm.ts (3,095, provider-affinity dual concurrency, Atria reasoning headroom, completion cache) ·
-                             brightdata.ts (2,242) · keyRotator ·
+server/db.ts                 SQLite layer: schema v26, migrations, 40+ readers/writers (5,651)
+server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,430)
+server/services/             llm.ts (3,427, provider-affinity dual concurrency, Atria reasoning headroom, completion cache) ·
+                             brightdata.ts (2,168) · keyRotator ·
                              sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
                              outboundPrompt · langfuse
 server/leadSearch/           the discovery engine
-  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,540)
-  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support (1,930)
-  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,340)
-  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (690)
+  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,805)
+  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support, known-metro registry (2,038)
+  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,527)
+  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (799)
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
   candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v26)
   defaultRoles.ts            open-ended role and business function extractor for any industry
@@ -89,19 +93,25 @@ server/leadSearch/           the discovery engine
   intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
   companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard) ·
   signalStore.ts · telemetry.ts · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
-  sessionHelpers.ts · observations.ts · profileEnrichment.ts · rejections.ts ·
+  sessionHelpers.ts · observations.ts (company-hint sanitizer: slogans, ellipses,
+                             marketing taglines) · profileEnrichment.ts · rejections.ts ·
   roundDiagnostics.ts · scoutScoring.ts · verification.ts ·
-  evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware)
+  evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware,
+                             student/intern/trainee denial)
   stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate) ·
                              retrieve (retrieval cache + vagueness-aware depth + rewriter on both paths) ·
-                             fuse (symmetrical alias-aware) · extract · verify ·
-                             enrich (provenance-tagged site probe + annotate-only post intent) ·
-                             judge (strict grounding + polarity guard + verdict reuse) · select ·
+                             fuse (symmetrical alias-aware) ·
+                             extract (Stage 2.5 gate + deterministic LinkedIn parse that
+                             rejects slogan/ellipsis company fields and defers to the LLM) ·
+                             verify · enrich (provenance-tagged site probe + annotate-only
+                             post intent) · judge (strict grounding + polarity guard +
+                             verdict reuse + primary admission gate) · select ·
                              persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
-test/                        161 files (160 .test.ts + queryIntelligence.eval.ts), node:test runner via tsx
-scripts/dev.ts               spawns Vite + Express (84 lines)
+test/                        163 files (161 `.test.ts` + `queryIntelligence.eval.ts` +
+                             `helpers/mockLlm.ts`), node:test runner via tsx
+scripts/dev.ts               spawns Vite + Express (83 lines)
 ```
 
 ## 5. The discovery pipeline
@@ -113,7 +123,12 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
    (`readDiscoveredCompanyNames(25)`), `resolveGeo` with pronoun-collision and city-only
    geo guards (no `USA` invention for open-global briefs), strategist query generation,
    cluster-keyed `historicalYield` (`domain_cluster|family|lane|provider`), and
-   `readOutcomeRate().rate` injection into `scheduleAdaptiveRetrievalTasks` (`planStage.ts`)
+   `readOutcomeRate().rate` injection into `scheduleAdaptiveRetrievalTasks` (`planStage.ts`).
+   Replenishment metros are suffixed with their own canonical country rather than the
+   session's `targetCountry`, and `namesKnownMetro` (whole-word registry over
+   `COUNTRY_TO_METROS` + `EXTRA_KNOWN_METROS`) stops the context requirement from appending
+   a second country to a query that already names a city — the guard against strings like
+   `"Dallas Canada"` on a Canada+USA brief (`prospectContract.ts`, `discoveryEngine.ts`)
 2. **retrieve** — two-wave parallel Tavily + Bright Data lanes, conditional supplemental
    fallback when Tavily yield is low, vagueness-aware `maxResults`/depth
    (`vague: 20`, `rich: precision-tuned`), bounded `queryRewriter` rescue dispatched across
@@ -122,14 +137,24 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 3. **fuse** — corroboration fusion, dedupe, ablation tagging, symmetrical bidirectional
    alias-aware term scoring (`MD` <-> `managing director`, `US` <-> `United States`)
    (`fuseStage.ts`, `aliasMap.ts`)
-4. **extract** — Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked (`extractStage.ts`)
+4. **extract** — Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked;
+   the deterministic LinkedIn parser splits pipe-delimited headlines and refuses company
+   values that `looksLikeCompanyHint` flags as slogan, ellipsis, or marketing tagline,
+   deferring those candidates to the LLM instead of persisting a bad company field
+   (`extractStage.ts`, `observations.ts`)
 5. **verify** — hard-requirement verification, borderline survival band (`verifyStage.ts`)
-6. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded),
-   tri-partition by evidence (excluding company-derived locations from `person_location`
-   auto-pass), `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with negation polarity
-   guard (`0.7 * window + 0.3 * setOverlap`), company-scoped `b2b_saas` contradiction
-   checks, `hard_fail` precedence over `fabricatedPass`, and contract-aware ranking
-   (hard `1.2x` + soft `0.4x`) (`judgeStage.ts`, `titleTriage.ts`,
+6. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded; student,
+   intern, trainee, and apprentice titles are demoted to IC even when they claim
+   "founder"), tri-partition by evidence (excluding company-derived locations from
+   `person_location` auto-pass), `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with
+   negation polarity guard (`0.7 * window + 0.3 * setOverlap`), company-scoped `b2b_saas`
+   contradiction checks, `hard_fail` precedence over `fabricatedPass`, contract-aware
+   ranking (hard `1.2x` + soft `0.4x`), and the **primary admission gate**
+   (`evaluatePrimaryAdmission`): a hard `company_type` requirement — the requirement that
+   defines the brief — must be positively proven (one `any_of` member suffices), and a
+   fresh company attribution that is neither `verified_fit` nor `matches_brief` overrides
+   a judge `pass`. Ablated requirements are exempt; withheld candidates are scored `-1`
+   and counted in `withheldByAdmissionGate` (`judgeStage.ts`, `titleTriage.ts`,
    `finalistJudge.ts`, `profileQuality.ts`, `scoring.ts`)
 7. **select** — pre-selection intent probing on top qualified candidates (Phase 4 company
    intent + Phase 5 LinkedIn post intent on top `ceil(targetLimit * 1.5)` pool) to activate
@@ -146,10 +171,10 @@ Cross-cutting invariants:
 
 - **Provider-Affinity Dual Concurrency** (`llm.ts`) routes LLM calls to Atria (primary,
   1 concurrent slot) and Byesu (secondary, 1 concurrent slot, runs in parallel with Atria).
-  When both are busy, calls wait in queue with Atria affinity as slots become free. Failsafe 1
-  (Groq, 950 output token cap) and Failsafe 2 (OpenRouter/Mistral) activate only when both
+  When both are busy, calls wait in queue and are dispatched first-fit as provider slots become free. Failsafe 1
+  (Groq, 950 output token cap) and Failsafe 2 (OpenRouter) activate only when both
   primary and secondary providers are out. Dynamic reasoning effort: low for extraction/retrieval,
-  medium for strategist, high for finalist judge.
+  medium for strategist, finalist judge, and contract extraction.
   `ExecuteDiscoveryOptions` supports `parentSessionId`/`deltaBrief` follow-ups
   and `interactive=false` headless expander fallback. The MAB pools priors by
   24 quantized brief centroids while preserving all `contract_guard` tasks above the
@@ -173,16 +198,16 @@ Cross-cutting invariants:
 - `LEAD_SEARCH_TIMEOUT_MS=0` disables the 15-minute safety timeout.
 - `server/configValidation.ts` emits non-fatal boot warnings for misconfigurations.
 
-`featureFlags.ts` exposes 15 flags; **6 have graduated into permanent architectural
-invariants** that return `true` unconditionally (see §9.6), the rest remain
-env-overridable.
+`featureFlags.ts` exposes 10 active flags; 6 earlier flags have graduated into permanent
+architectural invariants and were pruned from the runtime configuration.
 
 ## 7. Test suite
 
-161 files / 1043 unit & integration tests (185 suites) via `npm test` + 13 eval tests via
-`npm run test:eval` (verified passing 2026-10-05). Composition:
+161 `.test.ts` files / 1047 unit & integration tests (184 suites) via `npm test` (293s)
++ 13 eval tests via `npm run test:eval` (21s), all passing as verified 2026-10-05.
+Composition:
 
-- **Query & intelligence eval**: `queryIntelligence.eval` (13 suites covering 30+ gold briefs,
+- **Query & intelligence eval**: `queryIntelligence.eval` (13 tests over 30 gold briefs,
   pronoun-collision guard G21, plural-persona extraction G22, city-only geo anchoring G24,
   and qualified-yield baseline)
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
@@ -225,6 +250,9 @@ of the incorrect "2-4 rounds". The README badge now reads `681_Tests_Passing`, m
 measured suite. Generating the badge from the test run remains an option but it is no longer
 wrong. *(2026-09-25 note: the badge has since been simplified to `Lead_Engine-Passing`;
 current counts live in §2.)*
+
+*(2026-10-05 note: the README badge has been simplified to `Lead_Engine-Passing-10B981`
+so it does not drift; this index and §2 carry the authoritative counts.)*
 
 ### 9.2 `executeJudgeStage` dead code — RESOLVED (2026-09-16)
 
@@ -352,6 +380,38 @@ Resolved across 50 files and verified across 976 unit & integration tests (176 s
   - In `withProviderFallback` (`server/services/llm.ts`), dispatches to Atria as the prioritized primary model when idle, and immediately overflows to Byesu concurrently when Atria is in-flight, achieving safe parallel dual-model concurrency without triggering 429 rate limits or 524 gateway timeouts.
   - Elevated `ATRIA_MAX_TIMEOUT_MS` to `600_000ms` (10 minutes) with a `120_000ms` floor and token-scaling coefficients (`computeAtriaDynamicTimeoutMs`), preventing reasoning aborts on deep chain-of-thought models.
 
+### 9.12 Primary admission gate, triage/tagline hygiene, and contradictory-geo guard — LANDED (2026-10-05, `35f29bd`, `767f65e`)
+
+Two commits landed after the previous index generation; all four fixes are pinned by
+`test/primaryAdmission.test.ts` (new) and `test/titleTriage.test.ts` (extended), and the
+whole suite passes 1047 tests:
+
+- **Primary admission gate** (`evaluatePrimaryAdmission`, `judgeStage.ts`): the judge maps
+  an `unknown` on a context requirement to `qualified_partial` (15% discount), which is
+  right for incidental context but wrong for the requirement that *defines* the brief. A
+  hard `company_type` requirement must now be positively proven before a judged lead counts
+  toward the target (`any_of` groups need one passing member), and a fresh company
+  attribution that is neither `verified_fit` nor `matches_brief` overrides a judge `pass`.
+  Stored-profile attributions are exempt (their `adjacent/unverified` values are
+  placeholders), ablated requirements are exempt, and cached verdict reuse runs the same
+  gate so a cached `pass` cannot smuggle a lead past it. Withheld leads score `-1`.
+- **Student/intern founder denial** (`titleTriage.ts`): `STUDENT_INTERN_ROLE_REGEX`
+  demotes student, intern, trainee, and apprentice titles to IC with confidence 1 —
+  before executive alias expansion, so "Founder & Student" is never triaged as a
+  decision-maker. Lookbehind guards `former`/`ex-`.
+- **SERP company-tagline sanitization** (`extractStage.ts`, `observations.ts`): the
+  deterministic LinkedIn parser splits `Name | Title | Company` headlines, validates the
+  company token through `looksLikeCompanyHint`, falls back to the `at`/`@` clause, and
+  otherwise returns `null` so the LLM path takes over. `looksLikeCompanyHint` now rejects
+  truncated `...`/`…` values, a wider set of marketing-verb openers (`helping`,
+  `empowering`, `transforming`, `automating`, …), and `grow your` / `scale your` /
+  `help businesses` phrasings.
+- **Contradictory query geos** (`prospectContract.ts`, `discoveryEngine.ts`):
+  `ALL_KNOWN_METROS` / `namesKnownMetro` gate the context-requirement suffix so a query
+  already naming a city is not rewritten into `"Dallas Canada"`, and metro replenishment
+  now suffixes each metro with its *own* canonical country instead of the session
+  `targetCountry`, decoupling multi-country briefs.
+
 ## 10. Recommended next actions
 
 Updated 2026-10-05.
@@ -361,3 +421,5 @@ Updated 2026-10-05.
 3. ~~**Provider-Affinity Dual Concurrency & Atria Reasoning Timeouts.**~~ Done (`129173a`) — Atria 10m reasoning cap, dual 1-slot affinity routing.
 4. ~~**Merge to main and branch cleanup.**~~ Done — fast-forward merged to `main`, pushed to `origin/main`, secondary branch deleted.
 5. **Run a live production discovery session** to monitor real-time Atria vs. Byesu parallel dispatch in `search_logs.trace_events` under live network traffic.
+6. ~~**Refresh the README test badge**~~ — Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
+7. **Watch the primary admission gate's precision/recall trade** — it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.

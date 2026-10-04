@@ -8,7 +8,7 @@
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
     <img src="https://img.shields.io/badge/SQLite-Schema_v26-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v26" />
     <img src="https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
-    <img src="https://img.shields.io/badge/Lead_Engine-976_Passing-10B981" alt="Lead Engine Tests" />
+    <img src="https://img.shields.io/badge/Lead_Engine-Passing-10B981" alt="Lead Engine Tests" />
   </p>
 </div>
 
@@ -346,13 +346,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite (154 test files: 153 unit/integration suites with 976 tests across 176 suites + 1 evaluation harness with 13 tests, run via `tsx --test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider-affinity concurrency tests (`test/atriaConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 160+ test files (unit/integration suites + 1 evaluation harness, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider-affinity concurrency tests (`test/atriaConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (976 tests across 176 suites, 100% pass)
+# Full test suite (100% pass)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)

@@ -192,3 +192,41 @@ export const hasDuplicateProfile = (profile: Partial<LinkedInProfile> | Record<s
   }
   return false;
 };
+
+/**
+ * Detects if a LinkedIn URL handle has a clear name mismatch with the profile's full name.
+ * e.g. fullName: "Ben Brock", handle: "josh-catacutan-a15b911b6"
+ * Only flags if the handle clearly consists of a different person's name (multiple name tokens),
+ * not if it's a company name, initials, or vanity handle.
+ */
+export function checkHandleNameMismatch(fullName?: string, url?: string): { mismatch: boolean; handle?: string; reason?: string } {
+  if (!fullName || !url) return { mismatch: false };
+  const handle = getLinkedInHandle(url);
+  if (!handle) return { mismatch: false };
+
+  const cleanHandle = handle.replace(/[-_][a-f0-9]{6,}$/i, '').replace(/[-_]\d+$/i, '');
+  const handleTokens = cleanHandle.split(/[-_.]+/).filter(t => t.length >= 2 && !/^\d+$/.test(t));
+  if (handleTokens.length < 2) {
+    return { mismatch: false, handle };
+  }
+
+  const nameTokens = fullName
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2);
+
+  if (nameTokens.length === 0) return { mismatch: false, handle };
+
+  const hasOverlap = nameTokens.some(nt => handleTokens.some(ht => ht.includes(nt) || nt.includes(ht)));
+  if (!hasOverlap) {
+    return {
+      mismatch: true,
+      handle,
+      reason: `LinkedIn profile URL handle '/in/${handle}' does not match extracted name '${fullName}'`,
+    };
+  }
+
+  return { mismatch: false, handle };
+}
+

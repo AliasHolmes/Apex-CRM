@@ -4,6 +4,7 @@ import {
   buildProfileDedupeKeys,
   canonicalLinkedInIdentity,
   hasDuplicateProfile,
+  checkHandleNameMismatch,
 } from '../src/utils/leadDedupe.ts';
 
 test('canonical LinkedIn identity collapses URL presentation variations', () => {
@@ -84,4 +85,20 @@ test('buildProfileDedupeKeys extracts keys from both nested profile wrappers and
   assert.equal(hasDuplicateProfile(nestedLead, flatKeys), true);
   assert.equal(hasDuplicateProfile(directPropsLead, nestedKeys), true);
 });
+
+test('checkHandleNameMismatch flags obvious multi-word name discrepancies without rejecting vanity handles', () => {
+  const mismatchCase = checkHandleNameMismatch('Ben Brock', 'https://linkedin.com/in/josh-catacutan-a15b911b6');
+  assert.equal(mismatchCase.mismatch, true);
+  assert.match(mismatchCase.reason || '', /does not match extracted name/i);
+
+  const matchCase = checkHandleNameMismatch('John Doe', 'https://linkedin.com/in/john-doe-12345');
+  assert.equal(matchCase.mismatch, false);
+
+  const vanityCase = checkHandleNameMismatch('Ben Brock', 'https://linkedin.com/in/brkdigital');
+  assert.equal(vanityCase.mismatch, false);
+
+  const singleWordCase = checkHandleNameMismatch('Eli Rivera', 'https://linkedin.com/in/elirivera1');
+  assert.equal(singleWordCase.mismatch, false);
+});
+
 

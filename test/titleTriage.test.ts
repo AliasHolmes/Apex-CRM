@@ -12,6 +12,7 @@ process.env.APEX_DB_PATH = testDbPath;
 import {
   classifyTitle,
   evaluateDecisionMakerGate,
+  hasStudentSignal,
 } from "../server/leadSearch/titleTriage.js";
 import { checkStrictContradiction } from "../server/leadSearch/finalistJudge.js";
 import type { ProspectContract } from "../server/leadSearch/prospectContract.js";
@@ -81,6 +82,23 @@ test("Stream 3 - Title Triage Truth Table & Precedence", async (t) => {
     assert.equal(res.isExecutive, false);
     assert.equal(res.isIC, true);
     assert.ok(res.confidence <= 2);
+  });
+
+  await t.test("fails Studying Information Systems at Fisher College of Business; Founder as IC student role", () => {
+    const res = classifyTitle("Studying Information Systems at the Fisher College of Business; Founder building AI automations");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 2);
+  });
+
+  await t.test("hasStudentSignal correctly identifies student phrases across title and headline", () => {
+    assert.equal(hasStudentSignal("Founder", "Studying Information Systems at Fisher College of Business"), true);
+    assert.equal(hasStudentSignal("Founder", "Undergraduate student at Stanford"), true);
+    assert.equal(hasStudentSignal("Founder", "MBA candidate & Founder building AI tools"), true);
+    assert.equal(hasStudentSignal("Founder", "Pursuing a degree in computer science"), true);
+    assert.equal(hasStudentSignal("Founder", "Former student, now full-time Founder"), false);
+    assert.equal(hasStudentSignal("Founder", "Ex-student at MIT, Founder & CEO"), false);
+    assert.equal(hasStudentSignal("Founder & CEO", "Building modern B2B AI automations"), false);
   });
 });
 

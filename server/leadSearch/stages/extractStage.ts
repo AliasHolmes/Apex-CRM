@@ -43,9 +43,14 @@ import {
   canonicalLinkedInIdentity,
   getLinkedInHandle,
   isValidLinkedInHandle,
+  checkHandleNameMismatch,
 } from "../../../src/utils/leadDedupe.js";
 import { runWithTransientRetry } from "../sessionHelpers.js";
-import { looksLikeCompanyHint } from "../observations.js";
+import {
+  looksLikeCompanyHint,
+  companyEqualsLocation,
+  cleanCompanyNameFromUrlOrTitle,
+} from "../observations.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceQuality, LeadSourceProvider } from "../scoring.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -223,13 +228,19 @@ export function parseDeterministicLinkedInProfile(
   if (!currentTitle || currentTitle.length < 2 || currentTitle.length > 80) return null;
   if (currentCompany.length > 80) currentCompany = currentCompany.slice(0, 80).trim();
 
-  // Validate company name: slogans, trailing ellipses, and marketing taglines must not leak into company field
-  if (currentCompany && !looksLikeCompanyHint(currentCompany)) {
+  const location = extractSerpLocation(cleanSnippetNoise(item?.content || item?.raw_content || ""));
+
+  if (currentCompany) {
+    currentCompany = cleanCompanyNameFromUrlOrTitle(currentCompany, headline);
+  }
+
+  // Validate company name: slogans, trailing ellipses, marketing taglines, or municipal locations must not leak into company field
+  if (currentCompany && (!looksLikeCompanyHint(currentCompany) || companyEqualsLocation(currentCompany, location))) {
     const atMatch = headline.match(/\s+(?:at|@)\s+([^|\n-]+)/i);
-    if (atMatch && looksLikeCompanyHint(atMatch[1])) {
+    if (atMatch && looksLikeCompanyHint(atMatch[1]) && !companyEqualsLocation(atMatch[1], location)) {
       currentCompany = atMatch[1].trim();
     } else {
-      // Slogans or invalid company hints must not be deterministically parsed. Defer to LLM extraction.
+      // Slogans, location names, or invalid company hints must not be deterministically parsed. Defer to LLM extraction.
       return null;
     }
   }
@@ -239,7 +250,7 @@ export function parseDeterministicLinkedInProfile(
     currentTitle,
     headline: headline.slice(0, 160),
     currentCompany,
-    location: extractSerpLocation(cleanSnippetNoise(item?.content || item?.raw_content || "")),
+    location,
     extractionConfidence: parts.length >= 3 ? 8 : 6,
   };
 }
@@ -447,13 +458,18 @@ export async function executeExtractStage(
       item.title?.split(" - ")[0]?.split(" at ")[0]?.trim() ||
       "Unknown";
     const currentTitle = hit.position || "";
-    const currentCompany =
+    const rawCompany =
       hit.current_company_name ||
       (typeof hit.current_company === "object"
         ? hit.current_company?.name
         : "") ||
       "";
     const canonicalUrl = item.url;
+    const location = hit.city || hit.location || "";
+    let currentCompany = cleanCompanyNameFromUrlOrTitle(rawCompany, hit.about || currentTitle);
+    if (companyEqualsLocation(currentCompany, location)) {
+      currentCompany = "";
+    }
     const normalizedUrl =
       item._normalizedUrl || normalizeLinkedInUrl(canonicalUrl);
     const username =
@@ -507,6 +523,14 @@ export async function executeExtractStage(
     }
     if (queryRun) queryRun.evidenceBlocks++;
 
+    const handleCheck = checkHandleNameMismatch(fullName, canonicalUrl);
+    const evidenceReasons = [
+      `Verified profile dossier via Bright Data dataset: ${currentTitle} at ${currentCompany || "unspecified company"}`,
+    ];
+    if (handleCheck.mismatch && handleCheck.reason) {
+      evidenceReasons.push(`[Identity Warning] ${handleCheck.reason}`);
+    }
+
     datasetExtractedProfiles.push({
       id: `lead-${crypto.randomUUID()}`,
       fullName,
@@ -514,17 +538,15 @@ export async function executeExtractStage(
       currentCompany,
       company: currentCompany,
       headline: currentTitle,
-      location: hit.city || hit.location || "",
+      location,
       contactDetails: {
         linkedinUrl: normalizedUrl ? `https://${normalizedUrl}` : canonicalUrl,
         website: hit.current_company_website || "",
       },
-      extractionConfidence: 10,
+      extractionConfidence: handleCheck.mismatch ? 7 : 10,
       sourceProvider: "brightdata",
       sourceRound: round,
-      evidenceReasons: [
-        `Verified profile dossier via Bright Data dataset: ${currentTitle} at ${currentCompany}`,
-      ],
+      evidenceReasons,
       experiences: experienceArray,
       about: aboutText,
       _rawDossier: hit,
@@ -1357,6 +1379,19 @@ Evidence:
       const normalized = normalizeLinkedInUrl(unwrapped);
       if (normalized) {
         lead.contactDetails.linkedinUrl = `https://${normalized}`;
+      }
+      const handleCheck = checkHandleNameMismatch(lead.fullName, lead.contactDetails.linkedinUrl);
+      if (handleCheck.mismatch && handleCheck.reason) {
+        if (!Array.isArray(lead.evidenceReasons)) lead.evidenceReasons = [];
+        lead.evidenceReasons.push(`[Identity Warning] ${handleCheck.reason}`);
+      }
+    }
+    if (lead?.currentCompany) {
+      lead.currentCompany = cleanCompanyNameFromUrlOrTitle(lead.currentCompany, lead.headline || lead.currentTitle);
+      lead.company = lead.currentCompany;
+      if (companyEqualsLocation(lead.currentCompany, lead.location)) {
+        lead.currentCompany = "";
+        lead.company = "";
       }
     }
     return lead;

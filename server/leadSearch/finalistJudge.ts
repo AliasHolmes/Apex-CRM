@@ -16,6 +16,7 @@ import { aliasIncludes, normalizeAliasTerm } from "./aliasMap.js";
 import {
   classifyTitle,
   evaluateDecisionMakerGate,
+  hasStudentSignal,
 } from "./titleTriage.js";
 import {
   candidateMatchesWrongVertical,
@@ -1292,14 +1293,17 @@ export function checkStrictContradiction(
     }
   }
 
-  // 5. Deterministic Anti-Personas: IC Roles (Staff/Principal Engineer, Product Manager)
+  // 5. Deterministic Anti-Personas: IC Roles (Staff/Principal Engineer, Product Manager, Students)
   if (isOwnerOrFounderQuery) {
-    const rawTitle = clean(lead.currentTitle || lead.jobTitle || lead.headline || "", 200);
-    const classification = classifyTitle(rawTitle, contract);
+    const rawTitle = clean(lead.currentTitle || lead.jobTitle || "", 200);
+    const headline = clean(lead.headline || "", 200);
+    const title = rawTitle || headline;
+    const classification = classifyTitle(title, contract);
+    const studentSignal = hasStudentSignal(rawTitle, headline);
 
-    if (classification.isIC) {
+    if (classification.isIC || studentSignal) {
       return {
-        reason: `Individual contributor role ('${lead.currentTitle || lead.headline}') contradicts required owner/founder leadership`,
+        reason: `Individual contributor or student role ('${lead.currentTitle || lead.headline}') contradicts required owner/founder leadership`,
         requirementId: "authority",
       };
     }

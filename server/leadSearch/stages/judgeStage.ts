@@ -34,6 +34,7 @@ import {
   NON_DECISION_MAKER_REGEX,
   EXECUTIVE_OVERRIDE_REGEX as OWNER_TERMS_REGEX,
   classifyTitle,
+  hasStudentSignal,
 } from "../titleTriage.js";
 import { runGatedCompanyAttribution } from "../companyAttribution.js";
 import { runRollingPool } from "../rollingPool.js";
@@ -254,14 +255,16 @@ export function filterNonDecisionMakers(
   const rejected: FinalistCandidate[] = [];
 
   for (const candidate of candidates) {
-    const title = String(
+    const rawTitle = String(
       candidate.lead.currentTitle ||
         candidate.lead.title ||
-        candidate.lead.headline ||
         "",
     );
+    const headline = String(candidate.lead.headline || "");
+    const title = rawTitle || headline;
     const classification = classifyTitle(title, contract);
-    if (classification.isIC) {
+    const studentSignal = hasStudentSignal(rawTitle, headline);
+    if (classification.isIC || studentSignal) {
       rejected.push(candidate);
     } else {
       admitted.push(candidate);

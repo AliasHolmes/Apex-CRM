@@ -128,6 +128,8 @@ export const looksLikeCompanyHint = (value: string) => {
   if (candidate.length < 3 || candidate.length > 65) return false;
   if (!/[a-z0-9]/i.test(candidate)) return false;
   // Reject Reddit sub paths or questions/exclamations
+  // Reject URLs or domain-like strings with protocol, www prefix, or trailing path
+  if (/^(?:https?:\/\/|www\.)/i.test(candidate) || /\.[a-z]{2,8}\//i.test(candidate)) return false;
   if (/^\/?r\//i.test(candidate) || /[?!]/.test(candidate)) return false;
   const lower = candidate.toLowerCase();
   if (COMPANY_HINT_BLOCKLIST.has(lower)) return false;
@@ -148,6 +150,83 @@ export const looksLikeCompanyHint = (value: string) => {
   if (/\b(available at|open to|looking for|seeking|working at)\b/i.test(lower)) return false;
   if (/^[\d\s,.-]+$/.test(candidate)) return false;
   return true;
+};
+
+/**
+ * Checks whether an extracted company string directly duplicates a segment of the lead's location,
+ * preventing municipal names (e.g. "The Villages", "Chicago") from masquerading as companies.
+ */
+export const companyEqualsLocation = (company?: string, location?: string): boolean => {
+  if (!company || !location) return false;
+  const normCompany = cleanCompanyHint(company)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normCompany) return false;
+
+  const strippedCompany = normCompany
+    .replace(/\b(?:inc|llc|ltd|corp|corporation|group|agency|firm|technologies|solutions|services)\b/g, '')
+    .trim();
+
+  const segments = String(location)
+    .toLowerCase()
+    .split(/[,;\/|•·-]+/)
+    .map(s =>
+      s
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\b(?:greater|metro|metropolitan|area|city|region|county|state|province)\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+    .filter(Boolean);
+
+  for (const seg of segments) {
+    if (normCompany === seg || (strippedCompany && strippedCompany === seg)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Cleans a company name that may be a URL or domain, recovering a human-readable company name
+ * from the headline/title if present, or humanising the domain label.
+ */
+export const cleanCompanyNameFromUrlOrTitle = (rawCompany?: string, titleOrHeadline?: string): string => {
+  const company = cleanCompanyHint(rawCompany || '');
+  if (!company) return '';
+
+  if (/^(?:https?:\/\/|www\.)/i.test(company) || /\.[a-z]{2,8}\/?$/i.test(company)) {
+    if (titleOrHeadline) {
+      const match = titleOrHeadline.match(/\b(?:founder|owner|ceo|partner|president|director|principal)\s+(?:of|at|@)\s+([A-Za-z0-9&.,' -]+?)(?:\s*[|\u00b7\u2022(,]|\s+at\b|$)/i);
+      if (match && match[1]) {
+        const candidate = cleanCompanyHint(match[1]);
+        if (looksLikeCompanyHint(candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    try {
+      const urlStr = company.startsWith('http') ? company : `https://${company}`;
+      const url = new URL(urlStr);
+      const host = url.hostname.replace(/^www\./, '');
+      const domainLabel = host.split('.')[0];
+      if (domainLabel && domainLabel.length >= 3) {
+        const formatted = domainLabel
+          .replace(/([a-z])([A-Z])/g, '$1 $2')
+          .replace(/[-_]+/g, ' ')
+          .replace(/\b\w/g, c => c.toUpperCase());
+        if (looksLikeCompanyHint(formatted)) {
+          return formatted;
+        }
+      }
+    } catch {}
+    return '';
+  }
+
+  return company;
 };
 
 const companyFromHostedJobUrl = (url: URL) => {

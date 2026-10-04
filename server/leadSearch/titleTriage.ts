@@ -20,7 +20,12 @@ export const SUBORDINATE_ROLE_REGEX =
 
 /** Student, intern, and trainee roles must never be promoted to executive decision-makers even if they claim "founder". */
 export const STUDENT_INTERN_ROLE_REGEX =
-  /\b(?:(?<!former\s+|ex-)(?:student|intern|trainee|apprentice)(?:\s+(?:at\b|founder|researcher))?)\b/i;
+  /\b(?:(?<!former\s+|ex-)(?:student|intern|trainee|apprentice|studying|undergraduate|currently\s+enrolled|(?:pursuing\s+(?:a|an)?\s*(?:degree|bachelor|master|mba|phd))|(?:(?:bachelor|master|mba|phd)'?s?\s*candidate))(?:\s+(?:at\b|founder|researcher))?)\b/i;
+
+export function hasStudentSignal(...texts: (string | undefined | null)[]): boolean {
+  const combined = texts.filter(Boolean).join(" ");
+  return STUDENT_INTERN_ROLE_REGEX.test(combined);
+}
 
 const OWNER_OPERATOR_REGEX =
   /\b(?:independent|solo|freelance|boutique|fractional|advisory|principal|managing|founding)\s+(?:[a-z0-9.&+#-]+\s+){0,2}(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;

@@ -43,3 +43,12 @@ test('rejects non-profile URLs and name-only titles', () => {
   assert.equal(parseDeterministicLinkedInProfile({ url: 'https://www.linkedin.com/company/acme', title: 'Acme - Software - Acme | LinkedIn' }), null);
   assert.equal(parse('Jane Doe | LinkedIn'), null);
 });
+
+test('hands profile to LLM when parsed company name equals the location', () => {
+  const p = parse(
+    'Max Brown - AI Automation Agency Owner - The Villages | LinkedIn',
+    'Location: The Villages, Florida, United States \u00b7 500+ connections'
+  );
+  assert.equal(p, null);
+});
+

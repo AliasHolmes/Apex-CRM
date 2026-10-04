@@ -4,6 +4,8 @@ import {
   looksLikeCompanyHint,
   extractCompanyHintDeterministic,
   extractCompanyHintFromProfile,
+  companyEqualsLocation,
+  cleanCompanyNameFromUrlOrTitle,
   type FusedObservation
 } from '../server/leadSearch/observations.ts';
 
@@ -89,5 +91,39 @@ describe('Phase 1.1: looksLikeCompanyHint & company extraction heuristics', () =
       content: 'VP of Engineering at iRobot | Robotics & AI'
     });
     assert.equal(extractCompanyHintFromProfile(profileObs), 'iRobot');
+  });
+
+  it('rejects URLs and bare domains in looksLikeCompanyHint', () => {
+    assert.equal(looksLikeCompanyHint('https://www.dataleadershipgroup.ai/'), false);
+    assert.equal(looksLikeCompanyHint('http://acme.org'), false);
+    assert.equal(looksLikeCompanyHint('www.company.com'), false);
+    assert.equal(looksLikeCompanyHint('myfirm.ai/'), false);
+  });
+
+  it('detects when company string equals a location segment via companyEqualsLocation', () => {
+    assert.equal(companyEqualsLocation('The Villages', 'The Villages, Florida, United States'), true);
+    assert.equal(companyEqualsLocation('Chicago', 'Greater Chicago Area, Illinois'), true);
+    assert.equal(companyEqualsLocation('Denver', 'Denver Metropolitan Area'), true);
+    assert.equal(companyEqualsLocation('Acme Austin', 'Austin, Texas'), false);
+    assert.equal(companyEqualsLocation('Chicago AI Lab', 'Chicago, Illinois'), false);
+    assert.equal(companyEqualsLocation('Data Leadership Group', 'Columbia, Maryland'), false);
+  });
+
+  it('cleans URL companies or recovers name from headline via cleanCompanyNameFromUrlOrTitle', () => {
+    assert.equal(
+      cleanCompanyNameFromUrlOrTitle(
+        'https://www.dataleadershipgroup.ai/',
+        'LinkedIn Top Voice | Founder of Data Leadership Group (Data Scientist)'
+      ),
+      'Data Leadership Group'
+    );
+    assert.equal(
+      cleanCompanyNameFromUrlOrTitle('https://www.dataleadershipgroup.ai/', ''),
+      'Dataleadershipgroup'
+    );
+    assert.equal(
+      cleanCompanyNameFromUrlOrTitle('Acme Technologies', 'CEO at Acme Technologies'),
+      'Acme Technologies'
+    );
   });
 });

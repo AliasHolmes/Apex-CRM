@@ -38,7 +38,7 @@ const POSITIVE_SENIORITY_PATTERNS = [
 
 const WEAK_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'assistant', pattern: /\b(executive assistant|assistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)|assistant\s+(director|manager|principal)|assistant)\b/ },
-  { label: 'student', pattern: /\b(student|student club|student organization|campus club|university club|college club)\b/ },
+  { label: 'student', pattern: /\b(student|student club|student organization|campus club|university club|college club|studying|undergraduate|currently\s+enrolled|(?:pursuing\s+(?:a|an)?\s*(?:degree|bachelor|master|mba|phd))|(?:(?:bachelor|master|mba|phd)'?s?\s*candidate))\b/i },
   { label: 'intern', pattern: /\bintern(ship)?\b/ },
   { label: 'coordinator', pattern: /\bcoordinator\b/ },
   { label: 'associate', pattern: /\bassociate\b/ },

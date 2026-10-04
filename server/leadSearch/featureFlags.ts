@@ -4,8 +4,8 @@
  * Flags remain environment-overridable; toggle via process.env.
  *
  * Usage:
- *   if (isFlagEnabled.taxonomy()) { ... activate Phase 1 ... }
- *   if (isFlagEnabled.distributedQuery()) { ... activate Phase 2 ... }
+ *   if (isFlagEnabled.evidenceAware()) { ... }
+ *   if (isFlagEnabled.progressiveQualification()) { ... }
  */
 
 const readFlag = (envName: string, fallback = true): boolean => {
@@ -15,27 +15,6 @@ const readFlag = (envName: string, fallback = true): boolean => {
 };
 
 export const isFlagEnabled = {
-  /**
-   * Phase 1: Requirement Taxonomy Enhancement
-   * Adds requirementClass and queryHardness fields.
-   * Permanent architectural invariant; active unconditionally.
-   */
-  taxonomy: () => true,
-
-  /**
-   * Phase 2: Query Enforcement Decoupling
-   * Replaces append-all-hard-reqs with 1 Identity + 1 Distributed Context.
-   * Permanent architectural invariant; active unconditionally.
-   */
-  distributedQuery: () => true,
-
-  /**
-   * Phase 3: Semantic Grouping Support
-   * Honors any_of groups; if one member passes, all members pass.
-   * Permanent architectural invariant; active unconditionally.
-   */
-  semanticGrouping: () => true,
-
   /**
    * Phase 4: Evidence-Aware Hardness
    * Routes evidence by modality; penalizes missing preferred sources
@@ -47,13 +26,6 @@ export const isFlagEnabled = {
    * Enforces per-class coverage requirements
    */
   classAwareScheduler: () => readFlag('CLASS_AWARE_SCHEDULER_ENABLED'),
-
-  /**
-   * Phase 6: Diagnostics Enhancement
-   * Emits class-level diagnostics; recovery considers class bottlenecks.
-   * Permanent architectural invariant; active unconditionally.
-   */
-  enhancedDiagnostics: () => true,
 
   /**
    * Optimization 1: Fuzzy Token-Aligned Quote Grounding
@@ -84,20 +56,6 @@ export const isFlagEnabled = {
    * Eliminates thundering-herd retry bursts on 429s
    */
   fullJitterRetry: () => readFlag('FULL_JITTER_RETRY_ENABLED'),
-
-  /**
-   * Optimization 6: Transient vs Permanent Negative Cache Separation
-   * Prevents temporary 429/timeout errors from locking leads for 14 days.
-   * Permanent architectural invariant; active unconditionally.
-   */
-  transientNegativeCache: () => true,
-
-  /**
-   * Proactive Token Regulator: Graduated architectural invariant
-   * Monitors and regulates token consumption proactively across discovery stages.
-   * Permanent architectural invariant; active unconditionally.
-   */
-  proactiveTokenRegulator: () => true,
 
   /**
    * PIQ-BOS: Progressive Interleaved Qualification with Bounded Multi-Objective Selection

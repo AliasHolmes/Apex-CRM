@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDeterministicProspectContract,
@@ -32,43 +32,7 @@ const baseSpec: SearchSpec = {
 };
 
 describe('Phase 2: Distributed Query Enforcement', () => {
-  const originalEnv = process.env.DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED;
-
-  afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED;
-    } else {
-      process.env.DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED = originalEnv;
-    }
-  });
-
-  describe('When flag is DISABLED (Legacy Behavior)', () => {
-    beforeEach(() => {
-      process.env.DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED = 'false';
-    });
-
-    it('appends all hard requirements to persona queries', () => {
-      const brief = 'Find AI agency owners in New York';
-      const contract = buildDeterministicProspectContract(brief, baseSpec);
-      
-      const rawQueries = [
-        { query: 'digital marketing specialist', lane: 'person', family: 'persona_title' }
-      ];
-      
-      const enforced = enforceContractQueries(rawQueries, contract);
-      assert.ok(enforced.length > 0);
-      const q = enforced[0].query.toLowerCase();
-      // In legacy mode, both owner, AI agency, and location are appended
-      assert.ok(q.includes('owner') || q.includes('ceo'));
-      assert.ok(q.includes('ai agency') || q.includes('new york'));
-    });
-  });
-
-  describe('When flag is ENABLED (Distributed Behavior)', () => {
-    beforeEach(() => {
-      process.env.DISTRIBUTED_QUERY_ENFORCEMENT_ENABLED = 'true';
-    });
-
+  describe('Distributed Behavior', () => {
     it('guarantees identity requirement is present on all person queries', () => {
       const brief = 'Find AI agency owners in New York';
       const contract = buildDeterministicProspectContract(brief, baseSpec);

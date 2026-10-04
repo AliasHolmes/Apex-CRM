@@ -23,7 +23,6 @@ import {
 } from "../server/db.js";
 import { LeadQueryRunTracker } from "../server/leadSearch/pipelineTypes.js";
 import { normalizeProspectContract } from "../server/leadSearch/prospectContract.js";
-import { isFlagEnabled } from "../server/leadSearch/featureFlags.js";
 
 describe("Queue Invariants & Abort Mechanics", () => {
   it("immediately aborts a queued request when callerSignal aborts, without waiting for preceding tasks", async () => {
@@ -413,16 +412,6 @@ describe("Contract Diagnostics & Ungrounded Requirements", () => {
   });
 });
 
-describe("Graduated Feature Flags", () => {
-  it("returns true unconditionally for all 6 graduated architecture flags", () => {
-    assert.equal(isFlagEnabled.taxonomy(), true);
-    assert.equal(isFlagEnabled.distributedQuery(), true);
-    assert.equal(isFlagEnabled.semanticGrouping(), true);
-    assert.equal(isFlagEnabled.enhancedDiagnostics(), true);
-    assert.equal(isFlagEnabled.transientNegativeCache(), true);
-    assert.equal(isFlagEnabled.proactiveTokenRegulator(), true);
-  });
-});
 
 describe("Lead Merge Conflict & Relation Reassignment", () => {
   it("reassigns outreach drafts and activities to winner and purges conflicts", () => {

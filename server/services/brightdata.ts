@@ -1516,90 +1516,6 @@ export async function brightDataGetCompanyProfile(
   );
 }
 
-export async function brightDataGetLinkedInJobs(
-  url: string,
-  timeoutMs: number = 120_000,
-): Promise<any | null> {
-  const targetUrl = normalizeBrightDataUrl(url);
-  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
-
-  return await withBrightDataClient(
-    "web_data_linkedin_job_listings",
-    async (client) => {
-      const toolResult = await withHardTimeout(
-        client.callTool(
-          {
-            name: "web_data_linkedin_job_listings",
-            arguments: { url: targetUrl },
-          },
-          undefined,
-          { timeout: timeoutMs },
-        ),
-        timeoutMs,
-        "Bright Data web_data_linkedin_job_listings",
-      );
-
-      if ((toolResult as any)?.isError) {
-        throw new Error(
-          textFromToolResult(toolResult) ||
-            "Bright Data web_data_linkedin_job_listings returned an error",
-        );
-      }
-
-      const text = textFromToolResult(toolResult);
-      if (!text || !text.trim()) return null;
-      try {
-        return JSON.parse(text);
-      } catch {
-        return null;
-      }
-    },
-    { throwOnUnavailable: false, throwOnFailure: false },
-  );
-}
-
-export async function brightDataGetLinkedInPosts(
-  postUrl: string,
-  timeoutMs: number = 120_000,
-): Promise<any | null> {
-  const targetUrl = normalizeBrightDataUrl(postUrl);
-  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
-
-  return await withBrightDataClient(
-    "web_data_linkedin_posts",
-    async (client) => {
-      const toolResult = await withHardTimeout(
-        client.callTool(
-          {
-            name: "web_data_linkedin_posts",
-            arguments: { url: targetUrl },
-          },
-          undefined,
-          { timeout: timeoutMs },
-        ),
-        timeoutMs,
-        "Bright Data web_data_linkedin_posts",
-      );
-
-      if ((toolResult as any)?.isError) {
-        throw new Error(
-          textFromToolResult(toolResult) ||
-            "Bright Data web_data_linkedin_posts returned an error",
-        );
-      }
-
-      const text = textFromToolResult(toolResult);
-      if (!text || !text.trim()) return null;
-      try {
-        return JSON.parse(text);
-      } catch {
-        return null;
-      }
-    },
-    { throwOnUnavailable: false, throwOnFailure: false },
-  );
-}
-
 export async function brightDataScrapeAsHtml(
   url: string,
   timeoutMs: number = 60_000,
@@ -2061,10 +1977,6 @@ let googleSerpChallengeCount = 0;
 let stickyBingActiveSince = 0;
 const GOOGLE_CHALLENGE_STICKY_THRESHOLD = 2;
 
-export function resetStickyBingFallback() {
-  googleSerpChallengeCount = 0;
-  stickyBingActiveSince = 0;
-}
 
 export function isStickyBingActive(): boolean {
   if (stickyBingActiveSince > 0) {

@@ -100,14 +100,6 @@ export function shouldRunBrightDataForTask(
   return false;
 }
 
-export function filterTasksForTavily<T extends Pick<RetrievalTask, 'lane' | 'providerPreference' | 'priority'>>(
-  tasks: T[],
-  discoveryMode: DiscoveryProviderMode,
-  tavilyConfigured: boolean
-): T[] {
-  return tasks.filter(task => shouldRunTavilyForTask(task, discoveryMode, tavilyConfigured));
-}
-
 export function filterTasksForBrightData<T extends Pick<RetrievalTask, 'lane' | 'providerPreference'>>(
   tasks: T[],
   discoveryMode: DiscoveryProviderMode,

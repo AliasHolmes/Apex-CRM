@@ -316,15 +316,3 @@ export function parseLinkedInEvidence(markdown: string, fallback?: { title?: str
     rejectionReason: quality === 'bad' ? 'missing_core_identity' : undefined
   };
 }
-
-export function buildTavilyEvidence(item: any) {
-  const url = item?.url || '';
-  const title = item?.title || 'Untitled result';
-  const snippet = item?.content || item?.raw_content || '';
-  return [
-    `LINK: ${url}`,
-    `TITLE: ${title}`,
-    `[TAVILY SNIPPET]`,
-    normalizeWhitespace(snippet).slice(0, 900)
-  ].filter(Boolean).join('\n');
-}

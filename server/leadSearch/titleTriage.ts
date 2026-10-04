@@ -22,7 +22,7 @@ export const SUBORDINATE_ROLE_REGEX =
 export const STUDENT_INTERN_ROLE_REGEX =
   /\b(?:(?<!former\s+|ex-)(?:student|intern|trainee|apprentice)(?:\s+(?:at\b|founder|researcher))?)\b/i;
 
-export const OWNER_OPERATOR_REGEX =
+const OWNER_OPERATOR_REGEX =
   /\b(?:independent|solo|freelance|boutique|fractional|advisory|principal|managing|founding)\s+(?:[a-z0-9.&+#-]+\s+){0,2}(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;
 
 /** Titles that are individual-contributor roles even when they contain "consultant" or "specialist". */

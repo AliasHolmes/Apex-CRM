@@ -167,23 +167,6 @@ export function computeKalmanFusedScore(
   return Number(Math.min(Math.max(safeScore, 1), 10).toFixed(2));
 }
 
-/**
- * TF-IDF weight for a single intent signal term across a corpus of scraped pages.
- * signalCount  = occurrences of the term in this company's scraped text (TF proxy).
- * totalDocs    = total companies scraped this session.
- * docsWithTerm = how many companies contained this term (DF).
- *
- * weight = signalCount * log(totalDocs / (1 + docsWithTerm))
- */
-export function computeTfIdfSignalWeight(
-  signalCount: number,
-  totalDocs: number,
-  docsWithTerm: number
-): number {
-  if (signalCount <= 0 || totalDocs <= 0) return 0;
-  const idf = Math.log(totalDocs / (1 + docsWithTerm));
-  return Number(Math.max(0, signalCount * idf).toFixed(4));
-}
 
 export function getLeadScore(lead: Record<string, any> | null | undefined, fallback = 5): number {
   if (!lead || typeof lead !== 'object') return fallback;
@@ -549,14 +532,14 @@ export function computeBM25PlusScore(
   return Number(normalized.toFixed(2));
 }
 
-export type ParetoObjectiveVector = {
+export type ParetoDimensions = {
   authority: number;
   intent: number;
   postIntent: number;
   evidenceQuality: number;
 };
 
-export function extractObjectiveVector(lead: Record<string, any>): ParetoObjectiveVector {
+function extractObjectiveVector(lead: Record<string, any>): ParetoDimensions {
   const authority = clampScore(lead.decisionMakerVerification?.confidence ?? lead.audit?.authorityConfidence, 5);
   const intent = companyIntentScore(lead);
   const postIntent = postIntentScore(lead);

@@ -270,12 +270,12 @@ function getConfiguredLLMProviders(): LLMProvider[] {
   );
 }
 
-export const GROQ_MAX_OUTPUT_TOKENS = Number(
+const GROQ_MAX_OUTPUT_TOKENS = Number(
   process.env.GROQ_MAX_OUTPUT_TOKENS || 950,
 );
 const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i;
 
-export const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
+const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
   strategist: "medium",
   extraction: "low",
   intent_signals: "low",
@@ -1297,7 +1297,7 @@ export function clearProviderCooldowns(): void {
   pumpProviderSlotWaitQueue();
 }
 
-export class ProviderOutageError extends Error {
+class ProviderOutageError extends Error {
   readonly isNonRetryable = true;
   constructor(message: string) {
     super(message);
@@ -2146,10 +2146,6 @@ async function sendChatCompletion(
     }
     return content;
 }
-
-export const callLLMProvider = sendChatCompletion;
-
-/** Converts uppercase Type constants to lowercase for the OpenAI schema representation. */
 function normalizeSchema(schema: any): any {
   if (!schema || typeof schema !== "object") return schema;
   const out: any = {};
@@ -2198,7 +2194,7 @@ export type TavilySearchOptions = {
  * Callers sometimes have a full URL or a LinkedIn /in/ path, so normalize at
  * the provider boundary instead of sending a path as a supposed domain.
  */
-export function normalizeTavilyDomain(value: string) {
+function normalizeTavilyDomain(value: string) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   try {

@@ -173,9 +173,11 @@ CORE RULES:
 2. LOCATION equivalence: a city, state, province, metro area or region inside the required country or region satisfies it (e.g. "Lyon" satisfies "France", "Lagos" satisfies "Nigeria"). Country abbreviations and demonyms are equivalent to the country name.
 3. ROLE equivalence: titles that hold the same function and seniority in the candidate's industry and country satisfy a role requirement (e.g. "Head of Procurement" and "Procurement Director"). A junior, assistant or deputy variant of a role does not satisfy the senior role, and a person who assists an executive does not hold that executive's role.
 4. COMPANY TYPE & INDUSTRY: a company_type or company_industry requirement passes when the evidence shows the candidate's current employer operates in that category or an obvious sub-category. It fails only when the evidence explicitly shows a different kind of organization (e.g. the employer sells software to hospitals when the contract requires hospitals). If the evidence names the employer but does not describe what it does, mark the requirement "unknown", never "fail".
-5. EVIDENCE rules:
-   - For every hard requirement with status "pass", you MUST populate evidenceId (the [eN] tag of the evidence block containing the proof) and evidenceQuote (a short verbatim quote from that evidence, 5-40 words, that supports the verdict).
-   - For soft/signal requirements, evidenceId and evidenceQuote are optional.
+5. EVIDENCE rules (keep the output compact):
+   - For every hard requirement with status "pass", you MUST populate evidenceId (the [eN] tag of the evidence block containing the proof) and evidenceQuote (a verbatim quote from that evidence, 5-15 words, that supports the verdict). Omit the requirement reason.
+   - For a hard requirement with status "fail" or "unknown", populate reason with one short sentence saying what contradicts the requirement or what evidence is missing. Omit evidenceQuote.
+   - For soft/signal requirements, return only requirementId and status; omit evidenceId, evidenceQuote and reason.
+   - The candidate-level reason is one short sentence on overall fit.
    - "unknown" is used when evidence is insufficient or ambiguous.
    - "fail" is used ONLY when evidence explicitly contradicts a hard requirement.
 6. A candidate passes a hard requirement when the evidence clearly supports the semantic intent of the requirement per the rules above.
@@ -335,7 +337,7 @@ export function buildFinalistJudgePrompt(
     tasteDemonstrations = `\nPAST USER DECISIONS ON SIMILAR SEARCHES (Learn from past user KEEP/REJECT decisions):\n${examples}\nIncorporate these user preferences when resolving ambiguous or borderline candidates.\n`;
   }
 
-  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}${tasteDemonstrations}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. For hard requirements with status "pass", also return evidenceId and a short verbatim evidenceQuote (5-40 words). Return judgments only.`;
+  return `Prospect contract:\n${requirementText}\n\nCandidates:\n${candidateText}\n${agencyGuidance}${tasteDemonstrations}\nFor every listed candidate, assess every requirement. For each requirement return requirementId and status. For hard requirements with status "pass", also return evidenceId and a short verbatim evidenceQuote (5-15 words) and no reason. For hard requirements with status "fail" or "unknown", return a one-sentence reason instead. Return judgments only.`;
 }
 
 const normalizePassage = (text: string): string =>
@@ -1265,10 +1267,6 @@ export function checkStrictContradiction(
     }
   }
 
-  // 4b. Wrong-vertical agency check: bare "agency" also matches real estate,
-  // insurance, cannabis retail, and travel agencies. Fail those unless the
-  // contract names the vertical (a brief asking for real estate agencies
-  // must still match). Mirrors the Big Tech pattern above.
   // 4b. Wrong-vertical check by cluster:
   // Bare "agency" also matches real estate/insurance/cannabis, "coaching" matches therapy/fitness coach, etc.
   // Fail those unless the contract names the vertical (a brief asking for real estate agencies must still match).

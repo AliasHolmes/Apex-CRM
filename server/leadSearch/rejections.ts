@@ -21,12 +21,6 @@ export const incrementRejection = (counts: RejectionCounts, reason: RejectionRea
   counts[reason] = (counts[reason] || 0) + 1;
 };
 
-export const mergeRejections = (target: RejectionCounts, source: RejectionCounts) => {
-  for (const [reason, count] of Object.entries(source)) {
-    target[reason] = (target[reason] || 0) + count;
-  }
-};
-
 export const mapBrightDataRejection = (reason?: string): RejectionReason => {
   if (reason === 'provider_rate_limit_notice' || reason === 'provider_rate_limit') return 'brightdata_rate_limit';
   if (reason === 'blocked_or_login_wall') return 'brightdata_login_wall';

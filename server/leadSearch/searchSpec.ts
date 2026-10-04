@@ -177,7 +177,7 @@ export const normalizeSearchSpec = (
   };
 };
 
-export const METRO_HUBS_BY_COUNTRY: Record<string, string[]> = {
+const METRO_HUBS_BY_COUNTRY: Record<string, string[]> = {
   usa: [
     "New York",
     "San Francisco",

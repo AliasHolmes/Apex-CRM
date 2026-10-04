@@ -613,9 +613,9 @@ export async function executeDiscoverySession(
       ? Math.min(
           Math.max(
             Number(process.env.LEAD_SEARCH_RERANK_POOL_MULTIPLIER),
-            1,
+            1.1,
           ),
-          5,
+          2.0,
         )
       : undefined;
 

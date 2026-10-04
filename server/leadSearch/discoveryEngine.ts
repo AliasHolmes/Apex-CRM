@@ -145,6 +145,7 @@ import {
   requestContextFromOptions,
   resumeOptionsFromCheckpoint,
 } from "./sessionHelpers.js";
+import { colorizeTerminalLog } from "./terminalLog.js";
 
 export interface DiscoveryRequest {
   sessionId?: string;
@@ -340,7 +341,7 @@ export async function executeDiscoverySession(
     const line = structuredLogs
       ? JSON.stringify({ ts: new Date().toISOString(), sessionId, msg })
       : `[${new Date().toISOString()}] ${msg}`;
-    console.log(line);
+    console.log(structuredLogs ? line : colorizeTerminalLog(line));
     sessionLogs.push(line);
     if (activeSessionLogTotals) {
       activeSessionLogTotals.set(

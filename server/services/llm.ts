@@ -1262,8 +1262,10 @@ async function withProviderFallback<T>(
         !hasUntrustedMessage(normalized) &&
         (/timed?\s*out|timeout/i.test(normalized.message) || errStatus === 524 || errStatus === 408);
 
+      const stage = executionOptions?.metadata?.stage || executionOptions?.metadata?.operation;
+      const stageTag = stage ? ` \x1b[94m[${stage}]\x1b[0m` : "";
       console.error(
-        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${provider.model}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m`,
+        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${provider.model}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m${stageTag}`,
       );
 
       executionOptions.onProviderAttempt?.({
@@ -1949,9 +1951,11 @@ async function sendChatCompletion(
         ? suppliedTotal
         : Math.max(0, inputTokens) + Math.max(0, outputTokens);
 
+    const stageName = stage || options?.metadata?.operation;
+    const stageTag = stageName ? ` \x1b[94m[${stageName}]\x1b[0m` : "";
     // Rich ANSI colored console log
     console.log(
-      `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencyMs}ms\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m`,
+      `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencyMs}ms\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m${stageTag}`,
     );
 
     sendDirectLangfuseTrace({

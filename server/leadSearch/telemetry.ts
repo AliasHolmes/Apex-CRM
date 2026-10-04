@@ -132,6 +132,7 @@ export type MiningTraceEvent = {
       status: "success" | "error" | "skipped";
       statusCode?: number;
       latencyMs: number;
+      queueWaitMs?: number;
       error?: string;
     }>;
   };
@@ -407,6 +408,87 @@ function accumulatePhaseEvent(
   byPhase.set(event.phase, existing);
 }
 
+export type CriticalPathStage =
+  | "plan"
+  | "search"
+  | "extract"
+  | "enrich"
+  | "judge"
+  | "other";
+
+/** LLM work attributed to one pipeline stage of one round. Sums run across parallel calls. */
+export type StageLatency = { calls: number; llmMs: number; queueMs: number };
+
+const CRITICAL_PATH_ORDER: CriticalPathStage[] = [
+  "plan",
+  "search",
+  "extract",
+  "enrich",
+  "judge",
+  "other",
+];
+const CRITICAL_PATH_LABELS: Record<CriticalPathStage, string> = {
+  plan: "Plan",
+  search: "Search",
+  extract: "Extract",
+  enrich: "Enrich",
+  judge: "Judge",
+  other: "Other",
+};
+
+export function classifyCriticalPathStage(
+  event: Pick<MiningTraceEvent, "phase" | "operation">,
+): CriticalPathStage {
+  if (/judge/i.test(event.operation)) return "judge";
+  switch (event.phase) {
+    case "strategy":
+      return "plan";
+    case "search":
+      return "search";
+    case "extraction":
+      return "extract";
+    case "enrichment":
+      return "enrich";
+    case "candidate_processing":
+      return "judge";
+    default:
+      return "other";
+  }
+}
+
+const formatSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
+
+/**
+ * One log line per round: wall-clock per stage, plus the LLM time and queue wait behind it.
+ * The LLM and queue figures are sums across parallel calls, so they can exceed the wall-clock.
+ */
+export function formatCriticalPathLine(
+  round: number,
+  stageWallMs: Record<string, number>,
+  latency: Record<string, StageLatency>,
+): string {
+  const known = new Set<string>(CRITICAL_PATH_ORDER);
+  const stages = [
+    ...CRITICAL_PATH_ORDER,
+    ...Object.keys({ ...stageWallMs, ...latency }).filter((name) => !known.has(name)),
+  ];
+  const parts: string[] = [];
+  let totalMs = 0;
+  for (const stage of stages) {
+    const wallMs = Number(stageWallMs[stage]) || 0;
+    const detail = latency[stage];
+    totalMs += wallMs;
+    if (wallMs <= 0 && !(detail && detail.calls > 0)) continue;
+    const label = CRITICAL_PATH_LABELS[stage as CriticalPathStage] ?? stage;
+    const llm = detail && detail.calls > 0
+      ? ` (${detail.calls} call${detail.calls === 1 ? "" : "s"}, LLM sum ${formatSeconds(detail.llmMs)}, Queue sum ${formatSeconds(detail.queueMs)})`
+      : "";
+    parts.push(`${label}: ${formatSeconds(wallMs)}${llm}`);
+  }
+  parts.push(`Total: ${formatSeconds(totalMs)}`);
+  return `[Round ${round} Critical Path] ${parts.join(" | ")}`;
+}
+
 export function summarizePhases(events: MiningTraceEvent[]): PhaseTimelineItem[] {
   const byPhase = new Map<
     MiningPhase,
@@ -465,6 +547,7 @@ export class MiningTelemetryRecorder {
 
     accumulateProviderEvent(this.cumulativeProviderSummary, traceEvent);
     accumulatePhaseEvent(this.phaseTimelineAccumulator, traceEvent);
+    this.accumulateRoundLatency(traceEvent);
 
     this.events.push(traceEvent);
     // Ring behavior: keep memory bounded for long sessions. Oldest events are
@@ -498,6 +581,39 @@ export class MiningTelemetryRecorder {
     }
 
     return traceEvent;
+  }
+
+  // Kept outside the bounded event ring so per-round totals stay exact in long sessions.
+  private roundLatency = new Map<number, Map<CriticalPathStage, StageLatency>>();
+
+  private accumulateRoundLatency(event: MiningTraceEvent) {
+    if (event.round === undefined || event.status === "started") return;
+    const attempts = event.llm?.providerAttempts;
+    if (!Array.isArray(attempts) || attempts.length === 0) return;
+    const stage = classifyCriticalPathStage(event);
+    const byStage =
+      this.roundLatency.get(event.round) ||
+      new Map<CriticalPathStage, StageLatency>();
+    const entry = byStage.get(stage) || { calls: 0, llmMs: 0, queueMs: 0 };
+    entry.calls++;
+    for (const attempt of attempts) {
+      entry.llmMs += Number(attempt.latencyMs) || 0;
+      entry.queueMs += Number(attempt.queueWaitMs) || 0;
+    }
+    byStage.set(stage, entry);
+    this.roundLatency.set(event.round, byStage);
+  }
+
+  getRoundLatency(round: number): Record<string, StageLatency> {
+    const result: Record<string, StageLatency> = {};
+    for (const [stage, entry] of this.roundLatency.get(round) ?? []) {
+      result[stage] = { ...entry };
+    }
+    return result;
+  }
+
+  formatRoundCriticalPath(round: number, stageWallMs: Record<string, number>) {
+    return formatCriticalPathLine(round, stageWallMs, this.getRoundLatency(round));
   }
 
   finish(

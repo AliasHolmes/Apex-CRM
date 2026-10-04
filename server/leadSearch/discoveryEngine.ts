@@ -1241,6 +1241,11 @@ export async function executeDiscoverySession(
       const maxCandidatePoolLimit = collectionCapacity.candidateCeiling;
       let effectiveQualifiedBeforeRound = 0;
       const roundYieldHistory: Array<{ round: number; newQualified: number; providerUnits?: number }> = [];
+      // Per-round stage wall-clock behind the critical-path log line (see telemetry.ts).
+      let roundStageWallMs: Record<string, number> = {};
+      const addStageWall = (stage: string, sinceMs: number) => {
+        roundStageWallMs[stage] = (roundStageWallMs[stage] || 0) + (Date.now() - sinceMs);
+      };
 
       for (
         let round = initialRound;
@@ -1248,8 +1253,8 @@ export async function executeDiscoverySession(
         round++
       ) {
         // ARCHITECTURE NOTE: Speculative planning overlap (running next round's strategist while judging finishes)
-        // is deferred because Atria (1 slot) + Byesu (1 slot) cap means running strategist speculatively
-        // would starve attribution or judging slots.
+        // is deferred because it would compete with attribution and judging for the same
+        // provider slots (ATRIA_CONCURRENT_SLOTS / BYESU_CONCURRENT_SLOTS).
         if (safetyTimeoutMs > 0 && Date.now() - startedAt > safetyTimeoutMs) {
           stats.stopReason = "timeout";
           break;
@@ -1276,6 +1281,7 @@ export async function executeDiscoverySession(
         }
 
         stats.rounds = round;
+        roundStageWallMs = {};
         sessionState.round = round;
         sessionState.previousRoundSummary = previousRoundSummary;
         acceptedCountBeforeRound = acceptedLeads.length;
@@ -1321,6 +1327,7 @@ export async function executeDiscoverySession(
           : rerankPoolTarget;
 
         const currentGen = planningGeneration.value;
+        const planStartedAt = Date.now();
         const planResult = await executePlanStage(sessionCtx, {
           round,
           remaining,
@@ -1331,6 +1338,7 @@ export async function executeDiscoverySession(
           stats,
           generation: currentGen,
         });
+        addStageWall("plan", planStartedAt);
 
         if (planResult.stopReason) {
           stats.stopReason = planResult.stopReason;
@@ -1354,6 +1362,7 @@ export async function executeDiscoverySession(
         const { roundPlans, queryRuns } = planResult;
         stats.queryRuns.push(...queryRuns);
 
+        const searchStartedAt = Date.now();
         const retrieveResult = await executeRetrieveStage(sessionCtx, {
           round,
           roundPlans,
@@ -1385,6 +1394,7 @@ export async function executeDiscoverySession(
           searchSpec,
           stats,
         });
+        addStageWall("search", searchStartedAt);
 
         if (fuseResult.stopReason) {
           stats.stopReason = fuseResult.stopReason;
@@ -1732,6 +1742,7 @@ export async function executeDiscoverySession(
         rawResultsCount = seenPersonIdentifiers.size;
         stats.rawCandidates = rawResultsCount;
 
+        const extractStartedAt = Date.now();
         const extractResult = await executeExtractStage(sessionCtx, {
           round,
           candidateItems,
@@ -1747,6 +1758,7 @@ export async function executeDiscoverySession(
           stats,
         });
 
+        addStageWall("extract", extractStartedAt);
         brightDataProviderDisabled = extractResult.brightDataProviderDisabled;
         consecutiveFailedExtractionRounds =
           extractResult.consecutiveFailedExtractionRounds;
@@ -1823,6 +1835,7 @@ export async function executeDiscoverySession(
         // Prune auto-failed leads from enrichment
         candidateLeadsForEnrichment = postFilterLeads.filter(pfl => !pfl.lead._autoFailed);
 
+        const enrichStartedAt = Date.now();
         const enrichResult = await executeEnrichStage(sessionCtx, {
           round,
           postFilterLeads: candidateLeadsForEnrichment,
@@ -1841,6 +1854,7 @@ export async function executeDiscoverySession(
           leadQueryRuns,
           trackableBrightDataSearch,
         });
+        addStageWall("enrich", enrichStartedAt);
 
         brightDataProviderDisabled = enrichResult.brightDataProviderDisabled;
         brightDataTransportRetryAfter =
@@ -1922,6 +1936,7 @@ export async function executeDiscoverySession(
               return acc;
             }, 0);
 
+            const judgeStartedAt = Date.now();
             const incrementalResult = await evaluateIncrementalJudgeBatches(sessionCtx, {
               candidates: needsJudgeCandidates,
               contract,
@@ -1931,6 +1946,7 @@ export async function executeDiscoverySession(
               targetCushion: qualifiedTargetWithCushion,
               currentQualifiedCount: Math.floor(currentEqc),
             });
+            addStageWall("judge", judgeStartedAt);
 
             for (const qCand of incrementalResult.qualifiedCandidates) {
               tryAddQualifiedLead(qCand);
@@ -2084,6 +2100,7 @@ export async function executeDiscoverySession(
           updatedAt: new Date().toISOString(),
         });
         checkpointedQueryRunCount = stats.queryRuns.length;
+        logEvent(telemetry.formatRoundCriticalPath(round, roundStageWallMs));
 
         // Early shortlist termination:
         const judgePassRateEstimate =

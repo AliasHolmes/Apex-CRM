@@ -1285,8 +1285,8 @@ Evidence:
     }
   });
 
-  // The upper clamp was 1, which made LEAD_EXTRACTION_CONCURRENCY inert. 2 is the recommended
-  // maximum in configValidation.ts; default stays 1 unless opted in.
+  // 6 is the recommended maximum in configValidation.ts (provider slots bound real
+  // concurrency); default stays 1 unless opted in.
   const extractionConcurrency = Math.min(
     Math.max(
       Number(
@@ -1296,7 +1296,7 @@ Evidence:
       ),
       1,
     ),
-    2,
+    6,
   );
   const extractionResults = await runProviderQueue(
     extractionTasks.map((run, index) => ({

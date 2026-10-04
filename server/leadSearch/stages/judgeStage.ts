@@ -36,6 +36,7 @@ import {
   classifyTitle,
 } from "../titleTriage.js";
 import { runGatedCompanyAttribution } from "../companyAttribution.js";
+import { runRollingPool } from "../rollingPool.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(
@@ -451,7 +452,7 @@ export async function evaluateIncrementalJudgeBatches(
   const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 4500);
   const judgeConcurrency = Math.max(
     1,
-    Math.min(4, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
+    Math.min(8, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
   );
 
   const reusedQualified: any[] = [];
@@ -533,12 +534,6 @@ export async function evaluateIncrementalJudgeBatches(
     domainCluster: deriveContractDomainCluster(contract, config.promptQuery),
     limit: 6,
   });
-
-  // Chunk micro-batches into waves according to concurrency
-  const waves: FinalistCandidate[][][] = [];
-  for (let i = 0; i < microBatches.length; i += judgeConcurrency) {
-    waves.push(microBatches.slice(i, i + judgeConcurrency));
-  }
 
   let cumulativeQualified = (input.currentQualifiedCount || 0) + reusedQualified.length;
 
@@ -885,13 +880,15 @@ export async function evaluateIncrementalJudgeBatches(
     }
   };
 
-  for (let w = 0; w < waves.length; w++) {
-    const waveBatches = waves[w];
-    const waveCandidates = waveBatches.flat();
-
-    if (companyAttributionEnabled && waveCandidates.length > 0) {
+  // Attribution and judging run per micro-batch inside a rolling pool, so a slow batch never
+  // holds back its siblings and attribution for one batch overlaps judging of the others.
+  const judgeMicroBatch = async (
+    batch: FinalistCandidate[],
+    batchIndex: number,
+  ): Promise<any[]> => {
+    if (companyAttributionEnabled && batch.length > 0) {
       const attrSummary = await runGatedCompanyAttribution(
-        waveCandidates,
+        batch,
         contract,
         {
           signal: state.abortController?.signal,
@@ -912,8 +909,8 @@ export async function evaluateIncrementalJudgeBatches(
       }
     }
 
-    const activeWaveCandidates: FinalistCandidate[] = [];
-    for (const candidate of waveCandidates) {
+    const activeCandidates: FinalistCandidate[] = [];
+    for (const candidate of batch) {
       if (candidate.lead._autoFailed && candidate.lead._contradictionReason) {
         const contradictionInsight = {
           status: "hard_fail" as FinalistOutcomeStatus,
@@ -943,39 +940,46 @@ export async function evaluateIncrementalJudgeBatches(
           .map((r) => r.id);
         recordCandidateJudgeOutcome(candidate, "hard_fail", companyReqIds, "deterministic");
       } else {
-        activeWaveCandidates.push(candidate);
+        activeCandidates.push(candidate);
       }
     }
 
-    if (activeWaveCandidates.length === 0) {
-      continue;
+    if (activeCandidates.length === 0) {
+      return [];
     }
+    return evaluateSingleBatch(activeCandidates, batchIndex);
+  };
 
-    const activeCandidateSet = new Set(activeWaveCandidates);
-    const activeWaveBatches: FinalistCandidate[][] = waveBatches
-      .map((batch) => batch.filter((c) => activeCandidateSet.has(c)))
-      .filter((batch) => batch.length > 0);
+  let completedBatches = 0;
+  const cushionReached = () =>
+    targetCushion !== undefined && cumulativeQualified >= targetCushion;
+  const { results: batchResults, startedCount } = await runRollingPool(
+    microBatches,
+    async (batch, batchIndex) => {
+      const newlyQualified = await judgeMicroBatch(batch, batchIndex);
+      cumulativeQualified += newlyQualified.length;
+      completedBatches++;
+      return newlyQualified;
+    },
+    {
+      concurrency: judgeConcurrency,
+      // Stop dequeuing as soon as the cushion is met; in-flight batches finish on their own.
+      // Never before the first batch completes, so the first `judgeConcurrency` batches
+      // always run (the old first wave) even when earlier rounds already met the cushion.
+      shouldStop: () =>
+        Boolean(state.abortController?.signal.aborted) ||
+        (completedBatches > 0 && cushionReached()),
+    },
+  );
+  // Appended in batch order, not completion order, so output is deterministic.
+  for (const newlyQualified of batchResults) {
+    if (newlyQualified) qualifiedCandidates.push(...newlyQualified);
+  }
 
-    const waveResults: any[][] = await Promise.all(
-      activeWaveBatches.map((batch, idx) =>
-        evaluateSingleBatch(batch, w * judgeConcurrency + idx),
-      ),
+  if (startedCount < microBatches.length && cushionReached()) {
+    logEvent(
+      `Incremental Judge Round ${round}: reached target cushion (${cumulativeQualified}/${targetCushion}); skipped ${microBatches.length - startedCount} of ${microBatches.length} remaining batch(es).`,
     );
-    const newlyQualified = waveResults.flat();
-    qualifiedCandidates.push(...newlyQualified);
-    cumulativeQualified += newlyQualified.length;
-
-    // Check wave short-circuit:
-    if (
-      targetCushion !== undefined &&
-      cumulativeQualified >= targetCushion &&
-      w < waves.length - 1
-    ) {
-      logEvent(
-        `Incremental Judge Round ${round}: Wave ${w + 1}/${waves.length} reached target cushion (${cumulativeQualified}/${targetCushion}); short-circuiting remaining ${waves.length - w - 1} wave(s).`,
-      );
-      break;
-    }
   }
 
   return {

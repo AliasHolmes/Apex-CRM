@@ -100,9 +100,6 @@ export function computeTfidfScore(
 
 type SearchResult = { title: string; url: string; content: string };
 
-/** @deprecated Use UNIVERSAL_SIGNALS from intentSignals.ts */
-export const BUYING_SIGNALS = UNIVERSAL_SIGNALS;
-
 const BLOCKED_DOMAINS = [
   'linkedin.com', 'facebook.com', 'instagram.com', 'twitter.com', 'x.com',
   'crunchbase.com', 'indeed.com', 'glassdoor.com', 'yelp.com'

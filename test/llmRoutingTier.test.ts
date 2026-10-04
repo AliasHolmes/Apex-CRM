@@ -26,7 +26,7 @@ test('sizes judge batches to the route output cap', () => {
 });
 
 test('describes the fast route from the environment', () => {
-  const keys = ['ATRIA_API_KEY', 'OPENROUTER_API_KEY', 'TOKEN_HARBOR_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'BYESU_API_KEY', 'LLM_FAST_PROVIDER_IDS', 'GROQ_MODEL', 'OPENAI_MODEL'];
+  const keys = ['ATRIA_API_KEY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'BYESU_API_KEY', 'LLM_FAST_PROVIDER_IDS', 'GROQ_MODEL', 'OPENAI_MODEL'];
   const snapshot = Object.fromEntries(keys.map(k => [k, process.env[k]]));
   try {
     for (const k of keys) delete process.env[k];

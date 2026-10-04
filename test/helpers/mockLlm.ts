@@ -3,7 +3,7 @@ import type { SessionContext } from '../../server/leadSearch/pipelineTypes.js';
 import type { ProspectContract } from '../../server/leadSearch/prospectContract.js';
 
 const MANAGED_ENV = [
-  'ATRIA_API_KEY', 'ATRIA_PRIORITY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY', 'TOKEN_HARBOR_API_KEY',
+  'ATRIA_API_KEY', 'ATRIA_PRIORITY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY',
   'OPENAI_API_KEY', 'BYESU_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE', 'LLM_COMPLETION_CACHE',
   'LLM_MAX_RETRIES', 'LLM_FAST_PROVIDER_IDS', 'LEAD_COMPANY_ATTRIBUTION_ENABLED',
 ];

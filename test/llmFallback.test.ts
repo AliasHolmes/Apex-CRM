@@ -17,12 +17,6 @@ const MANAGED_KEYS = [
   'GROQ_API_KEY',
   'GROQ_BASE_URL',
   'GROQ_MODEL',
-  'TOKEN_HARBOR_API_KEY',
-  'TOKEN_HARBOR_BASE',
-  'TOKEN_HARBOR_MODEL',
-  'TOKEN_HARBOR_ENABLED',
-  'TOKEN_HARBOR_EXPIRATION_MS',
-  'TOKEN_HARBOR_EXPIRATION',
   'ATRIA_API_KEY',
   'ATRIA_BASE',
   'ATRIA_MODEL',
@@ -654,61 +648,7 @@ describe('LLM gateway and provider fallback', () => {
     delete process.env.LLM_SESSION_PROVIDER_FAILURE_THRESHOLD;
   });
 
-  it('guarantees Token Harbor is retired and omitted from provider candidates', async () => {
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
-
-    const llm = await importLLM('th-retired');
-    const ids = llm.getLLMProviderSummaries().map((p: any) => p.id);
-
-    assert.equal(ids.includes('tokenharbor'), false);
-    assert.equal(ids[0], 'primary');
-  });
-
-  it('automatically reverts to Byesu when Token Harbor expiration date has passed', async () => {
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
-    // Set expiration in the past
-    process.env.TOKEN_HARBOR_EXPIRATION_MS = String(Date.now() - 1000);
-
-    const llm = await importLLM('th-expired');
-    assert.equal(llm.isTokenHarborActive(), false);
-
-    let capturedUrl = '';
-    globalThis.fetch = async (url) => {
-      capturedUrl = url.toString();
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: 'byesu active' } }]
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    };
-
-    const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'byesu active');
-    assert.equal(res.provider, 'Byesu');
-    assert.equal(capturedUrl, 'https://byesu.com/v1/chat/completions');
-  });
-
-  it('isTokenHarborActive returns false when TOKEN_HARBOR_ENABLED is false or key is empty', async () => {
-    delete process.env.TOKEN_HARBOR_API_KEY;
-    delete process.env.TOKEN_HARBOR_ENABLED;
-
-    const llm = await importLLM('th-empty-key');
-    llm.resetTokenHarborRetirement();
-    assert.equal(llm.isTokenHarborActive(), false);
-
-    process.env.TOKEN_HARBOR_API_KEY = 'test-th-key';
-    process.env.TOKEN_HARBOR_ENABLED = 'false';
-    const llmDisabled = await importLLM('th-disabled-env');
-    llmDisabled.resetTokenHarborRetirement();
-    assert.equal(llmDisabled.isTokenHarborActive(), false);
-
-    delete process.env.TOKEN_HARBOR_API_KEY;
-    delete process.env.TOKEN_HARBOR_ENABLED;
-  });
-
-  it('guarantees Byesu is primary provider when Token Harbor is disabled', async () => {
-    process.env.TOKEN_HARBOR_ENABLED = 'false';
-    delete process.env.TOKEN_HARBOR_API_KEY;
+  it('guarantees Byesu is primary provider when configured', async () => {
     process.env.OPENAI_API_KEY = 'test-byesu-key';
     process.env.OPENAI_PROVIDER_NAME = 'Byesu';
     process.env.OPENAI_MODEL = 'gpt-5.5';
@@ -730,7 +670,6 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(res.model, 'gpt-5.5');
     assert.equal(capturedUrl, 'https://byesu.com/v1/chat/completions');
 
-    delete process.env.TOKEN_HARBOR_ENABLED;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_PROVIDER_NAME;
     delete process.env.OPENAI_MODEL;

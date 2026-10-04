@@ -173,8 +173,7 @@ Status update on the follow-ups and the core loop, measured against the current 
   - Remaining future work from §3: ternary `KEEP = +1.0 / MAYBE = +0.3 / REJECT = -1.0` per-arm counters and judge uncertainty Brier calibration curves.
 - **Inert flags:** resolved 2026-09-17 — the six graduated flags in `featureFlags.ts`
   are now permanent architectural invariants returning `true` unconditionally.
-- **`ProviderTrafficController`:** still exported from `keyRotator.ts` but exercised
-  only by `test/resilienceAndCacheHygiene.test.ts`; no production caller.
+- **`ProviderTrafficController`:** removed; previously exercised only by `test/resilienceAndCacheHygiene.test.ts` with no production caller.
 - **SSRF guard duplication:** resolved in substance — `privateHosts.ts` is the shared
   SSRF guard; `hostValidation.ts` is an HTTP `Host`-header parser (request validation),
   not a second SSRF implementation.

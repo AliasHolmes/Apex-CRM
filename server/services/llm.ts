@@ -27,7 +27,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: "primary" | "openrouter" | "groq" | "tokenharbor" | "atria";
+  id: "primary" | "openrouter" | "groq" | "atria";
   name: string;
   baseUrl: string;
   model: string;
@@ -146,36 +146,6 @@ const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 // form the failsafe tier.
 const DEFAULT_ATRIA_BASE = "https://api.atria-asi.ai/v1";
 const DEFAULT_ATRIA_MODEL = "Atria-Dawn-Preview";
-
-// Token Harbor is retired from the provider chain (see isTokenHarborActive); this default
-// expiry (Oct 19, 2026 00:00:00 +06:00) only gates the legacy active check.
-const DEFAULT_TOKEN_HARBOR_EXPIRATION_MS = new Date(
-  "2026-10-19T00:00:00+06:00",
-).getTime();
-
-let tokenHarborRetiredEarly = false;
-
-export function isTokenHarborActive(now = Date.now()): boolean {
-  if (tokenHarborRetiredEarly) return false;
-  if (process.env.TOKEN_HARBOR_ENABLED === "false" || !process.env.TOKEN_HARBOR_API_KEY) return false;
-  const expiryRaw =
-    process.env.TOKEN_HARBOR_EXPIRATION_MS ||
-    process.env.TOKEN_HARBOR_EXPIRATION;
-  const expiry = expiryRaw
-    ? (Number.isFinite(Number(expiryRaw))
-        ? Number(expiryRaw)
-        : new Date(expiryRaw).getTime())
-    : DEFAULT_TOKEN_HARBOR_EXPIRATION_MS;
-  return now < expiry;
-}
-
-export function retireTokenHarborEarly(): void {
-  tokenHarborRetiredEarly = true;
-}
-
-export function resetTokenHarborRetirement(): void {
-  tokenHarborRetiredEarly = false;
-}
 
 const tavilyKeyPool = new ApiKeyPool("Tavily", () =>
   parseApiKeys(process.env.TAVILY_API_KEYS, [process.env.TAVILY_API_KEY]),

@@ -68,6 +68,20 @@ test("Stream 3 - Title Triage Truth Table & Precedence", async (t) => {
     assert.equal(res.isExecutive, true);
     assert.equal(res.isIC, false);
   });
+
+  await t.test("fails Student at University of Toronto Schools, Founder at upend.AI as IC student role", () => {
+    const res = classifyTitle("Student at University of Toronto Schools, Founder at upend.AI");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 2);
+  });
+
+  await t.test("fails Marketing Intern & Co-Founder as IC intern role", () => {
+    const res = classifyTitle("Marketing Intern & Co-Founder");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 2);
+  });
 });
 
 test("Stream 3 - evaluateDecisionMakerGate Threshold Consistency", async (t) => {

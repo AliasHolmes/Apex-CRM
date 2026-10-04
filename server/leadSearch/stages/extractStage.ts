@@ -45,6 +45,7 @@ import {
   isValidLinkedInHandle,
 } from "../../../src/utils/leadDedupe.js";
 import { runWithTransientRetry } from "../sessionHelpers.js";
+import { looksLikeCompanyHint } from "../observations.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceQuality, LeadSourceProvider } from "../scoring.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -184,7 +185,13 @@ export function parseDeterministicLinkedInProfile(
   let currentCompany = "";
   if (parts.length >= 3) {
     headline = parts.slice(1, -1).join(" - ");
-    currentCompany = parts[parts.length - 1];
+    const rawCompanyPart = parts[parts.length - 1];
+    const pipeParts = rawCompanyPart.split(/\s*[|\u00b7\u2022]\s*/);
+    if (pipeParts.length > 1 && looksLikeCompanyHint(pipeParts[0])) {
+      currentCompany = pipeParts[0].trim();
+    } else {
+      currentCompany = rawCompanyPart.trim();
+    }
   } else {
     const second = parts[1];
     const atSplit = second.split(/\s+(?:at|@)\s+/i);
@@ -215,6 +222,17 @@ export function parseDeterministicLinkedInProfile(
   if (nameWords.length < 1 || nameWords.length > 5) return null;
   if (!currentTitle || currentTitle.length < 2 || currentTitle.length > 80) return null;
   if (currentCompany.length > 80) currentCompany = currentCompany.slice(0, 80).trim();
+
+  // Validate company name: slogans, trailing ellipses, and marketing taglines must not leak into company field
+  if (currentCompany && !looksLikeCompanyHint(currentCompany)) {
+    const atMatch = headline.match(/\s+(?:at|@)\s+([^|\n-]+)/i);
+    if (atMatch && looksLikeCompanyHint(atMatch[1])) {
+      currentCompany = atMatch[1].trim();
+    } else {
+      // Slogans or invalid company hints must not be deterministically parsed. Defer to LLM extraction.
+      return null;
+    }
+  }
 
   return {
     fullName,

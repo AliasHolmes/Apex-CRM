@@ -18,6 +18,10 @@ export const EXECUTIVE_OVERRIDE_REGEX =
 export const SUBORDINATE_ROLE_REGEX =
   /\b(?:assistant|secretary|aide|ea|pa)\s+(?:to|for)\b|\bchief\s+of\s+staff\s+to\b|\boffice\s+of\s+the\s+(?:ceo|founder|president|chairman)\b/i;
 
+/** Student, intern, and trainee roles must never be promoted to executive decision-makers even if they claim "founder". */
+export const STUDENT_INTERN_ROLE_REGEX =
+  /\b(?:(?<!former\s+|ex-)(?:student|intern|trainee|apprentice)(?:\s+(?:at\b|founder|researcher))?)\b/i;
+
 export const OWNER_OPERATOR_REGEX =
   /\b(?:independent|solo|freelance|boutique|fractional|advisory|principal|managing|founding)\s+(?:[a-z0-9.&+#-]+\s+){0,2}(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;
 
@@ -48,6 +52,10 @@ export function classifyTitle(
 
   if (SUBORDINATE_ROLE_REGEX.test(cleanTitle)) {
     return { isIC: true, isExecutive: false, confidence: 2 };
+  }
+
+  if (STUDENT_INTERN_ROLE_REGEX.test(cleanTitle)) {
+    return { isIC: true, isExecutive: false, confidence: 1 };
   }
 
   // Phase 4: alias-aware normalization -- expand standalone acronyms (MD, VP)

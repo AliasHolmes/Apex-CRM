@@ -134,7 +134,9 @@ export const looksLikeCompanyHint = (value: string) => {
   if (GENERIC_GEO_NAMES.has(lower)) return false;
   const words = candidate.split(/\s+/).filter(Boolean);
   if (words.length > 5 && !LEGAL_SUFFIX_RE.test(candidate)) return false;
-  if (/^(?:we're|i'm|you're|they're|it's|what|how|why|when|where|who|which|must|unlock|managed|building|scaling|guide|complete|ultimate|discover|explore|learn|join|hiring|looking|seeking|find|search|browse|top|best)\b/i.test(candidate)) return false;
+  if (candidate.includes('...') || candidate.includes('\u2026')) return false;
+  if (/^(?:we're|i'm|you're|they're|it's|what|how|why|when|where|who|which|must|unlock|managed|helping|building|scaling|empowering|enabling|transforming|accelerating|automating|driving|serving|providing|creating|leading|crafting|partnering|guide|complete|ultimate|discover|explore|learn|join|hiring|looking|seeking|find|search|browse|top|best)\b/i.test(candidate)) return false;
+  if (/\b(?:turn\s+ai\s+into|grow\s+your|scale\s+your|help\s+businesses|helping\s+businesses)\b/i.test(lower)) return false;
   if (/^[a-z]/.test(candidate) && words.length >= 2 && /^(?:in|on|at|to|for|with|from|by|about|into|through|during|before|after|between|under|is|are|was|were|be|been|being|have|has|had|do|does|did|can|could|should|would|may|might|my|your|our|their|this|that|these|those)\b/.test(candidate)) return false;
   if (/^\d+\+?\s*(?:comments?|jobs?|roles?|results?|profiles?|openings?|positions?)\b/i.test(candidate)) return false;
   // Reject geographic "City, ST" or "City, State, Country" strings

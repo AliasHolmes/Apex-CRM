@@ -113,6 +113,7 @@ import {
   buildProspectContractPrompt,
   COUNTRY_CANONICAL_MAP,
   COUNTRY_TO_METROS,
+  namesKnownMetro,
   normalizeProspectContract,
   prospectContractSchema,
   PROSPECT_CONTRACT_POLICY_VERSION,
@@ -1488,7 +1489,7 @@ export async function executeDiscoverySession(
             const cleanTerm = String(term || "").trim().toLowerCase();
             if (COUNTRY_TO_METROS[cleanTerm]) {
               const metros = COUNTRY_TO_METROS[cleanTerm];
-              const countrySuffix = targetCountry || COUNTRY_CANONICAL_MAP[cleanTerm] || "";
+              const countrySuffix = COUNTRY_CANONICAL_MAP[cleanTerm] || cleanTerm;
               for (const m of metros) {
                 if (countrySuffix && !m.toLowerCase().includes(countrySuffix.toLowerCase())) {
                   mappedMetros.push(`${m} ${countrySuffix}`);
@@ -1501,11 +1502,15 @@ export async function executeDiscoverySession(
               !COUNTRY_CANONICAL_MAP[cleanTerm] &&
               !/^(any|all|global|worldwide|remote)$/i.test(cleanTerm)
             ) {
-              const countrySuffix = targetCountry;
-              if (countrySuffix && !term.toLowerCase().includes(countrySuffix.toLowerCase())) {
-                mappedMetros.push(`${term} ${countrySuffix}`);
-              } else {
+              if (namesKnownMetro(term)) {
                 mappedMetros.push(term);
+              } else {
+                const countrySuffix = targetCountry;
+                if (countrySuffix && !term.toLowerCase().includes(countrySuffix.toLowerCase())) {
+                  mappedMetros.push(`${term} ${countrySuffix}`);
+                } else {
+                  mappedMetros.push(term);
+                }
               }
             }
           }

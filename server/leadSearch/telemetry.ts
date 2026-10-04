@@ -229,7 +229,7 @@ export type MiningTraceSummary = {
   sessionId: string;
   query: string;
   requested: number;
-  status: "running" | "success" | "error";
+  status: "running" | "success" | "error" | "cancelled";
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
@@ -424,7 +424,7 @@ export class MiningTelemetryRecorder {
   private events: MiningTraceEvent[] = [];
   private sequence = 0;
   private endedAt?: string;
-  private status: "running" | "success" | "error" = "running";
+  private status: "running" | "success" | "error" | "cancelled" = "running";
   private finalStats?: Record<string, any>;
   private maxEvents: number;
   private eventsTrimmed = 0;
@@ -500,14 +500,18 @@ export class MiningTelemetryRecorder {
     return traceEvent;
   }
 
-  finish(status: "success" | "error", finalStats?: Record<string, any>) {
+  finish(
+    status: "success" | "error" | "cancelled",
+    finalStats?: Record<string, any>,
+  ) {
     this.status = status;
     this.endedAt = nowIso();
     this.finalStats = finalStats;
     this.record({
       phase: "session",
       operation: "complete",
-      status,
+      // A cancellation is a user action, not a failure: keep it out of the error counters.
+      status: status === "cancelled" ? "info" : status,
       provider: "system",
       counts: {
         returned: Number(finalStats?.returned || 0),

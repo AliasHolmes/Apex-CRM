@@ -79,6 +79,7 @@ import {
   buildRetrievalTasks,
   buildSearchSpecPrompt,
   normalizeSearchSpec,
+  applyRequestedDiscoveryMode,
   type DiscoveryMode,
 } from "../leadSearch/searchSpec.js";
 import {
@@ -156,6 +157,64 @@ const isPersistableLead = (lead: unknown): lead is Record<string, any> => {
     (value.nextAction === undefined || nextActions.has(value.nextAction)),
   );
 };
+
+type LeadTransitionSnapshot = { stage?: unknown; reviewStatus?: unknown } | null | undefined;
+
+/**
+ * Classifies a lead's stage/review transition into the binary outcome the learning loop
+ * consumes ({positive, negative} + a detail naming what happened). Returns outcome=null for
+ * transitions that carry no feedback (for example moving to SEQUENCE ACTIVE).
+ */
+export function classifyLeadTransition(
+  previous: LeadTransitionSnapshot,
+  next: { stage?: unknown; reviewStatus?: unknown },
+): {
+  isNewReply: boolean;
+  isNewRejection: boolean;
+  isNewDirectVerification: boolean;
+  isNewVerification: boolean;
+  outcome: { type: "positive" | "negative"; detail: string } | null;
+} {
+  const prevStage = previous?.stage;
+  const prevReview = previous?.reviewStatus;
+  const isNewReply = next.stage === "REPLIED" && prevStage !== "REPLIED";
+  const isNewKeep = next.reviewStatus === "KEEP" && prevReview !== "KEEP";
+  const isNewConverted = next.stage === "CONVERTED" && prevStage !== "CONVERTED";
+  const isNewMeeting = next.stage === "MEETING BOOKED" && prevStage !== "MEETING BOOKED";
+  const isNewReject = next.reviewStatus === "REJECT" && prevReview !== "REJECT";
+  const isNewLost = next.stage === "LOST" && prevStage !== "LOST";
+  const isNewDirectVerification = isNewKeep || isNewConverted || isNewMeeting;
+  const isNewRejection = isNewReject || isNewLost;
+  const changed = prevStage !== next.stage || prevReview !== next.reviewStatus;
+
+  let outcome: { type: "positive" | "negative"; detail: string } | null = null;
+  if (changed) {
+    if (isNewReply) outcome = { type: "positive", detail: "REPLIED" };
+    else if (isNewConverted) outcome = { type: "positive", detail: "CONVERTED" };
+    else if (isNewMeeting) outcome = { type: "positive", detail: "MEETING BOOKED" };
+    else if (isNewKeep) outcome = { type: "positive", detail: "KEEP" };
+    else if (isNewLost) outcome = { type: "negative", detail: "LOST" };
+    else if (isNewReject) outcome = { type: "negative", detail: "REJECT" };
+  }
+  return {
+    isNewReply,
+    isNewRejection,
+    isNewDirectVerification,
+    isNewVerification: isNewDirectVerification || isNewReply,
+    outcome,
+  };
+}
+
+/**
+ * Single source for the concurrent-session cap used by both start and resume. Defaults to 1
+ * (one session at a time keeps the Atria/Byesu provider slots from being shared), matching
+ * .env.example; clamped to 1-8.
+ */
+export function resolveMaxConcurrentSessions(): number {
+  const configured = Number(process.env.APEX_MAX_CONCURRENT_SESSIONS);
+  const value = Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 1;
+  return Math.min(value, 8);
+}
 
 export function parseOptionalPositiveInt(val: unknown): number | undefined {
   if (val === undefined || val === null || val === "") return undefined;
@@ -307,14 +366,14 @@ router.patch("/leads/:id", (req, res): any => {
     const previousStage = previousLead?.stage;
 
     const allowCreate = req.body?.allowCreate === true;
-    if (previousLead && !allowCreate) {
-      if (!Number.isInteger(lead.revision)) {
-        return res.status(400).json({
-          apiVersion: 1,
-          error: "Integer revision is required when updating an existing lead.",
-          code: "REVISION_REQUIRED",
-        });
-      }
+    // allowCreate only relaxes the "must already exist" rule. An existing lead always needs
+    // its revision, otherwise a concurrent edit is silently overwritten.
+    if (previousLead && !Number.isInteger(lead.revision)) {
+      return res.status(400).json({
+        apiVersion: 1,
+        error: "Integer revision is required when updating an existing lead.",
+        code: "REVISION_REQUIRED",
+      });
     }
 
     const writeResult = upsertLeadWithIdentity(lead, {
@@ -354,52 +413,19 @@ router.patch("/leads/:id", (req, res): any => {
       });
     }
 
-    const previousReviewStatus = previousLead?.reviewStatus;
-    // G17: REPLIED transitions now produce a positive outcome signal
-    // (previously silent). Binary {positive, negative} + detail stage.
-    const isNewReply =
-      storedLead.stage === "REPLIED" && previousStage !== "REPLIED";
-    const isNewRejection =
-      (storedLead.reviewStatus === "REJECT" &&
-        previousReviewStatus !== "REJECT") ||
-      (storedLead.stage === "LOST" && previousStage !== "LOST");
-    const isNewDirectVerification =
-      (storedLead.reviewStatus === "KEEP" &&
-        previousReviewStatus !== "KEEP") ||
-      (storedLead.stage === "CONVERTED" && previousStage !== "CONVERTED") ||
-      (storedLead.stage === "MEETING BOOKED" &&
-        previousStage !== "MEETING BOOKED");
-    const isNewVerification = isNewDirectVerification || isNewReply;
-
-    // G17: every stage/review transition writes a binary outcome row (deduplicated per lead + outcomeType).
+    // G17: stage/review transitions write one binary outcome row (deduplicated per lead +
+    // outcomeType); the classifier is shared with POST /leads/bulk so both paths agree.
+    const transition = classifyLeadTransition(previousLead, storedLead);
+    const { isNewRejection, isNewVerification } = transition;
     let outcomeNewlyRecorded = false;
-    if (
-      previousStage !== storedLead.stage ||
-      previousReviewStatus !== storedLead.reviewStatus
-    ) {
+    if (transition.outcome) {
       try {
-        if (isNewReply) {
-          outcomeNewlyRecorded = recordLeadOutcome(
-            storedLead.id,
-            "positive",
-            "REPLIED",
-            storedLead.discoveryScopeKey,
-          );
-        } else if (isNewDirectVerification) {
-          outcomeNewlyRecorded = recordLeadOutcome(
-            storedLead.id,
-            "positive",
-            String(storedLead.stage || storedLead.reviewStatus),
-            storedLead.discoveryScopeKey,
-          );
-        } else if (isNewRejection) {
-          outcomeNewlyRecorded = recordLeadOutcome(
-            storedLead.id,
-            "negative",
-            String(storedLead.stage || storedLead.reviewStatus),
-            storedLead.discoveryScopeKey,
-          );
-        }
+        outcomeNewlyRecorded = recordLeadOutcome(
+          storedLead.id,
+          transition.outcome.type,
+          transition.outcome.detail,
+          storedLead.discoveryScopeKey,
+        );
       } catch (err) {
         console.warn("[lead-outcomes] Failed to record lead outcome:", err);
       }
@@ -664,6 +690,12 @@ router.post("/leads/:id/merge", (req, res): any => {
       }
       db.prepare("UPDATE outreach_drafts SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
       db.prepare("UPDATE lead_activities SET lead_id = ? WHERE lead_id = ?").run(winner.id, duplicateId);
+      // Outcomes follow the surviving prospect. Where the winner already has the same outcome
+      // type the duplicate's row would double-count one event, so it is dropped instead.
+      db.prepare(
+        "UPDATE lead_outcomes SET lead_id = ? WHERE lead_id = ? AND outcome_type NOT IN (SELECT outcome_type FROM lead_outcomes WHERE lead_id = ?)",
+      ).run(winner.id, duplicateId, winner.id);
+      db.prepare("DELETE FROM lead_outcomes WHERE lead_id = ?").run(duplicateId);
       db.prepare("DELETE FROM lead_identity_conflicts WHERE canonical_lead_id = ? OR duplicate_lead_id = ?").run(duplicateId, duplicateId);
       db.prepare("DELETE FROM leads WHERE id = ?").run(duplicateId);
 
@@ -744,9 +776,17 @@ router.post("/leads/bulk", (req, res): any => {
         .json({ error: "Expected up to 1,000 valid lead records." });
     }
     const perItemConflict = req.body?.perItemConflict !== false;
+    const forceOverwrite = req.body?.forceOverwrite === true;
+    // Snapshot the pre-write stage/review state so activity and outcome rows describe the
+    // real transition (not "from nothing") and only fire when something changed.
+    const previousById = new Map<string, Record<string, any> | null>();
+    for (const lead of leads) {
+      previousById.set(String(lead.id), readStoredLeadById(String(lead.id)));
+    }
     const writeResults = upsertLeadsWithIdentity(leads, {
       requireExisting: req.body?.requireExisting === true,
       perItemConflict,
+      forceOverwrite,
     });
     const conflicts = writeResults
       .filter((result) => result.disposition === "conflict")
@@ -772,29 +812,25 @@ router.post("/leads/bulk", (req, res): any => {
       .filter((result) => result.disposition === "created" || result.disposition === "updated")
       .map((result) => result.lead);
 
-    if (req.body?.forceOverwrite === true) {
-      for (const lead of committedLeads) {
-        if (lead.stage) {
+    for (const lead of committedLeads) {
+      const previous = previousById.get(String(lead.id));
+      if (!previous) continue; // newly created leads have no transition to record
+      try {
+        if (lead.stage && previous.stage !== lead.stage) {
           insertLeadActivity({
             leadId: lead.id,
             type: "stage_change",
-            fromValue: "",
+            fromValue: previous.stage ? String(previous.stage) : "",
             toValue: lead.stage,
-            actor: "user"
+            actor: "user",
           });
-
-          if (lead.stage === "SEQUENCE ACTIVE") {
-            recordLeadOutcome(lead.id, "sequenced" as any, "");
-          } else if (lead.stage === "REPLIED") {
-            recordLeadOutcome(lead.id, "replied" as any, "");
-          } else if (lead.stage === "MEETING BOOKED") {
-            recordLeadOutcome(lead.id, "meeting_booked" as any, "");
-          } else if (lead.stage === "CONVERTED") {
-            recordLeadOutcome(lead.id, "converted" as any, "");
-          } else if (lead.stage === "LOST") {
-            recordLeadOutcome(lead.id, "lost" as any, "");
-          }
         }
+        const { outcome } = classifyLeadTransition(previous, lead);
+        if (outcome) {
+          recordLeadOutcome(lead.id, outcome.type, outcome.detail, lead.discoveryScopeKey);
+        }
+      } catch (err) {
+        console.warn("[leads-bulk] Failed to record transition feedback:", err);
       }
     }
 
@@ -874,19 +910,20 @@ router.get("/llm-health", async (req, res) => {
     });
   }
 
-  // If not forced and we have healthy status, report from providerHealthState directly
-  // when primary provider is busy to avoid consuming provider slots during active sessions
-  const primaryConfigured = configuredProviders.find(
+  // Never spend a live probe on a provider slot a mining session may need: when ANY configured
+  // primary (Atria / Byesu) is busy, report from tracked provider health instead.
+  const configuredPrimaries = configuredProviders.filter(
     (p) => (p.id === "atria" || p.id === "primary") && p.configured,
   );
-  const isSlotAvailable = primaryConfigured ? isProviderSlotFree(primaryConfigured.id) : false;
+  const busyPrimary = configuredPrimaries.find((p) => !isProviderSlotFree(p.id));
+  const primaryConfigured = busyPrimary || configuredPrimaries[0];
 
-  if (!force && primaryConfigured && !isSlotAvailable) {
+  if (!force && busyPrimary && primaryConfigured) {
     return res.json({
       mode: "direct-fallback",
       provider: primaryConfigured.name,
       model: primaryConfigured.model,
-      ok: healthSummaries[primaryConfigured.id]?.status !== "out",
+      ok: configuredPrimaries.some((p) => healthSummaries[p.id]?.status !== "out"),
       cached: false,
       configuredProviders,
       healthSummaries,
@@ -895,9 +932,12 @@ router.get("/llm-health", async (req, res) => {
   }
 
   try {
+    // healthProbe: report status only - the probe must not move provider health (cooldowns,
+    // OUT) or reach the failsafe tier. The timeout is a request to be quick; reasoning
+    // providers apply their own minimum, so this stays a bounded, one-off call.
     const response = await openAIText("Reply with exactly ok", undefined, {
-      timeoutMs: 5000,
-      metadata: { isInteractive: true, priority: "high" },
+      timeoutMs: 8000,
+      metadata: { healthProbe: true },
     });
     const isOk = response.text.trim().toLowerCase().includes("ok");
     const result: Record<string, any> = {
@@ -914,13 +954,28 @@ router.get("/llm-health", async (req, res) => {
     res.json({ ...result, configuredProviders, healthSummaries: getProviderHealthSummaries() });
   } catch (error: any) {
     _llmHealthCache = null; // Do not cache failures
+    const message = error?.message || String(error);
+    // A probe never queues: busy primaries reject immediately. That is "busy", not "down".
+    if (/busy or unavailable/i.test(message)) {
+      return res.json({
+        mode: "direct-fallback",
+        ok: configuredPrimaries.some(
+          (p) => getProviderHealthSummaries()[p.id]?.status !== "out",
+        ),
+        busy: true,
+        cached: false,
+        configuredProviders,
+        healthSummaries: getProviderHealthSummaries(),
+        note: "Providers are busy with other requests; reported from tracked provider health.",
+      });
+    }
     res.json({
       mode: "direct-fallback",
       configuredProviders,
       healthSummaries: getProviderHealthSummaries(),
       ok: false,
       cached: false,
-      error: error.message || String(error),
+      error: message,
     });
   }
 });
@@ -940,7 +995,7 @@ router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promi
         .status(503)
         .json({
           error:
-            "OPENAI_API_KEY is not configured. Add it to your .env file to enable real scraping.",
+            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable real scraping.",
         });
     }
 
@@ -969,7 +1024,6 @@ router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promi
     const structurePrompt = `You are a CRM data extraction engine. Convert the following raw professional profile research into a structured JSON object.
 
 If a field is not found in the research, use an empty string - do NOT invent data.
-For the fitScore, intentScore, and timingScore: score 1-10 based on how much signal exists.
 
 Raw research data:
 ${rawText}`;
@@ -978,6 +1032,7 @@ ${rawText}`;
       structurePrompt,
       singleProfileSchema,
       APEX_SYSTEM_PROMPT,
+      { signal: abortController.signal },
     );
 
     if (!profile || !profile.fullName) {
@@ -1027,7 +1082,7 @@ router.post("/scrape-pasted", paidRouteLimit("scrape-pasted"), async (req, res):
         .status(503)
         .json({
           error:
-            "OPENAI_API_KEY is not configured. Add it to your .env file to enable AI extraction.",
+            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable AI extraction.",
         });
     }
 
@@ -1038,7 +1093,6 @@ router.post("/scrape-pasted", paidRouteLimit("scrape-pasted"), async (req, res):
 Extract every piece of professional information you can find and map it to the JSON schema.
 Do NOT invent any data - only use what is present in the text below.
 For email: if not explicitly stated, infer the most likely format based on name + company (label as INFERRED).
-For fitScore / intentScore / timingScore: score 1-10 based on signals in the text.
 
 Pasted text:
 ${pastedText}`;
@@ -1509,7 +1563,7 @@ router.post(
         .json({ error: `Session is already active: ${sessionId}`, sessionId });
     }
 
-    const maxConcurrent = Number(process.env.APEX_MAX_CONCURRENT_SESSIONS) || 1;
+    const maxConcurrent = resolveMaxConcurrentSessions();
     if (discoveryEngine.getActiveSessionIds().length >= maxConcurrent) {
       return res
         .status(429)
@@ -1692,14 +1746,18 @@ router.post("/lead-search/preview", paidRouteLimit("lead-search-preview"), async
     spec = buildFallbackSearchSpec(query, requestedMode);
     if (hasOpenAIKey()) {
       try {
-        spec = normalizeSearchSpec(
-          await openAIStructured(
-            buildSearchSpecPrompt(query),
-            searchSpecSchema,
-            STRATEGIST_SYSTEM_PROMPT,
-            { maxTokens: 700, temperature: 0 },
+        // The user's explicit mode choice wins over whatever mode the model picked.
+        spec = applyRequestedDiscoveryMode(
+          normalizeSearchSpec(
+            await openAIStructured(
+              buildSearchSpecPrompt(query),
+              searchSpecSchema,
+              STRATEGIST_SYSTEM_PROMPT,
+              { maxTokens: 700, temperature: 0 },
+            ),
+            query,
           ),
-          query,
+          requestedMode,
         );
       } catch {
         // A deterministic preview still lets the user edit and run a search when LLM planning is unavailable.
@@ -1860,13 +1918,7 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
   // Bound concurrent discovery runs. Every session drives paid Tavily / Bright Data / LLM
   // work, and distinct sessionIds previously allowed an unbounded number of parallel
   // pipelines. Reject with 503 (retryable) rather than queueing, so callers fail fast.
-  const maxConcurrentSessions = Math.min(
-    Math.max(
-      Number(process.env.APEX_MAX_CONCURRENT_SESSIONS || 2) || 2,
-      1,
-    ),
-    8,
-  );
+  const maxConcurrentSessions = resolveMaxConcurrentSessions();
   if (
     !discoveryEngine.isActive(targetSessionId) &&
     discoveryEngine.getActiveCount() >= maxConcurrentSessions
@@ -1904,10 +1956,6 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         deltaBrief:
           typeof req.body?.deltaBrief === "string"
             ? req.body.deltaBrief.trim() || undefined
-            : undefined,
-        interactive:
-          typeof req.body?.interactive === "boolean"
-            ? req.body.interactive
             : undefined,
       })
       .catch((err) => {
@@ -1951,10 +1999,6 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
       deltaBrief:
         typeof req.body?.deltaBrief === "string"
           ? req.body.deltaBrief.trim() || undefined
-          : undefined,
-      interactive:
-        typeof req.body?.interactive === "boolean"
-          ? req.body.interactive
           : undefined,
     });
     return res.status(200).json(result);
@@ -2194,7 +2238,7 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
         .status(503)
         .json({
           error:
-            "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY to your .env file to enable AI outreach generation.",
+            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable AI outreach generation.",
         });
     }
 
@@ -2303,7 +2347,7 @@ router.post("/chat", paidRouteLimit("chat"), async (req, res): Promise<any> => {
         .status(503)
         .json({
           error:
-            "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY to your .env file to enable the AI Copilot.",
+            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable the AI Copilot.",
         });
     }
 

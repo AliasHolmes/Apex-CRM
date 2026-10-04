@@ -12,8 +12,9 @@ test('keeps the configured priority unless fast providers are named', () => {
   assert.equal(ids(orderProvidersForTier(chain, undefined, ['groq'])), 'atria,primary,openrouter,groq');
 });
 
-test('moves named fast providers first in the given order, rest stable', () => {
-  assert.equal(ids(orderProvidersForTier(chain, 'fast', ['groq', 'openrouter'])), 'groq,openrouter,atria,primary');
+test('moves named fast providers first within their tier, never ahead of the primary pair', () => {
+  assert.equal(ids(orderProvidersForTier(chain, 'fast', ['groq', 'openrouter'])), 'atria,primary,groq,openrouter');
+  assert.equal(ids(orderProvidersForTier(chain, 'fast', ['primary'])), 'primary,atria,openrouter,groq');
   assert.equal(ids(orderProvidersForTier(chain, 'fast', ['unknown'])), 'atria,primary,openrouter,groq');
   assert.deepEqual(parseFastProviderIds(' Groq, openrouter ,,'), ['groq', 'openrouter']);
 });
@@ -33,8 +34,9 @@ test('describes the fast route from the environment', () => {
     process.env.OPENAI_MODEL = 'gpt-5.5';
     process.env.GROQ_API_KEY = 'k2';
     assert.deepEqual(describeLLMRoute('fast'), { providerId: 'primary', reasoning: true, outputTokenCap: Number.POSITIVE_INFINITY });
+    // Policy: naming a failsafe provider "fast" cannot route ahead of a healthy primary.
     process.env.LLM_FAST_PROVIDER_IDS = 'groq';
-    assert.deepEqual(describeLLMRoute('fast'), { providerId: 'groq', reasoning: false, outputTokenCap: 950 });
+    assert.deepEqual(describeLLMRoute('fast'), { providerId: 'primary', reasoning: true, outputTokenCap: Number.POSITIVE_INFINITY });
   } finally {
     for (const [k, v] of Object.entries(snapshot)) {
       if (v === undefined) delete process.env[k];

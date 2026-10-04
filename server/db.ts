@@ -2264,6 +2264,9 @@ export function upsertLeadInExistingTransaction(
   }
 
   const identityKeys = buildLeadIdentityKeys(lead);
+  // name_company keys owned by a different person (conflicting LinkedIn identity). The
+  // incoming lead is not a duplicate of that owner, and must not take the key from it.
+  const keysOwnedByOtherPerson = new Set<string>();
   for (const identityKey of identityKeys) {
     const identity = getCachedStatement(
       db,
@@ -2285,6 +2288,7 @@ export function upsertLeadInExistingTransaction(
             canonicalLead?.profile?.contactDetails?.linkedinUrl || canonicalLead?.contactDetails?.linkedinUrl || canonicalLead?.linkedinUrl || canonicalLead?.sourceUrl || canonicalLead?.url
           );
           if (incomingLinkedIn && existingLinkedIn && incomingLinkedIn !== existingLinkedIn) {
+            keysOwnedByOtherPerson.add(identityKey);
             continue; // Different people at the same company with the same name
           }
         }
@@ -2401,6 +2405,18 @@ export function upsertLeadInExistingTransaction(
       `DELETE FROM lead_identities WHERE lead_id = ? AND identity_key NOT IN (${placeholders})`,
     ).run(storedLead.id, ...storedKeys);
     for (const key of storedKeys) {
+      if (keysOwnedByOtherPerson.has(key)) {
+        // Keep the existing owner; record the key for this lead only if it is free.
+        getCachedStatement(
+          db,
+          `
+          INSERT INTO lead_identities (identity_key, lead_id, created_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(identity_key) DO NOTHING
+        `,
+        ).run(key, storedLead.id, now);
+        continue;
+      }
       getCachedStatement(
         db,
         `
@@ -2469,6 +2485,8 @@ export function deleteLeadInExistingTransaction(
   db: DatabaseSync,
   id: string,
 ): void {
+  // lead_outcomes rows are intentionally retained: they are scope-level learning signal
+  // (a rejected-then-deleted prospect should still teach the scheduler), not lead data.
   getCachedStatement(
     db,
     "DELETE FROM lead_activities WHERE lead_id = ?",
@@ -2494,7 +2512,9 @@ export function deleteLeadInExistingTransaction(
 
 export function deleteLead(id: string) {
   const db = getLeadsDb();
-  const shouldManageTransaction = !(db as any).inTransaction;
+  // node:sqlite exposes `isTransaction` (`inTransaction` is the better-sqlite3 spelling and
+  // is always undefined here, which made every call attempt a nested BEGIN).
+  const shouldManageTransaction = !db.isTransaction;
   let startedTransaction = false;
   if (shouldManageTransaction) {
     try {
@@ -3546,6 +3566,13 @@ export function upsertNegativeEnrichmentCacheEntry(
   );
 }
 
+/** Resumable checkpoints older than this many days (default 30) are cleared. */
+function resumableCheckpointCutoffIso(): string {
+  const configured = Number(process.env.MINING_CHECKPOINT_RETENTION_DAYS);
+  const days = Number.isFinite(configured) && configured > 0 ? configured : 30;
+  return new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+}
+
 export function insertSearchLog(log: any) {
   try {
     const db = getLeadsDb();
@@ -3632,12 +3659,15 @@ export function insertSearchLog(log: any) {
     `,
     ).run(retentionLimit);
 
+    // Finished sessions follow the search-log retention count. Resumable sessions
+    // (interrupted/error/cancelled, see readResumableMiningSessions) keep their checkpoint
+    // until the user resumes or deletes them, or until it ages past the resume horizon.
     getCachedStatement(
       db,
       `
       UPDATE mining_sessions
       SET checkpoint_json = NULL
-      WHERE status IN ('success', 'error', 'cancelled')
+      WHERE status IN ('success', 'partial_success')
         AND checkpoint_json IS NOT NULL
         AND id NOT IN (
           SELECT id FROM mining_sessions
@@ -3646,6 +3676,17 @@ export function insertSearchLog(log: any) {
         )
     `,
     ).run(retentionLimit);
+
+    getCachedStatement(
+      db,
+      `
+      UPDATE mining_sessions
+      SET checkpoint_json = NULL
+      WHERE status IN ('interrupted', 'error', 'cancelled')
+        AND checkpoint_json IS NOT NULL
+        AND updated_at < ?
+    `,
+    ).run(resumableCheckpointCutoffIso());
   } catch (err) {
     console.error("Failed to write search log to DB:", err);
   }
@@ -4559,6 +4600,7 @@ export type MiningSessionStatus =
   | "running"
   | "cancellation_requested"
   | "success"
+  | "partial_success"
   | "error"
   | "cancelled"
   | "interrupted";
@@ -4591,6 +4633,15 @@ export type MiningSessionCheckpoint = {
   datasetSearchAfter?: any[];
   /** Capped seen-key snapshot so resumed rounds skip already-rejected profiles. */
   seenCandidateKeys?: string[];
+  /** Request-scoped inputs (saved search, exclusions, mode) replayed when the session resumes. */
+  requestContext?: {
+    savedSearchId?: string;
+    excludeList?: string[];
+    discoveryMode?: string;
+    discoveryProviderMode?: string;
+    parentSessionId?: string;
+    deltaBrief?: string;
+  };
   updatedAt: string;
 };
 
@@ -4960,8 +5011,13 @@ export function readMiningSessionCheckpoint(
 
 export function upsertMiningSession(
   update: Pick<MiningSessionRecord, "id"> &
-    Partial<Omit<MiningSessionRecord, "id" | "updatedAt">> & {
+    Partial<
+      Omit<MiningSessionRecord, "id" | "updatedAt" | "completedAt" | "errorMessage">
+    > & {
       updatedAt?: string;
+      /** `null` clears the stored value (a resumed session is no longer completed/failed). */
+      completedAt?: string | null;
+      errorMessage?: string | null;
     },
 ) {
   const db = getLeadsDb();
@@ -4975,10 +5031,16 @@ export function upsertMiningSession(
       update.requestedLimit ?? existing?.requestedLimit ?? 0,
     ),
     startedAt: update.startedAt ?? existing?.startedAt ?? now,
-    completedAt: update.completedAt ?? existing?.completedAt,
+    completedAt:
+      update.completedAt === null
+        ? undefined
+        : (update.completedAt ?? existing?.completedAt),
     cancellationRequestedAt:
       update.cancellationRequestedAt ?? existing?.cancellationRequestedAt,
-    errorMessage: update.errorMessage ?? existing?.errorMessage,
+    errorMessage:
+      update.errorMessage === null
+        ? undefined
+        : (update.errorMessage ?? existing?.errorMessage),
     stats: update.stats ?? existing?.stats,
     traceSummary: update.traceSummary ?? existing?.traceSummary,
     checkpoint: update.checkpoint ?? existing?.checkpoint,
@@ -5068,6 +5130,7 @@ export function reconcileOrphanedMiningSessions(reason?: string): number {
     error_message: string | null;
   }[];
 
+  const reconciledAt = new Date().toISOString();
   for (const row of rows) {
     let msg = reason || row.error_message || defaultMessage;
     if (!reason && row.checkpoint_json) {
@@ -5086,11 +5149,11 @@ export function reconcileOrphanedMiningSessions(reason?: string): number {
       UPDATE mining_sessions
       SET status = 'interrupted',
           error_message = ?,
-          completed_at = COALESCE(completed_at, datetime('now')),
-          updated_at = datetime('now')
+          completed_at = COALESCE(completed_at, ?),
+          updated_at = ?
       WHERE id = ?
     `,
-    ).run(msg, row.id);
+    ).run(msg, reconciledAt, reconciledAt, row.id);
   }
 
   return rows.length;

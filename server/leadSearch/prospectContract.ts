@@ -1515,11 +1515,20 @@ export function normalizeProspectContract(
     }
   }
   const normalizedRequirements = dedupedNormalized;
+  // A bare employer brand in the exclusions is almost always a model reflex (every agency
+  // brief got "Google, Meta, ..."), and a bare brand also matches unrelated text. Drop it
+  // unless the user actually named that brand in their brief.
   const BARE_BRAND_NAMES = new Set(['microsoft', 'google', 'meta', 'apple', 'amazon', 'openai', 'deepmind']);
+  const briefLower = String(brief || '').toLowerCase();
+  // Brands are plain words, so no regex escaping is needed.
+  const brandNamedByUser = (brand: string) => new RegExp(`\\b${brand}\\b`).test(briefLower);
   const exclusions = unique([
     ...(Array.isArray(raw.exclusions) ? raw.exclusions : []),
     ...fallback.exclusions
-  ].filter(e => !BARE_BRAND_NAMES.has(String(e).trim().toLowerCase())), 30);
+  ].filter(e => {
+    const name = String(e).trim().toLowerCase();
+    return !BARE_BRAND_NAMES.has(name) || brandNamedByUser(name);
+  }), 30);
   const initial = Array.isArray(raw.initialQueries) ? raw.initialQueries : [];
   const initialQueries = enforceContractQueries(initial, {
     ...fallback,

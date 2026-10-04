@@ -26,6 +26,42 @@ import type { QueryRunStats } from "../strategist.js";
 import type { SearchSpec } from "../searchSpec.js";
 import { isAuthorityRelevant } from "../prospectContract.js";
 
+// Hosts that say nothing about which company a person works for.
+const NON_ANCHOR_HOSTS =
+  /(^|\.)(facebook|instagram|twitter|x|youtube|tiktok|reddit|pinterest|medium|quora|wikipedia|google|bing|yahoo|duckduckgo)\.[a-z.]+$/i;
+
+/**
+ * Whether a candidate carries something to anchor its identity to: a LinkedIn profile, a
+ * company website/domain, or a source page hosted on its own company site. Used to drop leads
+ * that are just a name scraped from a social/search page before they cost an attribution call.
+ */
+export function hasIdentityAnchor(lead: any): boolean {
+  if (!lead) return false;
+  if (
+    lead.contactDetails?.linkedinUrl ||
+    /linkedin\.com\/in\/[^/?#]+/i.test(String(lead.sourceUrl || ""))
+  ) {
+    return true;
+  }
+  if (
+    lead.contactDetails?.website ||
+    lead.companyDomain ||
+    lead.companyEntityResolution?.companyDomain ||
+    lead.profile?.contactDetails?.website
+  ) {
+    return true;
+  }
+  const source = String(lead.sourceUrl || "").trim();
+  if (!/^https?:\/\//i.test(source)) return false;
+  try {
+    const host = new URL(source).hostname.toLowerCase().replace(/^www\./, "");
+    if (!host || /(^|\.)linkedin\.com$/i.test(host)) return false;
+    return !NON_ANCHOR_HOSTS.test(host);
+  } catch {
+    return false;
+  }
+}
+
 export type PostFilterLead = {
   lead: any;
   evidenceMeta: EvidenceMeta;
@@ -160,18 +196,9 @@ export async function executeVerifyStage(
       continue;
     }
 
-    // P3: Deprioritize or drop non-LinkedIn leads before attribution unless accompanied by verified company domain
-    const hasLinkedIn = Boolean(
-      lead.contactDetails?.linkedinUrl ||
-      /linkedin\.com\/in\/[^/?#]+/i.test(lead.sourceUrl || "")
-    );
-    const hasCompanyDomain = Boolean(
-      lead.contactDetails?.website ||
-      lead.companyDomain ||
-      lead.companyEntityResolution?.companyDomain ||
-      lead.profile?.contactDetails?.website
-    );
-    if (!hasLinkedIn && !hasCompanyDomain) {
+    // P3: drop leads with no identity anchor (no LinkedIn profile, company site, or
+    // company-hosted source page) before they cost an attribution call.
+    if (!hasIdentityAnchor(lead)) {
       noteRejection("missing_identity", queryRun);
       continue;
     }

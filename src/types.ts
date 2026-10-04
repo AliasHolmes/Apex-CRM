@@ -334,7 +334,7 @@ export interface MiningTraceSummary {
   sessionId?: string;
   query?: string;
   requested?: number;
-  status?: 'running' | 'success' | 'error';
+  status?: 'running' | 'success' | 'error' | 'cancelled';
   startedAt?: string;
   endedAt?: string;
   durationMs?: number;
@@ -354,7 +354,7 @@ export interface SearchLog {
   timestamp: string;
   prompt: string;
   generatedQueries: string[];
-  status: 'success' | 'error' | 'running' | 'cancelled';
+  status: 'success' | 'partial_success' | 'error' | 'running' | 'cancelled';
   errorMessage?: string;
   rawResultsCount: number;
   leadsFound: number;
@@ -370,7 +370,7 @@ export interface SearchLog {
   schemaVersion?: number;
 }
 
-export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'error' | 'cancelled' | 'interrupted';
+export type MiningSessionStatus = 'running' | 'cancellation_requested' | 'success' | 'partial_success' | 'error' | 'cancelled' | 'interrupted';
 export type MiningPersistenceStatus = 'complete' | 'partial' | 'failed';
 
 export interface MiningSessionStats {

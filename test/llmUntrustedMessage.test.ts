@@ -67,6 +67,9 @@ describe('LLM failure classification ignores untrusted model text', () => {
   });
 
   it('still cascades to the next provider when malformed output contains "aborted"', async () => {
+    // Atria + Byesu: the in-pair partner is the "next provider" (the failsafe is reserved for
+    // when both primaries are out).
+    process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
 

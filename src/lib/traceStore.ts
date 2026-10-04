@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { MiningTraceEvent } from '@/types';
+import { isFinishedWithResults } from '@/lib/sessionStatus';
 
 export type MiningSessionLiveState = {
   sessionId: string;
@@ -189,7 +190,7 @@ class MiningTraceStore {
             logs: nextLogs,
             traceEvents: nextEvents,
             sessionMeta: data.session || state.sessionMeta,
-            status: status === 'success' ? 'completed' : status
+            status: isFinishedWithResults(status) ? 'completed' : status
           });
           this.notify();
         } catch {
@@ -218,7 +219,7 @@ class MiningTraceStore {
               const session = data?.session;
               const termStatus = session?.status;
               const finalStatus =
-                termStatus === 'success'
+                isFinishedWithResults(termStatus)
                   ? 'completed'
                   : termStatus === 'error'
                     ? 'error'

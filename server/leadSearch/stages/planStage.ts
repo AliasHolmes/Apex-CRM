@@ -41,6 +41,7 @@ import {
   buildScopeKey,
 } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
+import { resolveGeo } from "../queryUnderstanding.js";
 import { summarizeLLM } from "../telemetry.js";
 import { mineQueryRefinements } from "../collectionCapacity.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -523,13 +524,9 @@ export async function executePlanStage(
       }
     }
     if (!contractCountry) {
-      const briefLower = String(config.contract?.brief || config.promptQuery || "").toLowerCase();
-      for (const [cKey, cName] of Object.entries(COUNTRY_CANONICAL_MAP)) {
-        if (new RegExp(`\\b${cKey}\\b`, "i").test(briefLower)) {
-          contractCountry = cName;
-          break;
-        }
-      }
+      // Shared resolver: pronoun-colliding ISO codes ("help us", "contact me") never anchor geo.
+      contractCountry =
+        resolveGeo(String(config.contract?.brief || config.promptQuery || "")).countryAnchor || "";
     }
 
     const locations = rawLocations.map((loc) => {

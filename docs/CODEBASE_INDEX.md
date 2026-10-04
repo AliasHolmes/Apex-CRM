@@ -91,7 +91,7 @@ server/leadSearch/           the discovery engine
   companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard) ·
   signalStore.ts · telemetry.ts · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts · profileEnrichment.ts · rejections.ts ·
-  roundDiagnostics.ts · scoutScoring.ts · targetFulfillment.ts · verification.ts ·
+  roundDiagnostics.ts · scoutScoring.ts · verification.ts ·
   evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware)
   stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate) ·
                              retrieve (retrieval cache + vagueness-aware depth + rewriter on both paths) ·

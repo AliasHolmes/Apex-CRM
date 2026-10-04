@@ -147,8 +147,8 @@ describe("Queue Invariants & Abort Mechanics", () => {
         );
       };
 
-      const res = await openAIText("prompt");
-      assert.equal(res.text, "fallback-ok");
+      // A rate-limited primary is not "out", so the failsafe is not used; the 429 is returned.
+      await assert.rejects(() => openAIText("prompt"), /429/);
       // With LLM_MAX_RETRIES=1, attempt 0 and attempt 1 (total 2 attempts), NOT 3 attempts!
       assert.equal(primaryAttempts, 2);
     } finally {

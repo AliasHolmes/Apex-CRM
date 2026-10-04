@@ -144,6 +144,7 @@ export async function executeSelectStage(
       concurrency: postIntentConcurrency, // concurrent SERP retrieval; Phase B LLM batching remains sequential
       ttlDays,
       sessionAbortSignal: state.abortController.signal,
+      sessionId: config.sessionId,
       logEvent,
       recordTrace
     });

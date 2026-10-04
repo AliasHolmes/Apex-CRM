@@ -57,9 +57,13 @@ export type LinkedInPostIntentOptions = {
   concurrency?: number;
   ttlDays?: number;
   sessionAbortSignal?: AbortSignal;
+  sessionId?: string;
   logEvent: (msg: string) => void;
   recordTrace: (event: any) => void;
 };
+
+/** Session context threaded into post-intent LLM calls (routing policy + cancellation). */
+export type PostIntentLLMContext = { sessionId?: string; signal?: AbortSignal };
 
 export const postIntentSchema = {
   type: Type.OBJECT,
@@ -219,6 +223,7 @@ export async function classifyLinkedInPostIntent(
   lead: Record<string, any>,
   logEvent?: (msg: string) => void,
   recordTrace?: (event: any) => void,
+  llmContext?: PostIntentLLMContext,
 ): Promise<{ intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }> {
   if (!postContext || postContext.trim().length < 50) {
     return {
@@ -254,8 +259,10 @@ Analyze the snippets and classify the prospect's intent:`;
     }>(userPrompt, postIntentSchema, POST_INTENT_SYSTEM_PROMPT, {
       maxTokens: Math.max(600, Math.ceil(userPrompt.length / 3)),
       temperature: 0,
+      signal: llmContext?.signal,
       metadata: {
         stage: 'post_intent',
+        sessionId: llmContext?.sessionId,
         candidateCount: 1,
         promptSize: userPrompt.length,
       },
@@ -337,13 +344,14 @@ export async function classifyLinkedInPostIntentBatch(
   brief: string,
   logEvent?: (msg: string) => void,
   recordTrace?: (event: any) => void,
+  llmContext?: PostIntentLLMContext,
 ): Promise<Map<string, { intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }>> {
   const resultMap = new Map<string, { intentCategory: PostIntentCategory; confidenceScore: number; keywords: string[]; reason: string; quality: PostIntentQuality }>();
   if (!candidates.length) return resultMap;
 
   if (candidates.length === 1) {
     const single = candidates[0];
-    const res = await classifyLinkedInPostIntent(single.postContext, brief, single.lead, logEvent, recordTrace);
+    const res = await classifyLinkedInPostIntent(single.postContext, brief, single.lead, logEvent, recordTrace, llmContext);
     resultMap.set(single.candidateId, res);
     return resultMap;
   }
@@ -379,8 +387,10 @@ ${promptSections}`;
     }>(userPrompt, postIntentBatchSchema, POST_INTENT_BATCH_SYSTEM_PROMPT, {
       maxTokens: Math.max(800, candidates.length * 400),
       temperature: 0,
+      signal: llmContext?.signal,
       metadata: {
         stage: 'post_intent',
+        sessionId: llmContext?.sessionId,
         candidateCount: candidates.length,
         promptSize: userPrompt.length,
       },
@@ -411,7 +421,7 @@ ${promptSections}`;
 
     for (const c of candidates) {
       if (!resultMap.has(c.candidateId)) {
-        const fallbackRes = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace);
+        const fallbackRes = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace, llmContext);
         resultMap.set(c.candidateId, fallbackRes);
       }
     }
@@ -451,7 +461,7 @@ ${promptSections}`;
       `[LLM WARN] LinkedIn Post Intent batch classification failed (${Date.now() - startedAt}ms), falling back to individual calls: ${err.message || String(err)}`,
     );
     for (const c of candidates) {
-      const single = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace);
+      const single = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace, llmContext);
       resultMap.set(c.candidateId, single);
     }
     return resultMap;
@@ -755,7 +765,8 @@ export async function runLinkedInPostIntentEnrichment(
         candidateInputs,
         contract.brief,
         logEvent,
-        recordTrace
+        recordTrace,
+        { sessionId: options.sessionId, signal: options.sessionAbortSignal },
       );
 
       for (let j = 0; j < batch.length; j++) {

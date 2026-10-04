@@ -111,12 +111,18 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    for (let call = 0; call < 3; call++) {
-      await llm.openAIText('test prompt', undefined, { circuitBreaker: breaker });
+    // Policy: one availability failure is returned to the caller, never escalated.
+    await assert.rejects(() => llm.openAIText('test prompt', undefined, { circuitBreaker: breaker }), /504/);
+    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 0);
+
+    // Second failure reaches the threshold: Byesu is OUT, so the failsafe serves this call and the next.
+    for (let call = 0; call < 2; call++) {
+      const res = await llm.openAIText('test prompt', undefined, { circuitBreaker: breaker });
+      assert.equal(res.text, 'fallback ok');
     }
 
     assert.equal(calls.filter(url => url.startsWith('https://byesu.com/')).length, 2);
-    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 3);
+    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 2);
     assert.equal(breaker.disabledProviderIds.has('primary'), true);
   });
 
@@ -141,12 +147,13 @@ describe('LLM gateway and provider fallback', () => {
     };
 
     for (let call = 0; call < 3; call++) {
-      await llm.openAIText('test prompt', undefined, { circuitBreaker: breaker });
+      await assert.rejects(() => llm.openAIText('test prompt', undefined, { circuitBreaker: breaker }), /429/);
     }
 
-    // All 3 calls attempted primary first because 429 does not trip the breaker
+    // All 3 calls attempted primary because 429 does not trip the breaker; a rate-limited
+    // primary is not "out", so the failsafe is never used.
     assert.equal(calls.filter(url => url.startsWith('https://byesu.com/')).length, 3);
-    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 3);
+    assert.equal(calls.filter(url => url.startsWith('https://openrouter.ai/')).length, 0);
     assert.equal(breaker.disabledProviderIds.has('primary'), false);
   });
 
@@ -186,7 +193,7 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls, 2);
   });
 
-  it('falls back directly to OpenRouter when the primary provider fails', async () => {
+  it('falls back directly to OpenRouter when the primary provider is out', async () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.OPENROUTER_MODEL = 'openrouter-test-model';
@@ -204,7 +211,8 @@ describe('LLM gateway and provider fallback', () => {
       });
 
       if (calls.length === 1) {
-        return new Response('primary unavailable', { status: 503 });
+        // Auth failure marks the only primary OUT, which is what unlocks the failsafe.
+        return new Response('invalid api key', { status: 401 });
       }
 
       return new Response(JSON.stringify({
@@ -223,7 +231,7 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(calls[1].body.model, 'openrouter-test-model');
   });
 
-  it('falls back to OpenRouter after primary and Groq fail', async () => {
+  it('falls back to OpenRouter after the primary is out and Groq fails', async () => {
     process.env.BYESU_API_KEY = 'test-byesu-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
@@ -240,7 +248,10 @@ describe('LLM gateway and provider fallback', () => {
         auth: options.headers['Authorization'],
       });
 
-      if (calls.length < 3) {
+      if (calls.length === 1) {
+        return new Response('invalid api key', { status: 401 });
+      }
+      if (calls.length === 2) {
         return new Response('provider unavailable', { status: 429 });
       }
 
@@ -276,8 +287,11 @@ describe('LLM gateway and provider fallback', () => {
         body: JSON.parse(options.body),
       });
 
-      if (calls.length <= 2) {
-        return new Response('primary unavailable', { status: 503 });
+      if (calls.length === 1) {
+        return new Response('invalid api key', { status: 401 });
+      }
+      if (calls.length === 2) {
+        return new Response('groq unavailable', { status: 503 });
       }
 
       return new Response(JSON.stringify({
@@ -406,11 +420,11 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    // Call 1: Primary fails (count = 1), falls back to OpenRouter
-    const res1 = await llm.openAIText('prompt 1', undefined, { circuitBreaker });
-    assert.equal(res1.text, 'openrouter ok');
+    // Call 1: Primary fails (count = 1); the error is returned, the failsafe is not used
+    await assert.rejects(() => llm.openAIText('prompt 1', undefined, { circuitBreaker }), /500/);
+    assert.equal(calls.some((u) => u.includes('openrouter.ai')), false);
 
-    // Call 2: Primary fails (count = 2 -> trips breaker!), falls back to OpenRouter
+    // Call 2: Primary fails (count = 2 -> trips breaker!); Byesu is OUT, so OpenRouter serves it
     const res2 = await llm.openAIText('prompt 2', undefined, { circuitBreaker });
     assert.equal(res2.text, 'openrouter ok');
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), true);
@@ -491,9 +505,8 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    const res = await llm.openAIText('test prompt', undefined, { circuitBreaker });
-    assert.equal(res.text, 'openrouter recovered');
-    // Primary provider was placed on cooldown, NOT permanently disabled by circuit breaker on single failure
+    await assert.rejects(() => llm.openAIText('test prompt', undefined, { circuitBreaker }), /524/);
+    // Primary provider was placed on cooldown, NOT disabled by the circuit breaker on a single failure
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
   });
 
@@ -518,16 +531,18 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    // First call: failureCount becomes 1, not disabled
-    await llm.openAIText('prompt 1', undefined, { circuitBreaker });
+    // First call: failureCount becomes 1, not disabled, error returned to the caller
+    await assert.rejects(() => llm.openAIText('prompt 1', undefined, { circuitBreaker }), /524/);
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
     assert.equal(circuitBreaker.failureCounts['primary'], 1);
 
     // Clear provider cooldown so we can simulate the second call happening after cooldown expires
     llm.clearProviderCooldowns();
 
-    // Second call: failureCount becomes 2 >= threshold (2), trips breaker!
-    await llm.openAIText('prompt 2', undefined, { circuitBreaker });
+    // Second call: failureCount becomes 2 >= threshold (2), trips breaker; Byesu is now OUT,
+    // so the failsafe serves the call.
+    const res = await llm.openAIText('prompt 2', undefined, { circuitBreaker });
+    assert.equal(res.text, 'openrouter recovered');
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), true);
   });
 
@@ -591,8 +606,7 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    const res = await llm.openAIText('test prompt');
-    assert.equal(res.text, 'openrouter ok');
+    await assert.rejects(() => llm.openAIText('test prompt'), /timed out/);
     // Primary had LLM_MAX_RETRIES=2, but timeout broke immediately on attempt 1 without repeating
     assert.equal(primaryAttempts, 1);
   });
@@ -654,8 +668,7 @@ describe('LLM gateway and provider fallback', () => {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
 
-    const res = await llm.openAIText('test prompt', undefined, { circuitBreaker });
-    assert.equal(res.text, 'openrouter recovered');
+    await assert.rejects(() => llm.openAIText('test prompt', undefined, { circuitBreaker }), /429/);
     // Should NOT be permanently disabled by circuit breaker because it was not error code 1300
     assert.equal(circuitBreaker.disabledProviderIds.has('primary'), false);
   });

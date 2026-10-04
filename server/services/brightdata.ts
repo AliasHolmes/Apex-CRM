@@ -2056,6 +2056,8 @@ export function buildBrightDataSearchArguments(
 }
 
 let googleSerpChallengeCount = 0;
+// Sticky Bing fallback expires by itself after 15 minutes (see isStickyBingActive); a
+// successful Google result also clears it. There is deliberately no paid "probe" request.
 let stickyBingActiveSince = 0;
 const GOOGLE_CHALLENGE_STICKY_THRESHOLD = 2;
 
@@ -2071,22 +2073,6 @@ export function isStickyBingActive(): boolean {
       return false;
     }
     return true;
-  }
-  return false;
-}
-
-export async function attemptGoogleRecovery(): Promise<boolean> {
-  if (!isStickyBingActive()) return false;
-  if (Date.now() - stickyBingActiveSince < 10 * 60 * 1000) return false;
-  
-  try {
-    const results = await brightDataSearch("test", { engine: "google", forceEngine: true, timeoutMs: 8000 });
-    if (Array.isArray(results)) {
-       resetStickyBingFallback();
-       return true;
-    }
-  } catch(err) {
-    // Ignore
   }
   return false;
 }

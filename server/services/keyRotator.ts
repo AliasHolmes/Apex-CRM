@@ -100,7 +100,11 @@ const statusCodeFromError = (error: unknown) => {
   if (typeof anyError?.statusCode === 'number') return anyError.statusCode;
   if (typeof anyError?.status === 'number') return anyError.status;
   const message = error instanceof Error ? error.message : String(error);
-  const match = message.match(/\b(?:HTTP|status|error)\s*:?\s*(\d{3})\b/i) || message.match(/\b(4\d{2}|5\d{2})\b/);
+  // Prefer an explicit "HTTP/status/error NNN" label. The bare-number fallback must not read
+  // part of an address or port ("104.18.1.40:443"), a path or a larger number as a status.
+  const match =
+    message.match(/\b(?:HTTP|status|error)\s*:?\s*(\d{3})\b/i) ||
+    message.match(/(?<![\d.:/-])\b([45]\d{2})\b(?![.:/-]?\d)/);
   return match ? Number(match[1]) : undefined;
 };
 
@@ -158,7 +162,10 @@ export function classifyKeyRotationError(error: unknown): FailureClassification 
     statusCode === 401 ||
     statusCode === 402 ||
     statusCode === 403 ||
-    /\b(unauthorized|forbidden|invalid token|invalid api key|missing api[_ -]?token|insufficient credits?|out of credits?|quota exceeded|exceeded your quota|billing details?|payment required|insufficient balance|usage limit exceeded)\b/.test(lower)
+    // Tavily signals an exhausted plan / pay-as-you-go budget with 432 / 433.
+    statusCode === 432 ||
+    statusCode === 433 ||
+    /\b(unauthorized|forbidden|invalid token|invalid api key|missing api[_ -]?token|insufficient credits?|out of credits?|quota exceeded|exceeded your quota|billing details?|payment required|insufficient balance|usage limit exceeded|usage limit|plan limit|paygo limit|exceeds? your plan|exceeded your plan)\b/.test(lower)
   ) {
     return { kind: 'exhausted', statusCode, message };
   }

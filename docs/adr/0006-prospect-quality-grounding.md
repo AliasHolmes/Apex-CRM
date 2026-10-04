@@ -179,5 +179,6 @@ Status update on the follow-ups and the core loop, measured against the current 
   SSRF guard; `hostValidation.ts` is an HTTP `Host`-header parser (request validation),
   not a second SSRF implementation.
 - The ADR-0007 concurrency candidate is partially de-risked by stage-lane sharding
-  (`FEATURE_LLM_STAGE_QUEUES=true`), which is implemented but off by default.
+  (`FEATURE_LLM_STAGE_QUEUES=true`), which was implemented at the time and has since been
+  removed in favor of provider-affinity dual concurrency (ADR-0007).
 

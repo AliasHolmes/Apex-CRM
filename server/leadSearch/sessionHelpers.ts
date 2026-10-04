@@ -1,4 +1,5 @@
 import { extractLinkedInUsername, normalizeLinkedInUrl } from "../services/linkedinEvidence.js";
+import { canonicalLinkedInIdentity } from "../../src/utils/leadDedupe.js";
 import { getLeadScore, type EvidenceQuality, type LeadSourceProvider } from "./scoring.js";
 import { isFlagEnabled } from "./featureFlags.js";
 
@@ -289,4 +290,92 @@ export function evidenceQualityRank(quality?: string): number {
     default:
       return 1;
   }
+}
+
+/**
+ * Dedupe keys for the qualified-lead set. LinkedIn profiles are keyed by canonical identity
+ * (handle), so `https://www.linkedin.com/in/Jane-Doe/`, `linkedin.com/in/jane-doe?trk=x` and a
+ * scheme-less copy all collapse to one key. Raw URL strings used to be keyed verbatim, which let
+ * the same person qualify twice under different spellings.
+ */
+export function qualifiedLeadKeys(lead: any): string[] {
+  if (!lead) return [];
+  const keys: string[] = [];
+  if (lead.id) keys.push(`id:${lead.id}`);
+  const profileUrl =
+    lead.contactDetails?.linkedinUrl ||
+    lead.profile?.contactDetails?.linkedinUrl ||
+    lead.sourceUrl ||
+    "";
+  const canonical = profileUrl ? canonicalLinkedInIdentity(String(profileUrl)) : "";
+  if (canonical) keys.push(canonical);
+  else if (profileUrl) keys.push(`url:${normalizeDedupeValue(String(profileUrl))}`);
+  return keys;
+}
+
+/**
+ * Decides whether to spend one extra round chasing intent corroboration after the candidate
+ * target was already met. Corroboration must be rising versus the previous round: a flat count
+ * means another round is not converting, so the session stops with what it has.
+ */
+export function shouldRunExtraIntentRound(input: {
+  intentThresholdMet: boolean;
+  extraRoundsRun: number;
+  intentCorroboratedCount: number;
+  previousIntentCorroboratedCount: number;
+  round: number;
+  maxRounds: number;
+  acceptedCount: number;
+  candidateCeiling: number;
+}): boolean {
+  return (
+    !input.intentThresholdMet &&
+    input.extraRoundsRun < 1 &&
+    input.intentCorroboratedCount > input.previousIntentCorroboratedCount &&
+    input.round < input.maxRounds &&
+    input.acceptedCount < input.candidateCeiling
+  );
+}
+
+/** Request-scoped inputs a resumed session must replay to behave like the original run. */
+export type SessionRequestContext = {
+  savedSearchId?: string;
+  excludeList?: string[];
+  discoveryMode?: string;
+  discoveryProviderMode?: string;
+  parentSessionId?: string;
+  deltaBrief?: string;
+};
+
+const CHECKPOINT_EXCLUDE_LIST_CAP = 1_000;
+
+export function requestContextFromOptions(options: {
+  savedSearchId?: string;
+  excludeList?: unknown[];
+  discoveryMode?: string;
+  discoveryProviderMode?: string;
+  parentSessionId?: string;
+  deltaBrief?: string;
+}): SessionRequestContext {
+  const context: SessionRequestContext = {};
+  if (options.savedSearchId) context.savedSearchId = options.savedSearchId;
+  if (Array.isArray(options.excludeList)) {
+    // Capped so the checkpoint (rewritten every round) stays small; a saved search re-supplies
+    // its own full exclusion list from SQLite on resume.
+    const exclusions = options.excludeList
+      .filter((item): item is string => typeof item === "string")
+      .slice(0, CHECKPOINT_EXCLUDE_LIST_CAP);
+    if (exclusions.length > 0) context.excludeList = exclusions;
+  }
+  if (options.discoveryMode) context.discoveryMode = options.discoveryMode;
+  if (options.discoveryProviderMode) context.discoveryProviderMode = options.discoveryProviderMode;
+  if (options.parentSessionId) context.parentSessionId = options.parentSessionId;
+  if (options.deltaBrief) context.deltaBrief = options.deltaBrief;
+  return context;
+}
+
+export function resumeOptionsFromCheckpoint(checkpoint: {
+  requestContext?: SessionRequestContext;
+}): SessionRequestContext {
+  return { ...(checkpoint?.requestContext || {}) };
 }

@@ -17,6 +17,7 @@ import {
   getProspectContractCache,
   upsertProspectContractCache,
   readStoredCompanyDomains,
+  getSavedSearchExcludeList,
   getSearchCacheEntry,
   upsertSearchCacheEntry,
 } from "../db.js";
@@ -138,6 +139,10 @@ import {
   buildCheckpointEvidence,
   computeEarlyStopThreshold,
   clampEnvFloat,
+  qualifiedLeadKeys,
+  shouldRunExtraIntentRound,
+  requestContextFromOptions,
+  resumeOptionsFromCheckpoint,
 } from "./sessionHelpers.js";
 
 export interface DiscoveryRequest {
@@ -151,7 +156,6 @@ export interface DiscoveryRequest {
   savedSearchId?: string;
   parentSessionId?: string;
   deltaBrief?: string;
-  interactive?: boolean;
 }
 
 export interface DiscoveryEventListener {
@@ -288,8 +292,6 @@ export type ExecuteDiscoveryOptions = {
   /** Phase 5: multi-turn follow-ups. When set, deltaBrief is applied on top of the parent contract. */
   parentSessionId?: string;
   deltaBrief?: string;
-  /** Phase 1/5: when false (cron/API), run expander instead of needs_clarification abort. */
-  interactive?: boolean;
 };
 
 export async function executeDiscoverySession(
@@ -308,9 +310,10 @@ export async function executeDiscoverySession(
     cancelledSessions,
   } = options;
 
-  // Clear in-memory provider cooldowns when no other session is concurrently active
-  // so stale 24-hour quota bans or rate-limit cooldowns from previous sessions do not persist,
-  // without wiping active rate-limit backoff for an already-running session.
+  // Clear short in-memory cooldowns when no other session is concurrently active so a previous
+  // session's rate-limit backoff does not delay this one, without wiping the backoff of an
+  // already-running session. OUT states (auth failure / exhausted quota) are NOT cleared here:
+  // they expire on their own (LLM_AUTH_OUT_MS / LLM_QUOTA_OUT_MS) and are then re-tested.
   if (!activeSessions || activeSessions.size <= 1) {
     clearProviderCooldowns();
   }
@@ -366,13 +369,19 @@ export async function executeDiscoverySession(
     requestedLimit,
     new Date(startedAt).toISOString(),
   );
+  const isResumedRun = Boolean(options.initialCheckpoint);
   upsertMiningSession({
     id: sessionId,
     status: "running",
     prompt: promptQuery,
     requestedLimit,
-    startedAt: new Date(startedAt).toISOString(),
+    // A resume keeps the original start time and drops the previous run's end state, so a
+    // running session never shows a stale completedAt / errorMessage.
+    ...(isResumedRun
+      ? { completedAt: null, errorMessage: null }
+      : { startedAt: new Date(startedAt).toISOString() }),
   });
+  const checkpointRequestContext = requestContextFromOptions(options);
   activeSessionControllers.set(sessionId, sessionAbortController);
   // Store the recorder reference once (not per-event array copies) so live
   // trace consumers read the bounded internal buffer directly.
@@ -600,7 +609,7 @@ export async function executeDiscoverySession(
     if (!query) throw new Error("Search criteria/query is required");
     if (!hasOpenAIKey())
       throw new Error(
-        "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or GROQ_API_KEY to your .env file.",
+        "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file.",
       );
 
     const targetLimit = stats.requested;
@@ -1017,17 +1026,13 @@ export async function executeDiscoverySession(
     );
 
     const qualifiedLeads: any[] = [];
-    const qualifiedLeadKeys = new Set<string>();
+    const seenQualifiedKeys = new Set<string>();
 
     const tryAddQualifiedLead = (lead: any): boolean => {
       if (!lead) return false;
-      const idKey = lead.id ? `id:${lead.id}` : "";
-      const liUrl = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
-      const liKey = liUrl ? `url:${liUrl}` : "";
-      if (idKey && qualifiedLeadKeys.has(idKey)) return false;
-      if (liKey && qualifiedLeadKeys.has(liKey)) return false;
-      if (idKey) qualifiedLeadKeys.add(idKey);
-      if (liKey) qualifiedLeadKeys.add(liKey);
+      const keys = qualifiedLeadKeys(lead);
+      if (keys.some((key) => seenQualifiedKeys.has(key))) return false;
+      for (const key of keys) seenQualifiedKeys.add(key);
       qualifiedLeads.push(lead);
       return true;
     };
@@ -2057,6 +2062,7 @@ export async function executeDiscoverySession(
           targetLimit,
           contract,
           searchSpec,
+          requestContext: checkpointRequestContext,
           queryRuns: [],
           queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
           acceptedLeads: acceptedLeads.slice(0, 240),
@@ -2205,18 +2211,26 @@ export async function executeDiscoverySession(
           (roundEndEffectiveQualified >= targetLimit && uniqueCompanies >= minCompanyDiversity) ||
           (roundEndEffectiveQualified >= qualifiedTargetWithCushion);
 
+        // The baseline for "is corroboration rising?" must advance every round, not stay at 0.
+        const priorIntentCorroboratedCount = previousIntentCorroboratedCount;
+        previousIntentCorroboratedCount = intentCorroboratedCount;
+
         if (isTargetReached) {
-          const allowExtraIntentRound =
-            !intentThresholdMet &&
-            intentExtraRoundsRun < 1 &&
-            intentCorroboratedCount > previousIntentCorroboratedCount &&
-            round < maxRounds &&
-            acceptedLeads.length < collectionCapacity.candidateCeiling;
+          const allowExtraIntentRound = shouldRunExtraIntentRound({
+            intentThresholdMet,
+            extraRoundsRun: intentExtraRoundsRun,
+            intentCorroboratedCount,
+            previousIntentCorroboratedCount: priorIntentCorroboratedCount,
+            round,
+            maxRounds,
+            acceptedCount: acceptedLeads.length,
+            candidateCeiling: collectionCapacity.candidateCeiling,
+          });
 
           if (allowExtraIntentRound) {
             intentExtraRoundsRun++;
             logEvent(
-              `Round ${round}: Candidate target reached (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit}), attempting 1 extra round for intent recovery (${intentCorroboratedCount}/${requiredIntentCount} needed, rising from ${previousIntentCorroboratedCount}). Continuing to Round ${round + 1}.`,
+              `Round ${round}: Candidate target reached (${roundEndEffectiveQualified.toFixed(1)}/${targetLimit}), attempting 1 extra round for intent recovery (${intentCorroboratedCount}/${requiredIntentCount} needed, rising from ${priorIntentCorroboratedCount}). Continuing to Round ${round + 1}.`,
             );
             previousRoundSummary.shouldRecover = true;
             const intentReqIds = (contract.requirements || [])
@@ -2380,6 +2394,7 @@ export async function executeDiscoverySession(
       targetLimit,
       contract,
       searchSpec,
+      requestContext: checkpointRequestContext,
       queryRuns: [],
       queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
       acceptedLeads: acceptedLeads.slice(0, 240),
@@ -2497,7 +2512,7 @@ export async function executeDiscoverySession(
     const cancelled =
       error?.name === "AbortError" ||
       String(error?.message || "").includes("cancelled");
-    telemetry.finish("error", {
+    telemetry.finish(cancelled ? "cancelled" : "error", {
       ...stats,
       error: error.message || "Failed to locate leads.",
     });
@@ -2694,7 +2709,6 @@ export class DiscoverySessionEngine {
         savedSearchId: request.savedSearchId,
         parentSessionId: request.parentSessionId,
         deltaBrief: request.deltaBrief,
-        interactive: request.interactive,
         listener,
       });
     } catch (err) {
@@ -2736,21 +2750,50 @@ export class DiscoverySessionEngine {
     const sessionAbortController = new AbortController();
     this.activeSessionControllers.set(trimmedId, sessionAbortController);
 
-    return executeDiscoverySession({
-      sessionId: trimmedId,
-      promptQuery: checkpoint.promptQuery,
-      requestedLimit: checkpoint.targetLimit,
-      startedAt: Date.now(),
-      sessionAbortController,
-      activeSessions: this.activeSessions,
-      activeSessionLogTotals: this.activeSessionLogTotals,
-      activeSessionControllers: this.activeSessionControllers,
-      activeSessionEvents: this.activeSessionEvents,
-      cancelledSessions: this.cancelledSessions,
-      searchSpec: checkpoint.searchSpec,
-      initialCheckpoint: checkpoint,
-      listener,
-    });
+    // Replay the original request's context. Without it a resumed run loses its exclusions
+    // and never records itself against the saved search it belongs to.
+    const replay = resumeOptionsFromCheckpoint(checkpoint);
+    const savedSearchExclusions = replay.savedSearchId
+      ? getSavedSearchExcludeList(replay.savedSearchId)
+      : [];
+    const excludeList =
+      replay.excludeList || savedSearchExclusions.length > 0
+        ? Array.from(new Set([...(replay.excludeList || []), ...savedSearchExclusions])).slice(0, 5000)
+        : undefined;
+
+    try {
+      return await executeDiscoverySession({
+        sessionId: trimmedId,
+        promptQuery: checkpoint.promptQuery,
+        requestedLimit: checkpoint.targetLimit,
+        startedAt: Date.now(),
+        sessionAbortController,
+        activeSessions: this.activeSessions,
+        activeSessionLogTotals: this.activeSessionLogTotals,
+        activeSessionControllers: this.activeSessionControllers,
+        activeSessionEvents: this.activeSessionEvents,
+        cancelledSessions: this.cancelledSessions,
+        searchSpec: checkpoint.searchSpec,
+        initialCheckpoint: checkpoint,
+        discoveryMode: replay.discoveryMode as DiscoveryMode | undefined,
+        discoveryProviderMode: replay.discoveryProviderMode,
+        savedSearchId: replay.savedSearchId,
+        parentSessionId: replay.parentSessionId,
+        deltaBrief: replay.deltaBrief,
+        excludeList,
+        listener,
+      });
+    } catch (err) {
+      // executeDiscoverySession only cleans up once it is inside its own try block; an early
+      // throw (corrupt checkpoint, DB error) would otherwise leave this session claimed
+      // forever, blocking delete and any further resume until the process restarts.
+      this.activeSessions.delete(trimmedId);
+      this.activeSessionLogTotals.delete(trimmedId);
+      this.activeSessionControllers.delete(trimmedId);
+      this.activeSessionEvents.delete(trimmedId);
+      this.cancelledSessions.delete(trimmedId);
+      throw err;
+    }
   }
 }
 

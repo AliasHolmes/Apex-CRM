@@ -142,7 +142,7 @@ flowchart TD
 - **Upstream CRM Feedback, JSON Metro Saturation & Cross-Session Company Seeding**: Reads existing company domains, metro saturation counts (including SQLite JSON `$.profile.location` and `$.profile.city`), and cross-session `discovered_companies` (`readDiscoveredCompanyNames(25)`). Passes known domains directly into Tavily's `exclude_domains` parameter and directs the query strategist to pivot away from saturated hubs ($\ge 15$ leads) with negative search operators.
 - **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles. Acronyms (`MD`, `VP`, `CTO`, `CRO`) are expanded before matching.
 - **Pre-Judge Context Grounding**: Executes a lightweight, non-LLM site probe (~250ms) to fetch the root `<meta name="description">` or `<title>` for ambiguous accounts, appending verified business context before semantic evaluation.
-- **Strict Sequential LLM Invariant**: All LLM calls are serialized via `withSequentialLLMExecution` by default, eliminating concurrency errors, rate-limit storms, and gateway timeouts. Stage-lane sharding (`FEATURE_LLM_STAGE_QUEUES=true`) allows bounded concurrency with per-provider backoff preserved.
+- **Provider-Affinity Dual Concurrency**: Atria and Byesu form the primary pair and each serves exactly one request at a time, in parallel (Atria preferred whenever its slot is free; `ATRIA_CONCURRENT_SLOTS` / `BYESU_CONCURRENT_SLOTS`). Groq and OpenRouter/Mistral are a failsafe tier used only when both primaries are out. The older global single-mutex queue and stage-lane sharding (`FEATURE_LLM_STAGE_QUEUES`) no longer exist; see ADR-0007.
 - **Contract-Aware Calibrated Judging**: `rankLeadForFinalSelection` weights hard-requirement coverage (`1.2x` spread) with active soft-signal boost (`0.4x`); evidence quote checks are symmetrically alias-aware (`MD` <-> `managing director`, `US` <-> `United States`).
 - **Quantized Adaptive Controller & Constraint Retention**: MAB priors pool by 24 deterministic brief centroids (`centroid_<cluster>_<00-23>`) with `historicalYield` keyed by `domain_cluster|family|lane|provider` and ` seedAdaptiveRandom` deterministic test support; `contract_guard` tasks are preserved above the `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **CRM Workflow Preservation & Persistence Status Fidelity**: Same-identity engine upserts refresh objective profile and score attributes while preserving human-managed `stage`, `reviewStatus`, `nextAction`, and `notes` unless `forceOverwrite: true` is passed. Session and search-log statuses (`success | partial_success | error`) are derived from actual persistence counts rather than hardcoded.
@@ -174,7 +174,7 @@ flowchart TD
 ```mermaid
 graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
-    API --> DB[("SQLite Database (node:sqlite, Schema v23, WAL mode)")]
+    API --> DB[("SQLite Database (node:sqlite, Schema v26, WAL mode)")]
 
     API --> Direct["Direct OpenAI-Compatible Provider Chain"]
     Direct --> Primary["Atria / Byesu Provider"]
@@ -225,7 +225,6 @@ A minimal `.env` setup:
 ```env
 # Primary LLM Provider: Atria with provider-affinity concurrency & reasoning headroom
 ATRIA_API_KEY="your_atria_api_key"
-ATRIA_PRIORITY="primary"
 ATRIA_CONCURRENT_SLOTS="1"
 ATRIA_MAX_TIMEOUT_MS="600000"
 ATRIA_MIN_TIMEOUT_MS="120000"

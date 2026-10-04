@@ -197,6 +197,25 @@ export const METRO_HUBS_BY_COUNTRY: Record<string, string[]> = {
   australia: ["Sydney", "Melbourne", "Brisbane", "Perth"],
 };
 
+const DISCOVERY_MODES: readonly DiscoveryMode[] = [
+  "person_first",
+  "account_first",
+  "signal_first",
+  "local_business",
+];
+
+/**
+ * The user's explicit discovery-mode choice wins over whatever mode an LLM-generated spec
+ * carries; an unrecognised or absent request leaves the spec untouched.
+ */
+export function applyRequestedDiscoveryMode<T extends { mode: DiscoveryMode }>(
+  spec: T,
+  requested?: DiscoveryMode,
+): T {
+  if (!requested || !DISCOVERY_MODES.includes(requested)) return spec;
+  return { ...spec, mode: requested };
+}
+
 export const buildFallbackSearchSpec = (
   query: string,
   mode: DiscoveryMode = "person_first",

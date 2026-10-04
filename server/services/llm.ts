@@ -64,6 +64,12 @@ export type LLMSessionCircuitBreaker = {
   failureThreshold: number;
   failureCounts: Partial<Record<LLMProvider["id"], number>>;
   disabledProviderIds: Set<LLMProvider["id"]>;
+  /**
+   * Providers this breaker disabled because process-wide health marked them OUT. These
+   * entries are released when health reaches half-open, so a tripped provider is re-tested
+   * within the same session. Manually disabled providers are never released automatically.
+   */
+  healthDisabledProviderIds?: Set<LLMProvider["id"]>;
 };
 
 export type LLMRoutingTier = "fast" | "reasoning" | "balanced";
@@ -97,6 +103,7 @@ export function createLLMSessionCircuitBreaker(
     failureThreshold: Math.max(1, Math.floor(resolved)),
     failureCounts: {},
     disabledProviderIds: new Set<LLMProvider["id"]>(),
+    healthDisabledProviderIds: new Set<LLMProvider["id"]>(),
   };
 }
 
@@ -131,15 +138,17 @@ const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 const DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 
-// Atria is a self-hosted vLLM deployment (see docs/ATRIA-ENDPOINT-PROBE-2026-09-16.md).
+// Atria is a self-hosted vLLM deployment (see docs/adr/0007-industry-agnostic-pipeline-and-dual-provider-concurrency.md).
 // It is a REASONING model: reasoning_content is emitted and billed before any visible
 // content, so a small max_tokens yields content:null with finish_reason:"length".
-// Registered only when ATRIA_API_KEY is set, and appended after the established chain
-// unless ATRIA_PRIORITY=primary, so supplying a key never silently re-routes a session.
+// Registered only when ATRIA_API_KEY is set. When registered it is the first provider of the
+// primary pair (Atria + Byesu, one request each, in parallel); Groq and OpenRouter/Mistral
+// form the failsafe tier.
 const DEFAULT_ATRIA_BASE = "https://api.atria-asi.ai/v1";
 const DEFAULT_ATRIA_MODEL = "Atria-Dawn-Preview";
 
-// Auto-reverts after exactly 7 days from configuration (Sep 19, 2026 00:00:00 +06:00)
+// Token Harbor is retired from the provider chain (see isTokenHarborActive); this default
+// expiry (Oct 19, 2026 00:00:00 +06:00) only gates the legacy active check.
 const DEFAULT_TOKEN_HARBOR_EXPIRATION_MS = new Date(
   "2026-10-19T00:00:00+06:00",
 ).getTime();
@@ -190,11 +199,6 @@ function getOpenRouterHeaders(baseUrl?: string): Record<string, string> {
   return headers;
 }
 
-/** ATRIA_PRIORITY=primary promotes Atria ahead of the Byesu/OpenRouter/Groq chain. */
-function isAtriaPromoted(): boolean {
-  return (process.env.ATRIA_PRIORITY || "").toLowerCase() === "primary";
-}
-
 export function isAtriaConfigured(): boolean {
   return Boolean(process.env.ATRIA_API_KEY);
 }
@@ -220,16 +224,9 @@ function getAtriaProvider(): LLMProvider | null {
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
-  const atria = getAtriaProvider();
-  const atriaPromoted = isAtriaPromoted();
-
   // Tier 1: Primary Pair (Atria Primary, Byesu Secondary)
-  if (atria && (atriaPromoted || !process.env.BYESU_API_KEY && !process.env.OPENAI_API_KEY)) {
-    direct.push(atria);
-  } else if (atria) {
-    // Default: Atria is primary
-    direct.push(atria);
-  }
+  const atria = getAtriaProvider();
+  if (atria) direct.push(atria);
 
   direct.push({
     id: "primary",
@@ -316,13 +313,21 @@ export function orderProvidersForTier<T extends { id: string }>(
   fastProviderIds: string[],
 ): T[] {
   if (tier !== "fast" || fastProviderIds.length === 0) return providers;
+  // LLM_FAST_PROVIDER_IDS may reorder providers inside a tier, never promote a failsafe
+  // provider ahead of the primary pair.
+  const tierRank = (provider: T) => (provider.id === "atria" || provider.id === "primary" ? 0 : 1);
   const rank = (provider: T) => {
     const index = fastProviderIds.indexOf(provider.id);
     return index === -1 ? Number.MAX_SAFE_INTEGER : index;
   };
   return providers
     .map((provider, index) => ({ provider, index }))
-    .sort((a, b) => rank(a.provider) - rank(b.provider) || a.index - b.index)
+    .sort(
+      (a, b) =>
+        tierRank(a.provider) - tierRank(b.provider) ||
+        rank(a.provider) - rank(b.provider) ||
+        a.index - b.index,
+    )
     .map(({ provider }) => provider);
 }
 
@@ -331,11 +336,14 @@ export function describeLLMRoute(tier?: LLMRoutingTier): {
   reasoning: boolean;
   outputTokenCap: number;
 } {
-  const first = orderProvidersForTier(
+  const ordered = orderProvidersForTier(
     getConfiguredLLMProviders(),
     tier,
     parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS),
-  )[0];
+  );
+  // Health-aware: when Atria and Byesu are both out the failsafe serves the call, so callers
+  // that size batches from this (e.g. Groq's 950-token cap) must see the failsafe provider.
+  const first = ordered.find((p) => !isProviderOut(p.id)) ?? ordered[0];
   if (!first) return { providerId: null, reasoning: false, outputTokenCap: Number.POSITIVE_INFINITY };
   return {
     providerId: first.id,
@@ -408,22 +416,16 @@ export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
 
 /**
  * Atria (api.atria-asi.ai) is a self-hosted vLLM deployment behind an Aliyun ALB
- * (Singapore ap-southeast-1), NOT behind Cloudflare (verified in docs/ATRIA-ENDPOINT-PROBE-2026-09-16.md).
+ * (Singapore ap-southeast-1), NOT behind Cloudflare (endpoint probe of 2026-09-16; see ADR-0007).
  * The 115s CLOUDFLARE_MAX_TIMEOUT_MS therefore does not apply to Atria traffic.
  * Timeout scales dynamically with prompt weight and reasoning budget up to this safety ceiling.
  */
 export const ATRIA_MAX_TIMEOUT_MS = 600_000;
 
 /**
- * Bounded concurrency execution queue for all LLM calls.
- * Allows up to LLM_CONCURRENT_SLOTS (default: 1) active outbound calls.
- * When a task is aborted while waiting, it removes itself from waitQueue cleanly
- * to guarantee zero slot leakage or hung promises.
- *
- * Phase 1.5: optional stage-lane sharding behind FEATURE_LLM_STAGE_QUEUES.
- * When enabled, strategist/extraction/judge run on independent FIFO lanes
- * (max 2 each, global cap 4) so new intelligence calls cannot stall the pipeline.
- * Per-provider 429/524 backoff and key rotation are preserved in fetchWithRetry.
+ * Legacy global single-slot queue. Provider calls bypass it (sendChatCompletion always passes
+ * a providerId); concurrency is the per-provider slots in withProviderFallback (Atria 1 +
+ * Byesu 1, in parallel). runWithLlmStageLane is a passthrough kept for API compatibility.
  */
 export type LLMStageLane = 'strategist' | 'extraction' | 'judge' | 'general';
 
@@ -578,7 +580,7 @@ async function fetchWithRetry(
   url: string,
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
-  maxRetries = 1,
+  maxRetries?: number,
   isAtria = false,
   providerId?: string,
 ): Promise<Response> {
@@ -587,10 +589,20 @@ async function fetchWithRetry(
     : "";
   const isAtriaUrl =
     isAtria ||
-    /atria-asi\.ai|atria/i.test(url) ||
+    /(^|[/.])atria-asi\.ai(?=[/:]|$)/i.test(url) ||
     (atriaConfiguredBase ? url.startsWith(atriaConfiguredBase) : false);
 
-  const rawRetries = Number(process.env.LLM_MAX_RETRIES ?? maxRetries);
+  // Precedence: explicit per-call value, then LLM_MAX_RETRIES, then 1. An empty env var is
+  // "unset" (Number("") would otherwise silently become 0 and disable retries).
+  const envRetriesRaw = process.env.LLM_MAX_RETRIES;
+  const envRetries =
+    envRetriesRaw !== undefined && envRetriesRaw.trim() !== ""
+      ? Number(envRetriesRaw)
+      : Number.NaN;
+  const rawRetries =
+    typeof maxRetries === "number" && Number.isFinite(maxRetries) && maxRetries >= 0
+      ? maxRetries
+      : envRetries;
   const effectiveMaxRetries =
     Number.isFinite(rawRetries) && rawRetries >= 0 ? Math.floor(rawRetries) : 1;
 
@@ -742,10 +754,10 @@ async function fetchWithRetry(
         err instanceof Error
           ? err
           : new Error(String(err));
-      if (attempt < maxRetries) {
+      if (attempt < effectiveMaxRetries) {
         const waitMs = Math.pow(2, attempt) * 2000;
         console.warn(
-          `[llm] Fetch error on attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}. Retrying in ${waitMs}ms...`,
+          `[llm] Fetch error on attempt ${attempt + 1}/${effectiveMaxRetries + 1}: ${lastError.message}. Retrying in ${waitMs}ms...`,
         );
         await sleepWithSignal(waitMs, callerSignal);
       }
@@ -936,6 +948,8 @@ type ProviderSlotWaiter = {
   isInteractive?: boolean;
   enqueuedAt: number;
   cleanup?: () => void;
+  /** True when the waiter can never be served (e.g. every candidate went OUT). */
+  isAbandoned?: () => boolean;
 };
 
 const providerSlotWaitQueue: ProviderSlotWaiter[] = [];
@@ -948,6 +962,14 @@ export function pumpProviderSlotWaitQueue(): void {
     for (let i = 0; i < providerSlotWaitQueue.length; i++) {
       const waiter = providerSlotWaitQueue[i];
       if (waiter.signal?.aborted) continue;
+      if (waiter.isAbandoned?.()) {
+        providerSlotWaitQueue.splice(i, 1);
+        i--;
+        const abandonedErr = new Error("Every provider this call was waiting for is out.");
+        abandonedErr.name = "ProviderSlotAbandonedError";
+        waiter.reject(abandonedErr);
+        continue;
+      }
       const candidates = waiter.getCandidates();
       const available = candidates.find(
         (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
@@ -970,6 +992,7 @@ export function waitForProviderSlot(
   signal?: AbortSignal | null,
   timeoutMs = resolveDynamicQueueTimeoutMs(),
   isInteractive = false,
+  isAbandoned?: () => boolean,
 ): Promise<LLMProvider> {
   return new Promise<LLMProvider>((resolve, reject) => {
     let settled = false;
@@ -1039,6 +1062,7 @@ export function waitForProviderSlot(
       isInteractive,
       enqueuedAt,
       cleanup,
+      isAbandoned,
     };
 
     if (isInteractive) {
@@ -1087,16 +1111,49 @@ export function getProviderHealth(providerId: string): ProviderHealthRecord {
   return record;
 }
 
+/** Breaker entries that process-wide health added, so they can be released on recovery. */
+function markBreakerDisabledByHealth(
+  breaker: LLMSessionCircuitBreaker | undefined,
+  providerId: string,
+): void {
+  if (!breaker) return;
+  const pid = providerId as LLMProvider["id"];
+  breaker.disabledProviderIds.add(pid);
+  if (!breaker.healthDisabledProviderIds) breaker.healthDisabledProviderIds = new Set();
+  breaker.healthDisabledProviderIds.add(pid);
+}
+
+/**
+ * Re-admits a provider this breaker disabled because health marked it OUT, once that OUT
+ * window has ended (half-open). Without this a tripped provider stayed disabled for the
+ * rest of the session, since only a successful attempt cleared it and none was ever made.
+ */
+function releaseRecoveredBreakerEntry(
+  providerId: string,
+  breaker: LLMSessionCircuitBreaker | undefined,
+): void {
+  const pid = providerId as LLMProvider["id"];
+  if (!breaker?.healthDisabledProviderIds?.has(pid)) return;
+  if (getProviderHealth(providerId).status === "out") return;
+  breaker.healthDisabledProviderIds.delete(pid);
+  breaker.disabledProviderIds.delete(pid);
+  breaker.failureCounts[pid] = 0;
+}
+
+/**
+ * OUT means unusable: quota exhausted, auth failure, repeated fatal failures, or a manually
+ * opened session breaker. A provider that is merely busy or cooling down is NOT out.
+ */
 export function isProviderOut(providerId: string, breaker?: LLMSessionCircuitBreaker): boolean {
+  releaseRecoveredBreakerEntry(providerId, breaker);
   if (breaker?.disabledProviderIds?.has(providerId as any)) return true;
-  const health = getProviderHealth(providerId);
-  if (health.status === "out") return true;
-  if (health.status === "half_open" && health.halfOpenActive) return true;
-  const cooldownUntil = providerCooldowns.get(providerId);
-  if (cooldownUntil && Date.now() < cooldownUntil) {
-    return true;
-  }
-  return false;
+  return getProviderHealth(providerId).status === "out";
+}
+
+/** Briefly backing off after a rate limit, timeout, or transient 5xx. Not an outage. */
+export function isProviderCoolingDown(providerId: string): boolean {
+  const until = providerCooldowns.get(providerId);
+  return Boolean(until && Date.now() < until);
 }
 
 export function getProviderHealthSummaries(): Record<
@@ -1127,69 +1184,106 @@ export function recordProviderSuccess(providerId: string, breaker?: LLMSessionCi
   if (breaker) {
     const pid = providerId as LLMProvider["id"];
     breaker.disabledProviderIds.delete(pid);
+    breaker.healthDisabledProviderIds?.delete(pid);
     const prev = Number(breaker.failureCounts[pid] || 0);
     breaker.failureCounts[pid] = Math.max(0, prev - 1);
   }
 }
 
+function resolveAuthOutMs(): number {
+  const configured = Number(process.env.LLM_AUTH_OUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 10 * 60_000;
+}
+
+function resolveQuotaOutMs(): number {
+  const configured = Number(process.env.LLM_QUOTA_OUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 60 * 60_000;
+}
+
+function startProviderCooldown(providerId: string, cooldownMs: number): void {
+  if (!(cooldownMs > 0)) return;
+  const record = getProviderHealth(providerId);
+  // An OUT or half-open provider keeps that state; a cooldown never shortens an outage.
+  if (record.status === "out" || record.status === "half_open") return;
+  record.status = "cooling_down";
+  record.cooldownUntil = Date.now() + cooldownMs;
+  providerCooldowns.set(providerId, record.cooldownUntil);
+  // Wake queued calls the moment the cooldown ends instead of at the next slot release.
+  const timer = setTimeout(() => pumpProviderSlotWaitQueue(), cooldownMs + 5);
+  if (typeof timer.unref === "function") timer.unref();
+}
+
 export function recordProviderFailure(providerId: string, error: Error, breaker?: LLMSessionCircuitBreaker): void {
   const record = getProviderHealth(providerId);
+  // Any finished attempt ends a half-open probe; the outcome below decides the next state.
+  record.halfOpenActive = false;
   const status = error instanceof LLMProviderError ? error.status : undefined;
+  const untrusted = hasUntrustedMessage(error);
   const isAuth = status === 401 || status === 403;
   const isQuota = isExhaustedQuotaError(
     status,
     error.message,
     error instanceof LLMProviderError ? error.errorCode : undefined,
   );
-  const isFatal = isAuth || isQuota || isCircuitBreakingProviderFailure(error);
 
   if (isAuth || isQuota) {
+    // Bounded: once the window ends the provider is re-tested with a single half-open probe,
+    // so a rotated key or refilled quota is picked up without a restart.
     record.status = "out";
-    record.outUntil = Date.now() + 24 * 3600 * 1000;
+    record.outUntil = Date.now() + (isAuth ? resolveAuthOutMs() : resolveQuotaOutMs());
     record.outReason = isAuth ? "Authentication failure" : "Quota exhausted (429 code 1300)";
     record.halfOpenActive = false;
-    if (breaker) breaker.disabledProviderIds.add(providerId as LLMProvider["id"]);
+    markBreakerDisabledByHealth(breaker, providerId);
     console.warn(`[llm] ${providerId} marked OUT: ${record.outReason}.`);
     return;
   }
 
-  if (isFatal) {
+  const isFullRequestTimeout = !untrusted && /timed out after/i.test(error.message);
+  const configuredCooldown =
+    process.env.LLM_PROVIDER_COOLDOWN_MS !== undefined &&
+    process.env.LLM_PROVIDER_COOLDOWN_MS.trim() !== ""
+      ? Number(process.env.LLM_PROVIDER_COOLDOWN_MS)
+      : undefined;
+  const cooldownMs =
+    configuredCooldown !== undefined && Number.isFinite(configuredCooldown)
+      ? configuredCooldown
+      : isFullRequestTimeout
+        ? 5_000
+        : 15_000;
+
+  if (isCircuitBreakingProviderFailure(error)) {
     const pid = providerId as LLMProvider["id"];
-    if (breaker) {
-      breaker.failureCounts[pid] =
-        (breaker.failureCounts[pid] || 0) + 1;
-    }
+    if (breaker) breaker.failureCounts[pid] = (breaker.failureCounts[pid] || 0) + 1;
     record.consecutiveFatalFailures++;
-    if (record.status === "half_open") {
-      record.status = "out";
-      record.outUntil = Date.now() + 60_000;
-      record.outReason = `Half-open probe failed: ${truncateProviderError(error.message)}`;
-      record.halfOpenActive = false;
-      if (breaker) breaker.disabledProviderIds.add(pid);
-      console.warn(`[llm] ${providerId} probe failed; staying OUT for 60s.`);
-      return;
-    }
     const threshold = breaker?.failureThreshold || 3;
-    if (record.consecutiveFatalFailures >= threshold) {
+    if (record.status === "half_open" || record.consecutiveFatalFailures >= threshold) {
+      const wasProbe = record.status === "half_open";
       record.status = "out";
       record.outUntil = Date.now() + 60_000;
-      record.outReason = `${record.consecutiveFatalFailures} consecutive fatal failures`;
+      record.outReason = wasProbe
+        ? `Half-open re-test failed: ${truncateProviderError(error.message)}`
+        : `${record.consecutiveFatalFailures} consecutive fatal failures`;
       record.halfOpenActive = false;
-      if (breaker) breaker.disabledProviderIds.add(pid);
-      console.warn(
-        `[llm] ${providerId} reached failure threshold (${record.consecutiveFatalFailures}); marked OUT for 60s re-test.`,
-      );
+      providerCooldowns.delete(providerId);
+      markBreakerDisabledByHealth(breaker, providerId);
+      console.warn(`[llm] ${providerId} marked OUT for 60s (${record.outReason}).`);
       return;
     }
+    startProviderCooldown(providerId, cooldownMs);
+    return;
   }
 
-  const isFullRequestTimeout = !hasUntrustedMessage(error) && /timed out after/i.test(error.message);
-  const cooldownMs = isFullRequestTimeout ? 5_000 : 15_000;
-  record.status = "cooling_down";
-  record.cooldownUntil = Date.now() + cooldownMs;
-  providerCooldowns.set(providerId, Date.now() + cooldownMs);
-  const timer = setTimeout(() => pumpProviderSlotWaitQueue(), cooldownMs);
-  if (typeof timer.unref === "function") timer.unref();
+  // Rate limits and transient upstream errors back off briefly. Bad answers (unparseable
+  // output, schema/validation errors) are quality failures, not availability failures: they
+  // neither start a cooldown nor count toward OUT.
+  const isRateLimited =
+    status === 429 || (!untrusted && /429|rate[-_ ]?limit/i.test(error.message));
+  const isTransientUpstream =
+    (status !== undefined && status >= 500) ||
+    (!untrusted && /fetch failed|econnreset|econnrefused|socket hang up|network/i.test(error.message));
+  if (isRateLimited || isTransientUpstream || isFullRequestTimeout) {
+    startProviderCooldown(providerId, cooldownMs);
+  }
 }
 
 export function clearProviderCooldowns(): void {
@@ -1203,14 +1297,30 @@ export function clearProviderCooldowns(): void {
   pumpProviderSlotWaitQueue();
 }
 
+export class ProviderOutageError extends Error {
+  readonly isNonRetryable = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderOutageError";
+  }
+}
+
+/** How long background work waits for Atria/Byesu to recover when no failsafe is available. */
+function resolvePrimaryRecoveryMaxWaitMs(): number {
+  const configured = Number(process.env.LLM_PRIMARY_RECOVERY_MAX_WAIT_MS);
+  return Number.isFinite(configured) && configured >= 0 ? configured : 10 * 60_000;
+}
+
+type AttemptResult<T> = { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
+
 async function withProviderFallback<T>(
   operation: (
     provider: LLMProvider,
     options: LLMExecutionOptions,
   ) => Promise<T>,
   executionOptions: LLMExecutionOptions = {},
+  outagePauseStartedAt?: number,
 ): Promise<T> {
-  const startedCallAt = Date.now();
   if (executionOptions.signal?.aborted) {
     const cancelError = new Error("LLM request was aborted by caller.");
     cancelError.name = "AbortError";
@@ -1224,6 +1334,7 @@ async function withProviderFallback<T>(
     );
   }
 
+  const breaker = executionOptions.circuitBreaker;
   const fastIds = parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
   const primaryTier = orderProvidersForTier(
     allConfigured.filter((p) => p.id === "atria" || p.id === "primary"),
@@ -1241,31 +1352,32 @@ async function withProviderFallback<T>(
     executionOptions.metadata?.isInteractive ||
     executionOptions.metadata?.priority === "high",
   );
+  // Health probes report status; they must not move provider health or reach the failsafe.
+  const isHealthProbe = Boolean(executionOptions.metadata?.healthProbe);
 
-  const maxAtriaCeiling = Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
-    ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
-    : ATRIA_MAX_TIMEOUT_MS;
-  const overallCallBudgetMs = executionOptions.timeoutMs
-    ? executionOptions.timeoutMs * 2
-    : maxAtriaCeiling * 2;
-
-  let executionStartedAt = startedCallAt;
-
-  const checkCallBudget = () => {
-    if (Date.now() - executionStartedAt > overallCallBudgetMs) {
-      const budgetErr = new Error(`LLM call exceeded overall time budget of ${Math.round(overallCallBudgetMs / 1000)}s.`);
-      budgetErr.name = "TimeoutError";
-      (budgetErr as any).isNonRetryable = true;
-      (budgetErr as any).isFatalTimeout = true;
-      throw budgetErr;
-    }
+  // The budget must fit one full Atria attempt plus one full Byesu attempt, so it never
+  // blocks the partner fallback. It only bounds the extra in-pair retry and the failsafe.
+  const atriaCeilingMs =
+    Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
+      ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
+      : ATRIA_MAX_TIMEOUT_MS;
+  const overallCallBudgetMs = atriaCeilingMs + CLOUDFLARE_MAX_TIMEOUT_MS + 30_000;
+  // Queue time is not execution time, so slot waits are excluded from the budget.
+  const budgetClockStartedAt = Date.now();
+  let queueWaitTotalMs = 0;
+  const budgetExceeded = () =>
+    Date.now() - budgetClockStartedAt - queueWaitTotalMs > overallCallBudgetMs;
+  const budgetError = () => {
+    const err = new Error(
+      `LLM call exceeded overall time budget of ${Math.round(overallCallBudgetMs / 1000)}s.`,
+    );
+    err.name = "TimeoutError";
+    (err as any).isNonRetryable = true;
+    (err as any).isFatalTimeout = true;
+    return err;
   };
 
-  const executeAttempt = async (
-    provider: LLMProvider,
-    queueWaitMs = 0,
-  ): Promise<{ ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean }> => {
-    checkCallBudget();
+  const executeAttempt = async (provider: LLMProvider, queueWaitMs = 0): Promise<AttemptResult<T>> => {
     const attemptStartedAt = Date.now();
     let attemptUsage: LLMUsage | undefined;
     const opts: LLMExecutionOptions = {
@@ -1276,9 +1388,12 @@ async function withProviderFallback<T>(
       },
     };
 
+    const health = getProviderHealth(provider.id);
+    if (health.status === "half_open" && !isHealthProbe) health.halfOpenActive = true;
+
     try {
       const val = await operation(provider, opts);
-      recordProviderSuccess(provider.id, executionOptions.circuitBreaker);
+      recordProviderSuccess(provider.id, breaker);
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
@@ -1308,7 +1423,6 @@ async function withProviderFallback<T>(
         throw normalized;
       }
 
-      const attemptElapsedMs = Date.now() - attemptStartedAt;
       const errStatus = normalized instanceof LLMProviderError ? normalized.status : undefined;
       const isTimeout =
         !hasUntrustedMessage(normalized) &&
@@ -1325,194 +1439,189 @@ async function withProviderFallback<T>(
         actualModel: attemptUsage?.model || provider.model,
         status: "error",
         statusCode: errStatus,
-        latencyMs: attemptElapsedMs,
+        latencyMs: Date.now() - attemptStartedAt,
         queueWaitMs,
         error: truncateProviderError(normalized.message),
       });
 
-      recordProviderFailure(provider.id, normalized, executionOptions.circuitBreaker);
+      if (!isHealthProbe) recordProviderFailure(provider.id, normalized, breaker);
       return { ok: false, err: normalized, isTimeout };
     }
   };
 
-  const acquireSlot = async (candidates: LLMProvider[]): Promise<{ provider: LLMProvider; queueWaitMs: number }> => {
+  /**
+   * Takes a slot on the first candidate that is free and not cooling down. A busy or
+   * cooling-down candidate is waited for, never skipped in favor of a lower tier. If every
+   * candidate is merely cooling down (and none is busy), the cooldowns are cleared so the
+   * call is not starved.
+   */
+  const acquireSlot = async (
+    candidates: LLMProvider[],
+  ): Promise<{ provider: LLMProvider; queueWaitMs: number } | null> => {
     const immediate = candidates.find(
-      (p) => getProviderActiveSlots(p.id) < getProviderConcurrencyLimit(p.id),
+      (p) => isProviderSlotFree(p.id) && !isProviderCoolingDown(p.id),
     );
     if (immediate) {
       acquireProviderSlot(immediate.id);
       return { provider: immediate, queueWaitMs: 0 };
     }
+    const freeButCooling = candidates.filter((p) => isProviderSlotFree(p.id));
+    if (freeButCooling.length > 0 && candidates.every((p) => isProviderCoolingDown(p.id))) {
+      for (const p of freeButCooling) {
+        providerCooldowns.delete(p.id);
+        const h = getProviderHealth(p.id);
+        if (h.status === "cooling_down") {
+          h.status = "healthy";
+          h.cooldownUntil = undefined;
+        }
+      }
+      acquireProviderSlot(freeButCooling[0].id);
+      return { provider: freeButCooling[0], queueWaitMs: 0 };
+    }
+    // A health probe reports a busy provider as busy; it never queues behind real work.
+    if (isHealthProbe) return null;
+    const ids = new Set(candidates.map((p) => p.id));
     const queueWaitStart = Date.now();
-    const provider = await waitForProviderSlot(
-      () => candidates.filter((p) => !isProviderOut(p.id)),
-      executionOptions.signal,
-      resolveDynamicQueueTimeoutMs(),
-      isInteractive,
-    );
-    executionStartedAt = Date.now();
-    return { provider, queueWaitMs: Date.now() - queueWaitStart };
+    try {
+      const provider = await waitForProviderSlot(
+        () =>
+          allConfigured.filter(
+            (p) => ids.has(p.id) && !isProviderOut(p.id, breaker) && !isProviderCoolingDown(p.id),
+          ),
+        executionOptions.signal,
+        resolveDynamicQueueTimeoutMs(),
+        isInteractive,
+        () => candidates.every((p) => isProviderOut(p.id, breaker)),
+      );
+      const queueWaitMs = Date.now() - queueWaitStart;
+      queueWaitTotalMs += queueWaitMs;
+      return { provider, queueWaitMs };
+    } catch (error: any) {
+      if (executionOptions.signal?.aborted || error?.name === "AbortError") throw error;
+      console.warn(`[llm] Gave up waiting for a provider slot: ${error?.message || error}`);
+      return null;
+    }
+  };
+
+  const runOn = async (candidates: LLMProvider[]): Promise<{ provider: LLMProvider; result: AttemptResult<T> } | null> => {
+    const slot = await acquireSlot(candidates);
+    if (!slot) return null;
+    try {
+      return { provider: slot.provider, result: await executeAttempt(slot.provider, slot.queueWaitMs) };
+    } finally {
+      releaseProviderSlot(slot.provider.id);
+    }
   };
 
   let lastPrimaryError: Error | undefined;
 
-  // 1. PRIMARY TIER
-  if (primaryTier.length > 0) {
-    let eligiblePrimaries = primaryTier.filter((p) => !isProviderOut(p.id, executionOptions.circuitBreaker));
+  // 1. PRIMARY PAIR (Atria first, Byesu in parallel). Busy partners are waited for.
+  const eligiblePrimaries = primaryTier.filter((p) => !isProviderOut(p.id, breaker));
+  if (eligiblePrimaries.length > 0) {
+    const first = await runOn(eligiblePrimaries);
+    if (first?.result.ok) return first.result.val;
+    if (first && !first.result.ok) lastPrimaryError = first.result.err;
 
-    // Cooldown starvation recovery: if all primaries are filtered out only by temporary cooldowns,
-    // clear the cooldowns rather than starving with 0 attempts
-    if (eligiblePrimaries.length === 0) {
-      const nonBroken = primaryTier.filter(
-        (p) => !executionOptions.circuitBreaker?.disabledProviderIds.has(p.id as any) &&
-               getProviderHealth(p.id).status !== "out",
-      );
-      if (nonBroken.length > 0) {
-        for (const p of nonBroken) {
-          providerCooldowns.delete(p.id);
-          const h = getProviderHealth(p.id);
-          if (h.status === "cooling_down") {
-            h.status = "healthy";
-            h.cooldownUntil = undefined;
-          }
-        }
-        eligiblePrimaries = nonBroken;
-      }
+    const partners = primaryTier.filter(
+      (p) => p.id !== first?.provider.id && !isProviderOut(p.id, breaker),
+    );
+    let second: Awaited<ReturnType<typeof runOn>> = null;
+    if (first && partners.length > 0) {
+      second = await runOn(partners);
+      if (second?.result.ok) return second.result.val;
+      if (second && !second.result.ok) lastPrimaryError = second.result.err;
     }
 
-    if (eligiblePrimaries.length > 0) {
-      const { provider: firstProvider, queueWaitMs: firstWaitMs } = await acquireSlot(eligiblePrimaries);
-      let firstResult: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
-      try {
-        firstResult = await executeAttempt(firstProvider, firstWaitMs);
-      } finally {
-        releaseProviderSlot(firstProvider.id);
-      }
-
-      if (firstResult.ok) {
-        return firstResult.val;
-      }
-      lastPrimaryError = firstResult.err;
-
-      // First primary failed. Check if partner in primary pair is available
-      const remainingPrimaries = primaryTier.filter(
-        (p) => p.id !== firstProvider.id && !isProviderOut(p.id, executionOptions.circuitBreaker),
+    const firstTimedOut = Boolean(first && !first.result.ok && first.result.isTimeout);
+    const secondTimedOut = Boolean(second && !second.result.ok && second.result.isTimeout);
+    if (first && second && firstTimedOut && secondTimedOut) {
+      const bothTimeoutErr = new Error(
+        `Both primary providers timed out (${(first.result as any).err.message} | ${(second.result as any).err.message}).`,
       );
+      bothTimeoutErr.name = "TimeoutError";
+      (bothTimeoutErr as any).isNonRetryable = true;
+      (bothTimeoutErr as any).isFatalTimeout = true;
+      throw bothTimeoutErr;
+    }
 
-      if (remainingPrimaries.length > 0) {
-        const { provider: secondProvider, queueWaitMs: secondWaitMs } = await acquireSlot(remainingPrimaries);
-        let secondResult: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
-        try {
-          secondResult = await executeAttempt(secondProvider, secondWaitMs);
-        } finally {
-          releaseProviderSlot(secondProvider.id);
-        }
-
-        if (secondResult.ok) {
-          return secondResult.val;
-        }
-        lastPrimaryError = secondResult.err;
-
-        // Both primaries failed once on this call!
-        const stillEligible = primaryTier.filter((p) => !isProviderOut(p.id, executionOptions.circuitBreaker));
-        if (stillEligible.length > 0) {
-          // In-pair retry: send to the provider that did NOT time out
-          const didFirstTimeout = firstResult.isTimeout;
-          const didSecondTimeout = secondResult.isTimeout;
-
-          if (didFirstTimeout && didSecondTimeout) {
-            const bothTimeoutErr = new Error(
-              `Both primary providers timed out (${firstResult.err.message} | ${secondResult.err.message}).`,
-            );
-            (bothTimeoutErr as any).isNonRetryable = true;
-            (bothTimeoutErr as any).isFatalTimeout = true;
-            throw bothTimeoutErr;
-          }
-
-          const retryCandidate = !didFirstTimeout && stillEligible.some((p) => p.id === firstProvider.id)
-            ? firstProvider
-            : !didSecondTimeout && stillEligible.some((p) => p.id === secondProvider.id)
-              ? secondProvider
-              : stillEligible[0];
-
-          if (retryCandidate) {
-            console.warn(`[llm] Both primaries errored; sending 1 in-pair retry to ${retryCandidate.name}...`);
-            const { provider: retryProvider, queueWaitMs: retryWaitMs } = await acquireSlot([retryCandidate]);
-            let retryResult: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
-            try {
-              retryResult = await executeAttempt(retryProvider, retryWaitMs);
-            } finally {
-              releaseProviderSlot(retryProvider.id);
-            }
-
-            if (retryResult.ok) {
-              return retryResult.val;
-            }
-            lastPrimaryError = retryResult.err;
-          }
-        }
-      }
+    // One in-pair retry after BOTH primaries failed this call, sent to a provider that did not
+    // just time out. Errors that would fail identically (413, auth, bad request) are not retried.
+    const isRepeatable = (r: AttemptResult<T> | undefined) => {
+      if (!r || r.ok) return false;
+      const e = r.err as Error & { isNonRetryable?: boolean; isTokenLimit?: boolean };
+      if (e.isNonRetryable || e.isTokenLimit) return false;
+      const st = e instanceof LLMProviderError ? e.status : undefined;
+      return !(st !== undefined && [400, 401, 403, 404, 413, 422].includes(st));
+    };
+    const retryPool = primaryTier.filter((p) => {
+      if (isProviderOut(p.id, breaker)) return false;
+      if (first && p.id === first.provider.id && firstTimedOut) return false;
+      if (second && p.id === second.provider.id && secondTimedOut) return false;
+      return true;
+    });
+    const retryWorthwhile =
+      Boolean(first && second) && (isRepeatable(first?.result) || isRepeatable(second?.result));
+    if (retryWorthwhile && retryPool.length > 0 && !budgetExceeded()) {
+      console.warn(`[llm] Primary attempt(s) failed; one in-pair retry on ${retryPool.map((p) => p.name).join(" or ")}...`);
+      await sleepWithSignal(1_500, executionOptions.signal);
+      const retry = await runOn(retryPool);
+      if (retry?.result.ok) return retry.result.val;
+      if (retry && !retry.result.ok) lastPrimaryError = retry.result.err;
     }
   }
 
-  // At this point, all primary attempts for this call have failed (or all primaries are OUT).
-  const areAllPrimariesOut =
-    primaryTier.length > 0 &&
-    primaryTier.every((p) => isProviderOut(p.id, executionOptions.circuitBreaker));
+  // 2. FAILSAFE GATE: Groq/Mistral only when BOTH primaries are out (policy). A busy,
+  // cooling-down, or once-failed primary never escalates; the failure returns to the stage.
+  const allPrimariesOut =
+    primaryTier.length > 0 && primaryTier.every((p) => isProviderOut(p.id, breaker));
 
-  // If this is a background mining session and NOT an interactive call:
-  if (isBackgroundSession && !isInteractive) {
-    if (areAllPrimariesOut) {
+  if (primaryTier.length > 0 && !allPrimariesOut) {
+    throw lastPrimaryError ?? new Error("Primary LLM providers are busy or unavailable for this call.");
+  }
+
+  if (allPrimariesOut && isHealthProbe) {
+    throw new Error("Primary providers (Atria, Byesu) are both out.");
+  }
+
+  const failsafeEligible = failsafeTier.filter((p) => !isProviderOut(p.id, breaker));
+
+  if (allPrimariesOut && failsafeEligible.length === 0) {
+    const outMessage =
+      "Primary providers (Atria, Byesu) are out and no failsafe provider is available.";
+    // Background session work waits (bounded) for a primary to come back for re-testing.
+    if (isBackgroundSession && !isInteractive) {
+      const waitStartedAt = outagePauseStartedAt ?? Date.now();
+      const maxWaitMs = resolvePrimaryRecoveryMaxWaitMs();
+      const waitedMs = Date.now() - waitStartedAt;
+      if (waitedMs >= maxWaitMs) {
+        throw new ProviderOutageError(
+          `${outMessage} Gave up after waiting ${Math.round(waitedMs / 1000)}s for recovery.`,
+        );
+      }
+      const earliestRetest = Math.min(
+        ...primaryTier.map((p) => getProviderHealth(p.id).outUntil || Date.now() + 60_000),
+      );
+      const waitMs = Math.max(
+        1,
+        Math.min(60_000, Math.max(1_000, earliestRetest - Date.now()), maxWaitMs - waitedMs),
+      );
       console.warn(
-        `[llm] Both Atria and Byesu are confirmed OUT. Background mining session pausing for primary pair recovery (failsafe reserved for interactive calls)...`,
+        `[llm] ${outMessage} Waiting ${Math.round(waitMs / 1000)}s before re-testing the primaries.`,
       );
-      const atriaHealth = getProviderHealth("atria");
-      const byesuHealth = getProviderHealth("primary");
-      const earliestReTest = Math.min(
-        atriaHealth.outUntil || Date.now() + 60_000,
-        byesuHealth.outUntil || Date.now() + 60_000,
-      );
-      const waitMs = Math.max(1_000, Math.min(60_000, earliestReTest - Date.now()));
       await sleepWithSignal(waitMs, executionOptions.signal);
-      return withProviderFallback(operation, executionOptions);
+      return withProviderFallback(operation, executionOptions, waitStartedAt);
     }
-    // In background session: primaries had a per-call error, but are not permanently OUT.
-    // Throw back to engine rather than escalating to failsafe.
-    if (lastPrimaryError) {
-      throw lastPrimaryError;
-    }
+    throw new ProviderOutageError(outMessage);
   }
 
-  // 2. FAILSAFE TIER (Interactive calls, or background mining sessions when failsafe allowed, or standalone / test calls)
-  let failsafeEligible = failsafeTier.filter(
-    (p) => !isProviderOut(p.id, executionOptions.circuitBreaker),
-  );
-
-  // Cooldown starvation recovery for failsafes
-  if (failsafeEligible.length === 0 && failsafeTier.length > 0) {
-    const nonBroken = failsafeTier.filter(
-      (p) => !executionOptions.circuitBreaker?.disabledProviderIds.has(p.id as any) &&
-             getProviderHealth(p.id).status !== "out",
-    );
-    if (nonBroken.length > 0) {
-      for (const p of nonBroken) {
-        providerCooldowns.delete(p.id);
-      }
-      failsafeEligible = nonBroken;
-    }
-  }
-
+  // 3. FAILSAFE TIER (Groq, then OpenRouter/Mistral): used by every caller, but only when the
+  // primary pair is out, or when no primary provider is configured at all.
   if (failsafeEligible.length === 0) {
-    if (lastPrimaryError) {
-      throw lastPrimaryError;
-    }
-    throw new Error(
-      "All configured LLM providers failed or are unavailable.",
-    );
+    throw lastPrimaryError ?? new Error("All configured LLM providers failed or are unavailable.");
   }
 
-  if (primaryTier.length > 0) {
-    console.warn(`[llm] Primary providers unavailable. Failsafe activated.`);
+  if (allPrimariesOut) {
+    console.warn(`[llm] Atria and Byesu are both out. Failsafe activated.`);
     void sendDirectLangfuseTrace({
       stage: "failsafe_activation",
       status: "error",
@@ -1528,21 +1637,14 @@ async function withProviderFallback<T>(
   }
 
   const failsafeFailures: Error[] = lastPrimaryError ? [lastPrimaryError] : [];
-
   for (const failsafeProvider of failsafeEligible) {
-    checkCallBudget();
-    const { provider, queueWaitMs } = await acquireSlot([failsafeProvider]);
-    let result: { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
-    try {
-      result = await executeAttempt(provider, queueWaitMs);
-    } finally {
-      releaseProviderSlot(provider.id);
+    if (budgetExceeded()) {
+      failsafeFailures.push(budgetError());
+      break;
     }
-
-    if (result.ok) {
-      return result.val;
-    }
-    failsafeFailures.push(result.err);
+    const attempt = await runOn([failsafeProvider]);
+    if (attempt?.result.ok) return attempt.result.val;
+    if (attempt && !attempt.result.ok) failsafeFailures.push(attempt.result.err);
   }
 
   const failureErr = new Error(
@@ -1758,8 +1860,16 @@ async function sendChatCompletion(
           )
         : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
 
+  // Health probes are status checks: they honor the caller timeout exactly (no Atria/Byesu
+  // workload floor) and never retry, so a probe cannot hold a provider slot for minutes.
+  const isHealthProbe = Boolean(options?.metadata?.healthProbe);
+  const probeTimeoutMs =
+    isHealthProbe && Number(options?.timeoutMs) > 0 ? Number(options?.timeoutMs) : undefined;
+  const maxRetriesForCall = isHealthProbe ? 0 : options?.maxRetries;
   let timeoutForCall = options?.timeoutMs;
-  if (isAtriaTarget) {
+  if (probeTimeoutMs !== undefined) {
+    timeoutForCall = probeTimeoutMs;
+  } else if (isAtriaTarget) {
     timeoutForCall = computeAtriaDynamicTimeoutMs(
       effectiveMaxTokens,
       messages,
@@ -1822,7 +1932,7 @@ async function sendChatCompletion(
         signal: options?.signal,
       },
       timeoutForCall,
-      options?.maxRetries,
+      maxRetriesForCall,
       isAtriaTarget,
       provider.id,
     );
@@ -1895,7 +2005,7 @@ async function sendChatCompletion(
             signal: options?.signal,
           },
           timeoutForCall,
-          options?.maxRetries,
+          maxRetriesForCall,
           isAtriaTarget,
           provider.id,
         );
@@ -2512,6 +2622,10 @@ function repairTruncatedJSON(str: string): string | null {
   let inString = false;
   let escaped = false;
   let lastCompleteItemIndex = -1;
+  // Depth of the first array opened (1 for a bare array, 2 for a {"items":[...]} wrapper).
+  // A complete element of that array ends whenever the stack returns to this depth.
+  let itemArrayDepth = -1;
+  let closersAtLastItem = "";
 
   for (let i = 0; i < sub.length; i++) {
     const ch = sub[i];
@@ -2535,21 +2649,27 @@ function repairTruncatedJSON(str: string): string | null {
       stack.push("}");
     } else if (ch === "[") {
       stack.push("]");
+      if (itemArrayDepth === -1 && stack.length <= 2) itemArrayDepth = stack.length;
     } else if (ch === "}" || ch === "]") {
       if (stack.length > 0 && stack[stack.length - 1] === ch) {
         stack.pop();
-        if (stack.length === 1 && stack[0] === "]") {
+        if (stack.length === itemArrayDepth && stack[stack.length - 1] === "]") {
           lastCompleteItemIndex = i;
+          closersAtLastItem = [...stack].reverse().join("");
         }
       }
     }
   }
 
-  if (sub.startsWith("[") && lastCompleteItemIndex > 0) {
+  // Only salvage when the text was cut off inside that array (the array is still open).
+  const truncatedInsideItems =
+    itemArrayDepth > 0 && stack.length >= itemArrayDepth && stack[itemArrayDepth - 1] === "]";
+  const truncated = truncatedInsideItems;
+  if (lastCompleteItemIndex > 0 && (sub.startsWith("[") || truncated)) {
     console.warn(
       `[repairTruncatedJSON] Truncated JSON array repaired to last complete element (index: ${lastCompleteItemIndex}).`,
     );
-    return sub.slice(0, lastCompleteItemIndex + 1) + "]";
+    return sub.slice(0, lastCompleteItemIndex + 1) + closersAtLastItem;
   }
 
   if (inString) {
@@ -3052,12 +3172,10 @@ export const APEX_SYSTEM_PROMPT = `
 
 You are **Apex**, an elite B2B Sales Intelligence Engine embedded inside a LinkedIn CRM & Outreach Platform. You operate at the intersection of data enrichment, pipeline management, and precision outreach. You process raw lead signals and convert them into actionable, high-conversion sales assets.
 
-Your core responsibilities span five operational domains:
+Your core responsibilities span three operational domains:
 1. **Lead Ingestion & Structural Parsing**
 2. **AI Enrichment Pipeline**
-3. **CRM Pipeline Management**
-4. **Campaign Analytics & Scoring**
-5. **Outreach Sequence Studio**
+3. **Outreach Sequence Studio**
 
 You are not a general assistant. Every output you produce must be structured, data-grounded, and immediately actionable. No filler, no generalities.
 
@@ -3088,7 +3206,7 @@ When enrichment data is not available but contextual signals exist, infer intell
 ### Enrichment Confidence Score
 For every enriched field, append a confidence tag: [CONFIRMED], [INFERRED-HIGH], [INFERRED-LOW], [MISSING]
 
-## DOMAIN 5 - OUTREACH SEQUENCE STUDIO
+## DOMAIN 3 - OUTREACH SEQUENCE STUDIO
 
 ### The Golden Rules of Outreach
 1. **No I-first openers.** Never begin a message with "I" - opens with their name, an observation, or a pattern interrupt.

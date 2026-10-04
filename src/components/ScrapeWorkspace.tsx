@@ -35,6 +35,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ResumableSessionsBanner, type ResumableSession } from "@/components/ResumableSessionsBanner";
 import { TraceTerminal, TraceSummaryViewer } from "@/components/TraceTerminal";
 import { miningTraceStore } from "@/lib/traceStore";
+import { classifySessionStatus, isTerminalSessionStatus } from "@/lib/sessionStatus";
 
 const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
   const panelId = useId();
@@ -354,7 +355,6 @@ export default function ScrapeWorkspace() {
     });
 
     let watchTimer: ReturnType<typeof setInterval> | undefined;
-    let pollCount = 0;
 
     // Set once this watcher is finished, so an in-flight poll cannot write state afterwards
     // (it used to setState after unmount, and after being replaced by a newer watcher).
@@ -390,17 +390,13 @@ export default function ScrapeWorkspace() {
     };
 
     watchTimer = setInterval(() => {
-      pollCount += 1;
+      // The watcher is only ever stopped through its own controller (cancel / replacement /
+      // unmount). The server bounds how long a session can wait on its providers, so there is
+      // no client-side poll cap to fall back on.
       if (requestController.signal.aborted) {
-        const aborted = requestController.signal.aborted;
         cleanupDiscoveryUi();
-        if (aborted) {
-          if (taskId) updateTaskStatus(taskId, 'cancelled', 0);
-          setInfoMsg(isResume ? 'Detached from resumed session.' : 'Discovery cancelled.');
-        } else {
-          if (taskId) updateTaskStatus(taskId, 'failed');
-          setErrorCode('Stopped watching the mining session before it finished. Check Mining history for its outcome.');
-        }
+        if (taskId) updateTaskStatus(taskId, 'cancelled', 0);
+        setInfoMsg(isResume ? 'Detached from resumed session.' : 'Discovery cancelled.');
         return;
       }
 
@@ -424,7 +420,8 @@ export default function ScrapeWorkspace() {
           if (settled || requestController.signal.aborted) return;
           const sessionRow = payload.session;
           const status = String(sessionRow?.status || '');
-          if (!status || status === 'running' || status === 'cancellation_requested') return;
+          if (!isTerminalSessionStatus(status)) return;
+          const outcome = classifySessionStatus(status);
 
           // Stop polling timer immediately upon receiving terminal status
           if (watchTimer) {
@@ -464,7 +461,7 @@ export default function ScrapeWorkspace() {
             if (requestController.signal.aborted) return;
             notifyLeadsUpdated();
 
-            if (status === 'success') {
+            if (outcome === 'success' || outcome === 'partial') {
               updateTaskStatus(taskId, 'completed', totalReturned);
               if (isResume) {
                 setSuccessMsg(`Resumed discovery finished: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.${skippedInfo}${metricsInfo}`);
@@ -486,7 +483,10 @@ export default function ScrapeWorkspace() {
               if (!isResume) {
                 triggerToast(`Discovery complete: ${totalReturned} prospect${totalReturned === 1 ? '' : 's'} ready.`, 'success');
               }
-            } else if (status === 'cancelled') {
+              if (outcome === 'partial') {
+                setInfoMsg('Discovery finished, but only part of the results could be saved. Check Mining history for details.');
+              }
+            } else if (outcome === 'cancelled') {
               const savedCount = Number(stats?.persistedCount || 0);
               updateTaskStatus(taskId, 'cancelled', savedCount);
               if (savedCount > 0) {
@@ -1429,10 +1429,10 @@ export default function ScrapeWorkspace() {
                   </div>
                 ) : (
                   searchLogs.map(log => (
-                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-emerald-500/20 bg-emerald-500/5' : log.status === 'running' ? 'border-amber-500/20 bg-amber-500/5' : log.status === 'cancelled' ? 'border-sky-500/20 bg-sky-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
+                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-emerald-500/20 bg-emerald-500/5' : log.status === 'partial_success' ? 'border-amber-500/20 bg-amber-500/5' : log.status === 'running' ? 'border-amber-500/20 bg-amber-500/5' : log.status === 'cancelled' ? 'border-sky-500/20 bg-sky-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
                       <div className="flex items-start justify-between mb-2">
                         <div className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</div>
-                        <Badge variant="outline" className={log.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : log.status === 'running' ? 'text-amber-400 border-amber-500/30' : log.status === 'cancelled' ? 'text-sky-300 border-sky-500/30' : 'text-rose-400 border-rose-500/30'}>
+                        <Badge variant="outline" className={log.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : log.status === 'partial_success' ? 'text-amber-400 border-amber-500/30' : log.status === 'running' ? 'text-amber-400 border-amber-500/30' : log.status === 'cancelled' ? 'text-sky-300 border-sky-500/30' : 'text-rose-400 border-rose-500/30'}>
                           {log.status.toUpperCase()}
                         </Badge>
                       </div>

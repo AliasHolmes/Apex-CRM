@@ -1093,6 +1093,33 @@ export type TriPartitionResult = {
   needsJudge: FinalistCandidate[];
 };
 
+// Legal suffixes and division words that still name the big-tech employer itself
+// ("Amazon Web Services", "Google LLC", "Meta Platforms, Inc.", "Microsoft Azure").
+const BIG_TECH_NAME_FILLER = new Set([
+  "inc", "llc", "ltd", "corp", "corporation", "co", "company", "plc", "gmbh", "the",
+  "web", "services", "cloud", "platforms", "platform", "research", "labs", "technologies",
+  "technology", "ai", "ads", "advertising", "devices", "games", "studios",
+]);
+
+/**
+ * True only when the company name IS a big-tech employer (brand words plus legal/division
+ * words). A brand inside a services firm's name ("Amazon Growth Agency", "Meta Digital
+ * Partners") is a niche, not the employer, so it is left to the judge.
+ */
+export function isBigTechEmployerName(companyLower: string, brandRegex: RegExp): boolean {
+  const tokens = companyLower.split(/[^a-z0-9]+/).filter(Boolean);
+  const wholeBrand = new RegExp(`^(?:${brandRegex.source.replace(/^\\b|\\b$/g, "")})$`, "i");
+  let brandCount = 0;
+  for (const token of tokens) {
+    if (wholeBrand.test(token)) {
+      brandCount++;
+      continue;
+    }
+    if (!BIG_TECH_NAME_FILLER.has(token)) return false;
+  }
+  return brandCount > 0;
+}
+
 export function checkStrictContradiction(
   lead: Record<string, any>,
   contract: ProspectContract,
@@ -1228,18 +1255,13 @@ export function checkStrictContradiction(
       200,
     ).toLowerCase();
 
-    const isAgencyCompany = /\b(agency|agencies|consultancy|consulting|partner|partners|services|solutions|studio|integrator)\b/i.test(rawCompany);
     const bigTechCompanyMatch = rawCompany.match(BIG_TECH_REGEX);
-    
-    if (bigTechCompanyMatch) {
+
+    if (bigTechCompanyMatch && isBigTechEmployerName(rawCompany, BIG_TECH_REGEX)) {
       return {
         reason: `Candidate is employed by non-agency tech enterprise: '${bigTechCompanyMatch[1]}'`,
         requirementId: companyHardReq ? companyHardReq.id : "company_type",
       };
-    }
-    
-    if (!isAgencyCompany) {
-      // additional checks if needed, but here we just moved bigTech match out
     }
   }
 

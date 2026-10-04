@@ -3,6 +3,7 @@ import type { MiningTelemetryRecorder, MiningTraceEvent } from "./telemetry.js";
 import type { QueryRunStats } from "./strategist.js";
 import type { RejectionReason } from "./rejections.js";
 import type { LLMSessionCircuitBreaker } from "../services/llm.js";
+import type { SessionRequestContext } from "./sessionHelpers.js";
 import type { ScoutFreeTierBudget } from "./freeTier.js";
 import type { CollectionCapacity } from "./collectionCapacity.js";
 import type {
@@ -133,6 +134,8 @@ export type MiningSessionCheckpoint = {
   datasetSearchAfter?: any[];
   /** Capped seen-key snapshot so resumed rounds skip already-rejected profiles. */
   seenCandidateKeys?: string[];
+  /** Request-scoped inputs (saved search, exclusions, mode) replayed when the session resumes. */
+  requestContext?: SessionRequestContext;
   updatedAt: string;
 };
 

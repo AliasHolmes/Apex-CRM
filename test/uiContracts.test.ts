@@ -244,5 +244,9 @@ test('ScrapeWorkspace.tsx guarantees completion UI updates are not bypassed by s
   assert.match(scrapeSource, /const\s+taskId\s*=\s*handleTaskAdd\('search',\s*taskQuery\);/);
 });
 
-
-
+test('vite.config.ts explicitly dedupes react and pre-bundles table/virtualizer dependencies', () => {
+  const viteConfig = readFileSync(path.resolve('vite.config.ts'), 'utf8');
+  assert.match(viteConfig, /dedupe:\s*\[['"]react['"],\s*['"]react-dom['"]\]/);
+  assert.match(viteConfig, /['"]@tanstack\/react-table['"]/);
+  assert.match(viteConfig, /['"]@tanstack\/react-virtual['"]/);
+});

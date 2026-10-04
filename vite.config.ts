@@ -10,6 +10,7 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(import.meta.dirname, './src'),
       },
+      dedupe: ['react', 'react-dom'],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
@@ -24,6 +25,7 @@ export default defineConfig(() => {
       include: [
         'react',
         'react-dom',
+        '@tanstack/react-table',
         '@tanstack/react-virtual',
         'react-markdown',
         'remark-gfm',

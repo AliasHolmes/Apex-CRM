@@ -4,13 +4,14 @@ Generated: 2026-10-05 · Scope: all first-party code under `src/`, `server/`, `s
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Supersedes the 2026-10-02 index, which had drifted on test counts (154 → 161 files,
-> 976 → 1034 tests), line counts, and config keys (144 → 133). Verified values below were
-> measured directly from the tree, not inherited: `tsc --noEmit` passes with 0 errors,
-> the full suite (`npm test`) passes 1047 tests across 184 suites, and `npm run test:eval`
-> passes 13 tests, as of this date. Two commits landed after the prior index — `35f29bd`
-> (primary admission gate, contradictory-geo guard) and `767f65e` (student-founder triage,
-> SERP tagline sanitization, multi-country replenishment decoupling) — and are folded into
-> §4, §5, §7 below.
+> 976 → 1034 tests), line counts, and config keys (144 → 133). Every value below was
+> measured directly from the tree, not inherited, and is **pinned to commit `b60a6dc`**
+> (measured in a detached worktree so concurrent working-tree edits could not skew it):
+> `tsc --noEmit` passes with 0 errors, `npm test` reports **1064 tests across 181 suites**
+> (1063 pass; the single failure is the CRLF-only source guard documented in §9.14, not a
+> code defect), and `npm run test:eval` passes **13 tests**. This file is edited by more
+> than one session at a time — re-measure against a named sha rather than trusting a
+> number that has no commit attached.
 
 ---
 
@@ -41,13 +42,13 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Frontend (`src/`)                                                | ~11,785 lines across 36 files                                             |
-| Backend engine (`server/leadSearch/`)                            | ~24,420 lines: 42 modules + 9 `stages/`                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,610 lines                                                             |
+| Backend engine (`server/leadSearch/`)                            | ~24,505 lines: 43 modules + 9 `stages/`                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,385 lines                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
-| Test suite                                                       | 163 files (161 `.test.ts` + 1 `.eval.ts` + 1 helper), 1047 unit tests / 184 suites + 13 eval tests, all passing |
-| Total first-party LOC                                            | ~78,100 (incl. ~26,200 test LOC)                                          |
-| Working tree                                                     | clean except this file — last commit `767f65e`, sole pending change is `docs/CODEBASE_INDEX.md` |
+| Test suite                                                       | 166 files (164 `.test.ts` + 1 `.eval.ts` + 1 helper), 1064 unit tests / 181 suites + 13 eval tests, 1063 pass + 1 CRLF-only guard failure (§9.14) |
+| Total first-party LOC                                            | ~78,000 (incl. ~26,200 test LOC)                                          |
+| Anchor                                                           | measured at `b60a6dc`; working tree clean at that commit                  |
 
 ## 3. Tech stack
 
@@ -69,12 +70,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 server.ts                    Express app + static Vite serve (335 lines)
 server/db.ts                 SQLite layer: schema v26, migrations, 40+ readers/writers (5,651)
 server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,430)
-server/services/             llm.ts (3,427, provider-affinity dual concurrency, Atria reasoning headroom, completion cache) ·
+server/services/             llm.ts (3,261, provider-affinity dual concurrency, Atria reasoning headroom, completion cache;
+                             legacy single-mutex queue and Token Harbor/ProviderTrafficController removed) ·
                              brightdata.ts (2,168) · keyRotator ·
                              sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
                              outboundPrompt · langfuse
 server/leadSearch/           the discovery engine
-  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,805)
+  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,815)
+  rollingPool.ts             bounded rolling-window task pool used to parallelize judge micro-batches (42)
   prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support, known-metro registry (2,038)
   finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,527)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (799)
@@ -109,7 +112,7 @@ server/leadSearch/           the discovery engine
                              persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
-test/                        163 files (161 `.test.ts` + `queryIntelligence.eval.ts` +
+test/                        166 files (164 `.test.ts` + `queryIntelligence.eval.ts` +
                              `helpers/mockLlm.ts`), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (83 lines)
 ```
@@ -203,9 +206,10 @@ architectural invariants and were pruned from the runtime configuration.
 
 ## 7. Test suite
 
-161 `.test.ts` files / 1047 unit & integration tests (184 suites) via `npm test` (293s)
-+ 13 eval tests via `npm run test:eval` (21s), all passing as verified 2026-10-05.
-Composition:
+164 `.test.ts` files / 1064 unit & integration tests (181 suites) via `npm test` (158s at
+`b60a6dc`) + 13 eval tests via `npm run test:eval` (21s). 1063 pass; the one failure is
+the `verifiedBugfixes` source guard, which reproduces **only on a CRLF checkout** and is a
+test portability bug, not a code defect (§9.14). Composition:
 
 - **Query & intelligence eval**: `queryIntelligence.eval` (13 tests over 30 gold briefs,
   pronoun-collision guard G21, plural-persona extraction G22, city-only geo anchoring G24,
@@ -218,6 +222,9 @@ Composition:
 - **Persistence**: `leadPersistence` (incl. G15 CRM workflow preservation), `leadDedupe`,
   `leadIdentityMigration`, `sessionPersistenceAndResume`, `concurrencyShieldAndBulkDelete`,
   `crmNegativeExclusions` (incl. G13 JSON metro saturation)
+- **Judge parallelism**: `rollingPool` (bounded rolling-window pool semantics), `judgeRollingQueue`
+  (micro-batch fan-out with admission-gate ordering), `compactJudgeGrounding`, and
+  `criticalPathTelemetry` (wall-clock attribution added in `1743313`)
 - **Contracts**: `uiContracts` (16), `encodingHygiene`, `contractShape`
 - Curated subsets are wired as named `npm run test:*` scripts (incl. `npm run test:eval`).
 
@@ -412,6 +419,60 @@ whole suite passes 1047 tests:
   now suffixes each metro with its *own* canonical country instead of the session
   `targetCountry`, decoupling multi-country briefs.
 
+### 9.13 LLM queue, dead-code, and flag-surface cleanup (A1–A9, B1–B8, C) — LANDED (2026-10-05, `5a7b566`…`b60a6dc`)
+
+Eight commits that shrink the LLM/lead-search surface without changing behaviour, all
+measured here at `b60a6dc`:
+
+- **A1/A2 (`000f6d3`)** — the legacy single-mutex queue in `llm.ts` is gone; provider
+  affinity is now expressed solely by the independent Atria/Byesu slots. `test/llmBoundedConcurrency.test.ts`
+  was deleted with it, so the suite dropped from 165 to 164 `.test.ts` files.
+- **A3/B8 (`fe0c021`)** — Token Harbor leftovers and `ProviderTrafficController` removed
+  from `llm.ts`, `keyRotator.ts`, and `companyIntent.ts`; `llm.ts` shrank 3,427 → 3,261.
+- **A4 (`4a4f6c5`)** — the six graduated `() => true` flags were deleted outright rather
+  than left as no-ops; `featureFlags.ts` now exposes exactly 10 env-overridable flags.
+- **A6 (`4553486`)** — write-only `stats.rerank.*` fields dropped from
+  `discoveryEngine.ts` / `selectStage.ts`, closing the loose end §9.2 flagged when
+  `executeJudgeStage` was removed.
+- **A7–A9 (`5a7b566`)** — dead exports removed and module-local symbols scoped across
+  `discoveryRouting`, `finalistJudge`, `rejections`, `scoring`, `searchSpec`,
+  `titleTriage`, `brightdata`, `linkedinEvidence`, `llm`.
+- **Judge parallelism (`1743313`)** — new `rollingPool.ts` runs judge micro-batches in a
+  bounded rolling window (a finished item frees its slot instead of holding a
+  `Promise.all` wave), with `telemetry.ts` gaining critical-path wall-clock attribution.
+  Four new suites pin it: `rollingPool`, `judgeRollingQueue`, `compactJudgeGrounding`,
+  `criticalPathTelemetry`.
+- **B1–B7 (`c22ea8e`)** — `CONTEXT.md`, `README.md`, and this index re-synchronized;
+  the README test badge lost its hardcoded count.
+- **C (`b60a6dc`)** — `.env.example` re-synced with active runtime keys.
+
+### 9.14 Source guard is CRLF-sensitive — OPEN (found 2026-10-05)
+
+`test/verifiedBugfixes.test.ts:223` ("keeps no executable `<= 1.0` score comparison in the
+client") strips comments before matching:
+
+```ts
+const code = src.replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n')
+  .map((line) => line.replace(/\/\/.*$/, ''))
+  .join('\n');
+```
+
+On a CRLF checkout that second strip silently does nothing: `.` does not match `\r`, and
+`$` without the `m` flag only anchors at end of input, so `/\/\/.*$/` fails to match a
+comment that is followed by `\r` and the prose comment
+(`// ... not `<= 1.0`: a score of exactly 1 ...`) survives into `code`, tripping the
+assertion. Reproduced in a detached worktree where `core.autocrlf=true` (there is no
+`.gitattributes`) and `src/context/LeadContext.tsx` checks out as CRLF: **1 failure out of
+1064**. Rewriting that one file to LF in place makes all 8 tests in the file pass, which
+isolates line endings as the sole cause — the guard is correct and non-vacuous in the
+current dev tree, which happens to hold the file as LF.
+
+Impact: a fresh Windows clone of this repo fails `npm test` for a reason unrelated to the
+code. Fix either by normalizing before stripping (`code.split(/\r?\n/)`) or by pinning
+line endings in `.gitattributes`. Not yet applied — no commit should be made for this
+without an owner deciding which remedy they prefer.
+
 ## 10. Recommended next actions
 
 Updated 2026-10-05.
@@ -423,3 +484,5 @@ Updated 2026-10-05.
 5. **Run a live production discovery session** to monitor real-time Atria vs. Byesu parallel dispatch in `search_logs.trace_events` under live network traffic.
 6. ~~**Refresh the README test badge**~~ — Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
 7. **Watch the primary admission gate's precision/recall trade** — it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.
+8. **Make the `<= 1.0` source guard EOL-agnostic (§9.14)** — one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
+9. **Re-pin this index when HEAD moves.** Every number above is valid at `b60a6dc` only; §1 header carries the shas to re-measure against. Prefer an isolated worktree for the re-measure — this repo is edited by more than one session at a time.

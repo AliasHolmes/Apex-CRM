@@ -177,26 +177,6 @@ export const normalizeSearchSpec = (
   };
 };
 
-const METRO_HUBS_BY_COUNTRY: Record<string, string[]> = {
-  usa: [
-    "New York",
-    "San Francisco",
-    "Austin",
-    "Los Angeles",
-    "Chicago",
-    "Boston",
-    "Seattle",
-    "Miami",
-    "Atlanta",
-    "Dallas",
-    "Denver",
-    "San Diego",
-  ],
-  uk: ["London", "Manchester", "Birmingham", "Bristol", "Edinburgh", "Leeds"],
-  canada: ["Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa"],
-  australia: ["Sydney", "Melbourne", "Brisbane", "Perth"],
-};
-
 const DISCOVERY_MODES: readonly DiscoveryMode[] = [
   "person_first",
   "account_first",
@@ -357,7 +337,13 @@ export const buildRetrievalTasks = (
     });
 };
 
-import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, type ProspectContract } from "./prospectContract.js";
+import {
+  COUNTRY_CANONICAL_MAP,
+  COUNTRY_TO_METROS,
+  AMBIGUOUS_METRO_NAMES,
+  metroWithCountry,
+  type ProspectContract,
+} from "./prospectContract.js";
 import { looksLikeCompanyHint } from "./observations.js";
 import { normalizeTavilyCountry } from "../services/llm.js";
 import { resolveGeo } from "./queryUnderstanding.js";
@@ -408,6 +394,7 @@ export const buildFallbackQueryPlan = (
     const baseLower = base.toLowerCase();
     outer: for (const [key, metroList] of Object.entries(COUNTRY_TO_METROS)) {
       for (const metro of metroList) {
+        if (AMBIGUOUS_METRO_NAMES.has(metro.toLowerCase())) continue;
         const escaped = metro.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
         if (new RegExp(`\\b${escaped}\\b`, 'i').test(baseLower)) {
           const canonical = COUNTRY_CANONICAL_MAP[key] || COUNTRY_CANONICAL_MAP[key.toLowerCase()];
@@ -419,11 +406,8 @@ export const buildFallbackQueryPlan = (
     }
   }
   if (countryAnchor && metros.length === 0) {
-    // Fallback to legacy hub table for explicitly detected countries
-    const hubKey = countryAnchor.toLowerCase() === 'united states' || countryAnchor === 'USA' ? 'usa'
-      : countryAnchor.toLowerCase() === 'united kingdom' || countryAnchor === 'UK' ? 'uk'
-      : countryAnchor.toLowerCase();
-    const hubs = (METRO_HUBS_BY_COUNTRY as Record<string, string[]>)[hubKey];
+    const canonical = COUNTRY_CANONICAL_MAP[countryAnchor.toLowerCase()] || countryAnchor;
+    const hubs = COUNTRY_TO_METROS[canonical.toLowerCase()] || COUNTRY_TO_METROS[countryAnchor.toLowerCase()];
     if (hubs && hubs.length > 0) metros = [...hubs];
   }
 
@@ -438,10 +422,10 @@ export const buildFallbackQueryPlan = (
   // Zero default-invention: when geo is open_global, emit global queries with no location tokens.
   const geoSuffix = countryAnchor ? ` ${countryAnchor}` : '';
   const metro0 = countryAnchor && metros[0]
-    ? (!metros[0].toLowerCase().includes(countryAnchor.toLowerCase()) ? `${metros[0]} ${countryAnchor}` : metros[0])
+    ? metroWithCountry(metros[0], countryAnchor)
     : (countryAnchor ? countryAnchor : '');
   const metro1 = countryAnchor && metros[1]
-    ? (!metros[1].toLowerCase().includes(countryAnchor.toLowerCase()) ? `${metros[1]} ${countryAnchor}` : metros[1])
+    ? metroWithCountry(metros[1], countryAnchor)
     : (countryAnchor ? countryAnchor : '');
 
   const plans: SearchQueryPlanItem[] = [
@@ -542,8 +526,8 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
       ? `\nUNMET HARD REQUIREMENTS (these had < 25% pass rate last round and MUST be covered in queries): ${params.missingRequirementIds.join(", ")}`
       : "";
 
-  // Extract all metros from METRO_HUBS_BY_COUNTRY that appeared in previousQueries
-  const allKnownMetros = Object.values(METRO_HUBS_BY_COUNTRY).flat();
+  // Extract all metros from COUNTRY_TO_METROS that appeared in previousQueries
+  const allKnownMetros = Array.from(new Set(Object.values(COUNTRY_TO_METROS).flat()));
   const lowerQueries = prevQueries.map((q) => q.toLowerCase());
   const exploredMetros = allKnownMetros.filter((metro) =>
     lowerQueries.some((q) => q.includes(metro.toLowerCase())),
@@ -557,22 +541,30 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
   });
 
   // Determine target countries from brief or contract
-  const briefLower = (params.contract?.brief || params.query || "").toLowerCase();
-  const isNorthAmerica = /\bnorth\s+america\b/i.test(briefLower);
-  const isSouthOrLatinAmerica = /\b(?:south|latin)\s+america\b/i.test(briefLower);
-  const relevantCountries = Object.keys(METRO_HUBS_BY_COUNTRY).filter((c) => {
-    if (briefLower.includes(c)) return true;
-    if (isNorthAmerica && (c === "usa" || c === "canada")) return true;
-    if (c === "usa" && !isNorthAmerica && !isSouthOrLatinAmerica && /\b(?:united states|us|usa|u\.s\.a?|america)\b/i.test(briefLower)) return true;
-    if (c === "uk" && /\b(?:united kingdom|uk|britain|england|scotland)\b/i.test(briefLower)) return true;
-    return false;
-  });
-  const countryPool = relevantCountries.length > 0 ? relevantCountries : Object.keys(METRO_HUBS_BY_COUNTRY);
-  const eligibleMetros = countryPool.flatMap((c) => {
-    const hubList = METRO_HUBS_BY_COUNTRY[c] || [];
-    const countryLabel = c === "uk" ? "UK" : c === "canada" ? "Canada" : c === "australia" ? "Australia" : "";
-    return hubList.map((m) => countryLabel && !m.toLowerCase().includes(countryLabel.toLowerCase()) ? `${m} ${countryLabel}` : m);
-  });
+  const briefText = params.contract?.brief || params.query || "";
+  const resolvedGeo = resolveGeo(briefText);
+  let targetCountryCanonical: string | null = resolvedGeo.countryAnchor;
+  if (!targetCountryCanonical && params.contract?.identitySpec?.locations?.length) {
+    for (const loc of params.contract.identitySpec.locations) {
+      const geo = resolveGeo(loc);
+      if (geo.countryAnchor) {
+        targetCountryCanonical = geo.countryAnchor;
+        break;
+      }
+    }
+  }
+
+  const eligibleMetros: string[] = [];
+  if (targetCountryCanonical) {
+    const rawMetros =
+      COUNTRY_TO_METROS[targetCountryCanonical.toLowerCase()] ||
+      COUNTRY_TO_METROS[
+        (COUNTRY_CANONICAL_MAP[targetCountryCanonical.toLowerCase()] || "").toLowerCase()
+      ] || [];
+    for (const m of rawMetros) {
+      eligibleMetros.push(metroWithCountry(m, targetCountryCanonical));
+    }
+  }
   const unvisitedMetros = eligibleMetros.filter((m) => {
     const mLower = m.toLowerCase();
     const isExplored = exploredMetros.some((em) => mLower.includes(em.toLowerCase()));

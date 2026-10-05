@@ -15,7 +15,7 @@ import {
   Search, 
   Sparkles, 
   Check, 
-  AlertCircle, 
+  CircleAlert, 
   Info,
   RefreshCw, 
   Database,
@@ -30,6 +30,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ResumableSessionsBanner, type ResumableSession } from "@/components/ResumableSessionsBanner";
@@ -48,33 +49,33 @@ const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
   try {
     events = JSON.parse(debugLogsStr);
   } catch {
-    return <div className="text-xs text-rose-400 mt-2">Failed to parse debug logs.</div>;
+    return <div className="text-xs text-danger mt-2">Failed to parse debug logs.</div>;
   }
 
   if (events.length === 0) return null;
 
   return (
-    <div className="mt-3 pt-3 border-t border-slate-800/50">
+    <div className="mt-3 pt-3 border-t border-border/50">
       <Button 
         variant="ghost" 
         size="sm" 
         onClick={() => setExpanded(!expanded)} 
         aria-expanded={expanded}
         aria-controls={panelId}
-        className="text-xs text-indigo-400 hover:text-indigo-300 p-0 h-auto gap-1"
+        className="text-xs text-primary hover:text-primary p-0 h-auto gap-1"
       >
         {expanded ? 'Hide' : 'Show'} technical details ({events.length})
       </Button>
       
       {expanded && (
-        <div id={panelId} className="mt-2 space-y-2 max-h-96 overflow-y-auto custom-scrollbar p-2 bg-slate-950/50 rounded border border-slate-800/80">
+        <div id={panelId} className="mt-2 space-y-2 max-h-96 overflow-y-auto custom-scrollbar p-2 bg-background/50 rounded border border-border/80">
           {events.map((ev, idx) => (
-            <div key={idx} className="text-xs border-b border-slate-900 last:border-0 pb-2 mb-2 last:pb-0 last:mb-0">
-              <div className="flex items-center justify-between text-slate-500 font-mono text-xs">
+            <div key={idx} className="text-xs border-b border-border last:border-0 pb-2 mb-2 last:pb-0 last:mb-0">
+              <div className="flex items-center justify-between text-muted-foreground font-mono text-xs">
                 <span>{ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : ''}</span>
-                <span className="uppercase font-semibold text-indigo-400/80">{ev.type}</span>
+                <span className="uppercase font-semibold text-primary/80">{ev.type}</span>
               </div>
-              <div className="font-semibold text-slate-300 mt-0.5">{ev.label || ev.query || ev.url}</div>
+              <div className="font-semibold text-foreground/80 mt-0.5">{ev.label || ev.query || ev.url}</div>
               
               <Button 
                 variant="ghost" 
@@ -82,13 +83,13 @@ const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
                 onClick={() => setExpandedEvent(expandedEvent === idx ? null : idx)}
                 aria-expanded={expandedEvent === idx}
                 aria-controls={`${panelId}-${idx}`}
-                className="text-xs text-slate-400 hover:text-slate-200 p-0 h-auto mt-1"
+                className="text-xs text-muted-foreground hover:text-foreground p-0 h-auto mt-1"
               >
                 {expandedEvent === idx ? 'Collapse details' : 'Expand details'}
               </Button>
               
               {expandedEvent === idx && (
-                <pre id={`${panelId}-${idx}`} className="text-xs text-slate-300 font-mono bg-slate-950 p-2 rounded mt-1 overflow-x-auto whitespace-pre-wrap max-h-64 border border-slate-800">
+                <pre id={`${panelId}-${idx}`} className="text-xs text-foreground/80 font-mono bg-background p-2 rounded mt-1 overflow-x-auto whitespace-pre-wrap max-h-64 border border-border">
                   {JSON.stringify(ev, null, 2)}
                 </pre>
               )}
@@ -99,6 +100,12 @@ const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
     </div>
   );
 };
+
+const QUICK_SEARCH_EXAMPLES: ReadonlyArray<{ label: string; brief: string }> = [
+  { label: 'SaaS founders in Austin', brief: 'SaaS founders in Austin at companies with 10-50 employees' },
+  { label: 'Heads of growth hiring now', brief: 'Heads of growth at B2B software companies that are actively hiring marketers' },
+  { label: 'Local clinic owners', brief: 'Owners of independent dental or physiotherapy clinics in the UK' },
+];
 
 const DETAILED_SEARCH_EXAMPLE = `Job titles: Founder, CEO, Owner, COO, Head of Growth
 Industries: Marketing agencies, home services, dental practices
@@ -122,7 +129,7 @@ export default function ScrapeWorkspace() {
   const previewRequestIdRef = useRef(0);
   const { leads, handleLeadAdded, rehydrateLeads } = useLeads();
   const { triggerToast } = useToast();
-  const [activeTab, setActiveTab] = useState<'url' | 'paste' | 'find'>('url');
+  const [activeTab, setActiveTab] = useState<'url' | 'paste' | 'find'>('find');
   const [providerStatus, setProviderStatus] = useState<'checking' | 'ready' | 'missing' | 'offline'>('checking');
 
   // URL Mode inputs
@@ -940,9 +947,9 @@ export default function ScrapeWorkspace() {
 
           <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="w-full">
             <TabsList className="grid w-full grid-cols-3 mb-6 h-12">
+              <TabsTrigger value="find" disabled={loading} className="text-xs font-bold"><Search className="w-4 h-4 mr-2" aria-hidden="true" /> Search prospects</TabsTrigger>
               <TabsTrigger value="url" disabled={loading} className="text-xs font-bold"><Globe className="w-4 h-4 mr-2" aria-hidden="true" /> Profile lookup</TabsTrigger>
               <TabsTrigger value="paste" disabled={loading} className="text-xs font-bold"><Clipboard className="w-4 h-4 mr-2" aria-hidden="true" /> Paste profile</TabsTrigger>
-              <TabsTrigger value="find" disabled={loading} className="text-xs font-bold"><Search className="w-4 h-4 mr-2" aria-hidden="true" /> Search prospects</TabsTrigger>
             </TabsList>
 
             <TabsContent value="url" className="space-y-4">
@@ -1048,13 +1055,27 @@ export default function ScrapeWorkspace() {
                     onChange={(event) => updateSearchBrief(event.target.value)}
                     placeholder="For example: SaaS founders in Austin at companies with 10-50 employees"
                     disabled={loading}
-                    rows={5}
+                    rows={6}
                     aria-describedby="prospect-search-help"
-                    className="w-full resize-y leading-relaxed"
+                    className="w-full resize-y text-base leading-relaxed"
                   />
                   <p id="prospect-search-help" className="mt-2 text-sm text-muted-foreground">
                     Apex searches public evidence only. Profile enrichment stays on demand until you review the results.
                   </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Example searches">
+                    <span className="text-xs font-semibold text-muted-foreground">Try:</span>
+                    {QUICK_SEARCH_EXAMPLES.map((example) => (
+                      <button
+                        key={example.label}
+                        type="button"
+                        onClick={() => updateSearchBrief(example.brief)}
+                        disabled={loading}
+                        className="rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 motion-reduce:transition-none"
+                      >
+                        {example.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-4 rounded-xl border bg-muted/40 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -1085,7 +1106,7 @@ export default function ScrapeWorkspace() {
                             disabled={loading}
                             className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
                               leadLimit === preset
-                                ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-indigo-500'
+                                ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-ring'
                                 : 'bg-background hover:bg-muted text-muted-foreground border border-input'
                             }`}
                           >
@@ -1116,7 +1137,7 @@ export default function ScrapeWorkspace() {
                     aria-controls="advanced-prospect-search"
                     className="flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left text-sm font-semibold text-foreground transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    <span className="flex items-center gap-2"><SlidersHorizontal className="h-4 w-4 text-indigo-400" aria-hidden="true" /> Advanced search options</span>
+                    <span className="flex items-center gap-2"><SlidersHorizontal className="h-4 w-4 text-primary" aria-hidden="true" /> Advanced search options</span>
                     <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform motion-reduce:transition-none ${showAdvancedControls ? 'rotate-180' : ''}`} aria-hidden="true" />
                   </button>
 
@@ -1137,12 +1158,15 @@ export default function ScrapeWorkspace() {
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                         <div>
                           <label htmlFor="discovery-mode" className="mb-1.5 block text-sm font-medium">Search strategy</label>
-                          <select id="discovery-mode" value={discoveryMode} onChange={(event) => { cancelPreviewRequest(); setDiscoveryMode(event.target.value as typeof discoveryMode); setSearchPreview(null); }} disabled={loading} className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-                            <option value="person_first">People first</option>
-                            <option value="account_first">Companies first</option>
-                            <option value="signal_first">Recent signals first</option>
-                            <option value="local_business">Local businesses</option>
-                          </select>
+                          <Select value={discoveryMode} onValueChange={(value) => { cancelPreviewRequest(); setDiscoveryMode(value as typeof discoveryMode); setSearchPreview(null); }} disabled={loading}>
+                            <SelectTrigger id="discovery-mode"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="person_first">People first</SelectItem>
+                              <SelectItem value="account_first">Companies first</SelectItem>
+                              <SelectItem value="signal_first">Recent signals first</SelectItem>
+                              <SelectItem value="local_business">Local businesses</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div>
                           <label htmlFor="saved-search-name" className="mb-1.5 block text-sm font-medium">Search name</label>
@@ -1167,17 +1191,21 @@ export default function ScrapeWorkspace() {
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
                           <label htmlFor="saved-search" className="mb-1.5 block text-sm font-medium">Saved search</label>
-                          <select id="saved-search" value={selectedSavedSearchId} onChange={(event) => applySavedSearch(event.target.value)} disabled={loading} className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-                            <option value="">Choose a saved search</option>
-                            {savedSearches.map((saved) => <option key={saved.id} value={saved.id}>{saved.name}</option>)}
-                          </select>
+                          <Select value={selectedSavedSearchId} onValueChange={(value) => applySavedSearch(value)} disabled={loading || savedSearches.length === 0}>
+                            <SelectTrigger id="saved-search"><SelectValue placeholder={savedSearches.length === 0 ? 'No saved searches yet' : 'Choose a saved search'} /></SelectTrigger>
+                            <SelectContent>
+                              {savedSearches.map((saved) => <SelectItem key={saved.id} value={saved.id}>{saved.name}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div>
                           <label htmlFor="lookalike-prospect" className="mb-1.5 block text-sm font-medium">Find similar prospects</label>
-                          <select id="lookalike-prospect" value="" onChange={(event) => handleUseLookalike(event.target.value)} disabled={loading || leads.length === 0} className="h-10 w-full rounded-md border bg-background px-3 text-sm">
-                            <option value="">Choose an existing prospect</option>
-                            {leads.slice(0, 100).map((lead) => <option key={lead.id} value={lead.id}>{lead.profile.fullName}{lead.profile.currentCompany ? ` - ${lead.profile.currentCompany}` : ''}</option>)}
-                          </select>
+                          <Select value="" onValueChange={(value) => handleUseLookalike(value)} disabled={loading || leads.length === 0}>
+                            <SelectTrigger id="lookalike-prospect"><SelectValue placeholder="Choose an existing prospect" /></SelectTrigger>
+                            <SelectContent>
+                              {leads.slice(0, 100).map((lead) => <SelectItem key={lead.id} value={lead.id}>{lead.profile.fullName}{lead.profile.currentCompany ? ` - ${lead.profile.currentCompany}` : ''}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
                         </div>
                       </div>
 
@@ -1189,7 +1217,7 @@ export default function ScrapeWorkspace() {
                         </div>
                       )}
                       {searchPreview?.spec && (
-                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm text-emerald-100 space-y-1" role="status">
+                        <div className="rounded-lg border border-success/20 bg-success/5 p-3 text-sm text-success space-y-1" role="status">
                           <div className="font-semibold">Planned paths: {(searchPreview.tasks || []).map((task: any) => task.lane).filter((lane: string, index: number, lanes: string[]) => lanes.indexOf(lane) === index).join(', ') || 'people'}</div>
                           <div>Using: {[...(searchPreview.spec.person?.includeTitles || []), ...(searchPreview.spec.company?.industries || []), ...(searchPreview.spec.signals?.include || [])].slice(0, 6).join(' / ') || 'your brief'}</div>
                         </div>
@@ -1198,7 +1226,7 @@ export default function ScrapeWorkspace() {
                   )}
                 </div>
 
-                <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 text-sm text-indigo-100">
+                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-primary">
                   <span className="font-semibold">Flow:</span> Discover public prospects here, review them in Prospects, then enrich only the records you choose.
                 </div>
               </form>
@@ -1214,7 +1242,7 @@ export default function ScrapeWorkspace() {
           <div className="mt-6 space-y-4" role="status" aria-live="polite">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-indigo-400 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                <Sparkles className="w-4 h-4 text-primary animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 Discovery in progress...
               </span>
               <Button type="button" variant="outline" size="sm" onClick={handleCancelDiscovery} className="h-8 text-xs">
@@ -1231,18 +1259,18 @@ export default function ScrapeWorkspace() {
               initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={shouldReduceMotion ? undefined : { height: 0, opacity: 0 }}
-              className="mt-6 border border-emerald-500/20 bg-emerald-500/5 p-4 rounded-xl flex gap-3 text-emerald-300 text-sm"
+              className="mt-6 border border-success/20 bg-success/5 p-4 rounded-xl flex gap-3 text-success text-sm"
               role="status"
               aria-live="polite"
             >
-              <Check className="w-5 h-5 text-emerald-400 shrink-0" />
+              <Check className="w-5 h-5 text-success shrink-0" />
               <div>
-                <p className="font-semibold text-emerald-200">{successMsg}</p>
+                <p className="font-semibold text-success">{successMsg}</p>
                 {crmDuplicatesFiltered > 0 && (
                   <div className="mt-2 flex items-center gap-2">
                     <Badge
                       variant="outline"
-                      className="border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono text-xs py-0.5 px-2.5"
+                      className="border-warning/40 bg-warning/10 text-warning font-mono text-xs py-0.5 px-2.5"
                     >
                       CRM Duplicates Filtered: {crmDuplicatesFiltered}
                     </Badge>
@@ -1250,7 +1278,7 @@ export default function ScrapeWorkspace() {
                 )}
                 {sourceLinks.length > 0 && (
                   <div className="mt-2.5">
-                    <span className="text-xs font-semibold text-emerald-400 block mb-1">Sources</span>
+                    <span className="text-xs font-semibold text-success block mb-1">Sources</span>
                     <div className="flex flex-wrap gap-2">
                       {sourceLinks.slice(0, 3).map((link, i) => (
                         <a
@@ -1258,9 +1286,9 @@ export default function ScrapeWorkspace() {
                           href={link.uri}
                           target="_blank"
                           rel="noreferrer"
-                          className="bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors motion-reduce:transition-none text-emerald-200 text-xs px-2.5 py-1 rounded-md flex items-center gap-1 font-medium"
+                          className="bg-success/10 border border-success/20 hover:bg-success/20 transition-colors motion-reduce:transition-none text-success text-xs px-2.5 py-1 rounded-md flex items-center gap-1 font-medium"
                         >
-                          <Globe className="w-3 h-3 text-emerald-400" />
+                          <Globe className="w-3 h-3 text-success" />
                           {link.title.length > 25 ? link.title.substring(0, 25) + '...' : link.title}
                         </a>
                       ))}
@@ -1276,11 +1304,11 @@ export default function ScrapeWorkspace() {
               initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={shouldReduceMotion ? undefined : { height: 0, opacity: 0 }}
-              className="mt-6 flex gap-3 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4 text-sm text-sky-200"
+              className="mt-6 flex gap-3 rounded-xl border border-info/20 bg-info/5 p-4 text-sm text-info"
               role="status"
               aria-live="polite"
             >
-              <Info className="h-5 w-5 shrink-0 text-sky-400" aria-hidden="true" />
+              <Info className="h-5 w-5 shrink-0 text-info" aria-hidden="true" />
               <p className="font-semibold">{infoMsg}</p>
             </motion.div>
           )}
@@ -1290,13 +1318,13 @@ export default function ScrapeWorkspace() {
               initial={shouldReduceMotion ? false : { height: 0, opacity: 0 }}
               animate={{ height: 'auto', opacity: 1 }}
               exit={shouldReduceMotion ? undefined : { height: 0, opacity: 0 }}
-              className="mt-6 border border-rose-500/20 bg-rose-500/5 p-4 rounded-xl flex gap-3 text-rose-300 text-sm"
+              className="mt-6 border border-danger/20 bg-danger/5 p-4 rounded-xl flex gap-3 text-danger text-sm"
               role="alert"
             >
-              <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" aria-hidden="true" />
+              <CircleAlert className="w-5 h-5 text-danger shrink-0" aria-hidden="true" />
               <div>
-                <p className="font-semibold text-rose-200">Could not complete the request</p>
-                <p className="mt-0.5 text-rose-300 leading-relaxed text-xs">{errorCode}</p>
+                <p className="font-semibold text-danger">Could not complete the request</p>
+                <p className="mt-0.5 text-danger leading-relaxed text-xs">{errorCode}</p>
 
               </div>
             </motion.div>
@@ -1311,73 +1339,73 @@ export default function ScrapeWorkspace() {
           <div>
             <div className="flex items-center justify-between gap-3 border-b pb-3 mb-4">
               <div className="flex items-center gap-2">
-                <History className="w-5 h-5 text-slate-400" aria-hidden="true" />
-                <h3 className="text-sm font-bold text-slate-200">Recent activity</h3>
+                <History className="w-5 h-5 text-muted-foreground" aria-hidden="true" />
+                <h3 className="text-sm font-bold text-foreground">Recent activity</h3>
               </div>
               <Badge
                 variant="outline"
                 aria-live="polite"
                 className={providerStatus === 'ready'
-                  ? 'border-emerald-500/30 text-emerald-300'
+                  ? 'border-success/30 text-success'
                   : providerStatus === 'missing'
-                    ? 'border-amber-500/30 text-amber-300'
+                    ? 'border-warning/30 text-warning'
                     : providerStatus === 'offline'
-                      ? 'border-rose-500/30 text-rose-300'
-                      : 'border-slate-700 text-slate-400'}
+                      ? 'border-danger/30 text-danger'
+                      : 'border-input text-muted-foreground'}
               >
                 {providerStatus === 'ready' ? 'Discovery configured' : providerStatus === 'missing' ? 'Discovery setup needed' : providerStatus === 'offline' ? 'Health check unavailable' : 'Checking discovery setup'}
               </Badge>
             </div>
           
           {tasks.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/30 px-4 py-8 text-center">
-              <History className="mx-auto h-6 w-6 text-slate-500" aria-hidden="true" />
-              <p className="mt-3 text-sm font-medium text-slate-300">No activity yet</p>
-              <p className="mt-1 text-xs leading-relaxed text-slate-500">Profile lookups and prospect searches from this session will appear here.</p>
+            <div className="rounded-xl border border-dashed border-input bg-background/30 px-4 py-8 text-center">
+              <History className="mx-auto h-6 w-6 text-muted-foreground" aria-hidden="true" />
+              <p className="mt-3 text-sm font-medium text-foreground/80">No activity yet</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Profile lookups and prospect searches from this session will appear here.</p>
             </div>
           ) : (
             <ul className="space-y-3 max-h-[280px] overflow-y-auto pr-1" aria-label="Current session activity">
               {tasks.map((task) => (
               <li
                 key={task.id} 
-                className="p-3 bg-slate-950/60 rounded-xl border border-slate-800 flex items-center justify-between text-xs transition-colors motion-reduce:transition-none hover:bg-slate-900"
+                className="p-3 bg-background/60 rounded-xl border border-border flex items-center justify-between text-xs transition-colors motion-reduce:transition-none hover:bg-card"
               >
                 <div className="max-w-[70%]">
-                  <div className="flex items-center gap-1.5 font-bold text-slate-300">
-                    {task.type === 'url' && <Globe className="w-3.5 h-3.5 text-indigo-400" aria-hidden="true" />}
-                    {task.type === 'paste' && <Clipboard className="w-3.5 h-3.5 text-cyan-400" aria-hidden="true" />}
-                    {task.type === 'search' && <Search className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />}
+                  <div className="flex items-center gap-1.5 font-bold text-foreground/80">
+                    {task.type === 'url' && <Globe className="w-3.5 h-3.5 text-primary" aria-hidden="true" />}
+                    {task.type === 'paste' && <Clipboard className="w-3.5 h-3.5 text-info" aria-hidden="true" />}
+                    {task.type === 'search' && <Search className="w-3.5 h-3.5 text-info" aria-hidden="true" />}
                     <span className="truncate">{task.query}</span>
                   </div>
-                  <span className="text-xs text-slate-500 block mt-1">
+                  <span className="text-xs text-muted-foreground block mt-1">
                     {new Date(task.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
                 
                 <div>
                   {task.status === 'processing' && (
-                    <span className="px-2 py-1 bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/20 rounded-md flex items-center gap-1 font-bold text-xs animate-pulse motion-reduce:animate-none">
+                    <span className="px-2 py-1 bg-warning/10 text-warning ring-1 ring-warning/20 rounded-md flex items-center gap-1 font-bold text-xs animate-pulse motion-reduce:animate-none">
                       <RefreshCw className="w-3 h-3 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Searching
                     </span>
                   )}
                   {task.status === 'completed' && (
-                    <span className="px-2 py-1 bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20 rounded-md flex items-center gap-1 font-bold text-xs">
+                    <span className="px-2 py-1 bg-success/10 text-success ring-1 ring-success/20 rounded-md flex items-center gap-1 font-bold text-xs">
                       <Check className="w-3 h-3" aria-hidden="true" />
                       {task.resultCount ? `+${task.resultCount} prospects` : 'Done'}
                     </span>
                   )}
                   {task.status === 'failed' && (
-                    <span className="px-2 py-1 bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/20 rounded-md flex items-center gap-1 font-bold text-xs">
-                      <AlertCircle className="w-3 h-3" aria-hidden="true" /> Failed
+                    <span className="px-2 py-1 bg-danger/10 text-danger ring-1 ring-danger/20 rounded-md flex items-center gap-1 font-bold text-xs">
+                      <CircleAlert className="w-3 h-3" aria-hidden="true" /> Failed
                     </span>
                   )}
                   {task.status === 'cancelled' && (
-                    <span className="flex items-center gap-1 rounded-md bg-sky-500/10 px-2 py-1 text-xs font-bold text-sky-300 ring-1 ring-sky-500/20">
+                    <span className="flex items-center gap-1 rounded-md bg-info/10 px-2 py-1 text-xs font-bold text-info ring-1 ring-info/20">
                       <Info className="h-3 w-3" aria-hidden="true" /> Cancelled
                     </span>
                   )}
                   {task.status === 'idle' && (
-                    <span className="px-2 py-1 bg-slate-800 text-slate-400 rounded-md font-bold text-xs">
+                    <span className="px-2 py-1 bg-muted text-muted-foreground rounded-md font-bold text-xs">
                       Queued
                     </span>
                   )}
@@ -1388,18 +1416,18 @@ export default function ScrapeWorkspace() {
           )}
         </div>
 
-        <div className="mt-4 pt-4 border-t border-slate-800/80">
-          <div className="bg-indigo-500/5 p-3.5 rounded-xl flex items-start gap-2.5 text-xs text-indigo-300 border border-indigo-500/15">
-            <Database className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" aria-hidden="true" />
+        <div className="mt-4 pt-4 border-t border-border/80">
+          <div className="bg-primary/5 p-3.5 rounded-xl flex items-start gap-2.5 text-xs text-primary border border-primary/15">
+            <Database className="w-4 h-4 text-primary shrink-0 mt-0.5" aria-hidden="true" />
             <div>
-              <p className="font-semibold text-slate-200">Next: review, then enrich</p>
-              <p className="text-slate-400 leading-relaxed mt-0.5">New records go to Prospects first. Review them before running profile enrichment.</p>
+              <p className="font-semibold text-foreground">Next: review, then enrich</p>
+              <p className="text-muted-foreground leading-relaxed mt-0.5">New records go to Prospects first. Review them before running profile enrichment.</p>
             </div>
           </div>
         </div>
 
         <div className="mt-4 flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => setShowLogs(true)} className="gap-2 text-slate-300">
+          <Button variant="outline" size="sm" onClick={() => setShowLogs(true)} className="gap-2 text-foreground/80">
             <History className="w-4 h-4" aria-hidden="true" /> View search history
           </Button>
         </div>
@@ -1407,58 +1435,58 @@ export default function ScrapeWorkspace() {
       </Card>
 
       <Dialog open={showLogs} onOpenChange={setShowLogs}>
-        <DialogContent className="grid max-h-[85vh] max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-slate-700 bg-slate-900 p-0 motion-reduce:animate-none motion-reduce:transition-none">
-          <DialogHeader className="border-b border-slate-800 bg-slate-900/50 p-4 pr-12 text-left">
-            <DialogTitle className="flex items-center gap-2 text-lg text-slate-200">
-              <History className="w-5 h-5 text-indigo-400" aria-hidden="true" /> Search history
+        <DialogContent className="grid max-h-[85vh] max-w-4xl grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden border-input bg-card p-0 motion-reduce:animate-none motion-reduce:transition-none">
+          <DialogHeader className="border-b border-border bg-card/50 p-4 pr-12 text-left">
+            <DialogTitle className="flex items-center gap-2 text-lg text-foreground">
+              <History className="w-5 h-5 text-primary" aria-hidden="true" /> Search history
             </DialogTitle>
-            <DialogDescription className="text-slate-400">Completed and active prospect searches saved by the server.</DialogDescription>
+            <DialogDescription className="text-muted-foreground">Completed and active prospect searches saved by the server.</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 space-y-4 overflow-y-auto p-4 custom-scrollbar">
                 {searchLogsLoading ? (
-                  <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-400" role="status">
+                  <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground" role="status">
                     <RefreshCw className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Loading search history...
                   </div>
                 ) : searchLogsError ? (
-                  <p className="py-10 text-center text-sm text-rose-300" role="alert">{searchLogsError}</p>
+                  <p className="py-10 text-center text-sm text-danger" role="alert">{searchLogsError}</p>
                 ) : searchLogs.length === 0 ? (
                   <div className="py-10 text-center">
-                    <History className="mx-auto h-7 w-7 text-slate-600" aria-hidden="true" />
-                    <p className="mt-3 text-sm font-medium text-slate-300">No saved searches yet</p>
-                    <p className="mt-1 text-xs text-slate-500">Run a prospect search and its real server history will appear here.</p>
+                    <History className="mx-auto h-7 w-7 text-muted-foreground" aria-hidden="true" />
+                    <p className="mt-3 text-sm font-medium text-foreground/80">No saved searches yet</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Run a prospect search and its real server history will appear here.</p>
                   </div>
                 ) : (
                   searchLogs.map(log => (
-                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-emerald-500/20 bg-emerald-500/5' : log.status === 'partial_success' ? 'border-amber-500/20 bg-amber-500/5' : log.status === 'running' ? 'border-amber-500/20 bg-amber-500/5' : log.status === 'cancelled' ? 'border-sky-500/20 bg-sky-500/5' : 'border-rose-500/20 bg-rose-500/5'}`}>
+                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-success/20 bg-success/5' : log.status === 'partial_success' ? 'border-warning/20 bg-warning/5' : log.status === 'running' ? 'border-warning/20 bg-warning/5' : log.status === 'cancelled' ? 'border-info/20 bg-info/5' : 'border-danger/20 bg-danger/5'}`}>
                       <div className="flex items-start justify-between mb-2">
-                        <div className="text-xs text-slate-400">{new Date(log.timestamp).toLocaleString()}</div>
-                        <Badge variant="outline" className={log.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : log.status === 'partial_success' ? 'text-amber-400 border-amber-500/30' : log.status === 'running' ? 'text-amber-400 border-amber-500/30' : log.status === 'cancelled' ? 'text-sky-300 border-sky-500/30' : 'text-rose-400 border-rose-500/30'}>
+                        <div className="text-xs text-muted-foreground">{new Date(log.timestamp).toLocaleString()}</div>
+                        <Badge variant="outline" className={log.status === 'success' ? 'text-success border-success/30' : log.status === 'partial_success' ? 'text-warning border-warning/30' : log.status === 'running' ? 'text-warning border-warning/30' : log.status === 'cancelled' ? 'text-info border-info/30' : 'text-danger border-danger/30'}>
                           {log.status.toUpperCase()}
                         </Badge>
                       </div>
                       <div className="mb-3">
-                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Search brief</p>
-                        <p className="text-sm text-slate-200">{log.prompt}</p>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">Search brief</p>
+                        <p className="text-sm text-foreground">{log.prompt}</p>
                       </div>
                       {(log.generatedQueries || []).length > 0 && <div className="mb-3">
-                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Generated search queries</p>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">Generated search queries</p>
                         <ul className="list-disc pl-5 space-y-1">
                           {(log.generatedQueries || []).map((q, i) => (
-                            <li key={i} className="text-xs text-indigo-300 font-mono">{q}</li>
+                            <li key={i} className="text-xs text-primary font-mono">{q}</li>
                           ))}
                         </ul>
                       </div>}
-                      <div className="flex gap-4 mt-3 pt-3 border-t border-slate-800">
+                      <div className="flex gap-4 mt-3 pt-3 border-t border-border">
                         {log.status === 'error' ? (
-                          <div className="text-xs text-rose-400"><span className="font-semibold text-rose-500">Error:</span> {log.errorMessage}</div>
+                          <div className="text-xs text-danger"><span className="font-semibold text-danger">Error:</span> {log.errorMessage}</div>
                         ) : log.status === 'running' ? (
-                          <div className="text-xs text-amber-300"><span className="font-semibold text-amber-400">Running:</span> this search is still in progress.</div>
+                          <div className="text-xs text-warning"><span className="font-semibold text-warning">Running:</span> this search is still in progress.</div>
                         ) : (
                           <>
-                            <div className="text-xs text-slate-400"><span className="text-slate-300 font-semibold">{log.rawResultsCount}</span> source results</div>
-                            <div className="text-xs text-slate-400"><span className="text-emerald-400 font-semibold">{log.leadsFound}</span> prospects found</div>
+                            <div className="text-xs text-muted-foreground"><span className="text-foreground/80 font-semibold">{log.rawResultsCount}</span> source results</div>
+                            <div className="text-xs text-muted-foreground"><span className="text-success font-semibold">{log.leadsFound}</span> prospects found</div>
                             {Boolean(log.traceSummary?.existingCrmLeadsSkipped || (log as any).existingCrmLeadsSkipped) && (
-                              <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-300 text-xs py-0 px-2 flex items-center gap-1">
+                              <Badge variant="outline" className="border-warning/30 bg-warning/10 text-warning text-xs py-0 px-2 flex items-center gap-1">
                                 CRM Duplicates Filtered: {log.traceSummary?.existingCrmLeadsSkipped || (log as any).existingCrmLeadsSkipped}
                               </Badge>
                             )}
@@ -1475,9 +1503,9 @@ export default function ScrapeWorkspace() {
                         durationMs={log.traceSummary?.durationMs}
                       />
                       {log.detailedLogs && (
-                        <div className="mt-4 pt-3 border-t border-slate-800/50">
-                          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Detailed progress</p>
-                          <pre className="text-xs text-slate-400 font-mono bg-slate-950 p-3 rounded overflow-x-auto border border-slate-800 max-h-64 custom-scrollbar whitespace-pre-wrap">
+                        <div className="mt-4 pt-3 border-t border-border/50">
+                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Detailed progress</p>
+                          <pre className="text-xs text-muted-foreground font-mono bg-background p-3 rounded overflow-x-auto border border-border max-h-64 custom-scrollbar whitespace-pre-wrap">
                             {log.detailedLogs}
                           </pre>
                         </div>

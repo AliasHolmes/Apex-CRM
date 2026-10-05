@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { PlayCircle, Clock, Database, RefreshCw, Trash2, CheckSquare, Square, ChevronDown, ChevronUp } from 'lucide-react';
+import { CirclePlay, Clock, Database, RefreshCw, Trash2, SquareCheck, Square, ChevronDown, ChevronUp } from 'lucide-react';
 
 export type ResumableSession = {
   id: string;
@@ -172,16 +172,16 @@ export function ResumableSessionsBanner({
   if (resumableSessions.length === 0) return null;
 
   return (
-    <div className="mt-6 pt-4 border-t border-slate-800/80 space-y-3">
+    <div className="mt-6 pt-4 border-t border-border/80 space-y-3">
       {/* Header with bulk action controls */}
-      <div className="flex items-center justify-between gap-3 flex-wrap bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
+      <div className="flex items-center justify-between gap-3 flex-wrap bg-background/60 p-2.5 rounded-lg border border-border/80">
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setCollapsed(!collapsed)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors"
+            className="flex items-center gap-1.5 text-xs font-semibold text-warning hover:text-warning transition-colors"
           >
-            <PlayCircle className="h-4 w-4 text-amber-500" />
+            <CirclePlay className="h-4 w-4 text-warning" />
             <span>Interrupted Searches ({resumableSessions.length})</span>
             {collapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
           </button>
@@ -192,7 +192,7 @@ export function ResumableSessionsBanner({
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground ml-3 transition-colors"
           >
             {selectedIds.size === resumableSessions.length ? (
-              <CheckSquare className="h-3.5 w-3.5 text-amber-400" />
+              <SquareCheck className="h-3.5 w-3.5 text-warning" />
             ) : (
               <Square className="h-3.5 w-3.5" />
             )}
@@ -207,7 +207,7 @@ export function ResumableSessionsBanner({
               variant="outline"
               onClick={() => void handleDeleteSelected()}
               disabled={isDeleting}
-              className="h-7 text-xs border-rose-500/30 text-rose-300 hover:bg-rose-500/10 hover:text-rose-200"
+              className="h-7 text-xs border-danger/30 text-danger hover:bg-danger/10 hover:text-danger"
             >
               <Trash2 className="h-3 w-3 mr-1" />
               Delete Selected ({selectedIds.size})
@@ -219,7 +219,7 @@ export function ResumableSessionsBanner({
             variant="ghost"
             onClick={() => void handleClearAll()}
             disabled={isDeleting}
-            className="h-7 text-xs text-muted-foreground hover:text-rose-300 hover:bg-rose-500/10"
+            className="h-7 text-xs text-muted-foreground hover:text-danger hover:bg-danger/10"
           >
             <Trash2 className="h-3 w-3 mr-1" />
             Clear All
@@ -237,8 +237,8 @@ export function ResumableSessionsBanner({
                 key={session.id}
                 className={`border transition-all duration-150 ${
                   isSelected
-                    ? 'border-amber-500/50 bg-amber-500/10 shadow-sm'
-                    : 'border-amber-500/20 bg-amber-500/5 hover:border-amber-500/30'
+                    ? 'border-warning/50 bg-warning/10 shadow-sm'
+                    : 'border-warning/20 bg-warning/5 hover:border-warning/30'
                 }`}
               >
                 <CardContent className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -246,10 +246,10 @@ export function ResumableSessionsBanner({
                     <button
                       type="button"
                       onClick={() => toggleSelectOne(session.id)}
-                      className="mt-0.5 text-muted-foreground hover:text-amber-400 transition-colors shrink-0"
+                      className="mt-0.5 text-muted-foreground hover:text-warning transition-colors shrink-0"
                     >
                       {isSelected ? (
-                        <CheckSquare className="h-4 w-4 text-amber-400" />
+                        <SquareCheck className="h-4 w-4 text-warning" />
                       ) : (
                         <Square className="h-4 w-4" />
                       )}
@@ -260,7 +260,7 @@ export function ResumableSessionsBanner({
                         <span className="font-semibold text-xs text-foreground truncate max-w-md">
                           "{session.prompt}"
                         </span>
-                        <Badge variant="outline" className="text-xs bg-background border-amber-500/30 text-amber-700 dark:text-amber-300">
+                        <Badge variant="outline" className="text-xs bg-background border-warning/30 text-warning">
                           Interrupted
                         </Badge>
                         {session.checkpoint && (
@@ -291,7 +291,7 @@ export function ResumableSessionsBanner({
                     <Button
                       size="sm"
                       variant="default"
-                      className="bg-amber-600 hover:bg-amber-700 text-white flex items-center gap-1.5 h-7 text-xs font-medium"
+                      className="bg-warning hover:bg-warning/90 text-warning-foreground flex items-center gap-1.5 h-7 text-xs font-medium"
                       disabled={resumingId === session.id}
                       onClick={() => void handleResume(session)}
                     >
@@ -302,7 +302,7 @@ export function ResumableSessionsBanner({
                         </>
                       ) : (
                         <>
-                          <PlayCircle className="h-3 w-3" />
+                          <CirclePlay className="h-3 w-3" />
                           Resume Session
                         </>
                       )}
@@ -311,7 +311,7 @@ export function ResumableSessionsBanner({
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-danger hover:bg-danger/10"
                       onClick={(e) => void handleDeleteOne(session.id, e)}
                       title="Delete interrupted session"
                     >

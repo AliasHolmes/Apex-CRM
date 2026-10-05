@@ -316,8 +316,8 @@ export const COUNTRY_TO_METROS: Record<string, string[]> = {
   us: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
   america: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
   american: ["Austin", "San Francisco", "New York", "Seattle", "Chicago", "Boston"],
-  "new zealand": ["Auckland", "Wellington", "Christchurch"],
-  nz: ["Auckland", "Wellington", "Christchurch"],
+  "new zealand": ["Auckland", "Wellington", "Christchurch", "Tauranga", "Hamilton", "Dunedin", "Palmerston North", "Nelson", "Queenstown"],
+  nz: ["Auckland", "Wellington", "Christchurch", "Tauranga", "Hamilton", "Dunedin", "Palmerston North", "Nelson", "Queenstown"],
   germany: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
   german: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
   de: ["Berlin", "Munich", "Frankfurt", "Hamburg", "Cologne", "Stuttgart"],
@@ -371,6 +371,16 @@ const KNOWN_METRO_RE = new RegExp(
 
 /** True when the query names a known city (whole-word, case-insensitive). */
 export const namesKnownMetro = (query: string): boolean => KNOWN_METRO_RE.test(query || "");
+
+export const AMBIGUOUS_METRO_NAMES = new Set<string>(["hamilton", "nelson"]);
+
+export function metroWithCountry(metro: string, countryCanonical?: string | null): string {
+  if (!countryCanonical) return metro;
+  const cLower = countryCanonical.toLowerCase();
+  const mLower = metro.toLowerCase();
+  if (mLower.includes(cLower)) return metro;
+  return `${metro} ${countryCanonical}`.trim();
+}
 
 const expandAcceptableTerms = (
   scope: RequirementScope,
@@ -1190,7 +1200,7 @@ export function buildContractFallbackQueries(
     if (!l) return false;
     if (COUNTRY_CANONICAL_MAP[l]) return true;
     for (const metroList of Object.values(COUNTRY_TO_METROS)) {
-      if (metroList.some(m => m.toLowerCase() === l)) return true;
+      if (metroList.some(m => m.toLowerCase() === l && !AMBIGUOUS_METRO_NAMES.has(m.toLowerCase()))) return true;
     }
     return false;
   };

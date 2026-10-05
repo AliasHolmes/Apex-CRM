@@ -4622,6 +4622,7 @@ export type MiningSessionCheckpoint = {
   brightDataStats: any;
   existingCrmLeadsSkipped?: number;
   previousRoundSummary?: any;
+  roundHistory?: any[];
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
   /** Runs added since the previous checkpoint (delta serialization). */
@@ -4642,6 +4643,7 @@ export type MiningSessionCheckpoint = {
     parentSessionId?: string;
     deltaBrief?: string;
   };
+  parkedCandidates?: any[];
   updatedAt: string;
 };
 
@@ -4864,6 +4866,8 @@ export function enforceCheckpointByteBudgetWithPayload(
   if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.slice(0, 5);
   if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.slice(0, 5);
   if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.slice(0, 5);
+  if (Array.isArray(cp.parkedCandidates)) cp.parkedCandidates = cp.parkedCandidates.slice(0, 5);
+  if (Array.isArray(cp.roundHistory)) cp.roundHistory = cp.roundHistory.slice(-5);
   payload = JSON.stringify(cp);
   currentBytes = Buffer.byteLength(payload, "utf8");
   if (currentBytes <= maxBytes) {

@@ -10,6 +10,7 @@ import type {
   BrightDataSearchOptions,
   BrightDataSearchResult,
 } from "../services/brightdata.js";
+import type { FinalistCandidate } from "./finalistJudge.js";
 
 export type StageName =
   | "plan"
@@ -72,6 +73,15 @@ export type PipelinePorts = {
 
 import type { SignalStore, SignalStoreData } from "./signalStore.js";
 
+export type ParkedCandidate = {
+  candidateKey: string;
+  companyKey: string;
+  parkedRound: number;
+  cause: string;
+  recheckAttempts?: number;
+  candidate: FinalistCandidate;
+};
+
 export type PipelineSessionState = {
   round: number;
   stopReason?: string;
@@ -91,9 +101,12 @@ export type PipelineSessionState = {
   debugLogs: any[];
   urlRetryQueue?: Set<string>;
   previousRoundSummary?: any;
+  roundHistory?: any[];
   signalStore?: SignalStore;
   recoveryAttempts?: number;
   datasetSearchAfter?: any[];
+  parkedCandidates?: ParkedCandidate[];
+  reInjectedCandidates?: FinalistCandidate[];
 };
 
 export type SessionContext = {
@@ -123,6 +136,7 @@ export type MiningSessionCheckpoint = {
   brightDataStats: any;
   existingCrmLeadsSkipped?: number;
   previousRoundSummary?: any;
+  roundHistory?: any[];
   evidenceByUrl?: Record<string, any>;
   leadQueryRunMap?: Record<string, any>;
   /** Runs added since the previous checkpoint (delta serialization). */
@@ -136,6 +150,7 @@ export type MiningSessionCheckpoint = {
   seenCandidateKeys?: string[];
   /** Request-scoped inputs (saved search, exclusions, mode) replayed when the session resumes. */
   requestContext?: SessionRequestContext;
+  parkedCandidates?: ParkedCandidate[];
   updatedAt: string;
 };
 

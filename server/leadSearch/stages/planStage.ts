@@ -32,7 +32,21 @@ import {
 import {
   enforceContractQueries,
   COUNTRY_CANONICAL_MAP,
+  COUNTRY_TO_METROS,
+  metroWithCountry,
 } from "../prospectContract.js";
+import {
+  buildQuerySignature,
+  isNearDuplicateQuery,
+  isSignatureExhausted,
+  type QuerySignature,
+} from "../querySignature.js";
+import {
+  computeStallLevel,
+  buildStallDirectives,
+  buildStallGridQueries,
+  buildDirectoryDiscoveryQueries,
+} from "../stallLadder.js";
 import {
   scheduleAdaptiveRetrievalTasks,
   deriveContractDomainCluster,
@@ -90,6 +104,14 @@ const pushStateDebugLog = (state: { debugLogs: any[] }, log: any, maxLogs = 500)
   }
   state.debugLogs.push(log);
 };
+
+export function resolvePlannerProviderOrder(): string[] {
+  const env = process.env.LEAD_PLANNER_PROVIDER_ORDER;
+  if (env && env.trim()) {
+    return env.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  }
+  return ["primary", "atria"];
+}
 
 export async function executePlanStage(
   ctx: SessionContext,
@@ -215,6 +237,76 @@ export async function executePlanStage(
           ),
         );
 
+  // 1. Geography resolution and unvisited regional metros
+  const resolvedGeo = resolveGeo(briefText);
+  let targetCountryCanonical: string | null = resolvedGeo.countryAnchor;
+  if (!targetCountryCanonical && config.contract?.identitySpec?.locations?.length) {
+    for (const loc of config.contract.identitySpec.locations) {
+      const geo = resolveGeo(loc);
+      if (geo.countryAnchor) {
+        targetCountryCanonical = geo.countryAnchor;
+        break;
+      }
+    }
+  }
+
+  const allKnownMetros = Array.from(new Set(Object.values(COUNTRY_TO_METROS).flat()));
+  const lowerPrevQueries = (generatedQueries || []).map((q) => q.toLowerCase());
+  const exploredMetros = allKnownMetros.filter((metro) =>
+    lowerPrevQueries.some((q) => q.includes(metro.toLowerCase())),
+  );
+  const saturatedMetros = allKnownMetros.filter((metro) => {
+    const count = metroSaturation[metro.toLowerCase()] || 0;
+    return count >= 15;
+  });
+
+  const eligibleMetros: string[] = [];
+  if (targetCountryCanonical) {
+    const rawMetros =
+      COUNTRY_TO_METROS[targetCountryCanonical.toLowerCase()] ||
+      COUNTRY_TO_METROS[
+        (COUNTRY_CANONICAL_MAP[targetCountryCanonical.toLowerCase()] || "").toLowerCase()
+      ] || [];
+    for (const m of rawMetros) {
+      eligibleMetros.push(metroWithCountry(m, targetCountryCanonical));
+    }
+  }
+  const unvisitedMetros = eligibleMetros.filter((m) => {
+    const mLower = m.toLowerCase();
+    const isExplored = exploredMetros.some((em) => mLower.includes(em.toLowerCase()));
+    const isSaturated = saturatedMetros.some((sm) => mLower.includes(sm.toLowerCase()));
+    return !isExplored && !isSaturated;
+  });
+
+  // 2. Stall Ladder and Exhausted Signatures (Novelty Feedback)
+  const roundHistory = (state as any).roundHistory || ((state as any).previousRoundSummary ? [(state as any).previousRoundSummary] : []);
+  const stallLevel = computeStallLevel(roundHistory);
+
+  const exhaustedSigs: QuerySignature[] = [];
+  const previousQueryRuns: QueryRunStats[] = (state as any).queryRuns || [];
+  for (const qr of previousQueryRuns) {
+    const raw = Number(qr.rawCandidates ?? 0);
+    const unique = Number(qr.uniqueCandidates ?? 0);
+    const novelty = unique / Math.max(raw, 1);
+    if (raw >= 5 && novelty < 0.20 && qr.query) {
+      exhaustedSigs.push(buildQuerySignature(qr.query, { contract: config.contract }));
+    }
+  }
+
+  const minedRefinementTerms = mineQueryRefinements(
+    (state as any).acceptedLeads || (state as any).qualifiedLeads || [],
+    config.contract,
+    round,
+  );
+
+  const stallDirective = buildStallDirectives(stallLevel, config.contract, {
+    unvisitedMetros,
+    minedRefinements: minedRefinementTerms,
+  });
+  if (stallDirective.effectiveLevel > 0) {
+    logEvent(`Round ${round}: [Strategist] Injected ${stallDirective.summary}.`);
+  }
+
   let planItems: SearchQueryPlanItem[] = [];
 
   // Round 1 optimization: use contract.initialQueries directly when available,
@@ -233,11 +325,6 @@ export async function executePlanStage(
   }
 
   if (planItems.length === 0) {
-    const minedRefinementTerms = mineQueryRefinements(
-      (state as any).acceptedLeads || (state as any).qualifiedLeads || [],
-      config.contract,
-      round,
-    );
     const failedQueries = ((state as any).queryRuns || [])
       .filter((r: any) => ((r.acceptedLeads ?? r.acceptedCandidates ?? 0) === 0) && r.query)
       .map((r: any) => r.query as string);
@@ -265,6 +352,10 @@ export async function executePlanStage(
       logEvent,
     });
 
+    const effectivePrompt = stallDirective.directiveText
+      ? `${strategistPrompt}\n${stallDirective.directiveText}`
+      : strategistPrompt;
+
     const strategyStarted = Date.now();
     const strategyProviderAttempts: LLMProviderAttempt[] = [];
     let strategyUsage: LLMUsage | undefined;
@@ -281,10 +372,10 @@ export async function executePlanStage(
         status: "started",
         provider: "llm",
         round,
-        metadata: { promptLength: strategistPrompt.length, isRecovery: isRecoveryMode, remaining },
+        metadata: { promptLength: effectivePrompt.length, isRecovery: isRecoveryMode, remaining },
       });
       const queryResult = await openAIStructured<any>(
-        strategistPrompt,
+        effectivePrompt,
         searchQueriesSchema,
         STRATEGIST_SYSTEM_PROMPT,
         {
@@ -292,6 +383,10 @@ export async function executePlanStage(
           temperature: 0.1,
           circuitBreaker: state.llmCircuitBreaker,
           signal: effectiveSignal,
+          tierProviderOrder: resolvePlannerProviderOrder(),
+          providerHardTimeoutMs: { primary: 35_000, atria: 90_000 },
+          maxRetries: 0,
+          reasoningEffort: "low",
           metadata: {
             stage: "strategist",
             round,
@@ -481,23 +576,92 @@ export async function executePlanStage(
     }
   }
 
-  // Filter against seenQueryTexts without directly mutating caller state here
+  // Filter against seenQueryTexts and canonical query signatures
   const proposedQueries: string[] = [];
-  const roundPlans = adaptiveSchedule.tasks
-    .map((item) => {
-      const isPerson = item.lane === "person" || !item.lane;
-      const executableQuery = isPerson ? toLinkedInSearchQuery(item) : item.query;
-      return {
-        item: { ...item, domainCluster: item.domainCluster || domainCluster },
+  const historySigs: QuerySignature[] = (generatedQueries || []).map((q) =>
+    buildQuerySignature(q, { contract: config.contract }),
+  );
+
+  const candidatePlans = adaptiveSchedule.tasks.map((item) => {
+    const isPerson = item.lane === "person" || !item.lane;
+    const executableQuery = isPerson ? toLinkedInSearchQuery(item) : item.query;
+    return {
+      item: { ...item, domainCluster: item.domainCluster || domainCluster },
+      executableQuery,
+    };
+  });
+
+  const roundPlans: ExecutableQueryPlan[] = [];
+  for (const plan of candidatePlans) {
+    const key = plan.executableQuery.toLowerCase().trim();
+    if (seenQueryTexts.has(key)) continue;
+    const sig = buildQuerySignature(plan.executableQuery, { contract: config.contract });
+    if (isSignatureExhausted(sig, exhaustedSigs)) {
+      logEvent(
+        `Round ${round}: Dropping query "${plan.executableQuery}" - signature [${sig.roleClass}|${sig.orgClass}|${sig.geoAnchor}] exhausted by low novelty rate.`,
+      );
+      continue;
+    }
+    if (isNearDuplicateQuery(sig, historySigs)) {
+      logEvent(
+        `Round ${round}: Dropping query "${plan.executableQuery}" - near-duplicate of previously planned query signature.`,
+      );
+      continue;
+    }
+    historySigs.push(sig);
+    seenQueryTexts.add(key);
+    proposedQueries.push(plan.executableQuery);
+    roundPlans.push(plan);
+  }
+
+  // Stall Level 2+ Deterministic Grid Backfill (Phase 3D)
+  if (roundPlans.length < Math.min(4, maxTasks) && config.contract && stallLevel >= 2) {
+    const needed = Math.min(4, maxTasks) - roundPlans.length;
+    logEvent(
+      `Round ${round}: Level ${stallLevel} Stall - backfilling ${needed} query slot(s) with deterministic stall grid.`,
+    );
+    const gridItems = buildStallGridQueries(config.contract, unvisitedMetros, round);
+    const gridTasks = buildRetrievalTasks(gridItems, searchSpec);
+    for (const task of gridTasks) {
+      if (roundPlans.length >= Math.min(4, maxTasks)) break;
+      const isPerson = task.lane === "person" || !task.lane;
+      const executableQuery = isPerson ? toLinkedInSearchQuery(task) : task.query;
+      const key = executableQuery.toLowerCase().trim();
+      if (seenQueryTexts.has(key)) continue;
+      const sig = buildQuerySignature(executableQuery, { contract: config.contract });
+      if (isSignatureExhausted(sig, exhaustedSigs) || isNearDuplicateQuery(sig, historySigs)) {
+        continue;
+      }
+      historySigs.push(sig);
+      seenQueryTexts.add(key);
+      proposedQueries.push(executableQuery);
+      roundPlans.push({
+        item: { ...task, domainCluster: task.domainCluster || domainCluster },
         executableQuery,
-      };
-    })
-    .filter((plan) => {
-      const key = plan.executableQuery.toLowerCase();
-      if (seenQueryTexts.has(key)) return false;
-      proposedQueries.push(plan.executableQuery);
-      return true;
-    });
+      });
+    }
+  }
+
+  // Stall Level 3 Directory Discovery (Phase 3E)
+  if (stallLevel === 3 && config.contract && roundPlans.length < maxTasks) {
+    const dirItems = buildDirectoryDiscoveryQueries(config.contract, targetCountryCanonical);
+    const dirTasks = buildRetrievalTasks(dirItems, searchSpec);
+    for (const task of dirTasks) {
+      if (roundPlans.length >= maxTasks) break;
+      const executableQuery = task.query;
+      const key = executableQuery.toLowerCase().trim();
+      if (seenQueryTexts.has(key)) continue;
+      const sig = buildQuerySignature(executableQuery, { contract: config.contract });
+      if (isNearDuplicateQuery(sig, historySigs)) continue;
+      historySigs.push(sig);
+      seenQueryTexts.add(key);
+      proposedQueries.push(executableQuery);
+      roundPlans.push({
+        item: { ...task, domainCluster: task.domainCluster || domainCluster },
+        executableQuery,
+      });
+    }
+  }
 
   if (roundPlans.length === 0 && config.contract) {
     const roles = config.contract.identitySpec?.roles || ['founder', 'owner', 'CEO', 'managing partner', 'director'];
@@ -557,24 +721,27 @@ export async function executePlanStage(
 
     const maxFallbackPlans = Math.max(4, maxTasks);
     for (const candidateQuery of candidateVariants) {
-      const lowerQ = candidateQuery.toLowerCase();
-      if (!seenQueryTexts.has(lowerQ) && !proposedQueries.includes(candidateQuery)) {
-        proposedQueries.push(candidateQuery);
-        roundPlans.push({
-          item: {
-            query: candidateQuery,
-            family: 'persona_title',
-            intent: 'find_decision_makers',
-            priority: roundPlans.length + 1,
-            lane: 'person',
-            providerPreference: 'tavily',
-            domainCluster,
-            tavily: { searchDepth: 'basic', topic: 'general' }
-          } as any,
-          executableQuery: toLinkedInSearchQuery({ query: candidateQuery, lane: 'person' })
-        });
-        if (roundPlans.length >= maxFallbackPlans) break;
-      }
+      const lowerQ = candidateQuery.toLowerCase().trim();
+      if (seenQueryTexts.has(lowerQ) || proposedQueries.includes(candidateQuery)) continue;
+      const sig = buildQuerySignature(candidateQuery, { contract: config.contract });
+      if (isNearDuplicateQuery(sig, historySigs)) continue;
+      historySigs.push(sig);
+      seenQueryTexts.add(lowerQ);
+      proposedQueries.push(candidateQuery);
+      roundPlans.push({
+        item: {
+          query: candidateQuery,
+          family: 'persona_title',
+          intent: 'find_decision_makers',
+          priority: roundPlans.length + 1,
+          lane: 'person',
+          providerPreference: 'tavily',
+          domainCluster,
+          tavily: { searchDepth: 'basic', topic: 'general' }
+        } as any,
+        executableQuery: toLinkedInSearchQuery({ query: candidateQuery, lane: 'person' })
+      });
+      if (roundPlans.length >= maxFallbackPlans) break;
     }
     if (roundPlans.length > 0) {
       logEvent(`Round ${round}: generated ${roundPlans.length} novel dynamic semantic fallback queries.`);

@@ -96,10 +96,16 @@ test('prospect UI keeps email while exposing no dedicated discovery controls', (
   const leadTable = readFileSync(path.resolve('src/components/LeadTable.tsx'), 'utf8');
   const scrapeWorkspace = readFileSync(path.resolve('src/components/ScrapeWorkspace.tsx'), 'utf8');
   const types = readFileSync(path.resolve('src/types.ts'), 'utf8');
-  const combined = `${leadTable}\n${scrapeWorkspace}\n${types}`;
+  // The shared lead drawer and the filter bar now own the workflow labels that used to live
+  // in LeadTable's own details dialog and filter row.
+  const leadDrawer = readFileSync(path.resolve('src/components/LeadDrawer.tsx'), 'utf8');
+  const filterBar = readFileSync(path.resolve('src/components/prospects/ProspectFilterBar.tsx'), 'utf8');
+  const combined = `${leadTable}\n${leadDrawer}\n${filterBar}\n${scrapeWorkspace}\n${types}`;
   assert.doesNotMatch(combined, /find-email|email-discovery|forceEmailDiscovery|forceProfileScrape|lastReviewedAt|followUpAt/);
   assert.match(types, /email\?: string/);
-  assert.match(leadTable, /Review status/);
+  assert.match(leadDrawer, /Review status/);
+  assert.match(leadDrawer, /Next action/);
+  assert.match(filterBar, /Review status/);
   assert.match(leadTable, /Next action/);
 });
 

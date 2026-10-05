@@ -419,12 +419,15 @@ export type ProbeTarget = {
   companyName?: string;
 };
 
+export type SiteProbeOptions = {
+  abortSignal?: AbortSignal;
+  onProviderUsage?: (units: number) => void;
+  onDomainOutcome?: (domain: string, outcome: "success" | "thin_text" | "probe_failed") => void;
+};
+
 export async function probeCompanySites(
   targets: EnrichmentTarget[],
-  options: {
-    abortSignal?: AbortSignal;
-    onProviderUsage?: (units: number) => void;
-  } = {}
+  options: SiteProbeOptions = {}
 ): Promise<Map<string, SiteSignals>> {
   const results = new Map<string, SiteSignals>();
   if (!targets.length || !hasTavilyKey()) return results;
@@ -696,6 +699,22 @@ export async function probeCompanySites(
         }
       } catch {
         // Safe skip on alternate TLD batch error
+      }
+    }
+  }
+
+  if (options.onDomainOutcome) {
+    for (const domain of uniqueDomains) {
+      if (results.has(domain)) {
+        options.onDomainOutcome(domain, "success");
+      } else {
+        const contents = extractedByDomain.get(domain) || [];
+        const combined = contents.join("\n\n").trim();
+        if (combined.length === 0) {
+          options.onDomainOutcome(domain, "probe_failed");
+        } else {
+          options.onDomainOutcome(domain, "thin_text");
+        }
       }
     }
   }

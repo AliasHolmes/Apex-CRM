@@ -6,7 +6,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
-  AlertTriangle,
+  Check,
+  TriangleAlert,
   ChevronDown,
   ChevronUp,
   Clipboard,
@@ -22,9 +23,14 @@ import {
   ShieldAlert,
   Sparkles,
   UserCheck,
-  Wand2,
+  WandSparkles,
 } from 'lucide-react';
 import { Lead } from '../types';
+import {
+  SENDER_PROFILE_STORAGE_KEY,
+  parseSenderProfile,
+  serializeSenderProfile,
+} from '@/lib/senderProfile';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -104,6 +110,14 @@ const SPAM_KEYWORDS = [
   'secrets', 'act now', 'limited time', 'winner', 'millionaire', 'buy now',
 ];
 
+const readSenderProfile = () => {
+  try {
+    return parseSenderProfile(window.localStorage.getItem(SENDER_PROFILE_STORAGE_KEY));
+  } catch {
+    return parseSenderProfile(null);
+  }
+};
+
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error && error.message ? error.message : fallback;
 
@@ -173,11 +187,11 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [senderName, setSenderName] = useState('Arnob');
-  const [senderCompany, setSenderCompany] = useState('Lead-Finder Pro');
-  const [valueProposition, setValueProposition] = useState(
-    'building customized search-grounded workflows to automate verified prospect routing directly into active CRMs'
-  );
+  // Sender details are remembered between sessions; first-run values come from DEFAULT_SENDER_PROFILE.
+  const [initialSender] = useState(readSenderProfile);
+  const [senderName, setSenderName] = useState(initialSender.senderName);
+  const [senderCompany, setSenderCompany] = useState(initialSender.senderCompany);
+  const [valueProposition, setValueProposition] = useState(initialSender.valueProposition);
   const [sequenceStep, setSequenceStep] = useState('Step 1: First Touch');
   const [customInstruction, setCustomInstruction] = useState('');
   const [showSenderConfig, setShowSenderConfig] = useState(false);
@@ -194,6 +208,26 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   const generationAbortRef = useRef<AbortController | null>(null);
   const generationRequestIdRef = useRef(0);
   const prefersReducedMotion = useReducedMotion();
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SENDER_PROFILE_STORAGE_KEY,
+        serializeSenderProfile({ senderName, senderCompany, valueProposition }),
+      );
+    } catch {
+      // The sender profile is a convenience; drafting still works without storage.
+    }
+  }, [senderName, senderCompany, valueProposition]);
+
+  const draftedStepIds = useMemo(
+    () => new Set(
+      savedDrafts
+        .filter((draft) => draft.leadId === currentLeadId)
+        .map((draft) => draft.sequenceStep),
+    ),
+    [currentLeadId, savedDrafts],
+  );
 
   const commitSavedDrafts = useCallback((drafts: SavedOutreachDraft[]) => {
     savedDraftsRef.current = drafts;
@@ -648,31 +682,31 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   );
   const draftIsEmail = draftOriginConfig?.medium === 'Cold Email';
   const saveStatusClass = draftSaveState === 'error'
-    ? 'text-rose-300'
+    ? 'text-danger'
     : draftSaveState === 'local'
-      ? 'text-amber-300'
+      ? 'text-warning'
       : draftSaveState === 'saved'
-        ? 'text-emerald-300'
-        : 'text-slate-400';
+        ? 'text-success'
+        : 'text-muted-foreground';
 
   return (
-    <Card className="relative grid grid-cols-1 overflow-hidden border-0 shadow-2xl divide-y divide-slate-800 lg:grid-cols-5 lg:divide-x lg:divide-y-0">
+    <Card className="relative grid grid-cols-1 overflow-hidden border-0 shadow-2xl divide-y divide-border lg:grid-cols-5 lg:divide-x lg:divide-y-0">
       <section
         aria-labelledby="outreach-settings-title"
-        className="space-y-6 bg-slate-950/45 p-4 sm:p-6 lg:col-span-2 lg:max-h-[850px] lg:overflow-y-auto custom-scrollbar"
+        className="space-y-6 bg-background/45 p-4 sm:p-6 lg:col-span-2 lg:max-h-[850px] lg:overflow-y-auto custom-scrollbar"
       >
         <div>
-          <h3 id="outreach-settings-title" className="flex items-center gap-2 text-lg font-bold text-white">
-            <Wand2 className="h-5 w-5 text-indigo-400" aria-hidden="true" />
+          <h3 id="outreach-settings-title" className="flex items-center gap-2 text-lg font-bold text-foreground">
+            <WandSparkles className="h-5 w-5 text-primary" aria-hidden="true" />
             AI Outreach Studio
           </h3>
-          <p className="mt-1 text-sm leading-relaxed text-slate-400">
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
             Build a grounded outreach draft from the prospect details already in your workspace.
           </p>
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="lead-selector" className="block text-xs font-bold uppercase tracking-wider text-slate-300">
+          <label htmlFor="lead-selector" className="block text-xs font-bold uppercase tracking-wider text-foreground/80">
             Target prospect
           </label>
           <select
@@ -681,7 +715,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
             onChange={(event) => setCurrentLeadId(event.target.value)}
             disabled={loading || leads.length === 0}
             aria-describedby={leads.length === 0 ? 'outreach-no-leads' : undefined}
-            className="w-full cursor-pointer rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-3 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/60 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full cursor-pointer rounded-xl border border-border bg-background px-3.5 py-3 text-sm font-semibold text-foreground transition-colors hover:border-input focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {leads.length === 0 ? (
               <option value="">No prospects available</option>
@@ -694,27 +728,27 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
             )}
           </select>
           {leads.length === 0 && (
-            <p id="outreach-no-leads" role="status" className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3 text-sm text-sky-200">
+            <p id="outreach-no-leads" role="status" className="rounded-lg border border-info/20 bg-info/5 p-3 text-sm text-info">
               Add or discover a prospect first, then return here to create outreach.
             </p>
           )}
         </div>
 
         {targetLead?.companyAccount && (
-          <aside aria-label="Account context" className="space-y-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <aside aria-label="Account context" className="space-y-3 rounded-xl border border-success/20 bg-success/5 p-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <span className="block text-xs font-bold uppercase tracking-wider text-emerald-300">Account context</span>
-                <p className="mt-1 text-sm font-semibold text-slate-200">{targetLead.companyAccount.name}</p>
+                <span className="block text-xs font-bold uppercase tracking-wider text-success">Account context</span>
+                <p className="mt-1 text-sm font-semibold text-foreground">{targetLead.companyAccount.name}</p>
               </div>
-              <Badge variant="outline" className="border-emerald-500/30 text-xs text-emerald-300">
+              <Badge variant="outline" className="border-success/30 text-xs text-success">
                 Pain {targetLead.companyAccount.operationalPainScore}
               </Badge>
             </div>
             <div className="space-y-2">
               {Array.isArray(targetLead.companyAccount.buyingSignals) && targetLead.companyAccount.buyingSignals.slice(0, 3).map((signal, index) => (
-                <div key={`${signal.label}-${index}`} className="flex gap-2 text-sm text-slate-300">
-                  <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" aria-hidden="true" />
+                <div key={`${signal.label}-${index}`} className="flex gap-2 text-sm text-foreground/80">
+                  <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
                   <span>{signal.label}</span>
                 </div>
               ))}
@@ -722,16 +756,16 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           </aside>
         )}
 
-        <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/30">
+        <div className="overflow-hidden rounded-xl border border-border bg-background/30">
           <button
             type="button"
             onClick={() => setShowSenderConfig((visible) => !visible)}
             aria-expanded={showSenderConfig}
             aria-controls="sender-settings-panel"
-            className="flex w-full cursor-pointer items-center justify-between p-3.5 text-left text-sm font-bold text-slate-300 transition-colors hover:bg-slate-900/40 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500"
+            className="flex w-full cursor-pointer items-center justify-between p-3.5 text-left text-sm font-bold text-foreground/80 transition-colors hover:bg-card/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
             <span className="flex items-center gap-2">
-              <UserCheck className="h-4 w-4 text-emerald-400" aria-hidden="true" />
+              <UserCheck className="h-4 w-4 text-success" aria-hidden="true" />
               Sender details
             </span>
             {showSenderConfig
@@ -747,11 +781,11 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
-                className="overflow-hidden border-t border-slate-800 bg-slate-950/80"
+                className="overflow-hidden border-t border-border bg-background/80"
               >
                 <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
                   <div className="space-y-2">
-                    <label htmlFor="sender-name" className="block text-xs font-bold text-slate-300">Your name</label>
+                    <label htmlFor="sender-name" className="block text-xs font-bold text-foreground/80">Your name</label>
                     <Input
                       id="sender-name"
                       type="text"
@@ -761,7 +795,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                     />
                   </div>
                   <div className="space-y-2">
-                    <label htmlFor="sender-company" className="block text-xs font-bold text-slate-300">Company or product</label>
+                    <label htmlFor="sender-company" className="block text-xs font-bold text-foreground/80">Company or product</label>
                     <Input
                       id="sender-company"
                       type="text"
@@ -778,10 +812,10 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <label htmlFor="value-proposition" className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            <label htmlFor="value-proposition" className="text-xs font-bold uppercase tracking-wider text-foreground/80">
               Core offer
             </label>
-            <span id="value-proposition-help" className="text-xs text-slate-500">Used to shape the opening hook</span>
+            <span id="value-proposition-help" className="text-xs text-muted-foreground">Used to shape the opening hook</span>
           </div>
           <Textarea
             id="value-proposition"
@@ -796,7 +830,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
         </div>
 
         <fieldset disabled={loading} className="space-y-2">
-          <legend className="text-xs font-bold uppercase tracking-wider text-slate-300">Tone</legend>
+          <legend className="text-xs font-bold uppercase tracking-wider text-foreground/80">Tone</legend>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {TONE_OPTIONS.map((option) => (
               <button
@@ -804,21 +838,21 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                 type="button"
                 onClick={() => setTone(option.id)}
                 aria-pressed={tone === option.id}
-                className={`cursor-pointer rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60 ${
+                className={`cursor-pointer rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                   tone === option.id
-                    ? 'border-indigo-500 bg-indigo-500/10 text-indigo-200'
-                    : 'border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-900'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-background text-foreground/80 hover:bg-card'
                 }`}
               >
                 <span className="block text-sm font-bold">{option.id}</span>
-                <span className="mt-1 block text-xs text-slate-400">{option.description}</span>
+                <span className="mt-1 block text-xs text-muted-foreground">{option.description}</span>
               </button>
             ))}
           </div>
         </fieldset>
 
         <fieldset disabled={loading} className="space-y-2">
-          <legend className="text-xs font-bold uppercase tracking-wider text-slate-300">Delivery channel</legend>
+          <legend className="text-xs font-bold uppercase tracking-wider text-foreground/80">Delivery channel</legend>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {CHANNEL_OPTIONS.map((option) => {
               const Icon = option.icon;
@@ -828,13 +862,13 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                   type="button"
                   onClick={() => setMedium(option.id)}
                   aria-pressed={medium === option.id}
-                  className={`flex min-h-20 cursor-pointer flex-row items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60 sm:flex-col ${
+                  className={`flex min-h-20 cursor-pointer flex-row items-center justify-center gap-2 rounded-xl border p-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 sm:flex-col ${
                     medium === option.id
-                      ? 'border-indigo-500 bg-indigo-500/10 text-indigo-200'
-                      : 'border-slate-800 bg-slate-950 text-slate-400 hover:bg-slate-900'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border bg-background text-muted-foreground hover:bg-card'
                   }`}
                 >
-                  <Icon className="h-4 w-4 text-indigo-400" aria-hidden="true" />
+                  <Icon className="h-4 w-4 text-primary" aria-hidden="true" />
                   <span>{option.label}</span>
                 </button>
               );
@@ -844,10 +878,10 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <label htmlFor="custom-instruction" className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            <label htmlFor="custom-instruction" className="text-xs font-bold uppercase tracking-wider text-foreground/80">
               Additional direction
             </label>
-            <span id="custom-instruction-help" className="text-xs text-slate-500">Optional</span>
+            <span id="custom-instruction-help" className="text-xs text-muted-foreground">Optional</span>
           </div>
           <Input
             id="custom-instruction"
@@ -878,18 +912,18 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           </p>
         </div>
 
-        <section aria-labelledby="draft-library-title" className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/35 p-4">
+        <section aria-labelledby="draft-library-title" className="space-y-3 rounded-xl border border-border bg-background/35 p-4">
           <div className="flex items-center justify-between gap-3">
-            <h4 id="draft-library-title" className="text-xs font-bold uppercase tracking-wider text-slate-300">Saved drafts</h4>
+            <h4 id="draft-library-title" className="text-xs font-bold uppercase tracking-wider text-foreground/80">Saved drafts</h4>
             <Badge variant="outline" className="text-xs">{savedDrafts.length}</Badge>
           </div>
-          <p role="status" aria-live="polite" className="text-xs leading-relaxed text-slate-400">
+          <p role="status" aria-live="polite" className="text-xs leading-relaxed text-muted-foreground">
             {draftLibraryMessage}
           </p>
           {draftsLoading ? (
             <div className="space-y-2" aria-hidden="true">
-              <div className="h-14 animate-pulse rounded-lg bg-slate-900 motion-reduce:animate-none" />
-              <div className="h-14 animate-pulse rounded-lg bg-slate-900 motion-reduce:animate-none" />
+              <div className="h-14 animate-pulse rounded-lg bg-card motion-reduce:animate-none" />
+              <div className="h-14 animate-pulse rounded-lg bg-card motion-reduce:animate-none" />
             </div>
           ) : savedDrafts.length > 0 ? (
             <div className="max-h-64 space-y-2 overflow-y-auto pr-1 custom-scrollbar">
@@ -899,15 +933,15 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                   type="button"
                   onClick={() => handleLoadDraft(draft)}
                   aria-label={`Load draft for ${draft.leadName}, ${draft.wordCount} words, saved ${formatDraftDate(draft.createdAt)}`}
-                  className="w-full cursor-pointer rounded-lg border border-slate-800 bg-slate-950 p-3 text-left transition-colors hover:border-slate-700 hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  className="w-full cursor-pointer rounded-lg border border-border bg-background p-3 text-left transition-colors hover:border-input hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <span className="block truncate text-sm font-bold text-slate-200">
+                  <span className="block truncate text-sm font-bold text-foreground">
                     {draft.leadName} - {draft.companyName || 'Independent'}
                   </span>
-                  <span className="mt-1 block text-xs text-slate-400">
+                  <span className="mt-1 block text-xs text-muted-foreground">
                     {draft.sequenceStep} / {draft.medium} / {draft.wordCount} words
                   </span>
-                  <span className="mt-1 block text-xs text-slate-500">{formatDraftDate(draft.createdAt)}</span>
+                  <span className="mt-1 block text-xs text-muted-foreground">{formatDraftDate(draft.createdAt)}</span>
                 </button>
               ))}
             </div>
@@ -917,45 +951,68 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
 
       <section
         aria-labelledby="outreach-composer-title"
-        className="flex min-h-[560px] flex-col justify-between gap-6 bg-slate-900/5 p-4 sm:p-6 lg:col-span-3"
+        className="flex min-h-[560px] flex-col justify-between gap-6 bg-card/5 p-4 sm:p-6 lg:col-span-3"
       >
         <div className="space-y-4">
-          <div className="space-y-3 border-b border-slate-800 pb-4">
+          <div className="space-y-3 border-b border-border pb-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Sequence step</h3>
-              <span className="text-xs text-slate-500">Choose the purpose of this touch</span>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-foreground/80">Sequence step</h3>
+              <span className="text-xs text-muted-foreground">Choose the purpose of this touch</span>
             </div>
-            <div role="group" aria-label="Outreach sequence steps" className="flex gap-1 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950 p-1 custom-scrollbar">
+            <ol role="group" aria-label="Outreach sequence steps" className="grid gap-2 sm:grid-cols-3">
               {SEQUENCE_STEPS.map((step, index) => {
-                const Icon = step.icon;
                 const isActive = sequenceStep === step.id;
+                const isDrafted = draftedStepIds.has(step.id);
+                const StepIcon = step.icon;
                 return (
-                  <button
-                    key={step.id}
-                    id={`sequence-step-${index}`}
-                    type="button"
-                    aria-pressed={isActive}
-                    aria-controls="outreach-composer-panel"
-                    onClick={() => setSequenceStep(step.id)}
-                    disabled={loading}
-                    className={`flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 ${
-                      isActive
-                        ? 'border-indigo-500/30 bg-indigo-500/15 text-indigo-200'
-                        : 'border-transparent text-slate-400 hover:bg-slate-900/50 hover:text-slate-200'
-                    }`}
-                  >
-                    <Icon className="h-4 w-4 text-indigo-400" aria-hidden="true" />
-                    <span>{step.label}</span>
-                  </button>
+                  <li key={step.id} className="relative">
+                    {index < SEQUENCE_STEPS.length - 1 && (
+                      <span aria-hidden="true" className="absolute left-[calc(100%-0.25rem)] top-1/2 z-10 hidden h-px w-2.5 bg-border sm:block" />
+                    )}
+                    <button
+                      id={`sequence-step-${index}`}
+                      type="button"
+                      aria-pressed={isActive}
+                      aria-controls="outreach-composer-panel"
+                      onClick={() => setSequenceStep(step.id)}
+                      disabled={loading}
+                      className={`flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
+                        isActive
+                          ? 'border-primary/40 bg-primary/10'
+                          : 'border-border bg-background hover:bg-accent'
+                      }`}
+                    >
+                      <span
+                        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-bold ${
+                          isDrafted
+                            ? 'border-success/40 bg-success/10 text-success'
+                            : isActive
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-border text-muted-foreground'
+                        }`}
+                      >
+                        {isDrafted ? <Check aria-hidden="true" className="h-4 w-4" /> : index + 1}
+                      </span>
+                      <span className="min-w-0">
+                        <span className={`flex items-center gap-1.5 text-sm font-bold ${isActive ? 'text-primary' : 'text-foreground'}`}>
+                          <StepIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{step.label}</span>
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          {isDrafted ? 'Draft saved' : 'Not drafted yet'}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
                 );
               })}
-            </div>
+            </ol>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
-              <PenTool className="h-4 w-4 text-slate-500" aria-hidden="true" />
-              <label id="outreach-composer-title" htmlFor="outreach-copy" className="text-sm font-bold text-slate-300">
+              <PenTool className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              <label id="outreach-composer-title" htmlFor="outreach-copy" className="text-sm font-bold text-foreground/80">
                 Draft editor
               </label>
             </div>
@@ -1002,20 +1059,20 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           </div>
 
           <div aria-live="polite" className="min-h-5 text-sm">
-            {copied && <span className="text-emerald-300">Draft copied to the clipboard.</span>}
-            {copyError && <span role="alert" className="text-rose-300">{copyError}</span>}
+            {copied && <span className="text-success">Draft copied to the clipboard.</span>}
+            {copyError && <span role="alert" className="text-danger">{copyError}</span>}
             {draftTargetsDifferent && draftLead && (
-              <span className="block text-amber-300">
+              <span className="block text-warning">
                 This open draft remains linked to {draftLead.profile.fullName}. Generate a new draft for the newly selected prospect.
               </span>
             )}
             {draftLeadUnavailable && (
-              <span className="block text-amber-300">
+              <span className="block text-warning">
                 The prospect linked to this draft is no longer available, so save and email actions are disabled.
               </span>
             )}
             {draftSettingsDifferent && draftOriginConfig && (
-              <span className="block text-amber-300">
+              <span className="block text-warning">
                 The controls have changed since this draft was created. Regenerate to apply them; saving and email actions still use the draft's original settings ({draftOriginConfig.tone}, {draftOriginConfig.medium}, {draftOriginConfig.sequenceStep}).
               </span>
             )}
@@ -1025,7 +1082,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
             id="outreach-composer-panel"
             role="region"
             aria-label="Outreach draft composer"
-            className="relative flex min-h-[300px] flex-col rounded-2xl border border-slate-800 bg-slate-950/80 transition-shadow focus-within:ring-2 focus-within:ring-indigo-500/40"
+            className="relative flex min-h-[300px] flex-col rounded-2xl border border-border bg-background/80 transition-shadow focus-within:ring-2 focus-within:ring-ring/40"
           >
             <AnimatePresence mode="wait">
               {loading && (
@@ -1037,12 +1094,12 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
-                  className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 rounded-2xl bg-slate-950/95 p-6 text-center shadow-2xl"
+                  className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 rounded-2xl bg-background/95 p-6 text-center shadow-2xl"
                 >
-                  <div className="h-9 w-9 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent motion-reduce:animate-none" aria-hidden="true" />
+                  <div className="h-9 w-9 animate-spin rounded-full border-2 border-primary border-t-transparent motion-reduce:animate-none" aria-hidden="true" />
                   <div className="space-y-1">
-                    <p className="text-sm font-bold text-slate-200">Creating a grounded outreach draft...</p>
-                    <p className="text-xs text-slate-400">Using the selected prospect, offer, tone, and sequence step.</p>
+                    <p className="text-sm font-bold text-foreground">Creating a grounded outreach draft...</p>
+                    <p className="text-xs text-muted-foreground">Using the selected prospect, offer, tone, and sequence step.</p>
                   </div>
                 </motion.div>
               )}
@@ -1065,12 +1122,12 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                 placeholder="Write or edit your outreach draft here."
               />
             ) : errorCode ? (
-              <div role="alert" className="flex min-h-[300px] flex-col items-start justify-center gap-4 rounded-2xl bg-rose-950/10 p-6 text-sm text-rose-200 sm:p-8">
+              <div role="alert" className="flex min-h-[300px] flex-col items-start justify-center gap-4 rounded-2xl bg-danger/10 p-6 text-sm text-danger sm:p-8">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" aria-hidden="true" />
+                  <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-danger" aria-hidden="true" />
                   <div>
                     <p className="font-bold">The draft could not be generated.</p>
-                    <p className="mt-1 leading-relaxed text-rose-200/80">{errorCode}</p>
+                    <p className="mt-1 leading-relaxed text-danger/80">{errorCode}</p>
                   </div>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={() => void handleGeneratePitch()} disabled={!targetLead || draftsLoading || loading}>
@@ -1079,11 +1136,11 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
               </div>
             ) : (
               <div className="flex min-h-[300px] flex-1 flex-col items-center justify-center px-6 py-16 text-center">
-                <Send className="mb-3 h-10 w-10 text-slate-700" aria-hidden="true" />
-                <p className="text-sm font-bold text-slate-300">
+                <Send className="mb-3 h-10 w-10 text-background" aria-hidden="true" />
+                <p className="text-sm font-bold text-foreground/80">
                   {leads.length === 0 ? 'No prospect selected' : 'No draft yet'}
                 </p>
-                <p className="mt-2 max-w-sm text-sm leading-relaxed text-slate-500">
+                <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
                   {leads.length === 0
                     ? 'Add a prospect to your workspace before creating outreach.'
                     : 'Generate a new draft from the settings, or load one from Saved drafts.'}
@@ -1092,20 +1149,20 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
             )}
 
             {outreachCopy && (
-              <div id="composer-quality-summary" aria-label="Draft quality summary" className="grid grid-cols-2 gap-3 rounded-b-2xl border-t border-slate-900 bg-slate-950/90 p-3 text-slate-400 md:grid-cols-4">
-                <div className="space-y-1 border-r border-slate-900 pr-2">
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Word count</div>
-                  <div className={`text-sm font-bold ${wordCount > 150 && draftIsEmail ? 'text-amber-400' : 'text-slate-200'}`}>
+              <div id="composer-quality-summary" aria-label="Draft quality summary" className="grid grid-cols-2 gap-3 rounded-b-2xl border-t border-border bg-background/90 p-3 text-muted-foreground md:grid-cols-4">
+                <div className="space-y-1 border-r border-border pr-2">
+                  <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Word count</div>
+                  <div className={`text-sm font-bold ${wordCount > 150 && draftIsEmail ? 'text-warning' : 'text-foreground'}`}>
                     {wordCount} words{wordCount > 150 && draftIsEmail ? ' - long' : ''}
                   </div>
                 </div>
-                <div className="space-y-1 border-r border-slate-900 px-2">
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Read time</div>
-                  <div className="text-sm font-bold text-slate-200">{readingTimeSeconds} seconds</div>
+                <div className="space-y-1 border-r border-border px-2">
+                  <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Read time</div>
+                  <div className="text-sm font-bold text-foreground">{readingTimeSeconds} seconds</div>
                 </div>
-                <div className="space-y-1 border-r border-slate-900 px-2">
-                  <div className="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-slate-500">
-                    <Gauge className="h-3 w-3 text-emerald-400" aria-hidden="true" /> Grounding
+                <div className="space-y-1 border-r border-border px-2">
+                  <div className="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    <Gauge className="h-3 w-3 text-success" aria-hidden="true" /> Grounding
                   </div>
                   <div className="flex flex-wrap items-center gap-1">
                     <Badge
@@ -1114,12 +1171,12 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                     >
                       {personalizationCheck.score}
                     </Badge>
-                    <span className="text-xs text-slate-500">{personalizationCheck.matches.length}/3 details</span>
+                    <span className="text-xs text-muted-foreground">{personalizationCheck.matches.length}/3 details</span>
                   </div>
                 </div>
                 <div className="space-y-1 pl-2">
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Spam check</div>
-                  <div className={`text-sm font-bold ${spamMatches.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  <div className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Spam check</div>
+                  <div className={`text-sm font-bold ${spamMatches.length > 0 ? 'text-warning' : 'text-success'}`}>
                     {spamMatches.length === 0 ? 'No triggers found' : `${spamMatches.length} ${spamMatches.length === 1 ? 'trigger' : 'triggers'}`}
                   </div>
                 </div>
@@ -1130,8 +1187,8 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
 
         <div className="space-y-4">
           <section aria-labelledby="quick-refine-title" className="space-y-2">
-            <h4 id="quick-refine-title" className="text-xs font-bold uppercase tracking-wider text-slate-300">Quick refinements</h4>
-            <p className="text-xs text-slate-500">Each option regenerates the draft with that instruction.</p>
+            <h4 id="quick-refine-title" className="text-xs font-bold uppercase tracking-wider text-foreground/80">Quick refinements</h4>
+            <p className="text-xs text-muted-foreground">Each option regenerates the draft with that instruction.</p>
             <div className="flex flex-wrap gap-2">
               {POLISH_MACROS.map((macro) => (
                 <Button
@@ -1157,13 +1214,13 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 10 }}
                 transition={{ duration: prefersReducedMotion ? 0 : 0.2 }}
-                className="flex gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-amber-100"
+                className="flex gap-3 rounded-xl border border-warning/20 bg-warning/5 p-3 text-sm text-warning"
               >
-                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" aria-hidden="true" />
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
                 <div>
-                  <p className="font-bold text-amber-300">Review possible spam triggers</p>
-                  <p className="mt-1 leading-relaxed text-slate-400">
-                    Consider replacing: <span className="font-semibold text-amber-300">{spamMatches.join(', ')}</span>.
+                  <p className="font-bold text-warning">Review possible spam triggers</p>
+                  <p className="mt-1 leading-relaxed text-muted-foreground">
+                    Consider replacing: <span className="font-semibold text-warning">{spamMatches.join(', ')}</span>.
                   </p>
                 </div>
               </motion.div>
@@ -1171,11 +1228,11 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
           </AnimatePresence>
 
           {draftLead && (
-            <aside aria-label="Selected prospect details" className="flex flex-col gap-3 rounded-xl border border-indigo-500/10 bg-indigo-500/5 p-3.5 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+            <aside aria-label="Selected prospect details" className="flex flex-col gap-3 rounded-xl border border-primary/10 bg-primary/5 p-3.5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <span className="mb-1 block font-bold text-indigo-300">Draft context</span>
-                <span className="leading-relaxed text-slate-300">
-                  <span className="font-bold text-slate-200">{draftLead.profile.fullName}</span>
+                <span className="mb-1 block font-bold text-primary">Draft context</span>
+                <span className="leading-relaxed text-foreground/80">
+                  <span className="font-bold text-foreground">{draftLead.profile.fullName}</span>
                   {' - '}{draftLead.profile.industry || 'B2B'}
                   {' - '}{draftLead.profile.contactDetails?.email || 'Email not available'}
                 </span>

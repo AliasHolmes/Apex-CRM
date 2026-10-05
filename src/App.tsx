@@ -6,16 +6,19 @@
 import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { LeadProvider, useLeads } from './context/LeadContext';
 import { ToastProvider, useToast } from './context/ToastContext';
+import { ThemeProvider } from './context/ThemeContext';
+import { ThemeToggle } from './components/ThemeToggle';
+import { ApexLogo } from './components/ApexLogo';
+import { HeaderSearch } from './components/HeaderSearch';
+import { PageHeader } from './components/PageHeader';
+import { Skeleton } from './components/ui/skeleton';
+import type { ProspectPreset } from './components/LeadTable';
+import type { ProspectFilters } from './lib/prospectViews';
+import { IconProvider, NAV_ICONS } from './components/icons';
 import { motion, useReducedMotion } from 'motion/react';
 import { 
-  Sparkles, 
-  Layers, 
-  TableProperties, 
-  Gauge, 
-  Wand2, 
   Plus, 
-  Database,
-  MessageSquare,
+  BotMessageSquare,
   type LucideIcon
 } from 'lucide-react';
 import { LinkedInProfile, Lead } from './types';
@@ -27,7 +30,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   DASHBOARD_NAV_ITEMS,
+  getHashForLead,
   getHashForTab,
+  getLeadIdFromHash,
   getTabFromHash,
   type DashboardTab,
 } from './lib/navigation';
@@ -41,6 +46,7 @@ const LeadTable = lazy(() => import('./components/LeadTable'));
 const OutreachStudio = lazy(() => import('./components/OutreachStudio'));
 const CrmOverview = lazy(() => import('./components/CrmOverview'));
 const CrmCopilot = lazy(() => import('./components/CrmCopilot'));
+const LeadDrawer = lazy(() => import('./components/LeadDrawer'));
 import TabErrorBoundary from './components/TabErrorBoundary';
 
 interface NavigationItem {
@@ -49,14 +55,6 @@ interface NavigationItem {
   label: string;
   icon: LucideIcon;
 }
-
-const NAV_ICONS: Readonly<Record<DashboardTab, LucideIcon>> = {
-  overview: Gauge,
-  workspace: Sparkles,
-  inventory: TableProperties,
-  pipeline: Layers,
-  outreach: Wand2,
-};
 
 const NAV_ITEMS: readonly NavigationItem[] = DASHBOARD_NAV_ITEMS.map(item => ({
   ...item,
@@ -81,15 +79,15 @@ class AppErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       return (
-        <main className="min-h-screen bg-slate-950 px-6 py-16 text-slate-100">
-          <section className="mx-auto max-w-xl rounded-xl border border-rose-500/30 bg-slate-900 p-6 shadow-2xl">
-            <p className="text-sm font-semibold text-rose-300">Apex CRM could not render this workspace.</p>
-            <p className="mt-2 text-sm text-slate-300">
+        <main className="min-h-screen bg-background px-6 py-16 text-foreground">
+          <section className="mx-auto max-w-xl rounded-xl border border-danger/30 bg-card p-6 shadow-2xl">
+            <p className="text-sm font-semibold text-danger">Apex CRM could not render this workspace.</p>
+            <p className="mt-2 text-sm text-foreground/80">
               Reload the app to recover. If this repeats, the browser console contains the underlying error.
             </p>
             <button
               type="button"
-              className="mt-5 rounded-md bg-indigo-500 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-400"
+              className="mt-5 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
               onClick={() => window.location.reload()}
             >
               Reload Apex CRM
@@ -104,44 +102,48 @@ class AppErrorBoundary extends React.Component<
 }
 
 const TabLoading = () => (
-  <div className="min-h-56 grid place-items-center text-sm text-slate-400" role="status">
-    Loading workspace...
+  <div className="space-y-4" role="status" aria-busy="true">
+    <span className="sr-only">Loading workspace</span>
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {Array.from({ length: 4 }, (_, index) => (
+        <Skeleton key={index} className="h-24 rounded-xl" />
+      ))}
+    </div>
+    <Skeleton className="h-72 rounded-xl" />
   </div>
 );
 
 const AppShellLoading = () => (
-  <div className="min-h-screen bg-[#090d16] text-slate-100" aria-busy="true">
-    <header className="border-b border-slate-800 bg-slate-950/80 px-4 py-4 sm:px-6">
+  <div className="min-h-screen bg-background text-foreground" aria-busy="true">
+    <header className="border-b border-border bg-background/80 px-4 py-4 sm:px-6">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-6">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-xl bg-indigo-500/20" />
+          <Skeleton className="h-10 w-10 rounded-xl" />
           <div className="space-y-2">
-            <div className="h-3 w-24 rounded bg-slate-700" />
-            <div className="h-2 w-16 rounded bg-slate-800" />
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="h-2 w-16" />
           </div>
         </div>
         <div className="hidden gap-2 lg:flex">
           {NAV_ITEMS.map(item => (
-            <div key={item.id} className="h-9 w-20 rounded-lg bg-slate-800/80" />
+            <Skeleton key={item.id} className="h-9 w-20 rounded-lg" />
           ))}
         </div>
-        <div className="h-9 w-28 rounded-lg bg-indigo-500/20" />
+        <Skeleton className="h-9 w-28 rounded-lg" />
       </div>
     </header>
     <main className="mx-auto w-full max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8" role="status">
       <span className="sr-only">Loading CRM data</span>
-      <div className="animate-pulse space-y-6 motion-reduce:animate-none">
-        <div className="space-y-3">
-          <div className="h-6 w-48 rounded bg-slate-700" />
-          <div className="h-3 w-full max-w-xl rounded bg-slate-800" />
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }, (_, index) => (
-            <div key={index} className="h-28 rounded-xl border border-slate-800 bg-slate-900/70" />
-          ))}
-        </div>
-        <div className="h-80 rounded-xl border border-slate-800 bg-slate-900/70" />
+      <div className="space-y-3">
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-3 w-full max-w-xl" />
       </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 4 }, (_, index) => (
+          <Skeleton key={index} className="h-28 rounded-xl" />
+        ))}
+      </div>
+      <Skeleton className="h-80 rounded-xl" />
     </main>
   </div>
 );
@@ -156,9 +158,6 @@ function Dashboard() {
     refreshStats,
     handleBulkLeadsAdded,
     handleUpdateLeadStage,
-    handleUpdateLeadNotes,
-    handleUpdateLeadTags,
-    handleDeleteLead
   } = useLeads();
   const { triggerToast } = useToast();
   const shouldReduceMotion = useReducedMotion();
@@ -168,6 +167,8 @@ function Dashboard() {
     return new Set(initialTab === 'workspace' || initialTab === 'inventory' ? [initialTab] : []);
   });
   const [hasLoadedCopilot, setHasLoadedCopilot] = useState(false);
+  const [prospectPreset, setProspectPreset] = useState<ProspectPreset | null>(null);
+  const [openLeadId, setOpenLeadId] = useState<string | null>(() => getLeadIdFromHash(window.location.hash));
   const [selectedLeadForOutreach, setSelectedLeadForOutreach] = useState<Lead | null>(null);
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualName, setManualName] = useState('');
@@ -181,14 +182,35 @@ function Dashboard() {
 
   const navigateToTab = useCallback((tab: DashboardTab) => {
     setActiveTab(tab);
+    setOpenLeadId(null);
     const nextHash = getHashForTab(tab);
     if (window.location.hash !== nextHash) {
       window.history.pushState(null, '', nextHash);
     }
   }, []);
 
+  // The shared lead drawer is addressable: #prospects/<leadId> reopens it after a reload.
+  const openLead = useCallback((leadId: string) => {
+    setOpenLeadId(leadId);
+    const nextHash = getHashForLead(getTabFromHash(window.location.hash), leadId);
+    if (window.location.hash !== nextHash) {
+      window.history.pushState(null, '', nextHash);
+    }
+  }, []);
+
+  const closeLead = useCallback(() => {
+    setOpenLeadId(null);
+    const tabHash = getHashForTab(getTabFromHash(window.location.hash));
+    if (window.location.hash !== tabHash) {
+      window.history.replaceState(null, '', tabHash);
+    }
+  }, []);
+
   useEffect(() => {
-    const syncTabFromLocation = () => setActiveTab(getTabFromHash(window.location.hash));
+    const syncTabFromLocation = () => {
+      setActiveTab(getTabFromHash(window.location.hash));
+      setOpenLeadId(getLeadIdFromHash(window.location.hash));
+    };
     if (!window.location.hash) {
       window.history.replaceState(null, '', getHashForTab('overview'));
     }
@@ -300,6 +322,11 @@ function Dashboard() {
     }
   };
 
+  const handleViewProspects = useCallback((filters: Partial<ProspectFilters>) => {
+    setProspectPreset({ nonce: Date.now(), filters });
+    navigateToTab('inventory');
+  }, [navigateToTab]);
+
   const handleSelectLeadForOutreach = useCallback((lead: Lead) => {
     setSelectedLeadForOutreach(lead);
     navigateToTab('outreach');
@@ -310,14 +337,14 @@ function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#090d16] text-slate-100 font-sans flex flex-col justify-between selection:bg-indigo-500/30 selection:text-white">
+    <div className="min-h-screen bg-background text-foreground font-sans flex flex-col justify-between selection:bg-primary/30 selection:text-foreground">
       <a
         href="#main-content"
         onClick={(event) => {
           event.preventDefault();
           document.getElementById('main-content')?.focus();
         }}
-        className="sr-only z-[70] rounded-md bg-indigo-500 px-4 py-2 font-semibold text-white focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
+        className="sr-only z-[70] rounded-md bg-primary px-4 py-2 font-semibold text-primary-foreground focus:not-sr-only focus:fixed focus:left-4 focus:top-4"
       >
         Skip to workspace
       </a>
@@ -326,12 +353,10 @@ function Dashboard() {
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-primary/5 blur-[120px]" />
       </div>
 
-      <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/85 backdrop-blur-md">
+      <header className="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-[72px] flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 bg-primary text-primary-foreground rounded-xl flex items-center justify-center shadow">
-              <Database className="w-5 h-5" aria-hidden="true" />
-            </div>
+            <ApexLogo className="h-10 w-10 shadow-sm rounded-xl" />
             <div>
               <h1 className="font-extrabold text-foreground text-sm tracking-tight">
                 Apex CRM
@@ -354,16 +379,20 @@ function Dashboard() {
                   variant={isSelected ? "secondary" : "ghost"}
                   onClick={() => navigateToTab(item.id)}
                   aria-current={isSelected ? 'page' : undefined}
+                  aria-label={item.label}
+                  title={item.label}
                   className="flex items-center gap-2 h-9 px-3"
                 >
                   <Icon className={`w-4 h-4 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} aria-hidden="true" />
-                  {item.label}
+                  <span className="hidden xl:inline">{item.label}</span>
                 </Button>
               );
             })}
           </nav>
 
           <div className="flex items-center gap-2">
+            <HeaderSearch leads={leads} onOpenLead={openLead} />
+            <ThemeToggle />
             <Button type="button" size="sm" onClick={() => setShowManualModal(true)}>
               <Plus className="w-4 h-4 mr-1.5" aria-hidden="true" />
               Add prospect
@@ -372,7 +401,7 @@ function Dashboard() {
         </div>
 
         <nav
-          className="lg:hidden border-t border-slate-800/80 bg-slate-950/60 backdrop-blur-md px-4 py-2 flex gap-1.5 overflow-x-auto select-none"
+          className="lg:hidden border-t border-border/80 bg-background/60 backdrop-blur-md px-4 py-2 flex gap-1.5 overflow-x-auto select-none"
           aria-label="Mobile navigation"
         >
           {NAV_ITEMS.map(item => {
@@ -384,10 +413,10 @@ function Dashboard() {
                 type="button"
                 onClick={() => navigateToTab(item.id)}
                 aria-current={isSelected ? 'page' : undefined}
-                className={`px-3 py-2 rounded-lg text-xs font-bold shrink-0 transition-colors flex items-center gap-1.5 cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 ${
+                className={`px-3 py-2 rounded-lg text-xs font-bold shrink-0 transition-colors flex items-center gap-1.5 cursor-pointer border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                   isSelected
-                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
-                    : 'bg-slate-900/40 border-slate-800/60 text-slate-400 hover:text-white'
+                    ? 'bg-primary text-primary-foreground border-primary shadow-md'
+                    : 'bg-card/40 border-border/60 text-muted-foreground hover:text-foreground'
                 }`}
               >
                 <Icon className="w-3.5 h-3.5" aria-hidden="true" />
@@ -409,10 +438,11 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <div className="mb-6 max-w-3xl">
-                  <h2 id="discover-heading" className="text-2xl font-extrabold text-white tracking-tight">Discover prospects</h2>
-                  <p className="text-sm leading-6 text-slate-400 mt-1">Find qualified people, review the evidence, then add only the prospects you want to enrich.</p>
-                </div>
+                <PageHeader
+                  id="discover-heading"
+                  title="Discover prospects"
+                  description="Find qualified people, review the evidence, then add only the prospects you want to enrich."
+                />
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="Discover prospects">
                     <ScrapeWorkspace />
@@ -423,7 +453,7 @@ function Dashboard() {
             {activeTab === 'overview' && (
               <motion.section
                 key="tab-overview"
-                aria-label="CRM overview"
+                aria-labelledby="overview-heading"
                 initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
@@ -431,7 +461,14 @@ function Dashboard() {
               >
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="CRM overview">
-                    <CrmOverview leads={leads} stats={stats} />
+                    <CrmOverview
+                      leads={leads}
+                      stats={stats}
+                      onNavigate={navigateToTab}
+                      onOpenLead={openLead}
+                      onViewProspects={handleViewProspects}
+                      onAddProspect={() => setShowManualModal(true)}
+                    />
                   </TabErrorBoundary>
                 </Suspense>
               </motion.section>
@@ -445,20 +482,17 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <div className="mb-6 flex justify-between items-center gap-4">
-                  <div>
-                    <h2 id="pipeline-heading" className="text-2xl font-extrabold text-white tracking-tight">Pipeline</h2>
-                    <p className="text-sm leading-6 text-slate-400 mt-1">Move prospects through review, outreach, and follow-up without losing context.</p>
-                  </div>
-                </div>
+                <PageHeader
+                  id="pipeline-heading"
+                  title="Pipeline"
+                  description="Drag prospects between stages, or open one to review, reach out, and follow up without losing context."
+                />
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="Pipeline">
                     <CrmPipeline
                       leads={leads}
                       onUpdateLeadStage={handleUpdateLeadStage}
-                      onUpdateLeadNotes={handleUpdateLeadNotes}
-                      onUpdateLeadTags={handleUpdateLeadTags}
-                      onDeleteLead={handleDeleteLead}
+                      onOpenLead={openLead}
                       onSelectLeadForOutreach={handleSelectLeadForOutreach}
                     />
                   </TabErrorBoundary>
@@ -478,7 +512,7 @@ function Dashboard() {
               >
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="Prospect inventory">
-                    <LeadTable onAddManualLead={() => setShowManualModal(true)} />
+                    <LeadTable onAddManualLead={() => setShowManualModal(true)} onOpenLead={openLead} preset={prospectPreset} />
                   </TabErrorBoundary>
                 </Suspense>
               </motion.section>
@@ -493,10 +527,11 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
-                <div className="mb-6 max-w-3xl">
-                  <h2 id="outreach-heading" className="text-2xl font-extrabold text-white tracking-tight">Outreach</h2>
-                  <p className="text-sm leading-6 text-slate-400 mt-1">Draft personalized messages from the prospect and account evidence already in your CRM.</p>
-                </div>
+                <PageHeader
+                  id="outreach-heading"
+                  title="Outreach"
+                  description="Draft personalized messages from the prospect and account evidence already in your CRM."
+                />
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="Outreach">
                     <OutreachStudio
@@ -509,17 +544,23 @@ function Dashboard() {
             )}
       </main>
 
+      {openLeadId && (
+        <Suspense fallback={null}>
+          <LeadDrawer leadId={openLeadId} onClose={closeLead} onOpenOutreach={handleSelectLeadForOutreach} />
+        </Suspense>
+      )}
+
       {hasLoadedCopilot ? (
         <Suspense
           fallback={(
-            <div className="fixed bottom-5 right-5 z-50 grid h-14 w-14 place-items-center rounded-2xl border border-indigo-300/30 bg-indigo-600 text-white" role="status">
+            <div className="fixed bottom-5 right-5 z-50 grid h-14 w-14 place-items-center rounded-2xl border border-primary/30 bg-primary text-primary-foreground" role="status">
               <span className="sr-only">Loading Apex Copilot</span>
-              <MessageSquare className="h-6 w-6" aria-hidden="true" />
+              <BotMessageSquare className="h-6 w-6" aria-hidden="true" />
             </div>
           )}
         >
           <TabErrorBoundary tabName="Apex Copilot">
-            <CrmCopilot defaultOpen />
+            <CrmCopilot defaultOpen leads={leads} onOpenLead={openLead} />
           </TabErrorBoundary>
         </Suspense>
       ) : (
@@ -527,9 +568,9 @@ function Dashboard() {
           type="button"
           onClick={() => setHasLoadedCopilot(true)}
           aria-label="Open Apex Copilot"
-          className="fixed bottom-5 right-5 z-50 flex h-14 w-14 items-center justify-center rounded-2xl border border-indigo-300/30 bg-gradient-to-br from-indigo-500 to-violet-700 text-white shadow-[0_14px_40px_rgba(79,70,229,0.4)] transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+          className="fixed bottom-5 right-5 z-50 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/30 bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-xl shadow-primary/40 transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none motion-reduce:hover:translate-y-0"
         >
-          <MessageSquare className="h-6 w-6" aria-hidden="true" />
+          <BotMessageSquare className="h-6 w-6" aria-hidden="true" />
         </button>
       )}
 
@@ -540,10 +581,10 @@ function Dashboard() {
           if (!open && !isSavingManualLead) resetManualForm();
         }}
       >
-        <DialogContent className="max-w-lg bg-slate-900 border-slate-800 text-slate-100">
-          <DialogHeader className="border-b border-slate-800 pb-4">
+        <DialogContent className="max-w-lg bg-card border-border text-foreground">
+          <DialogHeader className="border-b border-border pb-4">
             <DialogTitle>Add a prospect</DialogTitle>
-            <DialogDescription className="text-slate-400">
+            <DialogDescription className="text-muted-foreground">
               Save a contact you already know. Name is required; email and LinkedIn URL improve duplicate detection.
             </DialogDescription>
           </DialogHeader>
@@ -551,7 +592,7 @@ function Dashboard() {
           <form onSubmit={handleManualLeadSubmit} aria-busy={isSavingManualLead} className="space-y-4 max-h-[75vh] overflow-y-auto custom-scrollbar pr-2 pt-2">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label htmlFor="manual-name" className="text-slate-300">Full name</Label>
+                <Label htmlFor="manual-name" className="text-foreground/80">Full name</Label>
                 <Input
                   id="manual-name"
                   type="text"
@@ -560,16 +601,16 @@ function Dashboard() {
                   value={manualName}
                   onChange={(e) => setManualName(e.target.value)}
                   placeholder="e.g. John Smith"
-                  className="bg-slate-950 border-slate-800"
+                  className="bg-background border-border"
                 />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="manual-industry" className="text-slate-300">Industry</Label>
+                <Label htmlFor="manual-industry" className="text-foreground/80">Industry</Label>
                 <select
                   id="manual-industry"
                   value={manualIndustry}
                   onChange={(e) => setManualIndustry(e.target.value as (typeof MANUAL_PROSPECT_INDUSTRIES)[number])}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-md px-3 py-2 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {MANUAL_PROSPECT_INDUSTRIES.map(industry => (
                     <option key={industry} value={industry}>{industry}</option>
@@ -580,7 +621,7 @@ function Dashboard() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <Label htmlFor="manual-title" className="text-slate-300">Current job title</Label>
+                <Label htmlFor="manual-title" className="text-foreground/80">Current job title</Label>
                 <Input
                   id="manual-title"
                   type="text"
@@ -588,11 +629,11 @@ function Dashboard() {
                   value={manualTitle}
                   onChange={(e) => setManualTitle(e.target.value)}
                   placeholder="e.g. Managing Director"
-                  className="bg-slate-950 border-slate-800"
+                  className="bg-background border-border"
                 />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="manual-company" className="text-slate-300">Company name</Label>
+                <Label htmlFor="manual-company" className="text-foreground/80">Company name</Label>
                 <Input
                   id="manual-company"
                   type="text"
@@ -600,13 +641,13 @@ function Dashboard() {
                   value={manualCompany}
                   onChange={(e) => setManualCompany(e.target.value)}
                   placeholder="e.g. Acme Corp"
-                  className="bg-slate-950 border-slate-800"
+                  className="bg-background border-border"
                 />
               </div>
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="manual-email" className="text-slate-300">Contact email</Label>
+              <Label htmlFor="manual-email" className="text-foreground/80">Contact email</Label>
               <Input
                 id="manual-email"
                 type="email"
@@ -614,35 +655,35 @@ function Dashboard() {
                 value={manualEmail}
                 onChange={(e) => setManualEmail(e.target.value)}
                 placeholder="e.g. jsmith@acme.com"
-                className="bg-slate-950 border-slate-800"
+                className="bg-background border-border"
               />
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="manual-linkedin" className="text-slate-300">LinkedIn profile URL</Label>
+              <Label htmlFor="manual-linkedin" className="text-foreground/80">LinkedIn profile URL</Label>
               <Input
                 id="manual-linkedin"
                 type="url"
                 value={manualUrl}
                 onChange={(e) => setManualUrl(e.target.value)}
                 placeholder="e.g. https://linkedin.com/in/johnsmith"
-                className="bg-slate-950 border-slate-800"
+                className="bg-background border-border"
               />
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="manual-summary" className="text-slate-300">Notes</Label>
+              <Label htmlFor="manual-summary" className="text-foreground/80">Notes</Label>
               <Textarea
                 id="manual-summary"
                 value={manualSummary}
                 onChange={(e) => setManualSummary(e.target.value)}
                 placeholder="Add useful context for review or outreach..."
                 rows={3}
-                className="bg-slate-950 border-slate-800 resize-y"
+                className="bg-background border-border resize-y"
               />
             </div>
 
-            <DialogFooter className="pt-4 border-t border-slate-800">
+            <DialogFooter className="pt-4 border-t border-border">
               <Button
                 type="button"
                 variant="outline"
@@ -661,14 +702,6 @@ function Dashboard() {
           </form>
         </DialogContent>
       </Dialog>
-
-      <footer className="bg-slate-900/40 border-t border-indigo-500/10 text-slate-500 text-xs text-center py-4">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2.5">
-          <span>Discover, qualify, enrich, and contact prospects from one workspace.</span>
-          <span className="font-semibold text-slate-400">Apex CRM</span>
-        </div>
-      </footer>
-
     </div>
   );
 }
@@ -676,11 +709,15 @@ function Dashboard() {
 export default function App() {
   return (
     <AppErrorBoundary>
-      <ToastProvider>
-        <LeadProvider>
-          <Dashboard />
-        </LeadProvider>
-      </ToastProvider>
+      <ThemeProvider>
+        <IconProvider>
+          <ToastProvider>
+            <LeadProvider>
+              <Dashboard />
+            </LeadProvider>
+          </ToastProvider>
+        </IconProvider>
+      </ThemeProvider>
     </AppErrorBoundary>
   );
 }

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .bg { fill: #4f46e5; }
+    .fg { fill: none; stroke: #ffffff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .dot { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #8176f4; }
+      .fg { stroke: #0d0f17; }
+      .dot { fill: #0d0f17; }
+    }
+  </style>
+  <rect class="bg" width="32" height="32" rx="8" />
+  <path class="fg" d="M7.5 23.5 16 8.5l8.5 15" />
+  <circle class="dot" cx="16" cy="20" r="2" />
+</svg>

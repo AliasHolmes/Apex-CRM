@@ -1,7 +1,7 @@
 // @license Apache-2.0
 
 import React, { Component, type ErrorInfo, type ReactNode } from 'react';
-import { AlertTriangle, RotateCcw } from 'lucide-react';
+import { TriangleAlert, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface TabErrorBoundaryProps {
@@ -45,17 +45,17 @@ export class TabErrorBoundary extends Component<TabErrorBoundaryProps, TabErrorB
         <div
           role="alert"
           aria-live="assertive"
-          className="mx-auto my-6 max-w-2xl rounded-xl border border-rose-500/30 bg-slate-900/90 p-6 text-slate-100 shadow-xl backdrop-blur-sm"
+          className="mx-auto my-6 max-w-2xl rounded-xl border border-danger/30 bg-card/90 p-6 text-foreground shadow-xl backdrop-blur-sm"
         >
           <div className="flex items-start gap-4">
-            <div className="rounded-lg bg-rose-500/20 p-2.5 text-rose-400 shrink-0">
-              <AlertTriangle className="h-6 w-6" aria-hidden="true" />
+            <div className="rounded-lg bg-danger/20 p-2.5 text-danger shrink-0">
+              <TriangleAlert className="h-6 w-6" aria-hidden="true" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="text-base font-semibold text-rose-300">
+              <h3 className="text-base font-semibold text-danger">
                 Failed to render {this.props.tabName}
               </h3>
-              <p className="mt-2 text-xs font-mono break-words rounded-lg border border-slate-800 bg-slate-950/80 p-3 text-slate-300 select-all">
+              <p className="mt-2 text-xs font-mono break-words rounded-lg border border-border bg-background/80 p-3 text-foreground/80 select-all">
                 {errorMessage}
               </p>
               <div className="mt-4 flex items-center gap-3">
@@ -64,7 +64,7 @@ export class TabErrorBoundary extends Component<TabErrorBoundaryProps, TabErrorB
                   variant="outline"
                   size="sm"
                   onClick={this.handleReset}
-                  className="inline-flex items-center gap-2 border-rose-500/40 text-rose-200 hover:bg-rose-500/10 hover:text-white"
+                  className="inline-flex items-center gap-2 border-danger/40 text-danger hover:bg-danger/10 hover:text-foreground"
                 >
                   <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                   Retry Tab

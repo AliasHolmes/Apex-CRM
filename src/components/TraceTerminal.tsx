@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMiningTraceStream } from '@/lib/traceStore';
 import { Badge } from '@/components/ui/badge';
-import { Clock, ExternalLink, BarChart2 } from 'lucide-react';
+import { Clock, ExternalLink, ChartNoAxesColumn } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -222,49 +222,49 @@ export const TraceSummaryViewer = ({
   if (!traceSummary && traceEvents.length === 0) return null;
 
   return (
-    <div className="p-4 border-t border-slate-800 bg-slate-950/70 space-y-3 text-xs text-slate-400">
+    <div className="p-4 border-t border-border bg-background/70 space-y-3 text-xs text-muted-foreground">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-        <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider flex items-center justify-between">
+        <div className="bg-card/60 border border-border rounded-md p-2.5">
+          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider flex items-center justify-between">
             <span>Duration</span>
             {active && (
-              <span className="flex items-center gap-1 text-xs font-semibold text-emerald-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse motion-reduce:animate-none" />
+              <span className="flex items-center gap-1 text-xs font-semibold text-success">
+                <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse motion-reduce:animate-none" />
                 Live
               </span>
             )}
           </div>
-          <div className="text-sm text-cyan-300 font-semibold mt-0.5 font-mono">
+          <div className="text-sm text-info font-semibold mt-0.5 font-mono">
             {formatDuration(effectiveDuration)}
           </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Events</div>
-          <div className="text-sm text-slate-200 font-semibold mt-0.5">{eventCount}</div>
+        <div className="bg-card/60 border border-border rounded-md p-2.5">
+          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider">Events</div>
+          <div className="text-sm text-foreground font-semibold mt-0.5">{eventCount}</div>
         </div>
         <div
           onClick={() => setTokenModalOpen(true)}
-          className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5 cursor-pointer hover:border-indigo-500/60 hover:bg-slate-900/90 transition-all group"
+          className="bg-card/60 border border-border rounded-md p-2.5 cursor-pointer hover:border-primary/60 hover:bg-card/90 transition-all group"
           title="Click to open Token Inspector and telemetry breakdown"
         >
-          <div className="text-xs uppercase text-slate-500 group-hover:text-indigo-400 font-bold tracking-wider flex items-center justify-between">
+          <div className="text-xs uppercase text-muted-foreground group-hover:text-primary font-bold tracking-wider flex items-center justify-between">
             <span>Model tokens</span>
-            <ExternalLink className="w-3 h-3 text-slate-500 group-hover:text-indigo-400 transition-colors" />
+            <ExternalLink className="w-3 h-3 text-muted-foreground group-hover:text-primary transition-colors" />
           </div>
-          <div className="text-sm text-indigo-300 font-semibold mt-0.5 flex items-center justify-between font-mono">
+          <div className="text-sm text-primary font-semibold mt-0.5 flex items-center justify-between font-mono">
             <span>{totalTokens.toLocaleString()}</span>
-            <span className="text-xs text-indigo-400/80 font-sans group-hover:underline">Inspect</span>
+            <span className="text-xs text-primary/80 font-sans group-hover:underline">Inspect</span>
           </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Est. Cost</div>
-          <div className="text-sm text-emerald-300 font-semibold mt-0.5">
+        <div className="bg-card/60 border border-border rounded-md p-2.5">
+          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider">Est. Cost</div>
+          <div className="text-sm text-success font-semibold mt-0.5">
             ${estimatedUsd.toFixed(4)}
           </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800 rounded-md p-2.5">
-          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider">Cost / Lead</div>
-          <div className="text-sm text-slate-200 font-semibold mt-0.5">
+        <div className="bg-card/60 border border-border rounded-md p-2.5">
+          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider">Cost / Lead</div>
+          <div className="text-sm text-foreground font-semibold mt-0.5">
             {costPerLead !== undefined ? `$${costPerLead.toFixed(4)}` : '-'}
           </div>
         </div>
@@ -274,7 +274,7 @@ export const TraceSummaryViewer = ({
         <div className="flex items-center gap-2 pt-0.5">
           <Badge
             variant="outline"
-            className="border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono text-xs py-1 px-2.5 flex items-center gap-1.5"
+            className="border-warning/40 bg-warning/10 text-warning font-mono text-xs py-1 px-2.5 flex items-center gap-1.5"
           >
             <span>CRM Duplicates Filtered: {traceSummary.existingCrmLeadsSkipped}</span>
           </Badge>
@@ -286,50 +286,50 @@ export const TraceSummaryViewer = ({
           {providers.map(([provider, item]) => (
             <div
               key={provider}
-              className="bg-slate-900/50 border border-slate-800 rounded-md p-2.5 text-xs"
+              className="bg-card/50 border border-border rounded-md p-2.5 text-xs"
             >
               <div className="flex items-center justify-between mb-1.5">
-                <span className="uppercase font-bold text-slate-300 flex items-center gap-1.5">
+                <span className="uppercase font-bold text-foreground/80 flex items-center gap-1.5">
                   <span
                     className={`w-2 h-2 rounded-full ${
                       provider === 'brightdata'
-                        ? 'bg-amber-400'
+                        ? 'bg-warning'
                         : provider === 'tavily'
-                        ? 'bg-cyan-400'
+                        ? 'bg-info'
                         : provider === 'llm'
-                        ? 'bg-indigo-400'
-                        : 'bg-slate-400'
+                        ? 'bg-primary'
+                        : 'bg-secondary'
                     }`}
                   />
                   {provider}
                 </span>
-                <span className="text-slate-500 text-xs">
+                <span className="text-muted-foreground text-xs">
                   avg {formatDuration(item.avgLatencyMs)}
                 </span>
               </div>
-              <div className="flex items-center gap-3 text-xs text-slate-400">
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 <span>
-                  <strong className="text-slate-200">{item.calls}</strong> calls
+                  <strong className="text-foreground">{item.calls}</strong> calls
                 </span>
-                <span className="text-emerald-400 font-medium">{item.successes} ok</span>
+                <span className="text-success font-medium">{item.successes} ok</span>
                 {item.failures > 0 && (
-                  <span className="text-rose-400 font-medium">{item.failures} fail</span>
+                  <span className="text-danger font-medium">{item.failures} fail</span>
                 )}
                 {item.totalTokens > 0 && (
-                  <span className="text-indigo-300">
+                  <span className="text-primary">
                     {item.totalTokens.toLocaleString()} tok
                   </span>
                 )}
               </div>
               {item.models && Object.keys(item.models).length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-2 pt-1.5 border-t border-slate-800/80">
+                <div className="flex flex-wrap gap-1 mt-2 pt-1.5 border-t border-border/80">
                   {Object.entries(item.models).map(([modelName, count]) => (
                     <span
                       key={modelName}
-                      className="px-1.5 py-0.5 rounded text-xs font-mono bg-cyan-950/60 border border-cyan-500/30 text-cyan-300 flex items-center gap-1"
+                      className="px-1.5 py-0.5 rounded text-xs font-mono bg-info/10 border border-info/30 text-info flex items-center gap-1"
                     >
-                      <span className="text-cyan-300">{modelName}</span>
-                      <span className="text-cyan-500 font-sans font-semibold">({String(count)})</span>
+                      <span className="text-info">{modelName}</span>
+                      <span className="text-info font-sans font-semibold">({String(count)})</span>
                     </span>
                   ))}
                 </div>
@@ -346,13 +346,13 @@ export const TraceSummaryViewer = ({
               key={phase.phase}
               className={`px-2 py-1 rounded-md border text-xs font-semibold flex items-center gap-1.5 ${
                 phase.status === 'error'
-                  ? 'border-rose-500/30 text-rose-300 bg-rose-500/5'
-                  : 'border-slate-800 text-slate-300 bg-slate-900/70'
+                  ? 'border-danger/30 text-danger bg-danger/5'
+                  : 'border-border text-foreground/80 bg-card/70'
               }`}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  phase.status === 'error' ? 'bg-rose-400' : 'bg-emerald-400'
+                  phase.status === 'error' ? 'bg-danger' : 'bg-success'
                 }`}
               />
               {phase.phase.replace(/_/g, ' ')} ({phase.events}) - {formatDuration(phase.durationMs)}
@@ -363,28 +363,28 @@ export const TraceSummaryViewer = ({
 
       {recent.length > 0 && (
         <div className="space-y-1 pt-1">
-          <div className="text-xs uppercase text-slate-500 font-bold tracking-wider mb-1">
+          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider mb-1">
             Recent tool calls
           </div>
           {recent.map((event) => (
             <div
               key={event.id}
-              className="text-xs text-slate-400 font-mono bg-slate-900/40 border border-slate-800/80 rounded px-2 py-1.5 flex items-center justify-between gap-2"
+              className="text-xs text-muted-foreground font-mono bg-card/40 border border-border/80 rounded px-2 py-1.5 flex items-center justify-between gap-2"
             >
               <span className="truncate flex items-center gap-1.5 min-w-0">
-                <span className="text-slate-500 font-semibold shrink-0">
+                <span className="text-muted-foreground font-semibold shrink-0">
                   {event.provider ? `[${event.provider.toUpperCase()}] ` : ''}
                 </span>
-                <span className="text-slate-300 shrink-0">
+                <span className="text-foreground/80 shrink-0">
                   {event.phase}/{event.operation}
                 </span>
                 {(event.model || event.llm?.model) && (
-                  <span className="px-1.5 py-0.5 rounded text-xs bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 font-mono shrink-0">
+                  <span className="px-1.5 py-0.5 rounded text-xs bg-info/10 border border-info/40 text-info font-mono shrink-0">
                     {event.model || event.llm?.model}
                   </span>
                 )}
                 {event.query ? (
-                  <span className="text-slate-400 truncate"> - "{event.query}"</span>
+                  <span className="text-muted-foreground truncate"> - "{event.query}"</span>
                 ) : (
                   ''
                 )}
@@ -392,10 +392,10 @@ export const TraceSummaryViewer = ({
               <span
                 className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded ${
                   event.status === 'error'
-                    ? 'text-rose-400 bg-rose-500/10'
+                    ? 'text-danger bg-danger/10'
                     : event.status === 'success'
-                    ? 'text-emerald-400 bg-emerald-500/10'
-                    : 'text-slate-400 bg-slate-800/50'
+                    ? 'text-success bg-success/10'
+                    : 'text-muted-foreground bg-muted/50'
                 }`}
               >
                 {event.latencyMs ? `${formatDuration(event.latencyMs)} ` : ''}
@@ -407,21 +407,21 @@ export const TraceSummaryViewer = ({
       )}
 
       <Dialog open={tokenModalOpen} onOpenChange={setTokenModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto bg-slate-900 border border-slate-800 text-slate-100 p-6 shadow-2xl">
-          <DialogHeader className="space-y-1 pb-3 border-b border-slate-800">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto bg-card border border-border text-foreground p-6 shadow-2xl">
+          <DialogHeader className="space-y-1 pb-3 border-b border-border">
             <div className="flex items-center gap-2">
-              <div className="p-1.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-400">
-                <BarChart2 className="w-4 h-4" />
+              <div className="p-1.5 rounded-md bg-primary/10 border border-primary/30 text-primary">
+                <ChartNoAxesColumn className="w-4 h-4" />
               </div>
-              <DialogTitle className="text-base font-semibold text-slate-100">
+              <DialogTitle className="text-base font-semibold text-foreground">
                 Session Token & Telemetry Inspector
               </DialogTitle>
             </div>
-            <DialogDescription className="text-xs text-slate-400 font-mono flex items-center gap-2">
+            <DialogDescription className="text-xs text-muted-foreground font-mono flex items-center gap-2">
               <span>Session: {sessionId || 'Live Active Session'}</span>
               {active && (
-                <span className="text-emerald-400 flex items-center gap-1 font-sans font-medium">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-success flex items-center gap-1 font-sans font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
                   Active
                 </span>
               )}
@@ -429,35 +429,35 @@ export const TraceSummaryViewer = ({
           </DialogHeader>
 
           {loadingStats ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400">
-              <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <div className="py-12 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+              <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
               <span className="text-xs font-mono">Loading session token statistics...</span>
             </div>
           ) : tokenStats ? (
             <div className="space-y-5 pt-3">
               {/* Summary Metrics */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
-                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Total Tokens</div>
-                  <div className="text-lg font-bold font-mono text-indigo-300 mt-0.5">
+                <div className="bg-background/70 border border-border rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold">Total Tokens</div>
+                  <div className="text-lg font-bold font-mono text-primary mt-0.5">
                     {Number(tokenStats.totalTokens || 0).toLocaleString()}
                   </div>
                 </div>
-                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
-                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Prompt Tokens</div>
-                  <div className="text-lg font-bold font-mono text-cyan-300 mt-0.5">
+                <div className="bg-background/70 border border-border rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold">Prompt Tokens</div>
+                  <div className="text-lg font-bold font-mono text-info mt-0.5">
                     {Number(tokenStats.totalInputTokens || 0).toLocaleString()}
                   </div>
                 </div>
-                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
-                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Output Tokens</div>
-                  <div className="text-lg font-bold font-mono text-purple-300 mt-0.5">
+                <div className="bg-background/70 border border-border rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold">Output Tokens</div>
+                  <div className="text-lg font-bold font-mono text-primary mt-0.5">
                     {Number(tokenStats.totalOutputTokens || 0).toLocaleString()}
                   </div>
                 </div>
-                <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3">
-                  <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Total LLM Calls</div>
-                  <div className="text-lg font-bold font-mono text-emerald-300 mt-0.5">
+                <div className="bg-background/70 border border-border rounded-lg p-3">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold">Total LLM Calls</div>
+                  <div className="text-lg font-bold font-mono text-success mt-0.5">
                     {tokenStats.totalCalls || 0}
                   </div>
                 </div>
@@ -466,27 +466,27 @@ export const TraceSummaryViewer = ({
               {/* Stage Breakdown */}
               {tokenStats.stages && Object.keys(tokenStats.stages).length > 0 && (
                 <div className="space-y-2">
-                  <div className="text-xs uppercase tracking-wider text-slate-400 font-bold flex items-center justify-between">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold flex items-center justify-between">
                     <span>Stage Token Distribution</span>
-                    <span className="text-xs text-slate-500 font-mono">Calls & Latency</span>
+                    <span className="text-xs text-muted-foreground font-mono">Calls & Latency</span>
                   </div>
-                  <div className="border border-slate-800 rounded-lg overflow-hidden divide-y divide-slate-800/60 bg-slate-950/50">
-                    <div className="grid grid-cols-5 bg-slate-900/80 px-3 py-2 text-xs font-semibold text-slate-400">
+                  <div className="border border-border rounded-lg overflow-hidden divide-y divide-border/60 bg-background/50">
+                    <div className="grid grid-cols-5 bg-card/80 px-3 py-2 text-xs font-semibold text-muted-foreground">
                       <div className="col-span-2">Stage</div>
                       <div className="text-right">Calls</div>
                       <div className="text-right">Tokens</div>
                       <div className="text-right">Avg Latency</div>
                     </div>
                     {Object.entries(tokenStats.stages).map(([stageName, stage]: [string, any]) => (
-                      <div key={stageName} className="grid grid-cols-5 px-3 py-2 text-xs items-center hover:bg-slate-800/20">
-                        <div className="col-span-2 font-mono font-medium text-slate-200 capitalize">
+                      <div key={stageName} className="grid grid-cols-5 px-3 py-2 text-xs items-center hover:bg-muted/20">
+                        <div className="col-span-2 font-mono font-medium text-foreground capitalize">
                           {stageName.replace(/_/g, ' ')}
                         </div>
-                        <div className="text-right font-mono text-slate-400">{stage.calls}</div>
-                        <div className="text-right font-mono text-indigo-300 font-medium">
+                        <div className="text-right font-mono text-muted-foreground">{stage.calls}</div>
+                        <div className="text-right font-mono text-primary font-medium">
                           {Number(stage.totalTokens || 0).toLocaleString()}
                         </div>
-                        <div className="text-right font-mono text-slate-400">
+                        <div className="text-right font-mono text-muted-foreground">
                           {formatDuration(stage.avgLatencyMs)}
                         </div>
                       </div>
@@ -498,19 +498,19 @@ export const TraceSummaryViewer = ({
               {/* Models Breakdown */}
               {tokenStats.models && Object.keys(tokenStats.models).length > 0 && (
                 <div className="space-y-1.5">
-                  <div className="text-xs uppercase tracking-wider text-slate-400 font-bold">
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground font-bold">
                     Models Used
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(tokenStats.models).map(([model, meta]: [string, any]) => (
                       <div
                         key={model}
-                        className="px-2.5 py-1 rounded bg-slate-950/80 border border-slate-800 text-xs font-mono flex items-center gap-2"
+                        className="px-2.5 py-1 rounded bg-background/80 border border-border text-xs font-mono flex items-center gap-2"
                       >
-                        <span className="text-cyan-300 font-medium">{model}</span>
-                        <span className="text-slate-500">|</span>
-                        <span className="text-slate-300">{meta.calls} calls</span>
-                        <span className="text-indigo-400">({Number(meta.tokens || 0).toLocaleString()} tok)</span>
+                        <span className="text-info font-medium">{model}</span>
+                        <span className="text-muted-foreground">|</span>
+                        <span className="text-foreground/80">{meta.calls} calls</span>
+                        <span className="text-primary">({Number(meta.tokens || 0).toLocaleString()} tok)</span>
                       </div>
                     ))}
                   </div>
@@ -518,18 +518,18 @@ export const TraceSummaryViewer = ({
               )}
 
               {/* Langfuse Observability Integration */}
-              <div className="p-3.5 rounded-lg border border-slate-800 bg-slate-950/60 space-y-2.5">
+              <div className="p-3.5 rounded-lg border border-border bg-background/60 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    <span className="text-xs font-semibold text-slate-200">Langfuse Tracing</span>
+                    <span className="w-2 h-2 rounded-full bg-success" />
+                    <span className="text-xs font-semibold text-foreground">Langfuse Tracing</span>
                   </div>
                   {tokenStats.langfuseDeepLink ? (
                     <a
                       href={tokenStats.langfuseDeepLink}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs transition-colors"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-primary hover:bg-primary/90 text-primary-foreground font-medium text-xs transition-colors"
                     >
                       <span>Open in Langfuse</span>
                       <ExternalLink className="w-3 h-3" />
@@ -538,23 +538,23 @@ export const TraceSummaryViewer = ({
                 </div>
 
                 {tokenStats.langfuseConfigured ? (
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Traces for this session are tracked with session tag <code className="text-cyan-300 bg-slate-900 px-1 py-0.5 rounded font-mono">{tokenStats.sessionId}</code>. You can inspect exact LLM inputs, completions, system prompts, latency, and cost in Langfuse.
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Traces for this session are tracked with session tag <code className="text-info bg-card px-1 py-0.5 rounded font-mono">{tokenStats.sessionId}</code>. You can inspect exact LLM inputs, completions, system prompts, latency, and cost in Langfuse.
                   </p>
                 ) : (
-                  <div className="text-xs text-slate-400 leading-relaxed bg-slate-900/80 p-2.5 rounded border border-slate-800/80 space-y-1">
-                    <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+                  <div className="text-xs text-muted-foreground leading-relaxed bg-card/80 p-2.5 rounded border border-border/80 space-y-1">
+                    <div className="font-semibold text-warning flex items-center gap-1.5">
                       <span>Telemetry Ready (Langfuse Host Optional)</span>
                     </div>
                     <div>
-                      Direct LLM tracing is active. To view rich interactive traces in the Langfuse dashboard, set <code className="text-slate-200">LANGFUSE_PUBLIC_KEY</code>, <code className="text-slate-200">LANGFUSE_SECRET_KEY</code>, and <code className="text-slate-200">LANGFUSE_HOST</code> in your environment.
+                      Direct LLM tracing is active. To view rich interactive traces in the Langfuse dashboard, set <code className="text-foreground">LANGFUSE_PUBLIC_KEY</code>, <code className="text-foreground">LANGFUSE_SECRET_KEY</code>, and <code className="text-foreground">LANGFUSE_HOST</code> in your environment.
                     </div>
                   </div>
                 )}
               </div>
             </div>
           ) : (
-            <div className="py-8 text-center text-xs text-slate-500">
+            <div className="py-8 text-center text-xs text-muted-foreground">
               No detailed token telemetry recorded yet for this session.
             </div>
           )}
@@ -573,28 +573,28 @@ function renderTerminalLog(log: string) {
       const [, provider, model, latency, tokens, details] = match;
       return (
         <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
-          <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-950">
+          <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-success/20 text-success border border-success/40 shadow-sm shadow-success">
             200 OK
           </span>
-          <span className="font-semibold text-slate-200">{provider}</span>
-          <span className="text-slate-600">{"\u00b7"}</span>
-          <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 shadow-sm shadow-cyan-950">
+          <span className="font-semibold text-foreground">{provider}</span>
+          <span className="text-muted-foreground">{"\u00b7"}</span>
+          <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-info/10 text-info border border-info/40 shadow-sm shadow-info">
             {model}
           </span>
-          <span className="text-slate-600">{"\u00b7"}</span>
-          <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
+          <span className="text-muted-foreground">{"\u00b7"}</span>
+          <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-warning/15 text-warning border border-warning/30">
             {latency}
           </span>
           {tokens && (
             <>
-              <span className="text-slate-600">{"\u00b7"}</span>
-              <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-purple-500/15 text-purple-300 border border-purple-500/30">
+              <span className="text-muted-foreground">{"\u00b7"}</span>
+              <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-primary/15 text-primary border border-primary/30">
                 {tokens}
               </span>
             </>
           )}
           {details && (
-            <span className="text-indigo-300 font-medium ml-0.5">{details}</span>
+            <span className="text-primary font-medium ml-0.5">{details}</span>
           )}
         </span>
       );
@@ -610,13 +610,13 @@ function renderTerminalLog(log: string) {
         <span
           className={`px-1.5 py-0.5 rounded text-xs font-bold ${
             isError
-              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-950'
-              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+              ? 'bg-danger/20 text-danger border border-danger/40 shadow-sm shadow-danger'
+              : 'bg-warning/20 text-warning border border-warning/40'
           }`}
         >
           {badgeText}
         </span>
-        <span className={isError ? 'text-rose-300' : 'text-amber-300'}>{cleanLog}</span>
+        <span className={isError ? 'text-danger' : 'text-warning'}>{cleanLog}</span>
       </span>
     );
   }
@@ -624,10 +624,10 @@ function renderTerminalLog(log: string) {
   if (log.includes('RATE LIMIT') || log.includes('429')) {
     return (
       <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
-        <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+        <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-warning/20 text-warning border border-warning/40">
           429 BACKOFF
         </span>
-        <span className="text-amber-300">{log}</span>
+        <span className="text-warning">{log}</span>
       </span>
     );
   }
@@ -669,26 +669,26 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
   if (!sessionId && logs.length === 0) return null;
 
   return (
-    <div className="mt-4 rounded-xl border border-indigo-500/20 bg-slate-950/90 overflow-hidden shadow-2xl">
+    <div className="mt-4 rounded-xl border border-primary/20 bg-background/90 overflow-hidden shadow-2xl">
       <div
         ref={scrollContainerRef}
-        className="p-5 font-mono text-xs text-indigo-300 space-y-2.5 max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950"
+        className="p-5 font-mono text-xs text-primary space-y-2.5 max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950"
       >
         <div className="flex flex-wrap gap-3 items-center justify-between mb-1">
           <div className="flex gap-3 items-center">
             <div className="relative h-4 w-4 shrink-0">
               <div
-                className={`absolute inset-0 h-full w-full rounded-full border-2 border-indigo-400 border-t-transparent ${
+                className={`absolute inset-0 h-full w-full rounded-full border-2 border-primary border-t-transparent ${
                   isRunning
                     ? 'animate-spin motion-reduce:animate-none'
                     : ''
                 }`}
               />
             </div>
-            <div className="text-sm text-slate-100 font-semibold flex items-center gap-2">
+            <div className="text-sm text-foreground font-semibold flex items-center gap-2">
               <span>Search live telemetry</span>
               {status === 'running' && (
-                <Badge variant="outline" className="border-indigo-500/40 text-indigo-300 text-xs py-0">
+                <Badge variant="outline" className="border-primary/40 text-primary text-xs py-0">
                   Streaming
                 </Badge>
               )}
@@ -701,7 +701,7 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
             ) && (
               <Badge
                 variant="outline"
-                className="border-amber-500/40 bg-amber-500/10 text-amber-300 font-mono text-xs py-0.5 px-2.5"
+                className="border-warning/40 bg-warning/10 text-warning font-mono text-xs py-0.5 px-2.5"
               >
                 CRM Duplicates Filtered:{" "}
                 {(sessionMeta?.stats as any)?.existingCrmLeadsSkipped ||
@@ -712,11 +712,11 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
               variant="outline"
               className={`font-mono text-xs py-0.5 px-2.5 flex items-center gap-1.5 ${
                 isRunning
-                  ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200'
-                  : 'border-slate-800 bg-slate-900/60 text-slate-300'
+                  ? 'border-primary/40 bg-primary/10 text-primary'
+                  : 'border-border bg-card/60 text-foreground/80'
               }`}
             >
-              <Clock className={`w-3.5 h-3.5 ${isRunning ? 'text-indigo-400 animate-pulse motion-reduce:animate-none' : 'text-slate-400'}`} />
+              <Clock className={`w-3.5 h-3.5 ${isRunning ? 'text-primary animate-pulse motion-reduce:animate-none' : 'text-muted-foreground'}`} />
               <span>{isRunning ? `Running: ${formatDuration(elapsedMs)}` : `Duration: ${formatDuration(elapsedMs)}`}</span>
             </Badge>
           </div>
@@ -732,11 +732,11 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
               const log = logs[virtualRow.index];
-              let colorClass = 'text-slate-300';
-              if (log.includes('[LLM 200 OK]')) colorClass = 'text-slate-200';
-              else if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) colorClass = 'text-rose-400 font-medium';
-              else if (log.includes('RATE LIMIT') || log.includes('429')) colorClass = 'text-amber-400 font-medium';
-              else if (log.includes('WAITING') || log.includes('FILTERING')) colorClass = 'text-amber-400 font-bold';
+              let colorClass = 'text-foreground/80';
+              if (log.includes('[LLM 200 OK]')) colorClass = 'text-foreground';
+              else if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) colorClass = 'text-danger font-medium';
+              else if (log.includes('RATE LIMIT') || log.includes('429')) colorClass = 'text-warning font-medium';
+              else if (log.includes('WAITING') || log.includes('FILTERING')) colorClass = 'text-warning font-bold';
               else if (
                 log.includes('REQUEST') ||
                 log.includes('QUERY') ||
@@ -744,7 +744,7 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
                 log.includes('EVIDENCE') ||
                 log.includes('EXTRACTION')
               ) {
-                colorClass = 'text-indigo-400 font-bold';
+                colorClass = 'text-primary font-bold';
               }
               return (
                 <div
@@ -760,14 +760,14 @@ export function TraceTerminal({ sessionId }: { sessionId: string | null | undefi
                   }}
                   className={`${colorClass} leading-relaxed flex items-start gap-1`}
                 >
-                  <span className="shrink-0 text-slate-600 select-none">{'>'}</span>
+                  <span className="shrink-0 text-muted-foreground select-none">{'>'}</span>
                   <div className="min-w-0 flex-1">{renderTerminalLog(log)}</div>
                 </div>
               );
             })}
           </div>
         ) : (
-          <p className="text-slate-500 italic">Starting the search...</p>
+          <p className="text-muted-foreground italic">Starting the search...</p>
         )}
       </div>
       <TraceSummaryViewer

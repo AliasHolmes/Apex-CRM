@@ -9,26 +9,30 @@ import { useLeads } from '../context/LeadContext';
 import { buildProfileDedupeKeys } from '../utils/leadDedupe';
 import { createCsvFieldReader, CSV_FIELD_ALIASES } from '../utils/csvFieldMapping';
 import Papa from 'papaparse';
-import { 
-  FileDown, 
-  Trash2, 
-  Layers, 
-  Mail, 
-  Link2,
-  Search, 
-  Sparkles, 
-  UserPlus2,
-  SlidersHorizontal,
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   ChevronLeft,
   ChevronRight,
-  AlertTriangle,
-  X,
-  UploadCloud,
-  Loader2,
+  Columns3,
+  Ellipsis,
+  FileDown,
   Flame,
+  Layers,
+  Link2,
+  LoaderCircle,
+  Mail,
   Radio,
+  Rows3,
   ShieldCheck,
+  Sparkles,
+  Trash2,
+  TriangleAlert,
+  UploadCloud,
   UserCheck,
+  UserPlus2,
+  X,
   Zap
 } from 'lucide-react';
 import {
@@ -39,8 +43,8 @@ import {
 import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import {
   Dialog,
@@ -50,19 +54,67 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ProspectFilterBar } from '@/components/prospects/ProspectFilterBar';
+import { SavedViewsMenu } from '@/components/prospects/SavedViewsMenu';
 import { PIPELINE_STAGES, getPipelineStageMeta } from '@/lib/pipeline';
 import { PROSPECTS_PAGE_SIZE } from '@/lib/ui';
 import {
+  EMPTY_PROSPECT_FILTERS,
+  PROSPECT_COLUMNS,
+  PROSPECT_TABLE_PREFS_KEY,
+  PROSPECT_VIEWS_STORAGE_KEY,
+  createViewId,
+  parseStoredViews,
+  parseTablePrefs,
+  serializeTablePrefs,
+  serializeViews,
+  sortLeads,
+  type ProspectColumnId,
+  type ProspectDensity,
+  type ProspectFilters,
+  type ProspectSort,
+  type ProspectSortKey,
+  type ProspectView,
+} from '@/lib/prospectViews';
+import { setLockedLeadIds } from '@/lib/leadLocks';
+import {
   getLeadProvenance,
   getNextAction,
+  getNextActionLabel,
   getReviewStatus,
   NEXT_ACTION_OPTIONS,
   REVIEW_STATUS_OPTIONS,
 } from '@/lib/prospectWorkflow';
 
+/** One-shot filter preset pushed in from elsewhere (for example Overview shortcuts). */
+export interface ProspectPreset {
+  /** Changes on every request so the same preset can be applied twice. */
+  nonce: number;
+  filters: Partial<ProspectFilters>;
+}
+
 interface LeadTableRowProps {
   lead: Lead;
   dataIndex?: number;
+  visibleColumns: ReadonlySet<ProspectColumnId>;
   isSelected: boolean;
   isDuplicate: boolean;
   isAsyncLocked: boolean;
@@ -70,6 +122,8 @@ interface LeadTableRowProps {
   onSelect: (leadId: string, checked: boolean) => void;
   onOpenDetails: (lead: Lead) => void;
   onRequestDelete: (lead: Lead) => void;
+  onStageChange: (lead: Lead, stage: Lead['stage']) => void;
+  onNextActionChange: (lead: Lead, nextAction: NextAction) => void;
 }
 
 const LeadTableRow = React.memo(
@@ -77,6 +131,7 @@ const LeadTableRow = React.memo(
     {
       lead,
       dataIndex,
+      visibleColumns,
       isSelected,
       isDuplicate,
       isAsyncLocked,
@@ -84,6 +139,8 @@ const LeadTableRow = React.memo(
       onSelect,
       onOpenDetails,
       onRequestDelete,
+      onStageChange,
+      onNextActionChange,
     },
     ref,
   ) {
@@ -96,6 +153,7 @@ const LeadTableRow = React.memo(
       ? addedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : '';
     const provenance = getLeadProvenance(lead);
+    const stageMeta = getPipelineStageMeta(lead.stage);
     const scout = provenance.scout;
     const linkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
     const linkedInSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(
@@ -107,251 +165,304 @@ const LeadTableRow = React.memo(
         ref={ref}
         data-index={dataIndex}
         className={`${isSelected ? 'bg-muted/50' : ''} ${
-          isDuplicate ? 'border-l-2 border-l-amber-500 bg-amber-500/5' : ''
+          isDuplicate ? 'border-l-2 border-l-warning bg-warning/5' : ''
         }`}
       >
       <TableCell className="text-center">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={isSelected}
-          onChange={(event) => onSelect(lead.id, event.target.checked)}
+          onCheckedChange={(checked) => onSelect(lead.id, checked === true)}
           disabled={isAsyncLocked || isMutationLocked}
-          className="h-4 w-4 cursor-pointer rounded disabled:cursor-not-allowed disabled:opacity-50"
           aria-label={isAsyncLocked
             ? `${lead.profile.fullName} is locked while enrichment is running`
             : `Select ${lead.profile.fullName}`}
         />
       </TableCell>
-      <TableCell className="font-bold">
-        <div className="flex items-center gap-2">
-          {isDuplicate && (
-            <div title="Potential duplicate profile" className="text-amber-500">
-              <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="sr-only">Potential duplicate</span>
+      {visibleColumns.has('contact') && (
+        <TableCell className="font-bold">
+          <div className="flex items-center gap-2">
+            {isDuplicate && (
+              <div title="Potential duplicate profile" className="text-warning">
+                <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="sr-only">Potential duplicate</span>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenDetails(lead)}
+              className="rounded-sm text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {lead.profile.fullName}
+            </button>
+            {lead.lastEnrichedAt && (
+              <div
+                title={`Enriched by AI on ${new Date(lead.lastEnrichedAt).toLocaleDateString()}`}
+                className="text-primary"
+              >
+                <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="sr-only">AI enriched</span>
+              </div>
+            )}
+            <a
+              href={linkedInProfileUrl || linkedInSearchUrl}
+              target="_blank"
+              rel="noreferrer"
+              title={linkedInProfileUrl ? 'Open LinkedIn profile' : 'Find this person on LinkedIn'}
+              aria-label={linkedInProfileUrl ? `Open ${lead.profile.fullName}'s LinkedIn profile` : `Find ${lead.profile.fullName} on LinkedIn`}
+              className="rounded-sm text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
+          </div>
+          {provenance.matchedCriteria.length > 0 && (
+            <div
+              className="mt-1 flex flex-wrap gap-1"
+              title={`Evidence sources: ${scout?.sourceProviders?.join(', ') || 'public web'}. ${provenance.uncertainties.join(' ')}`}
+            >
+              {provenance.matchedCriteria.slice(0, 2).map((reason: string) => (
+                <Badge
+                  key={reason}
+                  variant="outline"
+                  className="h-5 px-1.5 text-xs font-medium text-success border-success/25"
+                >
+                  {reason}
+                </Badge>
+              ))}
+              {provenance.paretoSkyline && (
+                <Badge variant="outline" className="h-5 px-1.5 text-xs font-semibold text-warning border-warning/30 bg-warning/10" title="Pareto Skyline: Non-dominated candidate across Authority, Intent, and Evidence Specificity">
+                  Skyline
+                </Badge>
+              )}
+              {Number(scout?.corroborationScore || 0) >= 7 && (
+                <Badge variant="outline" className="h-5 px-1.5 text-xs text-primary border-primary/25">
+                  corroborated
+                </Badge>
+              )}
+              {provenance.postIntentEvidence && provenance.postIntentEvidence.quality === 'strong' && (
+                <Badge
+                  variant="outline"
+                  className="h-5 px-1.5 text-xs font-semibold text-warning border-warning/40 bg-warning/10 flex items-center gap-1"
+                  title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+                >
+                  <Flame className="h-3 w-3 text-warning" aria-hidden="true" />
+                  {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
+                </Badge>
+              )}
+              {provenance.postIntentEvidence && provenance.postIntentEvidence.quality === 'moderate' && (
+                <Badge
+                  variant="outline"
+                  className="h-5 px-1.5 text-xs text-info border-info/30 bg-info/10 flex items-center gap-1"
+                  title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+                >
+                  <Radio className="h-3 w-3 text-info" aria-hidden="true" />
+                  {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
+                </Badge>
+              )}
             </div>
           )}
+        </TableCell>
+      )}
+      {visibleColumns.has('title') && (
+        <TableCell className="max-w-[200px] truncate text-muted-foreground" title={lead.profile.currentTitle}>
+          {lead.profile.currentTitle || 'Professional'}
+        </TableCell>
+      )}
+      {visibleColumns.has('company') && (
+        <TableCell className="max-w-[190px] text-muted-foreground">
+          <div className="truncate">{lead.profile.currentCompany || 'Independent'}</div>
+          {(provenance.location || provenance.industry) && (
+            <div className="mt-1 truncate text-xs text-muted-foreground">
+              {[provenance.location, provenance.industry].filter(Boolean).join(' - ')}
+            </div>
+          )}
+          {Boolean(lead.companyAccount?.buyingSignals?.length) && (
+            <div className="mt-1 truncate text-xs font-bold text-success">
+              {lead.companyAccount!.buyingSignals.length} signals - Pain {lead.companyAccount!.operationalPainScore ?? 0}
+            </div>
+          )}
+        </TableCell>
+      )}
+      {visibleColumns.has('stage') && (
+        <TableCell className="min-w-[160px]">
+          <Select
+            value={lead.stage}
+            onValueChange={(value) => onStageChange(lead, value as Lead['stage'])}
+            disabled={isAsyncLocked || isMutationLocked}
+          >
+            <SelectTrigger className="h-8 w-[160px] text-xs" aria-label={`Pipeline stage for ${lead.profile.fullName}`}>
+              <SelectValue>
+                <span className="flex items-center gap-2">
+                  <span aria-hidden="true" className={`h-2 w-2 rounded-full ${stageMeta.dotClassName}`} />
+                  {stageMeta.shortLabel}
+                </span>
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {PIPELINE_STAGES.map((stage) => (
+                <SelectItem key={stage.id} value={stage.id}>{stage.shortLabel}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </TableCell>
+      )}
+      {visibleColumns.has('nextAction') && (
+        <TableCell className="min-w-[150px]">
+          <Select
+            value={getNextAction(lead)}
+            onValueChange={(value) => onNextActionChange(lead, value as NextAction)}
+            disabled={isAsyncLocked || isMutationLocked}
+          >
+            <SelectTrigger className="h-8 w-[150px] text-xs" aria-label={`Next action for ${lead.profile.fullName}`}>
+              <SelectValue>{getNextActionLabel(getNextAction(lead))}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {NEXT_ACTION_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </TableCell>
+      )}
+      {visibleColumns.has('signals') && (
+        <TableCell className="max-w-[220px]">
+          <div className="flex flex-col gap-1">
+            {provenance.postIntentEvidence && provenance.postIntentEvidence.quality !== 'none' ? (
+              <div className="flex items-center gap-1.5">
+                <Badge
+                  variant="outline"
+                  className={`h-5 px-1.5 text-xs font-semibold flex items-center gap-1 ${
+                    provenance.postIntentEvidence.quality === 'strong'
+                      ? 'text-warning border-warning/40 bg-warning/10'
+                      : 'text-info border-info/30 bg-info/10'
+                  }`}
+                  title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+                >
+                  {provenance.postIntentEvidence.quality === 'strong' ? (
+                    <Flame className="h-3 w-3 text-warning" aria-hidden="true" />
+                  ) : (
+                    <Zap className="h-3 w-3 text-info" aria-hidden="true" />
+                  )}
+                  <span className="capitalize">{(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')}</span>
+                </Badge>
+              </div>
+            ) : (() => {
+              const hiringTrigger = lead.buyingSignalsDetected?.find(
+                (s) => s.toLowerCase().includes("hiring") || s.toLowerCase().includes("job requisition")
+              );
+              if (hiringTrigger) {
+                return (
+                  <div className="flex items-center gap-1.5">
+                    <Badge
+                      variant="outline"
+                      className="h-5 px-1.5 text-xs text-warning border-warning/30 bg-warning/10 flex items-center gap-1 max-w-[210px] truncate"
+                      title={hiringTrigger}
+                    >
+                      <Flame className="h-3 w-3 text-warning shrink-0" aria-hidden="true" />
+                      <span className="truncate">{hiringTrigger}</span>
+                    </Badge>
+                  </div>
+                );
+              }
+              if (lead.companyAccount?.buyingSignals?.length) {
+                return (
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline" className="h-5 px-1.5 text-xs text-success border-success/30 bg-success/10 flex items-center gap-1">
+                      <Zap className="h-3 w-3 text-success" aria-hidden="true" />
+                      <span>{lead.companyAccount.buyingSignals.length} Signals (Pain {lead.companyAccount.operationalPainScore})</span>
+                    </Badge>
+                  </div>
+                );
+              }
+              if (Array.isArray(lead.buyingSignalsDetected) && lead.buyingSignalsDetected.length > 0) {
+                return (
+                  <div className="flex items-center gap-1.5">
+                    <Badge
+                      variant="outline"
+                      className="h-5 px-1.5 text-xs text-success border-success/30 bg-success/10 flex items-center gap-1 max-w-[210px] truncate"
+                      title={lead.buyingSignalsDetected[0]}
+                    >
+                      <Zap className="h-3 w-3 text-success shrink-0" aria-hidden="true" />
+                      <span className="truncate">{lead.buyingSignalsDetected[0]}</span>
+                    </Badge>
+                  </div>
+                );
+              }
+              return <span className="text-xs text-muted-foreground italic">No active intent trigger</span>;
+            })()}
+            {lead.companyAccount?.painSummary ? (
+              <div className="text-xs text-muted-foreground truncate max-w-[210px]" title={lead.companyAccount.painSummary}>
+                {lead.companyAccount.painSummary}
+              </div>
+            ) : lead.profile.contactDetails?.email ? (
+              <div className="flex items-center gap-1 text-xs text-muted-foreground truncate max-w-[210px]" title={lead.profile.contactDetails.email}>
+                <Mail className="h-3 w-3 text-muted-foreground shrink-0" aria-hidden="true" />
+                <span className="truncate">{lead.profile.contactDetails.email}</span>
+              </div>
+            ) : null}
+          </div>
+        </TableCell>
+      )}
+      {visibleColumns.has('authority') && (
+        <TableCell className="max-w-[220px]">
           <button
             type="button"
             onClick={() => onOpenDetails(lead)}
-            className="rounded-sm text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex min-w-[140px] flex-col items-start gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:opacity-80 transition-opacity"
+            aria-label={`View authority and match details for ${lead.profile.fullName}`}
           >
-            {lead.profile.fullName}
+            {(lead.decisionMakerVerification?.titleMatched && !lead.decisionMakerVerification?.ignoredTitle) ? (
+              <Badge variant="outline" className="h-5 px-1.5 text-xs font-semibold text-success border-success/40 bg-success/10 flex items-center gap-1">
+                <ShieldCheck className="h-3 w-3 text-success" aria-hidden="true" />
+                <span>Verified Decision Maker</span>
+              </Badge>
+            ) : lead.decisionMakerVerification?.trajectoryScore !== undefined ? (
+              <Badge variant="outline" className="h-5 px-1.5 text-xs text-primary border-primary/30 bg-primary/10 flex items-center gap-1">
+                <UserCheck className="h-3 w-3 text-primary" aria-hidden="true" />
+                <span>Authority {lead.decisionMakerVerification.trajectoryScore}/10</span>
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="h-5 px-1.5 text-xs text-muted-foreground border-input bg-muted/40">
+                {lead.profile.currentTitle && /\b(founder|co-founder|owner|ceo|cto|cmo|cpo|cro|president|partner|vp|director|head)\b/i.test(lead.profile.currentTitle)
+                  ? 'Key Decision Maker'
+                  : 'Target Match'}
+              </Badge>
+            )}
+            <span className="text-xs text-muted-foreground truncate max-w-[210px]" title={lead.decisionMakerVerification?.reason || lead.evidenceReasons?.[0] || lead.notes || 'Click to view qualification and provenance'}>
+              {lead.decisionMakerVerification?.reason || lead.evidenceReasons?.[0] || (lead.notes ? lead.notes.replace(/^LinkedIn-indexed lead with account context\.\s*/, '') : 'View full match details')}
+            </span>
           </button>
-          {lead.lastEnrichedAt && (
-            <div
-              title={`Enriched by AI on ${new Date(lead.lastEnrichedAt).toLocaleDateString()}`}
-              className="text-primary"
-            >
-              <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="sr-only">AI enriched</span>
-            </div>
-          )}
-          <a
-            href={linkedInProfileUrl || linkedInSearchUrl}
-            target="_blank"
-            rel="noreferrer"
-            title={linkedInProfileUrl ? 'Open LinkedIn profile' : 'Find this person on LinkedIn'}
-            aria-label={linkedInProfileUrl ? `Open ${lead.profile.fullName}'s LinkedIn profile` : `Find ${lead.profile.fullName} on LinkedIn`}
-            className="rounded-sm text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-          </a>
-        </div>
-        {provenance.matchedCriteria.length > 0 && (
-          <div
-            className="mt-1 flex flex-wrap gap-1"
-            title={`Evidence sources: ${scout?.sourceProviders?.join(', ') || 'public web'}. ${provenance.uncertainties.join(' ')}`}
-          >
-            {provenance.matchedCriteria.slice(0, 2).map((reason: string) => (
-              <Badge
-                key={reason}
-                variant="outline"
-                className="h-5 px-1.5 text-xs font-medium text-emerald-400 border-emerald-500/25"
-              >
-                {reason}
-              </Badge>
-            ))}
-            {provenance.paretoSkyline && (
-              <Badge variant="outline" className="h-5 px-1.5 text-xs font-semibold text-amber-300 border-amber-500/30 bg-amber-500/10" title="Pareto Skyline: Non-dominated candidate across Authority, Intent, and Evidence Specificity">
-                Skyline
-              </Badge>
-            )}
-            {Number(scout?.corroborationScore || 0) >= 7 && (
-              <Badge variant="outline" className="h-5 px-1.5 text-xs text-indigo-300 border-indigo-500/25">
-                corroborated
-              </Badge>
-            )}
-            {provenance.postIntentEvidence && provenance.postIntentEvidence.quality === 'strong' && (
+        </TableCell>
+      )}
+      {visibleColumns.has('added') && (
+        <TableCell className="whitespace-nowrap text-muted-foreground">
+          <div className="text-xs font-medium text-foreground/80">{addedDate}</div>
+          {addedTime && <div className="mt-0.5 text-xs text-muted-foreground">{addedTime}</div>}
+        </TableCell>
+      )}
+      {visibleColumns.has('score') && (
+        <TableCell className="text-center">
+          {(lead.qualificationScore ?? lead.predictiveScore) ? (
+            <div className="flex flex-col items-center gap-0.5">
               <Badge
                 variant="outline"
-                className="h-5 px-1.5 text-xs font-semibold text-amber-300 border-amber-500/40 bg-amber-500/10 flex items-center gap-1"
-                title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
+                className="border-primary/30 text-primary"
+                title={provenance.confidenceInterval
+                  ? `95% Credible Interval: [${provenance.confidenceInterval.lower} - ${provenance.confidenceInterval.upper}] (uncertainty: +/-${provenance.confidenceInterval.uncertainty})`
+                  : undefined}
               >
-                <Flame className="h-3 w-3 text-amber-400" aria-hidden="true" />
-                {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
+                {lead.qualificationScore ?? lead.predictiveScore}% Qualified
               </Badge>
-            )}
-            {provenance.postIntentEvidence && provenance.postIntentEvidence.quality === 'moderate' && (
-              <Badge
-                variant="outline"
-                className="h-5 px-1.5 text-xs text-sky-300 border-sky-500/30 bg-sky-500/10 flex items-center gap-1"
-                title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
-              >
-                <Radio className="h-3 w-3 text-sky-400" aria-hidden="true" />
-                {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
-              </Badge>
-            )}
-          </div>
-        )}
-      </TableCell>
-      <TableCell className="max-w-[200px] truncate text-muted-foreground" title={lead.profile.currentTitle}>
-        {lead.profile.currentTitle || 'Professional'}
-      </TableCell>
-      <TableCell className="max-w-[190px] text-muted-foreground">
-        <div className="truncate">{lead.profile.currentCompany || 'Independent'}</div>
-        {(provenance.location || provenance.industry) && (
-          <div className="mt-1 truncate text-xs text-slate-500">
-            {[provenance.location, provenance.industry].filter(Boolean).join(' - ')}
-          </div>
-        )}
-        {Boolean(lead.companyAccount?.buyingSignals?.length) && (
-          <div className="mt-1 truncate text-xs font-bold text-emerald-400">
-            {lead.companyAccount!.buyingSignals.length} signals - Pain {lead.companyAccount!.operationalPainScore ?? 0}
-          </div>
-        )}
-      </TableCell>
-      <TableCell className="max-w-[220px]">
-        <div className="flex flex-col gap-1">
-          {provenance.postIntentEvidence && provenance.postIntentEvidence.quality !== 'none' ? (
-            <div className="flex items-center gap-1.5">
-              <Badge
-                variant="outline"
-                className={`h-5 px-1.5 text-xs font-semibold flex items-center gap-1 ${
-                  provenance.postIntentEvidence.quality === 'strong'
-                    ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
-                    : 'text-sky-300 border-sky-500/30 bg-sky-500/10'
-                }`}
-                title={`Why Now: ${(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')} (${Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% confidence)${provenance.postIntentEvidence.llmReason ? ` - ${provenance.postIntentEvidence.llmReason}` : ''}`}
-              >
-                {provenance.postIntentEvidence.quality === 'strong' ? (
-                  <Flame className="h-3 w-3 text-amber-400" aria-hidden="true" />
-                ) : (
-                  <Zap className="h-3 w-3 text-sky-400" aria-hidden="true" />
-                )}
-                <span className="capitalize">{(provenance.postIntentEvidence.intentCategory || 'signal').replace(/_/g, ' ')}</span>
-              </Badge>
+              {provenance.confidenceInterval && (
+                <span className="text-xs text-muted-foreground font-mono" title="95% Credible Interval bounds">
+                  [{provenance.confidenceInterval.lower} - {provenance.confidenceInterval.upper}]
+                </span>
+              )}
             </div>
-          ) : (() => {
-            const hiringTrigger = lead.buyingSignalsDetected?.find(
-              (s) => s.toLowerCase().includes("hiring") || s.toLowerCase().includes("job requisition")
-            );
-            if (hiringTrigger) {
-              return (
-                <div className="flex items-center gap-1.5">
-                  <Badge
-                    variant="outline"
-                    className="h-5 px-1.5 text-xs text-amber-300 border-amber-500/30 bg-amber-500/10 flex items-center gap-1 max-w-[210px] truncate"
-                    title={hiringTrigger}
-                  >
-                    <Flame className="h-3 w-3 text-amber-400 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{hiringTrigger}</span>
-                  </Badge>
-                </div>
-              );
-            }
-            if (lead.companyAccount?.buyingSignals?.length) {
-              return (
-                <div className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1">
-                    <Zap className="h-3 w-3 text-emerald-400" aria-hidden="true" />
-                    <span>{lead.companyAccount.buyingSignals.length} Signals (Pain {lead.companyAccount.operationalPainScore})</span>
-                  </Badge>
-                </div>
-              );
-            }
-            if (Array.isArray(lead.buyingSignalsDetected) && lead.buyingSignalsDetected.length > 0) {
-              return (
-                <div className="flex items-center gap-1.5">
-                  <Badge
-                    variant="outline"
-                    className="h-5 px-1.5 text-xs text-emerald-300 border-emerald-500/30 bg-emerald-500/10 flex items-center gap-1 max-w-[210px] truncate"
-                    title={lead.buyingSignalsDetected[0]}
-                  >
-                    <Zap className="h-3 w-3 text-emerald-400 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{lead.buyingSignalsDetected[0]}</span>
-                  </Badge>
-                </div>
-              );
-            }
-            return <span className="text-xs text-slate-500 italic">No active intent trigger</span>;
-          })()}
-          {lead.companyAccount?.painSummary ? (
-            <div className="text-xs text-slate-400 truncate max-w-[210px]" title={lead.companyAccount.painSummary}>
-              {lead.companyAccount.painSummary}
-            </div>
-          ) : lead.profile.contactDetails?.email ? (
-            <div className="flex items-center gap-1 text-xs text-slate-400 truncate max-w-[210px]" title={lead.profile.contactDetails.email}>
-              <Mail className="h-3 w-3 text-slate-500 shrink-0" aria-hidden="true" />
-              <span className="truncate">{lead.profile.contactDetails.email}</span>
-            </div>
-          ) : null}
-        </div>
-      </TableCell>
-      <TableCell className="max-w-[220px]">
-        <button
-          type="button"
-          onClick={() => onOpenDetails(lead)}
-          className="flex min-w-[140px] flex-col items-start gap-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:opacity-80 transition-opacity"
-          aria-label={`View authority and match details for ${lead.profile.fullName}`}
-        >
-          {(lead.decisionMakerVerification?.titleMatched && !lead.decisionMakerVerification?.ignoredTitle) ? (
-            <Badge variant="outline" className="h-5 px-1.5 text-xs font-semibold text-emerald-300 border-emerald-500/40 bg-emerald-500/10 flex items-center gap-1">
-              <ShieldCheck className="h-3 w-3 text-emerald-400" aria-hidden="true" />
-              <span>Verified Decision Maker</span>
-            </Badge>
-          ) : lead.decisionMakerVerification?.trajectoryScore !== undefined ? (
-            <Badge variant="outline" className="h-5 px-1.5 text-xs text-indigo-300 border-indigo-500/30 bg-indigo-500/10 flex items-center gap-1">
-              <UserCheck className="h-3 w-3 text-indigo-400" aria-hidden="true" />
-              <span>Authority {lead.decisionMakerVerification.trajectoryScore}/10</span>
-            </Badge>
           ) : (
-            <Badge variant="outline" className="h-5 px-1.5 text-xs text-slate-400 border-slate-700 bg-slate-800/40">
-              {lead.profile.currentTitle && /\b(founder|co-founder|owner|ceo|cto|cmo|cpo|cro|president|partner|vp|director|head)\b/i.test(lead.profile.currentTitle)
-                ? 'Key Decision Maker'
-                : 'Target Match'}
-            </Badge>
+            <span className="text-xs text-muted-foreground">--</span>
           )}
-          <span className="text-xs text-slate-400 truncate max-w-[210px]" title={lead.decisionMakerVerification?.reason || lead.evidenceReasons?.[0] || lead.notes || 'Click to view qualification and provenance'}>
-            {lead.decisionMakerVerification?.reason || lead.evidenceReasons?.[0] || (lead.notes ? lead.notes.replace(/^LinkedIn-indexed lead with account context\.\s*/, '') : 'View full match details')}
-          </span>
-        </button>
-      </TableCell>
-      <TableCell className="whitespace-nowrap text-muted-foreground">
-        <div className="text-xs font-medium text-slate-300">{addedDate}</div>
-        {addedTime && <div className="mt-0.5 text-xs text-slate-500">{addedTime}</div>}
-      </TableCell>
-      <TableCell className="text-center">
-        {(lead.qualificationScore ?? lead.predictiveScore) ? (
-          <div className="flex flex-col items-center gap-0.5">
-            <Badge
-              variant="outline"
-              className="border-indigo-500/30 text-indigo-400"
-              title={provenance.confidenceInterval
-                ? `95% Credible Interval: [${provenance.confidenceInterval.lower} - ${provenance.confidenceInterval.upper}] (uncertainty: +/-${provenance.confidenceInterval.uncertainty})`
-                : undefined}
-            >
-              {lead.qualificationScore ?? lead.predictiveScore}% Qualified
-            </Badge>
-            {provenance.confidenceInterval && (
-              <span className="text-xs text-slate-500 font-mono" title="95% Credible Interval bounds">
-                [{provenance.confidenceInterval.lower} - {provenance.confidenceInterval.upper}]
-              </span>
-            )}
-          </div>
-        ) : (
-          <span className="text-xs text-slate-600">--</span>
-        )}
-      </TableCell>
+        </TableCell>
+      )}
       <TableCell className="text-right">
         <Button
           variant="ghost"
@@ -370,7 +481,43 @@ const LeadTableRow = React.memo(
   );
 }));
 
-export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => void }) {
+function hasWhyNowSignal(lead: Lead): boolean {
+  const evidence = getLeadProvenance(lead).postIntentEvidence;
+  return Boolean(evidence && evidence.quality !== 'none');
+}
+
+function readTablePrefs() {
+  try {
+    return parseTablePrefs(window.localStorage.getItem(PROSPECT_TABLE_PREFS_KEY));
+  } catch {
+    return parseTablePrefs(null);
+  }
+}
+
+function readSavedViews(): ProspectView[] {
+  try {
+    return parseStoredViews(window.localStorage.getItem(PROSPECT_VIEWS_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+const DEFAULT_SORT_DIRECTION: Record<ProspectSortKey, ProspectSort['direction']> = {
+  name: 'asc',
+  company: 'asc',
+  added: 'desc',
+  score: 'desc',
+};
+
+export default function LeadTable({
+  onAddManualLead,
+  onOpenLead,
+  preset,
+}: {
+  onAddManualLead: () => void;
+  onOpenLead: (leadId: string) => void;
+  preset?: ProspectPreset | null;
+}) {
   const {
     leads,
     rehydrateLeads,
@@ -390,17 +537,29 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   }, [rehydrateLeads]);
   const { triggerToast } = useToast();
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(() => new Set());
-  const [tableSearch, setTableSearch] = useState('');
-  const [stageFilter, setStageFilter] = useState<Lead['stage'] | 'All'>('All');
-  const [reviewFilter, setReviewFilter] = useState<ReviewStatus | 'All'>('All');
-  const [nextActionFilter, setNextActionFilter] = useState<NextAction | 'All'>('All');
-  const [locationFilter, setLocationFilter] = useState('All');
-  const [industryFilter, setIndustryFilter] = useState('All');
-  const [currentPage, setCurrentPage] = useState(1);
-  const [detailsLeadId, setDetailsLeadId] = useState<string | null>(null);
-  const handleOpenDetails = useCallback((selectedLead: Lead) => {
-    setDetailsLeadId(selectedLead.id);
+  const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  const [filters, setFilters] = useState<ProspectFilters>(EMPTY_PROSPECT_FILTERS);
+  const {
+    search: tableSearch,
+    stage: stageFilter,
+    review: reviewFilter,
+    nextAction: nextActionFilter,
+    location: locationFilter,
+    industry: industryFilter,
+    signal: signalFilter,
+  } = filters;
+  const updateFilters = useCallback((updates: Partial<ProspectFilters>) => {
+    setFilters((previous) => ({ ...previous, ...updates }));
+    setActiveViewId(null);
   }, []);
+  const [sort, setSort] = useState<ProspectSort | null>(null);
+  const [density, setDensity] = useState<ProspectDensity>(() => readTablePrefs().density);
+  const [hiddenColumns, setHiddenColumns] = useState<ProspectColumnId[]>(() => readTablePrefs().hiddenColumns);
+  const [views, setViews] = useState<ProspectView[]>(() => readSavedViews());
+  const [currentPage, setCurrentPage] = useState(1);
+  const handleOpenDetails = useCallback((selectedLead: Lead) => {
+    onOpenLead(selectedLead.id);
+  }, [onOpenLead]);
 
   const [showConfirmBulkDelete, setShowConfirmBulkDelete] = useState(false);
   const [showConfirmPurgeDuplicates, setShowConfirmPurgeDuplicates] = useState(false);
@@ -409,7 +568,6 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   const [isImporting, setIsImporting] = useState(false);
   const [bulkMutation, setBulkMutation] = useState<'stage' | 'workflow' | 'delete' | 'purge' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
   const isMountedRef = useRef(true);
   const [enrichmentQueue, setEnrichmentQueue] = useState<Lead[]>([]);
   const [enrichmentStep, setEnrichmentStep] = useState<string>('');
@@ -424,6 +582,12 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     [asyncLockedLeadIds, selectedLeadIdArray],
   );
   const isBulkMutating = bulkMutation !== null;
+
+  // Let the shared lead drawer see which prospects enrichment is currently touching.
+  useEffect(() => {
+    setLockedLeadIds(asyncLockedLeadIds);
+  }, [asyncLockedLeadIds]);
+  useEffect(() => () => setLockedLeadIds([]), []);
 
   React.useEffect(() => {
     isMountedRef.current = true;
@@ -537,7 +701,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     }),
     [leads],
   );
-  const filteredLeads = useMemo(
+  const unsortedFilteredLeads = useMemo(
     () => searchableLeads
       .filter(({ lead, searchText }) => (
         (stageFilter === 'All' || lead.stage === stageFilter)
@@ -545,11 +709,13 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
         && (nextActionFilter === 'All' || getNextAction(lead) === nextActionFilter)
         && (locationFilter === 'All' || lead.profile?.location === locationFilter)
         && (industryFilter === 'All' || lead.profile?.industry === industryFilter)
+        && (signalFilter === 'All' || hasWhyNowSignal(lead))
         && (!deferredSearch || searchText.includes(deferredSearch))
       ))
       .map(({ lead }) => lead),
-    [deferredSearch, industryFilter, locationFilter, nextActionFilter, reviewFilter, searchableLeads, stageFilter],
+    [deferredSearch, industryFilter, locationFilter, nextActionFilter, reviewFilter, searchableLeads, signalFilter, stageFilter],
   );
+  const filteredLeads = useMemo(() => sortLeads(unsortedFilteredLeads, sort), [unsortedFilteredLeads, sort]);
 
   // Consolidated single-pass duplicate analysis on all leads using authoritative dedupe keys
   const duplicateAnalysis = useMemo(() => {
@@ -658,10 +824,6 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
   const pageStart = filteredLeads.length === 0 ? 0 : currentPageStartIndex + 1;
   const pageEnd = Math.min(currentPageStartIndex + paginatedLeads.length, filteredLeads.length);
   const leadIdSet = useMemo(() => new Set(leads.map((lead) => lead.id)), [leads]);
-  const detailsLead = useMemo(
-    () => leads.find(lead => lead.id === detailsLeadId) || null,
-    [detailsLeadId, leads],
-  );
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
@@ -718,17 +880,11 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
 
   React.useEffect(() => {
     setCurrentPage(1);
-  }, [industryFilter, locationFilter, nextActionFilter, normalizedSearch, reviewFilter, stageFilter]);
+  }, [industryFilter, locationFilter, nextActionFilter, normalizedSearch, reviewFilter, signalFilter, sort, stageFilter]);
 
   React.useEffect(() => {
     setCurrentPage(prev => Math.min(prev, totalPages));
   }, [totalPages]);
-
-  React.useEffect(() => {
-    if (selectAllCheckboxRef.current) {
-      selectAllCheckboxRef.current.indeterminate = someVisibleSelected;
-    }
-  }, [someVisibleSelected]);
 
   React.useEffect(() => {
     setSelectedLeadIds((previous) => {
@@ -737,10 +893,6 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       return next.size === previous.size ? previous : next;
     });
   }, [leadIdSet]);
-
-  React.useEffect(() => {
-    if (detailsLeadId && !leadIdSet.has(detailsLeadId)) setDetailsLeadId(null);
-  }, [detailsLeadId, leadIdSet]);
 
   const handleSelectAll = useCallback((checked: boolean) => {
     setSelectedLeadIds((previous) => {
@@ -783,6 +935,9 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       triggerToast('Wait for active enrichment before changing these stages.', 'info');
       return;
     }
+    const previousStages = leads
+      .filter((lead) => targetIds.includes(lead.id))
+      .map((lead) => ({ id: lead.id, stage: lead.stage }));
     setBulkMutation('stage');
     try {
       let updatedCount = targetIds.length;
@@ -807,6 +962,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           ? `Updated ${updatedCount} lead stage${updatedCount === 1 ? '' : 's'} to ${getPipelineStageMeta(stage).shortLabel}.${detailMsg}`
           : `No stages were changed.${detailMsg}`,
         updatedCount > 0 ? 'success' : 'info',
+        updatedCount > 0 ? { action: { label: 'Undo', onClick: () => undoBulkStage(previousStages) } } : undefined,
       );
       setSelectedLeadIds(new Set());
     } catch (error: any) {
@@ -825,11 +981,18 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
       triggerToast('Wait for active enrichment before changing workflow fields.', 'info');
       return;
     }
+    const previousWorkflow = leads
+      .filter((lead) => targetIds.includes(lead.id))
+      .map((lead) => ({ id: lead.id, reviewStatus: getReviewStatus(lead), nextAction: getNextAction(lead) }));
     setBulkMutation('workflow');
     try {
       await handleUpdateLeadsFields(targetIds, updates);
       if (!isMountedRef.current) return;
-      triggerToast(`Updated workflow for ${targetIds.length} prospect${targetIds.length === 1 ? '' : 's'}.`, 'success');
+      triggerToast(
+        `Updated workflow for ${targetIds.length} prospect${targetIds.length === 1 ? '' : 's'}.`,
+        'success',
+        { action: { label: 'Undo', onClick: () => undoBulkWorkflow(previousWorkflow, updates) } },
+      );
       setSelectedLeadIds(new Set());
     } catch (error: any) {
       if (isMountedRef.current) triggerToast(error.message || 'Could not update prospect workflow.', 'error');
@@ -838,19 +1001,176 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
     }
   };
 
-  const handleDetailsWorkflowChange = async (
-    updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
+  const undoBulkStage = useCallback((previous: Array<{ id: string; stage: Lead['stage'] }>) => {
+    const groups = new Map<Lead['stage'], string[]>();
+    for (const item of previous) groups.set(item.stage, [...(groups.get(item.stage) ?? []), item.id]);
+    void Promise.all(Array.from(groups, ([stage, ids]) => handleUpdateLeadsStage(ids, stage)))
+      .then(() => triggerToast('Stage changes undone.', 'info'))
+      .catch(() => triggerToast('Could not undo the stage changes.', 'error'));
+  }, [handleUpdateLeadsStage, triggerToast]);
+
+  const undoBulkWorkflow = useCallback((
+    previous: Array<{ id: string; reviewStatus: ReviewStatus; nextAction: NextAction }>,
+    applied: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
   ) => {
-    if (!detailsLead || isBulkMutating) return;
-    setBulkMutation('workflow');
-    try {
-      await handleUpdateLeadFields(detailsLead.id, updates);
-      if (isMountedRef.current) triggerToast('Prospect workflow saved.', 'success');
-    } catch (error: any) {
-      if (isMountedRef.current) triggerToast(error.message || 'Could not save prospect workflow.', 'error');
-    } finally {
-      if (isMountedRef.current) setBulkMutation(null);
+    const groups = new Map<string, { ids: string[]; updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction } }>();
+    for (const item of previous) {
+      const updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction } = {};
+      if (applied.reviewStatus !== undefined) updates.reviewStatus = item.reviewStatus;
+      if (applied.nextAction !== undefined) updates.nextAction = item.nextAction;
+      const key = JSON.stringify(updates);
+      const group = groups.get(key) ?? { ids: [], updates };
+      group.ids.push(item.id);
+      groups.set(key, group);
     }
+    void Promise.all(Array.from(groups.values(), (group) => handleUpdateLeadsFields(group.ids, group.updates)))
+      .then(() => triggerToast('Workflow changes undone.', 'info'))
+      .catch(() => triggerToast('Could not undo the workflow changes.', 'error'));
+  }, [handleUpdateLeadsFields, triggerToast]);
+
+  const handleInlineStageChange = useCallback(async (lead: Lead, stage: Lead['stage']) => {
+    if (lead.stage === stage) return;
+    if (asyncLockedLeadIds.has(lead.id) || isBulkMutating) {
+      triggerToast(`Wait for the current update to finish before changing ${lead.profile.fullName}.`, 'info');
+      return;
+    }
+    const previousStage = lead.stage;
+    try {
+      await handleUpdateLeadStage(lead.id, stage);
+      if (!isMountedRef.current) return;
+      triggerToast(`Moved ${lead.profile.fullName} to ${getPipelineStageMeta(stage).shortLabel}.`, 'success', {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            void Promise.resolve(handleUpdateLeadStage(lead.id, previousStage)).catch(() => {
+              triggerToast('Could not undo the stage change.', 'error');
+            });
+          },
+        },
+      });
+    } catch (error) {
+      if (isMountedRef.current) {
+        triggerToast(error instanceof Error ? error.message : 'The pipeline stage could not be saved.', 'error');
+      }
+    }
+  }, [asyncLockedLeadIds, handleUpdateLeadStage, isBulkMutating, triggerToast]);
+
+  const handleInlineNextActionChange = useCallback(async (lead: Lead, nextAction: NextAction) => {
+    const previousAction = getNextAction(lead);
+    if (previousAction === nextAction) return;
+    if (asyncLockedLeadIds.has(lead.id) || isBulkMutating) {
+      triggerToast(`Wait for the current update to finish before changing ${lead.profile.fullName}.`, 'info');
+      return;
+    }
+    try {
+      await handleUpdateLeadFields(lead.id, { nextAction });
+      if (!isMountedRef.current) return;
+      triggerToast(`Next action for ${lead.profile.fullName}: ${getNextActionLabel(nextAction)}.`, 'success', {
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            void Promise.resolve(handleUpdateLeadFields(lead.id, { nextAction: previousAction })).catch(() => {
+              triggerToast('Could not undo the next action change.', 'error');
+            });
+          },
+        },
+      });
+    } catch (error) {
+      if (isMountedRef.current) {
+        triggerToast(error instanceof Error ? error.message : 'Could not save the next action.', 'error');
+      }
+    }
+  }, [asyncLockedLeadIds, handleUpdateLeadFields, isBulkMutating, triggerToast]);
+
+  // ----- Table preferences, sorting and saved views ---------------------------------------
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PROSPECT_TABLE_PREFS_KEY, serializeTablePrefs({ density, hiddenColumns }));
+    } catch {
+      // Preferences are a convenience; the table still works without storage.
+    }
+  }, [density, hiddenColumns]);
+
+  const visibleColumns = useMemo(
+    () => new Set<ProspectColumnId>(PROSPECT_COLUMNS.filter((column) => !hiddenColumns.includes(column.id)).map((column) => column.id)),
+    [hiddenColumns],
+  );
+
+  const handleToggleColumn = (columnId: ProspectColumnId, show: boolean) => {
+    setHiddenColumns((previous) => (show ? previous.filter((id) => id !== columnId) : [...previous, columnId]));
+    setActiveViewId(null);
+  };
+
+  const handleDensityChange = (next: ProspectDensity) => {
+    setDensity(next);
+    setActiveViewId(null);
+  };
+
+  const handleSortChange = (key: ProspectSortKey) => {
+    setSort((previous) => {
+      const defaultDirection = DEFAULT_SORT_DIRECTION[key];
+      if (!previous || previous.key !== key) return { key, direction: defaultDirection };
+      if (previous.direction === defaultDirection) return { key, direction: defaultDirection === 'asc' ? 'desc' : 'asc' };
+      return null;
+    });
+    setActiveViewId(null);
+  };
+
+  const persistViews = useCallback((next: ProspectView[]) => {
+    setViews(next);
+    try {
+      window.localStorage.setItem(PROSPECT_VIEWS_STORAGE_KEY, serializeViews(next));
+    } catch {
+      triggerToast('This view could not be saved in the browser, so it will be lost on reload.', 'info');
+    }
+  }, [triggerToast]);
+
+  const handleSaveView = (name: string) => {
+    const view: ProspectView = { id: createViewId(), name, filters, sort, density, hiddenColumns };
+    persistViews([...views, view]);
+    setActiveViewId(view.id);
+    triggerToast(`Saved view "${name}".`, 'success');
+  };
+
+  const handleApplyView = (view: ProspectView) => {
+    setFilters(view.filters);
+    setSort(view.sort);
+    setDensity(view.density);
+    setHiddenColumns(view.hiddenColumns);
+    setActiveViewId(view.id);
+    setCurrentPage(1);
+  };
+
+  const handleDeleteView = (viewId: string) => {
+    persistViews(views.filter((view) => view.id !== viewId));
+    if (activeViewId === viewId) setActiveViewId(null);
+  };
+
+  useEffect(() => {
+    if (!preset) return;
+    setFilters({ ...EMPTY_PROSPECT_FILTERS, ...preset.filters });
+    setActiveViewId(null);
+    setCurrentPage(1);
+  }, [preset]);
+
+  const renderSortableHead = (key: ProspectSortKey, label: string, className?: string) => {
+    const isActive = sort?.key === key;
+    const SortIcon = !isActive ? ArrowUpDown : sort.direction === 'asc' ? ArrowUp : ArrowDown;
+    return (
+      <TableHead
+        className={className}
+        aria-sort={isActive ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
+      >
+        <button
+          type="button"
+          onClick={() => handleSortChange(key)}
+          className="-ml-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {label}
+          <SortIcon aria-hidden="true" className={`h-3.5 w-3.5 ${isActive ? 'text-primary' : 'opacity-60'}`} />
+        </button>
+      </TableHead>
+    );
   };
 
   const handleStartEnrichment = () => {
@@ -1168,7 +1488,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setShowConfirmBulkDelete(false)} disabled={isBulkMutating}>Cancel</Button>
             <Button type="button" variant="destructive" onClick={handleBulkDeleteAction} disabled={isBulkMutating || selectedHasAsyncLockedLead}>
-              {bulkMutation === 'delete' && <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+              {bulkMutation === 'delete' && <LoaderCircle className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
               {bulkMutation === 'delete' ? 'Deleting...' : 'Delete selected'}
             </Button>
           </DialogFooter>
@@ -1189,7 +1509,7 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               setDuplicateIdsToDelete([]);
             }} disabled={isBulkMutating}>Cancel</Button>
             <Button type="button" variant="destructive" onClick={handleExecutePurgeDuplicates} disabled={isBulkMutating || duplicateIdsToDelete.some((leadId) => asyncLockedLeadIds.has(leadId))}>
-              {bulkMutation === 'purge' && <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+              {bulkMutation === 'purge' && <LoaderCircle className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
               {bulkMutation === 'purge' ? 'Removing...' : 'Remove duplicates'}
             </Button>
           </DialogFooter>
@@ -1207,174 +1527,15 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setLeadPendingDelete(null)} disabled={isBulkMutating}>Cancel</Button>
             <Button type="button" variant="destructive" onClick={handleSingleDeleteAction} disabled={isBulkMutating || Boolean(leadPendingDelete && asyncLockedLeadIds.has(leadPendingDelete.id))}>
-              {bulkMutation === 'delete' && <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+              {bulkMutation === 'delete' && <LoaderCircle className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
               {bulkMutation === 'delete' ? 'Deleting...' : 'Delete prospect'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(detailsLead)} onOpenChange={(open) => {
-        if (!open && bulkMutation !== 'workflow') setDetailsLeadId(null);
-      }}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{detailsLead?.profile.fullName || 'Prospect details'}</DialogTitle>
-            <DialogDescription>
-              Review provenance and set lightweight workflow labels. These controls do not send outreach or move pipeline stages.
-            </DialogDescription>
-          </DialogHeader>
-          {detailsLead && (() => {
-            const provenance = getLeadProvenance(detailsLead);
-            return (
-              <div className="space-y-5">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="space-y-1 text-sm font-semibold">
-                    <span>Review status</span>
-                    <select
-                      value={getReviewStatus(detailsLead)}
-                      disabled={bulkMutation === 'workflow' || asyncLockedLeadIds.has(detailsLead.id)}
-                      onChange={(event) => void handleDetailsWorkflowChange({ reviewStatus: event.target.value as ReviewStatus })}
-                      className="h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                    >
-                      {REVIEW_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-                    </select>
-                  </label>
-                  <label className="space-y-1 text-sm font-semibold">
-                    <span>Next action</span>
-                    <select
-                      value={getNextAction(detailsLead)}
-                      disabled={bulkMutation === 'workflow' || asyncLockedLeadIds.has(detailsLead.id)}
-                      onChange={(event) => void handleDetailsWorkflowChange({ nextAction: event.target.value as NextAction })}
-                      className="h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                    >
-                      {NEXT_ACTION_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-                    </select>
-                  </label>
-                </div>
-                <div className="grid gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm sm:grid-cols-2">
-                  <div><span className="text-muted-foreground">Title</span><p className="mt-1 font-semibold">{detailsLead.profile.currentTitle || 'Not provided'}</p></div>
-                  <div><span className="text-muted-foreground">Company</span><p className="mt-1 font-semibold">{detailsLead.profile.currentCompany || 'Not provided'}</p></div>
-                  <div><span className="text-muted-foreground">Location</span><p className="mt-1 font-semibold">{provenance.location || 'Not provided'}</p></div>
-                  <div><span className="text-muted-foreground">Industry</span><p className="mt-1 font-semibold">{provenance.industry || 'Not provided'}</p></div>
-                  <div><span className="text-muted-foreground">Email</span><p className="mt-1 break-all font-semibold">{detailsLead.profile.contactDetails?.email || 'Not provided'}</p></div>
-                  <div><span className="text-muted-foreground">LinkedIn</span><p className="mt-1 break-all font-semibold">{detailsLead.profile.contactDetails?.linkedinUrl || 'Not provided'}</p></div>
-                </div>
-                <section>
-                  <h3 className="text-sm font-bold">Discovery query</h3>
-                  <p className="mt-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm text-slate-300">{provenance.discoveryQuery || 'No discovery query was stored for this prospect.'}</p>
-                </section>
-                <section>
-                  <h3 className="text-sm font-bold">Qualification & Mathematical Diagnostics</h3>
-                  <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
-                      <span className="text-slate-500 font-bold uppercase text-xs">Fit Score</span>
-                      <p className="mt-1 font-semibold text-slate-200">{detailsLead.scoreBreakdown?.fitScore ?? detailsLead.fitScore ?? 'N/A'}/10</p>
-                    </div>
-                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
-                      <span className="text-slate-500 font-bold uppercase text-xs">Intent Score</span>
-                      <p className="mt-1 font-semibold text-slate-200">{detailsLead.scoreBreakdown?.intentScore ?? detailsLead.intentScore ?? 'N/A'}/10</p>
-                    </div>
-                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
-                      <span className="text-slate-500 font-bold uppercase text-xs">Career DCR</span>
-                      <p className="mt-1 font-semibold text-indigo-300">{detailsLead.decisionMakerVerification?.trajectoryScore ? `${detailsLead.decisionMakerVerification.trajectoryScore}/10` : 'N/A'}</p>
-                    </div>
-                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
-                      <span className="text-slate-500 font-bold uppercase text-xs">95% Credible Interval</span>
-                      <p className="mt-1 font-semibold text-emerald-300">
-                        {provenance.confidenceInterval
-                          ? `[${provenance.confidenceInterval.lower} - ${provenance.confidenceInterval.upper}] (+/-${provenance.confidenceInterval.uncertainty})`
-                          : 'N/A'}
-                      </p>
-                    </div>
-                  </div>
-                  {provenance.paretoSkyline && (
-                    <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5 text-xs text-amber-200">
-                      <span className="font-bold">Pareto Skyline Outlier:</span> This candidate is on Front 1 non-dominated ranking across Authority, Intent, and Evidence Specificity.
-                    </div>
-                  )}
-                </section>
-                {provenance.postIntentEvidence && provenance.postIntentEvidence.quality !== 'none' && (
-                  <section>
-                    <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-300">
-                      <Flame className="h-4 w-4 text-amber-400" aria-hidden="true" />
-                      Why Now (Recent LinkedIn Activity)
-                    </h3>
-                    <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-amber-200 capitalize">
-                          {(provenance.postIntentEvidence.intentCategory || 'signal').replace('_', ' ')}
-                        </span>
-                        <Badge variant="outline" className="border-amber-500/30 text-amber-400 bg-amber-500/10">
-                          {Math.round((provenance.postIntentEvidence.confidenceScore || 0) * 100)}% Confidence
-                        </Badge>
-                      </div>
-                      {provenance.postIntentEvidence.llmReason && (
-                        <p className="text-slate-300">{provenance.postIntentEvidence.llmReason}</p>
-                      )}
-                      {provenance.postIntentEvidence.intentKeywords?.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {provenance.postIntentEvidence.intentKeywords.map((kw: string) => (
-                            <Badge key={kw} variant="secondary" className="text-xs px-1.5 py-0">
-                              {kw}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                      {provenance.postIntentEvidence.postSnippets?.length > 0 && (
-                        <div className="text-slate-400 italic border-l-2 border-amber-500/30 pl-2 mt-1">
-                          "{provenance.postIntentEvidence.postSnippets[0]}"
-                        </div>
-                      )}
-                    </div>
-                  </section>
-                )}
-                {Boolean(detailsLead.buyingSignalsDetected?.length) && (
-                  <section>
-                    <h3 className="text-sm font-bold flex items-center gap-1.5 text-amber-300">
-                      <Flame className="h-4 w-4 text-amber-400" aria-hidden="true" />
-                      Active Job Requisitions & Live Triggers
-                    </h3>
-                    <div className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 text-xs space-y-2">
-                      {detailsLead.buyingSignalsDetected!.map((signal, idx) => (
-                        <div key={idx} className="flex items-start justify-between gap-2">
-                          <span className="font-semibold text-amber-200">{signal}</span>
-                          {detailsLead.hiringSignalUrl && (
-                            <a
-                              href={detailsLead.hiringSignalUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 shrink-0 underline"
-                            >
-                              <Link2 className="h-3 w-3" aria-hidden="true" />
-                              <span>View Job Post</span>
-                            </a>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
-                <section>
-                  <h3 className="text-sm font-bold">Matched criteria</h3>
-                  {provenance.matchedCriteria.length > 0 ? (
-                    <div className="mt-2 flex flex-wrap gap-2">{provenance.matchedCriteria.map(criterion => <Badge key={criterion} variant="outline">{criterion}</Badge>)}</div>
-                  ) : <p className="mt-2 text-sm text-muted-foreground">No matched criteria recorded.</p>}
-                </section>
-                <section>
-                  <h3 className="text-sm font-bold">Uncertainties</h3>
-                  {provenance.uncertainties.length > 0 ? (
-                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-200">{provenance.uncertainties.map(item => <li key={item}>{item}</li>)}</ul>
-                  ) : <p className="mt-2 text-sm text-muted-foreground">No uncertainties recorded.</p>}
-                </section>
-              </div>
-            );
-          })()}
-        </DialogContent>
-      </Dialog>
-
-      <Card className="relative shadow-2xl" aria-busy={isBulkMutating}>
-        <CardContent className="space-y-6 p-4 sm:p-6">
+      <Card className="relative shadow-sm" aria-busy={isBulkMutating}>
+        <CardContent className="space-y-5 p-4 sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h2 className="flex items-center gap-2 text-xl font-extrabold text-foreground">
@@ -1384,83 +1545,98 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
               <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Review saved contacts, enrich selected records, and move them into the right pipeline stage.</p>
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <SavedViewsMenu
+                views={views}
+                activeViewId={activeViewId}
+                onApply={handleApplyView}
+                onDelete={handleDeleteView}
+                onSave={handleSaveView}
+              />
               <Button type="button" size="sm" onClick={onAddManualLead}>
                 <UserPlus2 className="mr-2 h-4 w-4" aria-hidden="true" />
                 Add prospect
               </Button>
               <input type="file" accept=".csv" ref={fileInputRef} onChange={handleCsvImport} className="sr-only" tabIndex={-1} />
-              <Button type="button" variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} disabled={isImporting}>
-                {isImporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <UploadCloud className="mr-2 h-4 w-4" aria-hidden="true" />}
-                {isImporting ? 'Importing...' : 'Import CSV'}
-              </Button>
-              <Button type="button" variant="outline" size="sm" onClick={() => handleCsvExport(true)} disabled={leads.length === 0}>
-                <FileDown className="mr-2 h-4 w-4" aria-hidden="true" />
-                Export all
-              </Button>
-              <details className="group relative">
-                <summary className="flex h-9 cursor-pointer list-none items-center rounded-md border border-input bg-background px-3 text-sm font-medium shadow-xs hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  More actions
-                </summary>
-                <div className="absolute right-0 z-30 mt-2 grid w-52 gap-1 rounded-lg border border-slate-700 bg-slate-900 p-2 shadow-2xl">
-                  <Button type="button" variant="ghost" size="sm" className="justify-start" onClick={handleSelectDuplicates} disabled={leads.length === 0 || isBulkMutating}>Select duplicates</Button>
-                  <Button type="button" variant="ghost" size="sm" className="justify-start text-destructive hover:text-destructive" onClick={handleTriggerPurgeDuplicates} disabled={leads.length === 0 || isBulkMutating}>Remove duplicates</Button>
-                </div>
-              </details>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="icon" className="h-9 w-9" aria-label="More actions" title="More actions">
+                    {isImporting
+                      ? <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                      : <Ellipsis className="h-4 w-4" aria-hidden="true" />}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Data</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => fileInputRef.current?.click()} disabled={isImporting}>
+                    <UploadCloud aria-hidden="true" />
+                    {isImporting ? 'Importing...' : 'Import CSV'}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => handleCsvExport(true)} disabled={leads.length === 0}>
+                    <FileDown aria-hidden="true" />
+                    Export all
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Clean up</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={handleSelectDuplicates} disabled={leads.length === 0 || isBulkMutating}>
+                    <Layers aria-hidden="true" />
+                    Select duplicates
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={handleTriggerPurgeDuplicates}
+                    disabled={leads.length === 0 || isBulkMutating}
+                    className="text-danger focus:text-danger"
+                  >
+                    <Trash2 aria-hidden="true" />
+                    Remove duplicates
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
           {selectedLeadIds.size > 0 && (
-            <section className="flex flex-col gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between" aria-label="Selected prospect actions">
+            <section className="flex flex-col gap-3 rounded-xl border border-primary/30 bg-primary/10 p-3 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between" aria-label="Selected prospect actions">
               <div className="flex items-center gap-2">
                 <Badge>{selectedLeadIds.size}</Badge>
-                <span className="text-sm font-semibold text-slate-200">selected</span>
+                <span className="text-sm font-semibold text-foreground">selected</span>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <label htmlFor="bulk-stage" className="sr-only">Move selected prospects to stage</label>
-                <select
-                  id="bulk-stage"
-                  className="h-9 rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                  defaultValue=""
+                <Select
+                  value=""
+                  onValueChange={(value) => void handleBulkStageChange(value as Lead['stage'])}
                   disabled={isBulkMutating || selectedHasAsyncLockedLead}
-                  onChange={(event) => {
-                    if (event.target.value) void handleBulkStageChange(event.target.value as Lead['stage']);
-                    event.target.value = '';
-                  }}
                 >
-                  <option value="" disabled>Move to stage...</option>
-                  {PIPELINE_STAGES.map(stage => <option key={stage.id} value={stage.id}>{stage.shortLabel}</option>)}
-                </select>
+                  <SelectTrigger id="bulk-stage" className="h-9 w-[170px]"><SelectValue placeholder="Move to stage..." /></SelectTrigger>
+                  <SelectContent>
+                    {PIPELINE_STAGES.map((stage) => <SelectItem key={stage.id} value={stage.id}>{stage.shortLabel}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <label htmlFor="bulk-review" className="sr-only">Set review status for selected prospects</label>
-                <select
-                  id="bulk-review"
-                  className="h-9 rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                  defaultValue=""
+                <Select
+                  value=""
+                  onValueChange={(value) => void handleBulkWorkflowChange({ reviewStatus: value as ReviewStatus })}
                   disabled={isBulkMutating || selectedHasAsyncLockedLead}
-                  onChange={(event) => {
-                    if (event.target.value) void handleBulkWorkflowChange({ reviewStatus: event.target.value as ReviewStatus });
-                    event.target.value = '';
-                  }}
                 >
-                  <option value="" disabled>Set review...</option>
-                  {REVIEW_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
+                  <SelectTrigger id="bulk-review" className="h-9 w-[150px]"><SelectValue placeholder="Set review..." /></SelectTrigger>
+                  <SelectContent>
+                    {REVIEW_STATUS_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <label htmlFor="bulk-next-action" className="sr-only">Set next action for selected prospects</label>
-                <select
-                  id="bulk-next-action"
-                  className="h-9 rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                  defaultValue=""
+                <Select
+                  value=""
+                  onValueChange={(value) => void handleBulkWorkflowChange({ nextAction: value as NextAction })}
                   disabled={isBulkMutating || selectedHasAsyncLockedLead}
-                  onChange={(event) => {
-                    if (event.target.value) void handleBulkWorkflowChange({ nextAction: event.target.value as NextAction });
-                    event.target.value = '';
-                  }}
                 >
-                  <option value="" disabled>Set next action...</option>
-                  {NEXT_ACTION_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
+                  <SelectTrigger id="bulk-next-action" className="h-9 w-[170px]"><SelectValue placeholder="Set next action..." /></SelectTrigger>
+                  <SelectContent>
+                    {NEXT_ACTION_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 <Button type="button" variant="outline" size="sm" onClick={handleStartEnrichment} disabled={enrichmentQueue.length > 0 || isBulkMutating || selectedHasAsyncLockedLead}>
-                  {enrichmentQueue.length > 0 ? <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Sparkles className="mr-2 h-4 w-4" aria-hidden="true" />}
+                  {enrichmentQueue.length > 0 ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Sparkles className="mr-2 h-4 w-4" aria-hidden="true" />}
                   {enrichmentQueue.length > 0 ? `Enriching ${enrichmentQueue.length}` : 'Enrich'}
                 </Button>
                 <Button type="button" variant="outline" size="sm" onClick={() => handleCsvExport(false)}>
@@ -1476,169 +1652,182 @@ export default function LeadTable({ onAddManualLead }: { onAddManualLead: () => 
                 </Button>
               </div>
               {selectedHasAsyncLockedLead && (
-                <p className="basis-full text-xs font-medium text-amber-300" role="status">
+                <p className="basis-full text-xs font-medium text-warning" role="status">
                   Workflow, stage, and delete actions unlock when active enrichment finishes.
                 </p>
               )}
             </section>
           )}
 
-      {enrichmentStep && (
-        <div className="bg-indigo-900/30 border border-indigo-500/30 rounded-xl px-4 py-3 flex items-center justify-between" role="status" aria-live="polite">
-           <div className="flex items-center gap-3">
-             <Loader2 className="w-5 h-5 text-indigo-400 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-             <div className="flex flex-col">
-               <span className="text-sm font-bold text-indigo-200">Enriching {enrichmentQueue.length} record{enrichmentQueue.length === 1 ? '' : 's'}...</span>
-               <span className="text-xs text-indigo-300">{enrichmentStep}</span>
-             </div>
-           </div>
-        </div>
-      )}
-
-      {/* Spreadsheet Controller */}
-      <div className="flex flex-col md:flex-row gap-4 items-center justify-between border-t border-slate-800/60 pt-4">
-        <div className="relative w-full md:w-80">
-          <label htmlFor="prospect-search" className="sr-only">Search prospects</label>
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <Input
-            id="prospect-search"
-            type="text"
-            value={tableSearch}
-            onChange={(e) => setTableSearch(e.target.value)}
-            placeholder="Search people, companies, criteria, or uncertainties..."
-            className="pl-9"
-          />
-        </div>
-
-        <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
-          <SlidersHorizontal className="w-4 h-4 text-slate-400" aria-hidden="true" />
-          <label htmlFor="stage-filter" className="text-slate-400 text-xs font-bold uppercase">Stage:</label>
-          <select
-            id="stage-filter"
-            value={stageFilter}
-            onChange={(e) => setStageFilter(e.target.value as Lead['stage'] | 'All')}
-            className="bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-300 px-3 py-1.5 font-medium outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-          >
-            <option value="All">All Stages</option>
-            {PIPELINE_STAGES.map(stage => <option key={stage.id} value={stage.id}>{stage.shortLabel}</option>)}
-          </select>
-          <label htmlFor="review-filter" className="sr-only">Filter by review status</label>
-          <select id="review-filter" value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value as ReviewStatus | 'All')} className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-sm font-medium text-slate-300 outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
-            <option value="All">All reviews</option>
-            {REVIEW_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <label htmlFor="next-action-filter" className="sr-only">Filter by next action</label>
-          <select id="next-action-filter" value={nextActionFilter} onChange={(event) => setNextActionFilter(event.target.value as NextAction | 'All')} className="rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-sm font-medium text-slate-300 outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
-            <option value="All">All next actions</option>
-            {NEXT_ACTION_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <label htmlFor="location-filter" className="sr-only">Filter by location</label>
-          <select id="location-filter" value={locationFilter} onChange={(event) => setLocationFilter(event.target.value)} className="max-w-44 rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-sm font-medium text-slate-300 outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
-            <option value="All">All locations</option>
-            {locationOptions.map(location => <option key={location} value={location}>{location}</option>)}
-          </select>
-          <label htmlFor="industry-filter" className="sr-only">Filter by industry</label>
-          <select id="industry-filter" value={industryFilter} onChange={(event) => setIndustryFilter(event.target.value)} className="max-w-44 rounded-lg border border-slate-800 bg-slate-950 px-3 py-1.5 text-sm font-medium text-slate-300 outline-none focus-visible:ring-2 focus-visible:ring-indigo-400">
-            <option value="All">All industries</option>
-            {industryOptions.map(industry => <option key={industry} value={industry}>{industry}</option>)}
-          </select>
-        </div>
-      </div>
-
-      {/* Real Table Grid container */}
-      <div
-        ref={tableContainerRef}
-        className="border rounded-xl mb-16 overflow-hidden bg-card"
-      >
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10 text-center">
-                <input
-                  ref={selectAllCheckboxRef}
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  onChange={(e) => handleSelectAll(e.target.checked)}
-                  disabled={isBulkMutating || selectableVisibleLeadIds.length === 0}
-                  className="h-4 w-4 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                  aria-checked={someVisibleSelected ? 'mixed' : allVisibleSelected}
-                  aria-label={`Select all ${selectableVisibleLeadIds.length} available prospects on this page`}
-                />
-              </TableHead>
-              <TableHead className="min-w-[180px]">Contact Profile Name</TableHead>
-              <TableHead className="min-w-[160px]">Primary Title</TableHead>
-              <TableHead className="min-w-[160px]">Employer / Company Name</TableHead>
-              <TableHead className="min-w-[200px]">Buying Signals & Intent</TableHead>
-              <TableHead className="min-w-[180px]">Authority & Match Reason</TableHead>
-              <TableHead className="min-w-[110px]">Added</TableHead>
-              <TableHead className="w-[140px] text-center">Qualification Score</TableHead>
-              <TableHead className="w-[80px] text-right">Delete</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredLeads.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={9} className="text-center text-muted-foreground font-medium py-8">
-                  No records stored matching your current directory queries.
-                </TableCell>
-              </TableRow>
-            ) : (
-              rows.map((row, index) => {
-                const lead = row.original;
-                return (
-                  <LeadTableRow
-                    key={lead.id}
-                    lead={lead}
-                    dataIndex={currentPageStartIndex + index}
-                    isSelected={selectedLeadIds.has(lead.id)}
-                    isDuplicate={duplicateIds.has(lead.id)}
-                    isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
-                    isMutationLocked={isBulkMutating}
-                    onSelect={handleSelectRow}
-                    onOpenDetails={handleOpenDetails}
-                    onRequestDelete={handleRequestDeleteLead}
-                  />
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-        {filteredLeads.length > PROSPECTS_PAGE_SIZE && (
-          <div className="flex flex-col gap-3 border-t bg-slate-950/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-xs font-medium text-muted-foreground">
-              Showing <span className="text-foreground">{pageStart}-{pageEnd}</span> of <span className="text-foreground">{filteredLeads.length}</span> matching prospects
+          {enrichmentStep && (
+            <div className="flex items-center justify-between rounded-xl border border-primary/30 bg-primary/10 px-4 py-3" role="status" aria-live="polite">
+              <div className="flex items-center gap-3">
+                <LoaderCircle className="h-5 w-5 animate-spin text-primary motion-reduce:animate-none" aria-hidden="true" />
+                <div className="flex flex-col">
+                  <span className="text-sm font-bold text-primary">Enriching {enrichmentQueue.length} record{enrichmentQueue.length === 1 ? '' : 's'}...</span>
+                  <span className="text-xs text-primary">{enrichmentStep}</span>
+                </div>
+              </div>
             </div>
-            <div className="flex items-center justify-between gap-2 sm:justify-end">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                disabled={activePage === 1}
-                className="h-8 px-2"
-                title="Previous page"
-              >
-                <ChevronLeft className="h-4 w-4" />
-                <span className="sr-only">Previous page</span>
-              </Button>
-              <span className="min-w-24 text-center text-xs font-bold text-slate-300">
-                Page {activePage} of {totalPages}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                disabled={activePage === totalPages}
-                className="h-8 px-2"
-                title="Next page"
-              >
-                <ChevronRight className="h-4 w-4" />
-                <span className="sr-only">Next page</span>
-              </Button>
-            </div>
+          )}
+
+          <div className="border-t border-border/60 pt-4">
+            <ProspectFilterBar
+              filters={filters}
+              onChange={updateFilters}
+              locationOptions={locationOptions}
+              industryOptions={industryOptions}
+              resultCount={filteredLeads.length}
+              totalCount={leads.length}
+            />
           </div>
-        )}
-      </div>
 
+          <div className="flex items-center justify-end gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="ghost" size="sm" className="gap-1.5 text-muted-foreground">
+                  <Columns3 aria-hidden="true" className="h-4 w-4" />
+                  Columns
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel>Visible columns</DropdownMenuLabel>
+                {PROSPECT_COLUMNS.map((column) => (
+                  <DropdownMenuCheckboxItem
+                    key={column.id}
+                    checked={visibleColumns.has(column.id)}
+                    disabled={column.required}
+                    onCheckedChange={(checked) => handleToggleColumn(column.id, checked === true)}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    {column.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="ghost" size="sm" className="gap-1.5 text-muted-foreground">
+                  <Rows3 aria-hidden="true" className="h-4 w-4" />
+                  Density
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Row density</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={density} onValueChange={(value) => handleDensityChange(value as ProspectDensity)}>
+                  <DropdownMenuRadioItem value="comfortable">Comfortable</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="compact">Compact</DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Real Table Grid container */}
+          <div
+            ref={tableContainerRef}
+            className={`mb-4 overflow-hidden rounded-xl border bg-card ${density === 'compact' ? '[&_td]:py-1.5 [&_th]:h-10' : ''}`}
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10 text-center">
+                    <Checkbox
+                      checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                      onCheckedChange={(checked) => handleSelectAll(checked === true)}
+                      disabled={isBulkMutating || selectableVisibleLeadIds.length === 0}
+                      aria-label={`Select all ${selectableVisibleLeadIds.length} available prospects on this page`}
+                    />
+                  </TableHead>
+                  {renderSortableHead('name', 'Contact', 'min-w-[180px]')}
+                  {visibleColumns.has('title') && <TableHead className="min-w-[160px]">Title</TableHead>}
+                  {visibleColumns.has('company') && renderSortableHead('company', 'Company', 'min-w-[160px]')}
+                  {visibleColumns.has('stage') && <TableHead className="min-w-[160px]">Stage</TableHead>}
+                  {visibleColumns.has('nextAction') && <TableHead className="min-w-[150px]">Next action</TableHead>}
+                  {visibleColumns.has('signals') && <TableHead className="min-w-[200px]">Buying signals</TableHead>}
+                  {visibleColumns.has('authority') && <TableHead className="min-w-[180px]">Authority and match</TableHead>}
+                  {visibleColumns.has('added') && renderSortableHead('added', 'Added', 'min-w-[110px]')}
+                  {visibleColumns.has('score') && renderSortableHead('score', 'Match score', 'w-[140px]')}
+                  <TableHead className="w-[80px] text-right"><span className="sr-only">Delete</span></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredLeads.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumns.size + 2} className="py-12 text-center">
+                      <p className="font-medium text-foreground">
+                        {leads.length === 0 ? 'No prospects yet' : 'No prospects match these filters'}
+                      </p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {leads.length === 0
+                          ? 'Add a prospect, import a CSV, or discover new people from the Discover tab.'
+                          : 'Try removing a filter or searching for something broader.'}
+                      </p>
+                      {leads.length > 0 && (
+                        <Button type="button" variant="outline" size="sm" className="mt-4" onClick={() => updateFilters({ ...EMPTY_PROSPECT_FILTERS })}>
+                          Clear all filters
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  rows.map((row, index) => {
+                    const lead = row.original;
+                    return (
+                      <LeadTableRow
+                        key={lead.id}
+                        lead={lead}
+                        dataIndex={currentPageStartIndex + index}
+                        visibleColumns={visibleColumns}
+                        isSelected={selectedLeadIds.has(lead.id)}
+                        isDuplicate={duplicateIds.has(lead.id)}
+                        isAsyncLocked={asyncLockedLeadIds.has(lead.id)}
+                        isMutationLocked={isBulkMutating}
+                        onSelect={handleSelectRow}
+                        onOpenDetails={handleOpenDetails}
+                        onRequestDelete={handleRequestDeleteLead}
+                        onStageChange={handleInlineStageChange}
+                        onNextActionChange={handleInlineNextActionChange}
+                      />
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+            {filteredLeads.length > PROSPECTS_PAGE_SIZE && (
+              <div className="flex flex-col gap-3 border-t bg-background/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-xs font-medium text-muted-foreground">
+                  Showing <span className="text-foreground">{pageStart}-{pageEnd}</span> of <span className="text-foreground">{filteredLeads.length}</span> matching prospects
+                </div>
+                <div className="flex items-center justify-between gap-2 sm:justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={activePage === 1}
+                    className="h-8 px-2"
+                    title="Previous page"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    <span className="sr-only">Previous page</span>
+                  </Button>
+                  <span className="min-w-24 text-center text-xs font-bold text-foreground/80">
+                    Page {activePage} of {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={activePage === totalPages}
+                    className="h-8 px-2"
+                    title="Next page"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                    <span className="sr-only">Next page</span>
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
     </>

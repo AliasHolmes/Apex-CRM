@@ -35,14 +35,36 @@
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
 
-  /* Project-specific midpoints used by the existing CRM surfaces. */
-  --color-slate-205: #e2e8f0;
-  --color-slate-350: #94a3b8;
-  --color-slate-450: #64748b;
-  --color-slate-550: #475569;
-  --color-slate-850: #172033;
-  --color-slate-905: #0a0f1a;
-  --color-emerald-450: #10b981;
+  /* Semantic status colors. Text-safe in both themes. */
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
+  --color-danger: hsl(var(--danger));
+  --color-danger-foreground: hsl(var(--danger-foreground));
+  --color-info: hsl(var(--info));
+  --color-info-foreground: hsl(var(--info-foreground));
+
+  /* Raised surfaces (menus, drawers, the Copilot panel). */
+  --color-surface-elevated: hsl(var(--surface-elevated));
+
+  /* Categorical chart palette. */
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  /* Pipeline stage ramp: cool (new) to warm (active) to green (won). */
+  --color-stage-1: hsl(var(--stage-1));
+  --color-stage-2: hsl(var(--stage-2));
+  --color-stage-3: hsl(var(--stage-3));
+  --color-stage-4: hsl(var(--stage-4));
+  --color-stage-5: hsl(var(--stage-5));
+  --color-stage-6: hsl(var(--stage-6));
+  --color-stage-7: hsl(var(--stage-7));
+  --color-stage-8: hsl(var(--stage-8));
+  --color-stage-9: hsl(var(--stage-9));
 
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
@@ -51,47 +73,101 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    color-scheme: light;
+    --background: 220 25% 98%;
+    --foreground: 224 30% 10%;
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 224 30% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --popover-foreground: 224 30% 10%;
+    --surface-elevated: 0 0% 100%;
+    --primary: 245 75% 52%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 20% 95%;
+    --secondary-foreground: 224 30% 14%;
+    --muted: 220 20% 95%;
+    --muted-foreground: 220 10% 38%;
+    --accent: 245 60% 96%;
+    --accent-foreground: 245 70% 40%;
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 16% 88%;
+    --input: 220 16% 84%;
+    --ring: 245 75% 52%;
+    --radius: 0.625rem;
+
+    --success: 152 65% 26%;
+    --success-foreground: 0 0% 100%;
+    --warning: 30 90% 34%;
+    --warning-foreground: 0 0% 100%;
+    --danger: 0 72% 42%;
+    --danger-foreground: 0 0% 100%;
+    --info: 199 90% 30%;
+    --info-foreground: 0 0% 100%;
+
+    --chart-1: 245 75% 56%;
+    --chart-2: 199 85% 42%;
+    --chart-3: 152 55% 36%;
+    --chart-4: 36 90% 46%;
+    --chart-5: 330 70% 52%;
+
+    --stage-1: 215 18% 52%;
+    --stage-2: 199 85% 42%;
+    --stage-3: 245 75% 58%;
+    --stage-4: 275 65% 56%;
+    --stage-5: 38 90% 46%;
+    --stage-6: 22 88% 50%;
+    --stage-7: 152 55% 38%;
+    --stage-8: 190 35% 42%;
+    --stage-9: 0 68% 52%;
   }
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    color-scheme: dark;
+    --background: 226 30% 7%;
+    --foreground: 220 20% 94%;
+    --card: 226 25% 10%;
+    --card-foreground: 220 20% 94%;
+    --popover: 226 25% 13%;
+    --popover-foreground: 220 20% 94%;
+    --surface-elevated: 226 25% 13%;
+    --primary: 245 85% 71%;
+    --primary-foreground: 226 30% 8%;
+    --secondary: 226 20% 15%;
+    --secondary-foreground: 220 20% 94%;
+    --muted: 226 20% 15%;
+    --muted-foreground: 220 12% 66%;
+    --accent: 226 22% 18%;
+    --accent-foreground: 220 20% 94%;
+    --destructive: 0 70% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 226 18% 19%;
+    --input: 226 18% 22%;
+    --ring: 245 85% 71%;
+
+    --success: 152 55% 52%;
+    --success-foreground: 226 30% 8%;
+    --warning: 38 92% 58%;
+    --warning-foreground: 226 30% 8%;
+    --danger: 0 80% 68%;
+    --danger-foreground: 226 30% 8%;
+    --info: 199 85% 60%;
+    --info-foreground: 226 30% 8%;
+
+    --chart-1: 245 80% 70%;
+    --chart-2: 199 85% 60%;
+    --chart-3: 152 55% 52%;
+    --chart-4: 38 92% 58%;
+    --chart-5: 330 75% 68%;
+
+    --stage-1: 215 18% 62%;
+    --stage-2: 199 85% 60%;
+    --stage-3: 245 80% 70%;
+    --stage-4: 275 70% 68%;
+    --stage-5: 38 92% 58%;
+    --stage-6: 22 90% 60%;
+    --stage-7: 152 55% 50%;
+    --stage-8: 190 40% 58%;
+    --stage-9: 0 75% 64%;
   }
 }
 
@@ -100,22 +176,40 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
   }
 }
 
-/* Custom Scrollbar Styles */
+/* Custom scrollbar, token-driven so it follows the active theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+}
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.25);
+  background: hsl(var(--muted-foreground) / 0.3);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.45);
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Recharts SVG text and hover cursor, themed through tokens (SVG attributes cannot read var()). */
+.recharts-cartesian-axis-tick-value {
+  fill: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.recharts-bar-label {
+  fill: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 700;
+}
+.recharts-tooltip-cursor {
+  fill: hsl(var(--muted) / 0.45);
 }

@@ -6,7 +6,7 @@
  * resolveGeo() returns geo=open_global with invented=false and NO
  * countryAnchor/metros. Callers must not inject USA/US hubs.
  */
-import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS } from './prospectContract.js';
+import { COUNTRY_CANONICAL_MAP, COUNTRY_TO_METROS, AMBIGUOUS_METRO_NAMES } from './prospectContract.js';
 
 export type QueryTier = 'vague' | 'standard' | 'rich';
 export type MissingSlot = 'role' | 'geo' | 'industry' | 'seniority' | 'signal';
@@ -54,7 +54,9 @@ export function resolveGeo(brief: unknown): GeoResolution {
       // in, is, at...) must never anchor geo from lowercase prose.
       const raw = String(brief || '');
       const upperHit = new RegExp(`\\b${escaped.toUpperCase()}\\b`).test(raw);
-      const metroHit = (COUNTRY_TO_METROS[key] || []).some(m => text.includes(m.toLowerCase()));
+      const metroHit = (COUNTRY_TO_METROS[key] || [])
+        .filter(m => !AMBIGUOUS_METRO_NAMES.has(m.toLowerCase()))
+        .some(m => text.includes(m.toLowerCase()));
       const PRONOUN_COLLISIONS = new Set(['us', 'me', 'am', 'in', 'is', 'at', 'as', 'an', 'be', 'by', 'do', 'go', 'he', 'if', 'it', 'my', 'no', 'of', 'on', 'or', 'so', 'to', 'up', 'we']);
       if (PRONOUN_COLLISIONS.has(key.toLowerCase())) {
         // Require prepositional adjacency ("in US", "based in ME") or uppercase or metro.

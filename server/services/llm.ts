@@ -78,6 +78,9 @@ export type LLMExecutionOptions = {
   onProviderAttempt?: (attempt: LLMProviderAttempt) => void;
   onUsage?: (usage: LLMUsage) => void;
   timeoutMs?: number;
+  hardTimeoutMs?: number;
+  providerHardTimeoutMs?: Partial<Record<string, number>>;
+  tierProviderOrder?: string[];
   maxRetries?: number;
   circuitBreaker?: LLMSessionCircuitBreaker;
   signal?: AbortSignal;
@@ -246,7 +249,7 @@ const GROQ_MAX_OUTPUT_TOKENS = Number(
 const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i;
 
 const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
-  strategist: "medium",
+  strategist: "low",
   extraction: "low",
   intent_signals: "low",
   company_attribution: "low",
@@ -301,15 +304,22 @@ export function orderProvidersForTier<T extends { id: string }>(
     .map(({ provider }) => provider);
 }
 
-export function describeLLMRoute(tier?: LLMRoutingTier): {
+export function describeLLMRoute(
+  tier?: LLMRoutingTier,
+  tierProviderOrder?: string[],
+): {
   providerId: string | null;
   reasoning: boolean;
   outputTokenCap: number;
 } {
+  const fastIds =
+    tierProviderOrder && tierProviderOrder.length > 0
+      ? tierProviderOrder
+      : parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
   const ordered = orderProvidersForTier(
     getConfiguredLLMProviders(),
-    tier,
-    parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS),
+    tierProviderOrder?.length ? "fast" : tier,
+    fastIds,
   );
   // Health-aware: when Atria and Byesu are both out the failsafe serves the call, so callers
   // that size batches from this (e.g. Groq's 950-token cap) must see the failsafe provider.
@@ -1169,10 +1179,13 @@ async function withProviderFallback<T>(
   }
 
   const breaker = executionOptions.circuitBreaker;
-  const fastIds = parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
+  const fastIds =
+    executionOptions.tierProviderOrder && executionOptions.tierProviderOrder.length > 0
+      ? executionOptions.tierProviderOrder
+      : parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
   const primaryTier = orderProvidersForTier(
     allConfigured.filter((p) => p.id === "atria" || p.id === "primary"),
-    executionOptions.routingTier,
+    executionOptions.tierProviderOrder?.length ? "fast" : executionOptions.routingTier,
     fastIds,
   );
   const failsafeTier = orderProvidersForTier(
@@ -1214,8 +1227,12 @@ async function withProviderFallback<T>(
   const executeAttempt = async (provider: LLMProvider, queueWaitMs = 0): Promise<AttemptResult<T>> => {
     const attemptStartedAt = Date.now();
     let attemptUsage: LLMUsage | undefined;
+    const resolvedHardTimeoutMs =
+      executionOptions.providerHardTimeoutMs?.[provider.id] ||
+      executionOptions.hardTimeoutMs;
     const opts: LLMExecutionOptions = {
       ...executionOptions,
+      hardTimeoutMs: resolvedHardTimeoutMs,
       onUsage: (usage) => {
         attemptUsage = usage;
         executionOptions.onUsage?.(usage);
@@ -1280,7 +1297,14 @@ async function withProviderFallback<T>(
         error: truncateProviderError(normalized.message),
       });
 
-      if (!isHealthProbe) recordProviderFailure(provider.id, normalized, breaker);
+      // Circuit breaker health isolation:
+      // When a hardTimeoutMs was applied AND this was a timeout failure, do NOT record failure
+      // against global provider health or the session circuit breaker. This prevents planner-induced
+      // tight timeouts from cooling down or marking Byesu/Atria OUT for extract and judge.
+      const isPlannerHardTimeout = Boolean(resolvedHardTimeoutMs && isTimeout);
+      if (!isHealthProbe && !isPlannerHardTimeout) {
+        recordProviderFailure(provider.id, normalized, breaker);
+      }
       return { ok: false, err: normalized, isTimeout };
     }
   };
@@ -1396,7 +1420,9 @@ async function withProviderFallback<T>(
       return true;
     });
     const retryWorthwhile =
-      Boolean(first && second) && (isRepeatable(first?.result) || isRepeatable(second?.result));
+      executionOptions.maxRetries !== 0 &&
+      Boolean(first && second) &&
+      (isRepeatable(first?.result) || isRepeatable(second?.result));
     if (retryWorthwhile && retryPool.length > 0 && !budgetExceeded()) {
       console.warn(`[llm] Primary attempt(s) failed; one in-pair retry on ${retryPool.map((p) => p.name).join(" or ")}...`);
       await sleepWithSignal(1_500, executionOptions.signal);
@@ -1584,7 +1610,11 @@ export function computeAtriaDynamicTimeoutMs(
   messages: ChatMessage[],
   requestedTimeoutMs?: number,
   metadata?: Record<string, any>,
+  hardTimeoutMs?: number,
 ): number {
+  if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) {
+    return hardTimeoutMs;
+  }
   if (
     requestedTimeoutMs !== undefined &&
     requestedTimeoutMs > 0 &&
@@ -1629,7 +1659,11 @@ export function computeByesuDynamicTimeoutMs(
   messages: ChatMessage[],
   requestedTimeoutMs?: number,
   metadata?: Record<string, any>,
+  hardTimeoutMs?: number,
 ): number {
+  if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) {
+    return hardTimeoutMs;
+  }
   if (
     requestedTimeoutMs !== undefined &&
     requestedTimeoutMs > 0 &&
@@ -1675,7 +1709,7 @@ async function sendChatCompletion(
     maxTokens?: number;
     temperature?: number;
     responseFormat?: { type: "json_object" };
-  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata">,
+  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "hardTimeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata">,
 ): Promise<string> {
   if (options?.signal?.aborted) {
     const cancelError = new Error("LLM request was aborted by caller.");
@@ -1705,12 +1739,15 @@ async function sendChatCompletion(
   let timeoutForCall = options?.timeoutMs;
   if (probeTimeoutMs !== undefined) {
     timeoutForCall = probeTimeoutMs;
+  } else if (Number(options?.hardTimeoutMs) > 0) {
+    timeoutForCall = Number(options?.hardTimeoutMs);
   } else if (isAtriaTarget) {
     timeoutForCall = computeAtriaDynamicTimeoutMs(
       effectiveMaxTokens,
       messages,
       options?.timeoutMs,
       options?.metadata,
+      options?.hardTimeoutMs,
     );
   } else if (isByesuTarget) {
     timeoutForCall = computeByesuDynamicTimeoutMs(
@@ -1718,6 +1755,7 @@ async function sendChatCompletion(
       messages,
       options?.timeoutMs,
       options?.metadata,
+      options?.hardTimeoutMs,
     );
   }
 

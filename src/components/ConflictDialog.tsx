@@ -9,7 +9,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import type { Lead } from '@/types';
-import { AlertTriangle, Check, RefreshCw, GitMerge } from 'lucide-react';
+import { TriangleAlert, Check, RefreshCw, GitMerge } from 'lucide-react';
 import { rebaseLeadChanges } from '@/lib/leadMutations';
 
 export type ConflictResolutionStrategy = 'keep_local' | 'keep_server' | 'merge';
@@ -86,8 +86,8 @@ export function ConflictDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <div className="flex items-center gap-2 text-amber-500">
-            <AlertTriangle className="h-5 w-5" />
+          <div className="flex items-center gap-2 text-warning">
+            <TriangleAlert className="h-5 w-5" />
             <DialogTitle className="text-lg font-semibold">Lead Revision Conflict</DialogTitle>
           </div>
           <DialogDescription className="text-sm text-muted-foreground">
@@ -119,10 +119,10 @@ export function ConflictDialog({
                       {f.label}
                     </Badge>
                   </div>
-                  <div className="text-blue-600 dark:text-blue-400 bg-blue-50/50 dark:bg-blue-950/20 p-1.5 rounded truncate">
+                  <div className="text-info bg-info/10 p-1.5 rounded truncate">
                     {f.localVal}
                   </div>
-                  <div className="text-emerald-600 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/20 p-1.5 rounded truncate">
+                  <div className="text-success bg-success/10 p-1.5 rounded truncate">
                     {f.serverVal}
                   </div>
                 </div>
@@ -140,7 +140,7 @@ export function ConflictDialog({
             <GitMerge className="h-4 w-4" />
             Smart Merge
           </Button>
-          <Button variant="default" size="sm" onClick={handleKeepLocal} className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700">
+          <Button variant="default" size="sm" onClick={handleKeepLocal} className="flex items-center gap-1.5">
             <Check className="h-4 w-4" />
             Overwrite With My Changes
           </Button>

@@ -17,8 +17,10 @@ import {
 import { formatExperienceBlock } from "./extractStage.js";
 import {
   getEnrichmentCacheEntriesBatch,
+  getEnrichmentCacheEntry,
   upsertEnrichmentCacheEntry,
   getNegativeEnrichmentCacheEntriesBatch,
+  getNegativeEnrichmentCacheEntry,
   upsertNegativeEnrichmentCacheEntry,
   recordProviderUsage,
 } from "../../db.js";
@@ -29,8 +31,10 @@ import {
   applySiteProbeSignals,
   parseSiteSignalsFromEvidenceBlock,
 } from "../siteProbe.js";
+import { lookupCompanyDomain } from "../companyDomainLookup.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
-import { evaluateDecisionMakerGate } from "../titleTriage.js";
+import { evaluateDecisionMakerGate, classifyTitle } from "../titleTriage.js";
+import type { FinalistCandidate } from "../finalistJudge.js";
 import { createLeadEvidence } from "../evidence.js";
 import { computeScoreBreakdown } from "../scoring.js";
 import { incrementRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
@@ -938,31 +942,67 @@ export async function executeEnrichStage(
           }
           return false;
         })
-        .sort((a, b) => (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0));
+        .sort((a, b) => {
+          const highValDiff = (b.highValue ? 1 : 0) - (a.highValue ? 1 : 0);
+          if (highValDiff !== 0) return highValDiff;
+          return (
+            computePersonaStrength(b.lead, contract) -
+            computePersonaStrength(a.lead, contract)
+          );
+        });
 
-      const toHostKey = (rawDomain: string): string => {
-        try {
-          return new URL(
-            rawDomain.startsWith("http") ? rawDomain : `https://${rawDomain}`,
-          )
-            .hostname.replace(/^www\./, "")
-            .toLowerCase();
-        } catch {
-          return rawDomain
-            .replace(/^https?:\/\/(www\.)?/i, "")
-            .replace(/\/.*$/, "")
-            .toLowerCase();
-        }
-      };
+      const maxDomainLookups = Math.max(
+        0,
+        Number(process.env.LEAD_COMPANY_DOMAIN_LOOKUP_MAX_PER_ROUND ?? 6),
+      );
+      let domainLookupsAttempted = 0;
 
       const targetDomainMeta = new Map<
         EnrichmentTarget,
         { domain: string; host: string }
       >();
       for (const target of probeCandidateTargets) {
-        const domain = deriveCompanyDomain(target.lead);
+        let domain = deriveCompanyDomain(target.lead);
+        if (!domain && maxDomainLookups > 0 && domainLookupsAttempted < maxDomainLookups) {
+          const pStrength = computePersonaStrength(target.lead, contract);
+          if (pStrength >= 2) {
+            const companyName = String(
+              target.lead.currentCompany ||
+                target.lead.company ||
+                target.lead.profile?.currentCompany ||
+                "",
+            ).trim();
+            if (companyName) {
+              domainLookupsAttempted++;
+              const firstLocReq = (contract?.requirements || []).find(
+                (r) => r.scope === "person_location",
+              );
+              const locationAnchor = String(
+                target.lead.location ||
+                  target.lead.profile?.location ||
+                  firstLocReq?.acceptableTerms?.[0] ||
+                  "",
+              ).trim();
+              const lookupResult = await lookupCompanyDomain(
+                companyName,
+                locationAnchor,
+                ctx,
+                { signal: state.abortController.signal },
+              );
+              if (lookupResult) {
+                domain = lookupResult.domain;
+                target.lead.website = lookupResult.domain;
+                target.lead.evidence = target.lead.evidence || {};
+                target.lead.evidence.companyDomainProvenance = "tavily_lookup";
+              }
+            }
+          }
+        }
         if (domain) {
           targetDomainMeta.set(target, { domain, host: toHostKey(domain) });
+        } else {
+          target.lead.evidence = target.lead.evidence || {};
+          target.lead.evidence.companyProbeOutcome = "no_domain";
         }
       }
 
@@ -994,6 +1034,8 @@ export async function executeEnrichStage(
           signals.sourceUrl = domain;
           applySiteProbeSignals(target, signals, domain, refreshLeadEvidence);
           target.enriched = true;
+          target.lead.evidence = target.lead.evidence || {};
+          target.lead.evidence.companyProbeOutcome = "cached";
           continue;
         }
 
@@ -1002,6 +1044,8 @@ export async function executeEnrichStage(
           negativeSiteCacheMap.get(host) || negativeSiteCacheMap.get(domain);
         if (negCache) {
           stats.siteProbe.negativeHits++;
+          target.lead.evidence = target.lead.evidence || {};
+          target.lead.evidence.companyProbeOutcome = "negative_cache";
           continue;
         }
 
@@ -1009,6 +1053,8 @@ export async function executeEnrichStage(
         if (!probedUniqueHosts.has(domainKey)) {
           if (probedUniqueHosts.size >= siteProbeMax) {
             stats.siteProbe.skippedCap++;
+            target.lead.evidence = target.lead.evidence || {};
+            target.lead.evidence.companyProbeOutcome = "probe_cap";
             continue;
           }
           probedUniqueHosts.add(domainKey);
@@ -1025,68 +1071,94 @@ export async function executeEnrichStage(
           const reserved = state.freeTierBudget.reserveTavilySearch("basic");
           if (!reserved) {
             logEvent(`Round ${round}: site probe skipped - Tavily budget exhausted.`);
-          } else {
-          const probeResults = await probeCompanySites(targetsToProbe, {
-            abortSignal: state.abortController.signal,
-            onProviderUsage: (units) => {
-              if (!config.creditReservationEnabled)
-                recordProviderUsage("tavily", units);
-            },
-          });
-
-          let probeSucceeded = 0;
-          const persistedDomains = new Set<string>();
-          const negativeCachedHosts = new Set<string>();
-          for (const target of targetsToProbe) {
-            const meta = targetDomainMeta.get(target);
-            if (!meta) continue;
-            const { domain, host } = meta;
-            if (probeResults.has(domain)) {
-              const signals = probeResults.get(domain)!;
-              if (!persistedDomains.has(domain)) {
-                persistedDomains.add(domain);
-                applySiteProbe(target, signals, domain, refreshLeadEvidence);
-              } else {
-                applySiteProbeSignals(target, signals, domain, refreshLeadEvidence);
-              }
-              probeSucceeded++;
-            } else if (!negativeCachedHosts.has(host)) {
-              negativeCachedHosts.add(host);
-              // Negative cache dead / failed domain using canonical host key
-              upsertNegativeEnrichmentCacheEntry(
-                {
-                  normalizedUrl: host,
-                  scrapeQuality: "bad",
-                  evidenceBlock: "site_probe_no_signals",
-                  sourceProvider: "site_probe",
-                },
-                24,
-              );
+            for (const target of targetsToProbe) {
+              target.lead.evidence = target.lead.evidence || {};
+              target.lead.evidence.companyProbeOutcome = "probe_cap";
             }
-          }
-          stats.siteProbe.succeeded += probeSucceeded;
-          logEvent(
-            `Round ${round}: company site probe enriched ${probeSucceeded}/${targetsToProbe.length} candidates with location/headcount.`,
-          );
-          recordTrace({
-            phase: "enrichment",
-            operation: "site_probe",
-            status: probeSucceeded > 0 ? "success" : "skipped",
-            provider: "tavily",
-            round,
-            latencyMs: Date.now() - probeStarted,
-            counts: {
-              attempted: targetsToProbe.length,
-              succeeded: probeSucceeded,
-            },
-          });
+          } else {
+            const domainOutcomes = new Map<string, "success" | "thin_text" | "probe_failed">();
+            const probeResults = await probeCompanySites(targetsToProbe, {
+              abortSignal: state.abortController.signal,
+              onProviderUsage: (units) => {
+                if (!config.creditReservationEnabled)
+                  recordProviderUsage("tavily", units);
+              },
+              onDomainOutcome: (dom, outcome) => {
+                domainOutcomes.set(dom, outcome);
+              },
+            });
+
+            let probeSucceeded = 0;
+            const persistedDomains = new Set<string>();
+            const negativeCachedHosts = new Set<string>();
+            for (const target of targetsToProbe) {
+              const meta = targetDomainMeta.get(target);
+              if (!meta) continue;
+              const { domain, host } = meta;
+              target.lead.evidence = target.lead.evidence || {};
+              if (probeResults.has(domain)) {
+                const signals = probeResults.get(domain)!;
+                if (!persistedDomains.has(domain)) {
+                  persistedDomains.add(domain);
+                  applySiteProbe(target, signals, domain, refreshLeadEvidence);
+                } else {
+                  applySiteProbeSignals(target, signals, domain, refreshLeadEvidence);
+                }
+                probeSucceeded++;
+                target.lead.evidence.companyProbeOutcome = "success";
+              } else {
+                const outcome = domainOutcomes.get(domain) || "probe_failed";
+                target.lead.evidence.companyProbeOutcome = outcome;
+                if (!negativeCachedHosts.has(host)) {
+                  negativeCachedHosts.add(host);
+                  upsertNegativeEnrichmentCacheEntry(
+                    {
+                      normalizedUrl: host,
+                      scrapeQuality: "bad",
+                      evidenceBlock:
+                        outcome === "thin_text"
+                          ? "site_probe_thin_text"
+                          : "site_probe_no_signals",
+                      sourceProvider: "site_probe",
+                    },
+                    24,
+                  );
+                }
+              }
+            }
+            stats.siteProbe.succeeded += probeSucceeded;
+            logEvent(
+              `Round ${round}: company site probe enriched ${probeSucceeded}/${targetsToProbe.length} candidates with location/headcount.`,
+            );
+            recordTrace({
+              phase: "enrichment",
+              operation: "site_probe",
+              status: probeSucceeded > 0 ? "success" : "skipped",
+              provider: "tavily",
+              round,
+              latencyMs: Date.now() - probeStarted,
+              counts: {
+                attempted: targetsToProbe.length,
+                succeeded: probeSucceeded,
+              },
+            });
           }
         } catch (err: any) {
           logEvent(
             `WARN: Company site probe failed in round ${round}: ${err.message || String(err)}`,
           );
+          for (const target of targetsToProbe) {
+            target.lead.evidence = target.lead.evidence || {};
+            if (!target.lead.evidence.companyProbeOutcome) {
+              target.lead.evidence.companyProbeOutcome = "probe_failed";
+            }
+          }
         }
       }
+
+      // Re-entry processing for parked candidates using unused probe budget
+      const unusedBudget = Math.max(0, siteProbeMax - probedUniqueHosts.size);
+      await processParkedCandidates(ctx, unusedBudget, round);
     } else if (!siteProbeEnabled) {
       stats.siteProbe.skippedDisabled += uncachedTargets.filter(
         (t) => !t.enriched,
@@ -1166,4 +1238,201 @@ export async function executeEnrichStage(
     brightDataProviderDisabled,
     brightDataTransportRetryAfter,
   };
+}
+
+export const toHostKey = (rawDomain: string): string => {
+  try {
+    return new URL(
+      rawDomain.startsWith("http") ? rawDomain : `https://${rawDomain}`,
+    )
+      .hostname.replace(/^www\./, "")
+      .toLowerCase();
+  } catch {
+    return rawDomain
+      .replace(/^https?:\/\/(www\.)?/i, "")
+      .replace(/\/.*$/, "")
+      .toLowerCase();
+  }
+};
+
+export function computePersonaStrength(
+  lead: Record<string, any>,
+  contract?: ProspectContract,
+): number {
+  if (!lead || !contract) return 0;
+  let strength = 0;
+
+  // 1. Role match (+2)
+  const roleReqs = (contract.requirements || []).filter(
+    (r) => r.scope === "person_role",
+  );
+  const roleTerms = roleReqs.flatMap((r) => r.acceptableTerms || []).filter(Boolean);
+  const titleText = [
+    lead.currentTitle,
+    lead.title,
+    lead.headline,
+    lead.profile?.currentTitle,
+    lead.profile?.headline,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (titleText) {
+    let roleMatched = false;
+    if (roleTerms.length > 0) {
+      roleMatched = roleTerms.some((term) => {
+        const lowerTerm = term.toLowerCase().trim();
+        if (!lowerTerm) return false;
+        const regex = new RegExp(
+          `\\b${lowerTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+          "i",
+        );
+        return regex.test(titleText);
+      });
+    }
+    if (roleMatched) {
+      strength += 2;
+    } else {
+      const triage = classifyTitle(
+        lead.currentTitle || lead.title || lead.headline || "",
+      );
+      if (triage.isExecutive && !triage.isIC) {
+        strength += 1;
+      }
+    }
+  }
+
+  // 2. Location match (+1)
+  const locReqs = (contract.requirements || []).filter(
+    (r) => r.scope === "person_location",
+  );
+  const locTerms = locReqs.flatMap((r) => r.acceptableTerms || []).filter(Boolean);
+
+  const locText = [
+    lead.location,
+    lead.profile?.location,
+    lead.headline,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (locText && locTerms.length > 0) {
+    const locMatched = locTerms.some((term) => {
+      const lowerTerm = term.toLowerCase().trim();
+      if (!lowerTerm) return false;
+      return locText.includes(lowerTerm);
+    });
+    if (locMatched) {
+      strength += 1;
+    }
+  }
+
+  return strength;
+}
+
+export async function processParkedCandidates(
+  sessionCtx: SessionContext,
+  siteProbeMaxRemaining: number,
+  round: number,
+): Promise<FinalistCandidate[]> {
+  const isEnabled =
+    process.env.LEAD_PARK_WITHHELD === "true" ||
+    process.env.LEAD_PARK_WITHHELD === "1";
+  if (!isEnabled) return [];
+  const state = sessionCtx.state;
+  if (!state.parkedCandidates || state.parkedCandidates.length === 0) return [];
+
+  let probeBudgetRemaining = Math.max(0, siteProbeMaxRemaining);
+  const reInjected: FinalistCandidate[] = [];
+  const survivingParked: typeof state.parkedCandidates = [];
+
+  for (const parked of state.parkedCandidates) {
+    parked.recheckAttempts = (parked.recheckAttempts || 0) + 1;
+    let newEvidenceBlock: string | null = null;
+    let domain = deriveCompanyDomain(parked.candidate.lead);
+
+    // If no domain, attempt domain lookup if budget allows
+    if (!domain) {
+      const companyName = String(
+        parked.candidate.lead.currentCompany ||
+          parked.candidate.lead.company ||
+          "",
+      ).trim();
+      if (companyName) {
+        const lookup = await lookupCompanyDomain(
+          companyName,
+          "",
+          sessionCtx,
+          { signal: state.abortController.signal },
+        );
+        if (lookup) {
+          domain = lookup.domain;
+          parked.candidate.lead.website = lookup.domain;
+        }
+      }
+    }
+
+    if (domain) {
+      const host = toHostKey(domain);
+      const posCache =
+        getEnrichmentCacheEntry({ normalizedUrl: host }) ||
+        getEnrichmentCacheEntry({ normalizedUrl: domain });
+      if (posCache && posCache.evidenceBlock) {
+        newEvidenceBlock = posCache.evidenceBlock;
+      } else if (probeBudgetRemaining > 0) {
+        const negCache = getNegativeEnrichmentCacheEntry(
+          { normalizedUrl: host },
+          new Date(),
+          "site_probe",
+        );
+        if (!negCache) {
+          probeBudgetRemaining--;
+          const dummyTarget = {
+            url: domain,
+            normalizedUrl: host,
+            lead: parked.candidate.lead,
+            highValue: true,
+            enriched: false,
+            reserved: false,
+          };
+          try {
+            const results = await probeCompanySites([dummyTarget as any], {
+              abortSignal: state.abortController.signal,
+            });
+            if (results.has(domain)) {
+              const signals = results.get(domain)!;
+              applySiteProbe(dummyTarget as any, signals, domain);
+              newEvidenceBlock =
+                parked.candidate.lead.evidence?.evidenceBlock || null;
+            }
+          } catch {
+            // Safe ignore
+          }
+        }
+      }
+    }
+
+    if (newEvidenceBlock) {
+      parked.candidate.evidence.push({
+        id: `site_probe_reentry_${round}_${Date.now()}`,
+        text: newEvidenceBlock,
+      });
+      reInjected.push(parked.candidate);
+      sessionCtx.logEvent(
+        `Round ${round}: Parked candidate ${parked.candidateKey} acquired company evidence and re-enters judging.`,
+      );
+    } else if (parked.recheckAttempts < 3) {
+      survivingParked.push(parked);
+    } else {
+      sessionCtx.logEvent(
+        `Round ${round}: Dropping parked candidate ${parked.candidateKey} after 3 failed re-check attempts.`,
+      );
+    }
+  }
+
+  state.parkedCandidates = survivingParked;
+  state.reInjectedCandidates = reInjected;
+  return reInjected;
 }

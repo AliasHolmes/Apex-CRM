@@ -984,6 +984,9 @@ export async function executeDiscoverySession(
     let brightDataTransportRetryAfter = 0;
     const urlRetryQueue = new Set<string>();
     let previousRoundSummary: Record<string, any> = {};
+    const roundHistory: any[] = Array.isArray(options.initialCheckpoint?.roundHistory)
+      ? [...options.initialCheckpoint.roundHistory]
+      : (options.initialCheckpoint?.previousRoundSummary ? [options.initialCheckpoint.previousRoundSummary] : []);
     let intentExtraRoundsRun = 0;
     let previousIntentCorroboratedCount = 0;
     const llmCircuitBreaker = createLLMSessionCircuitBreaker();
@@ -1089,11 +1092,15 @@ export async function executeDiscoverySession(
       debugLogs,
       urlRetryQueue,
       previousRoundSummary,
+      roundHistory,
       signalStore: initialSignalStore,
       recoveryAttempts: Number(
         options.initialCheckpoint?.recoveryAttempts || 0,
       ),
       datasetSearchAfter: options.initialCheckpoint?.datasetSearchAfter,
+      parkedCandidates: Array.isArray(options.initialCheckpoint?.parkedCandidates)
+        ? [...options.initialCheckpoint.parkedCandidates]
+        : [],
     };
 
     const pipelinePorts: PipelinePorts = {
@@ -1164,6 +1171,13 @@ export async function executeDiscoverySession(
         accumulatedViableCount = Number(
           cp.previousRoundSummary.viableCandidates || 0,
         );
+      }
+      if (Array.isArray(cp.roundHistory)) {
+        roundHistory.length = 0;
+        roundHistory.push(...cp.roundHistory);
+      } else if (cp.previousRoundSummary) {
+        roundHistory.length = 0;
+        roundHistory.push(cp.previousRoundSummary);
       }
       if (Array.isArray(cp.acceptedLeads)) {
         for (const lead of cp.acceptedLeads) {
@@ -1285,6 +1299,7 @@ export async function executeDiscoverySession(
         roundStageWallMs = {};
         sessionState.round = round;
         sessionState.previousRoundSummary = previousRoundSummary;
+        sessionState.roundHistory = roundHistory;
         acceptedCountBeforeRound = acceptedLeads.length;
 
         const cushionMultiplier = targetLimit <= 15 ? 1.35 : targetLimit <= 35 ? 1.25 : 1.15;
@@ -1930,6 +1945,15 @@ export async function executeDiscoverySession(
           }
 
           const needsJudgeCandidates = postTriage.needsJudge;
+          if (sessionState.reInjectedCandidates && sessionState.reInjectedCandidates.length > 0) {
+            for (const reinjected of sessionState.reInjectedCandidates) {
+              needsJudgeCandidates.push(reinjected);
+              logEvent(
+                `Round ${round}: Parked candidate ${reinjected.lead.fullName || reinjected.candidateId} re-injected for judging.`,
+              );
+            }
+            sessionState.reInjectedCandidates = [];
+          }
           if (needsJudgeCandidates.length > 0) {
             const currentEqc = qualifiedLeads.reduce((acc, lead) => {
               if (lead.qualification?.verdict === "qualified") return acc + 1;
@@ -2049,6 +2073,9 @@ export async function executeDiscoverySession(
           missingHardRequirementIds: combinedMissingHardIds,
           rejectionReasons: stats.rejectionReasons,
         };
+        sessionState.previousRoundSummary = previousRoundSummary;
+        roundHistory.push(previousRoundSummary);
+        sessionState.roundHistory = roundHistory;
 
         // Invalidate previous generation if post-judging diagnostics or ablation demand recovery
         if (
@@ -2088,6 +2115,7 @@ export async function executeDiscoverySession(
           brightDataStats,
           existingCrmLeadsSkipped: stats.existingCrmLeadsSkipped,
           previousRoundSummary,
+          roundHistory: roundHistory.slice(-10),
           evidenceByUrl: buildCheckpointEvidence(
             evidenceByUrl,
             acceptedLeads.slice(0, 240),
@@ -2098,6 +2126,7 @@ export async function executeDiscoverySession(
           recoveryAttempts: sessionState.recoveryAttempts,
           datasetSearchAfter: sessionState.datasetSearchAfter,
           seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
+          parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
           updatedAt: new Date().toISOString(),
         });
         checkpointedQueryRunCount = stats.queryRuns.length;
@@ -2421,6 +2450,7 @@ export async function executeDiscoverySession(
       brightDataStats,
       existingCrmLeadsSkipped: stats.existingCrmLeadsSkipped,
       previousRoundSummary,
+      roundHistory: roundHistory.slice(-10),
       evidenceByUrl: buildCheckpointEvidence(
         evidenceByUrl,
         acceptedLeads.slice(0, 240),
@@ -2431,6 +2461,7 @@ export async function executeDiscoverySession(
       recoveryAttempts: sessionState.recoveryAttempts,
       datasetSearchAfter: sessionState.datasetSearchAfter,
       seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
+      parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
       updatedAt: new Date().toISOString(),
     });
     checkpointedQueryRunCount = stats.queryRuns.length;

@@ -111,7 +111,10 @@ server/leadSearch/           the discovery engine
                              verdict reuse + primary admission gate) · select ·
                              persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
-                             ToastContext) · components/ (10 feature + 9 ui) · lib/ · utils/
+                             ToastContext, ThemeContext) · components/ (feature + shared
+                             LeadDrawer, overview/, prospects/, 17 ui primitives) · lib/ · utils/
+                             Design tokens + light/dark theme live in index.css; public/ holds
+                             theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
 test/                        166 files (164 `.test.ts` + `queryIntelligence.eval.ts` +
                              `helpers/mockLlm.ts`), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (83 lines)
@@ -225,7 +228,8 @@ test portability bug, not a code defect (§9.14). Composition:
 - **Judge parallelism**: `rollingPool` (bounded rolling-window pool semantics), `judgeRollingQueue`
   (micro-batch fan-out with admission-gate ordering), `compactJudgeGrounding`, and
   `criticalPathTelemetry` (wall-clock attribution added in `1743313`)
-- **Contracts**: `uiContracts` (16), `encodingHygiene`, `contractShape`
+- **Contracts**: `uiContracts`, `themeContrast` (WCAG AA token pairs + no raw palette classes), `encodingHygiene`, `contractShape`
+- **UI logic**: `prospectViews`, `overviewStats`, `leadHash`, `linkProspectNames`, `senderProfile`
 - Curated subsets are wired as named `npm run test:*` scripts (incl. `npm run test:eval`).
 
 ## 8. Assessment — what is strong

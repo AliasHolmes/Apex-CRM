@@ -38,6 +38,7 @@ import {
 } from "../titleTriage.js";
 import { runGatedCompanyAttribution } from "../companyAttribution.js";
 import { runRollingPool } from "../rollingPool.js";
+import { resolveTitleFromQualification } from "../titleResolution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export function computeJudgeDynamicMaxTokens(
@@ -143,6 +144,107 @@ export function evaluatePrimaryAdmission(
     };
   }
   return { admit: true };
+}
+
+export function shouldParkWithheldCandidate(
+  lead: any,
+  qualification: Pick<Qualification, "requirements"> | undefined | null,
+  contract: ProspectContract,
+): boolean {
+  if (!lead || !qualification || !contract) return false;
+
+  // 1. Did the person_role requirement pass?
+  const personRoleReqs = (contract.requirements || []).filter(
+    (r: any) => r.importance === "hard" && r.scope === "person_role",
+  );
+  if (personRoleReqs.length === 0) return false;
+  const roleAssessments = (qualification.requirements || []).filter((a: any) =>
+    personRoleReqs.some((r: any) => r.id === a.requirementId),
+  );
+  const rolePassed =
+    roleAssessments.length > 0 &&
+    roleAssessments.every((a: any) => a.status === "pass");
+  if (!rolePassed) return false;
+
+  // 2. Is company_type solely unproven (not contradicted)?
+  const companyTypeReqs = (contract.requirements || []).filter(
+    (r: any) => r.importance === "hard" && r.scope === "company_type",
+  );
+  if (companyTypeReqs.length === 0) return false;
+  const companyAssessments = (qualification.requirements || []).filter((a: any) =>
+    companyTypeReqs.some((r: any) => r.id === a.requirementId),
+  );
+
+  // If any company requirement explicitly failed, it is contradicted, not unproven
+  const anyCompanyFailed = companyAssessments.some((a: any) => a.status === "fail");
+  if (anyCompanyFailed) return false;
+
+  // If company requirement already passed, it is not withheld for company_type
+  const anyCompanyPassed = companyAssessments.some((a: any) => a.status === "pass");
+  if (anyCompanyPassed) return false;
+
+  // Attribution check: must not contradict brief
+  const attr = lead.companyAttribution;
+  if (
+    attr &&
+    !attr.fromStoredProfile &&
+    attr.queryAlignment === "contradicts_brief"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isParkWithheldEnabled(): boolean {
+  return (
+    process.env.LEAD_PARK_WITHHELD === "true" ||
+    process.env.LEAD_PARK_WITHHELD === "1"
+  );
+}
+
+export function parkCandidate(
+  state: any,
+  candidate: FinalistCandidate,
+  round: number,
+): boolean {
+  if (!state) return false;
+  state.parkedCandidates = state.parkedCandidates || [];
+  const candidateKey =
+    candidate.lead.contactDetails?.linkedinUrl ||
+    candidate.lead.sourceUrl ||
+    candidate.candidateId;
+  const companyKey = (
+    candidate.lead.currentCompany ||
+    candidate.lead.company ||
+    ""
+  )
+    .toLowerCase()
+    .trim();
+
+  // If already parked, don't duplicate
+  if (state.parkedCandidates.some((p: any) => p.candidateKey === candidateKey)) {
+    return false;
+  }
+
+  // Cap: 20 entries, oldest first eviction
+  if (state.parkedCandidates.length >= 20) {
+    state.parkedCandidates.shift();
+  }
+
+  state.parkedCandidates.push({
+    candidateKey,
+    companyKey,
+    parkedRound: round,
+    cause: candidate.lead.evidence?.companyProbeOutcome || "no_domain",
+    recheckAttempts: 0,
+    candidate: {
+      candidateId: candidate.candidateId,
+      lead: candidate.lead,
+      evidence: [...(candidate.evidence || [])],
+    },
+  });
+  return true;
 }
 
 export type SafetyNetPromotionResult = {
@@ -332,7 +434,12 @@ export async function evaluateIncrementalJudgeBatches(
     Math.max(Number(process.env.LEAD_PASS_VERDICT_TTL_DAYS ?? 14) || 14, 1),
     60,
   );
-  const applyQualification = (lead: any, qualification: Qualification, fallbackReason?: string) => {
+  const applyQualification = (
+    lead: any,
+    qualification: Qualification,
+    fallbackReason?: string,
+    candidateEvidence?: any[],
+  ) => {
     lead.qualification = qualification;
     lead.whyThisLead = qualification.reason || fallbackReason;
     lead.finalSelectionScore = qualification.finalScore;
@@ -340,6 +447,17 @@ export async function evaluateIncrementalJudgeBatches(
       lead.scoreBreakdown.finalScore = qualification.finalScore;
     }
     lead.scoreOverride = qualification.finalScore;
+
+    const titleRes = resolveTitleFromQualification({
+      lead,
+      qualification,
+      contract,
+      evidence: candidateEvidence,
+    });
+    if (titleRes?.title) {
+      lead.currentTitle = titleRes.title;
+      lead.titleSource = titleRes.source;
+    }
   };
 
   const recordCandidateJudgeOutcome = (
@@ -460,6 +578,13 @@ export async function evaluateIncrementalJudgeBatches(
 
   const reusedQualified: any[] = [];
   let withheldByAdmissionGate = 0;
+  const withheldCauseCounts: Record<string, number> = {
+    no_domain: 0,
+    probe_cap: 0,
+    negative_cache: 0,
+    probe_failed: 0,
+    thin_text: 0,
+  };
   const candidatesToJudge: FinalistCandidate[] = [];
   for (const candidate of vettedCandidates) {
     const identityKey = isCacheableFingerprint(reqFingerprint) ? candidateVerdictKey(candidate.lead) : "";
@@ -477,9 +602,17 @@ export async function evaluateIncrementalJudgeBatches(
         judgmentInsights.set(candidate.candidateId, withheld);
         candidate.lead.judgmentInsight = withheld;
         withheldByAdmissionGate++;
+        const cause = candidate.lead.evidence?.companyProbeOutcome || "no_domain";
+        withheldCauseCounts[cause] = (withheldCauseCounts[cause] || 0) + 1;
+        if (
+          isParkWithheldEnabled() &&
+          shouldParkWithheldCandidate(candidate.lead, qualification, contract)
+        ) {
+          parkCandidate(state, candidate, round);
+        }
         continue;
       }
-      applyQualification(candidate.lead, qualification, cached.reason);
+      applyQualification(candidate.lead, qualification, cached.reason, candidate.evidence);
       const insight = {
         status: qualification.verdict as FinalistOutcomeStatus,
         score: qualification.finalScore,
@@ -695,12 +828,20 @@ export async function evaluateIncrementalJudgeBatches(
           };
           judgmentInsights.set(candidate.candidateId, withheld);
           withheldByAdmissionGate++;
+          const cause = lead.evidence?.companyProbeOutcome || "no_domain";
+          withheldCauseCounts[cause] = (withheldCauseCounts[cause] || 0) + 1;
+          if (
+            isParkWithheldEnabled() &&
+            shouldParkWithheldCandidate(lead, qualification, contract)
+          ) {
+            parkCandidate(state, candidate, round);
+          }
           logEvent(
-            `Round ${round} Admission gate withheld ${String(lead.fullName || lead.currentCompany || candidate.candidateId)}: ${withheld.reason}`,
+            `Round ${round} Admission gate withheld ${String(lead.fullName || lead.currentCompany || candidate.candidateId)} (${cause}): ${withheld.reason}`,
           );
           return [];
         }
-        applyQualification(lead, qualification, outcome.reason);
+        applyQualification(lead, qualification, outcome.reason, candidate.evidence);
         if (isCacheableFingerprint(reqFingerprint) && qualification.qualificationSource !== "deterministic") {
           const identityKey = candidateVerdictKey(lead);
           const evidenceHash = computeEvidenceHash(candidate.evidence);
@@ -982,6 +1123,12 @@ export async function evaluateIncrementalJudgeBatches(
   if (startedCount < microBatches.length && cushionReached()) {
     logEvent(
       `Incremental Judge Round ${round}: reached target cushion (${cumulativeQualified}/${targetCushion}); skipped ${microBatches.length - startedCount} of ${microBatches.length} remaining batch(es).`,
+    );
+  }
+
+  if (withheldByAdmissionGate > 0) {
+    logEvent(
+      `Admission gate withheld ${withheldByAdmissionGate}: no_domain=${withheldCauseCounts.no_domain || 0} probe_cap=${withheldCauseCounts.probe_cap || 0} probe_failed=${withheldCauseCounts.probe_failed || 0} thin_text=${withheldCauseCounts.thin_text || 0} negative_cache=${withheldCauseCounts.negative_cache || 0}`,
     );
   }
 

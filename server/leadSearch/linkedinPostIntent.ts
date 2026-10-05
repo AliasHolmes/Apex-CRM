@@ -169,28 +169,59 @@ export function buildLinkedInPostSearchQuery(lead: Record<string, any>): string 
   return '';
 }
 
-export function extractPostSnippets(results: BrightDataSearchResult[]): { snippets: string[]; postContext: string; firstUrl?: string } {
-  const postResults = (results || []).filter(item => {
-    const u = (item.url || '').toLowerCase();
-    return u.includes('linkedin.com/posts') || u.includes('linkedin.com/feed/update') || u.includes('linkedin.com/activity') || u.includes('linkedin.com/pulse');
-  });
+export const LINKEDIN_POST_URL_REGEX = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/(?:posts\/|pulse\/|feed\/update\/|activity\/|in\/[^/]+\/recent-activity)/i;
 
-  const targetResults = postResults.length > 0 ? postResults : (results || []).slice(0, 3);
+export function isLinkedInPostUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  return LINKEDIN_POST_URL_REGEX.test(url.trim());
+}
+
+export const SERP_BOILERPLATE_PATTERNS: readonly (string | RegExp)[] = [
+  "Visual Search",
+  "Privacy Policy](#)",
+  "Open links in new tab",
+  "bing.com/ck/a?",
+  "Search instead for",
+  "Including results for",
+  "Showing results for",
+  "Skip to main content",
+  "Sign in to see more",
+] as const;
+
+export function isSerpBoilerplate(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  return SERP_BOILERPLATE_PATTERNS.some((pattern) =>
+    typeof pattern === 'string'
+      ? text.includes(pattern)
+      : pattern.test(text)
+  );
+}
+
+export function extractPostSnippets(results: BrightDataSearchResult[]): { snippets: string[]; postContext: string; firstUrl?: string } {
+  const postResults = (results || []).filter(item => isLinkedInPostUrl(item.url || ''));
+
   const snippets: string[] = [];
   const contextParts: string[] = [];
+  const survivingResults: BrightDataSearchResult[] = [];
 
-  for (const item of targetResults.slice(0, 5)) {
+  for (const item of postResults.slice(0, 5)) {
     const title = (item.title || '').replace(/\s*[-|]\s*linkedin.*$/i, '').trim();
     const content = (item.content || '').trim();
+    if (isSerpBoilerplate(title) || isSerpBoilerplate(content)) continue;
     if (content || title) {
+      survivingResults.push(item);
       const line = [title, content].filter(Boolean).join(' - ');
       snippets.push(line);
       contextParts.push(`[Post snippet]: ${line}`);
     }
   }
 
+  if (snippets.length === 0) {
+    return { snippets: [], postContext: '', firstUrl: undefined };
+  }
+
   const postContext = contextParts.join('\n').slice(0, 2400);
-  const firstUrl = targetResults[0]?.url;
+  const firstUrl = survivingResults[0]?.url;
   return { snippets, postContext, firstUrl };
 }
 

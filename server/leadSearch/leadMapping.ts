@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { getLeadScore } from "./scoring.js";
 import { buildScopeKey } from "./adaptiveScheduler.js";
+import { resolveTitleFromQualification } from "./titleResolution.js";
 
 /**
  * Records which brief produced each lead. Without this every lead was persisted with
@@ -38,6 +39,22 @@ export function mapCandidateToPersistedLead(
 ): Record<string, any> {
   const leadId = p.id || fallbackId || `lead-${crypto.randomUUID()}`;
   p.id = leadId;
+
+  const rawTitle = String(p.currentTitle || p.title || '').trim();
+  const fullName = String(p.fullName || '').trim().toLowerCase();
+  if (!rawTitle || rawTitle.toLowerCase() === fullName) {
+    const titleRes = resolveTitleFromQualification({
+      lead: p,
+      qualification: p.qualification,
+      contract: null,
+      evidence: null,
+    });
+    if (titleRes?.title) {
+      p.currentTitle = titleRes.title;
+      p.titleSource = titleRes.source;
+    }
+  }
+
   const hasAccountContext = !!p.companyAccount;
   const backendFinalScore = getLeadScore(p, 0);
   const compositeScore =

@@ -91,6 +91,41 @@ test("Stream 3 - Title Triage Truth Table & Precedence", async (t) => {
     assert.ok(res.confidence <= 2);
   });
 
+  await t.test("fails Account Manager as an IC non-decision maker role", () => {
+    const res = classifyTitle("Account Manager");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 3);
+  });
+
+  await t.test("fails Key Account Manager as an IC non-decision maker role", () => {
+    const res = classifyTitle("Key Account Manager");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 3);
+  });
+
+  await t.test("fails Product Leader as an IC non-decision maker role", () => {
+    const res = classifyTitle("Product Leader");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 3);
+  });
+
+  await t.test("fails Brand Ambassador as an IC non-decision maker role", () => {
+    const res = classifyTitle("Brand Ambassador");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 3);
+  });
+
+  await t.test("fails Community Manager as an IC non-decision maker role", () => {
+    const res = classifyTitle("Community Manager");
+    assert.equal(res.isExecutive, false);
+    assert.equal(res.isIC, true);
+    assert.ok(res.confidence <= 3);
+  });
+
   await t.test("hasStudentSignal correctly identifies student phrases across title and headline", () => {
     assert.equal(hasStudentSignal("Founder", "Studying Information Systems at Fisher College of Business"), true);
     assert.equal(hasStudentSignal("Founder", "Undergraduate student at Stanford"), true);

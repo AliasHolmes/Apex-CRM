@@ -504,33 +504,35 @@ const expandAcceptableTerms = (
       if (isAI) {
         expanded.push(
           'AI agency',
+          'AI integrator',
+          'AI solutions provider',
+          'AI solutions firm',
+          'AI studio',
+          'AI automation agency',
+          'AI services firm',
           'AI agencies',
+          'AI firm',
+          'AI partner',
           'AI consultancy',
           'AI consulting firm',
-          'AI services firm',
-          'AI solutions provider',
           'AI advisory firm',
-          'AI studio',
-          'AI marketing agency',
-          'AI firm',
           'artificial intelligence agency',
-          'AI-powered agency',
-          'AI partner',
-          'AI integrator'
+          'AI-powered agency'
         );
       } else {
         expanded.push(
           'agency',
-          'agencies',
-          'consultancy',
-          'consulting firm',
-          'services firm',
+          'integrator',
           'solutions provider',
-          'advisory firm',
+          'solutions firm',
           'studio',
+          'services firm',
+          'agencies',
           'firm',
           'partner',
-          'integrator'
+          'consultancy',
+          'consulting firm',
+          'advisory firm'
         );
       }
     }
@@ -1207,9 +1209,9 @@ export function buildContractFallbackQueries(
   if (rawVertical && verticalResolvesToLocation(rawVertical)) {
     rawVertical = identitySpec?.companyTypes?.[0] || '';
   }
-  const vertical = rawVertical && rawVertical.includes(' ') && !rawVertical.startsWith('"')
-    ? `"${rawVertical}"`
-    : rawVertical;
+  // Do not force quotation marks onto multi-word verticals; unquoted natural tokens
+  // permit flexible SERP matches and prevent search engine zero-yield starvation.
+  const vertical = rawVertical ? rawVertical.replace(/^"|"$/g, '').trim() : '';
 
   // Generate Cartesian grid of single roles x single locations (global when no geo).
   // Global mode varies by role + discovery modifier to keep 4 unique queries

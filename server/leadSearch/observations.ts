@@ -93,7 +93,7 @@ export type SignalBlock = {
   category?: string;
 };
 
-const cleanCompanyHint = (value: unknown) => String(value || '')
+export const cleanCompanyHint = (value: unknown) => String(value || '')
   .replace(/\s+/g, ' ')
   .replace(/^[#@]+/, '')
   .trim()

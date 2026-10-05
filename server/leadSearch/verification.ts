@@ -157,7 +157,7 @@ export function verifyDecisionMakerFromEvidence(input: {
   const hasAssistantAuthorityConflict = /\bassistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)\b/.test(profileIdentityText);
   const classification = classifyTitle(profileIdentityText);
   const hasPositiveTitle = positiveMatches.length > 0 || seniorityPositive || classification.isExecutive;
-  const hasWeakTitle = weakMatches.length > 0;
+  const hasWeakTitle = weakMatches.length > 0 || classification.isIC;
   const weakConflictOverridesPositive = hasStudentOrgConflict || hasAssistantAuthorityConflict;
   const ignoredTitle = !isWeakTitleRequested && hasWeakTitle && (!hasPositiveTitle || weakConflictOverridesPositive);
 

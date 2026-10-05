@@ -4,6 +4,7 @@ import {
 } from "../../services/linkedinEvidence.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
 import { evaluateDecisionMakerGate } from "../titleTriage.js";
+import { cleanCompanyHint, looksLikeCompanyHint } from "../observations.js";
 import { createLeadEvidence } from "../evidence.js";
 import { buildScoutEvidence } from "../scoutScoring.js";
 import { computeScoreBreakdown } from "../scoring.js";
@@ -203,8 +204,60 @@ export async function executeVerifyStage(
       continue;
     }
 
+    let resolvedCompany = String(
+      lead?.currentCompany || lead?.company || lead?.profile?.currentCompany || lead?.organization || ""
+    ).trim();
+
+    if (!resolvedCompany) {
+      if (lead?.companyEntityResolution?.companyName) {
+        resolvedCompany = String(lead.companyEntityResolution.companyName).trim();
+      } else {
+        const headlineText = String(lead?.headline || lead?.currentTitle || "").trim();
+        if (headlineText) {
+          const atMatch = headlineText.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|•|\n|,|$))/i);
+          if (atMatch && atMatch[1]) {
+            const candidate = cleanCompanyHint(atMatch[1]);
+            if (looksLikeCompanyHint(candidate)) {
+              resolvedCompany = candidate;
+            }
+          }
+          if (!resolvedCompany) {
+            const parts = headlineText.split(/\s*(?:\||\u2013|\u2014|•)\s*/).map(p => p.trim()).filter(Boolean);
+            if (parts.length > 1) {
+              const last = cleanCompanyHint(parts[parts.length - 1]);
+              if (looksLikeCompanyHint(last) && !/\b(founder|owner|ceo|executive|leader|director|manager)\b/i.test(last)) {
+                resolvedCompany = last;
+              }
+            }
+          }
+        }
+
+        if (!resolvedCompany && (lead?.contactDetails?.website || lead?.companyDomain)) {
+          try {
+            const rawUrl = lead?.contactDetails?.website || lead?.companyDomain;
+            const urlStr = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
+            const urlObj = new URL(urlStr);
+            const domainLabel = urlObj.hostname.replace(/^www\./, "").split(".")[0];
+            if (domainLabel && domainLabel.length >= 3) {
+              const formatted = domainLabel
+                .replace(/([a-z])([A-Z])/g, "$1 $2")
+                .replace(/[-_]+/g, " ")
+                .replace(/\b\w/g, (c: string) => c.toUpperCase());
+              if (looksLikeCompanyHint(formatted)) {
+                resolvedCompany = formatted;
+              }
+            }
+          } catch {}
+        }
+      }
+
+      if (resolvedCompany) {
+        lead.currentCompany = resolvedCompany;
+      }
+    }
+
     const hasCompany = Boolean(
-      (lead?.currentCompany || lead?.company || lead?.profile?.currentCompany || lead?.organization || "").trim() ||
+      resolvedCompany ||
       (lead?.companyEntityResolution?.verified && lead?.companyEntityResolution?.companyName)
     );
     const hasCompanyRequirement = Boolean(
@@ -329,6 +382,7 @@ export async function executeVerifyStage(
           confidence: dmVerification.confidence,
           effectiveScore: effectiveScore(lead),
           minScore,
+          authorityRequired: authorityRelevant,
         })
       : { pass: true };
     if (!dmGate.pass) {

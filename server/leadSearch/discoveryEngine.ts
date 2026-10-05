@@ -800,13 +800,14 @@ export async function executeDiscoverySession(
     });
     let rerankPoolTarget = collectionCapacity.rerankPoolTarget;
     let maxRounds = collectionCapacity.maxRounds;
-    // Ceiling for the in-loop budget extension below. When the operator pinned
-    // LEAD_SEARCH_MAX_ROUNDS the configured value is authoritative and extension is
-    // limited to it; otherwise the original recovery ceiling of 10 is preserved.
-    const configuredRoundCeiling =
-      Number(process.env.LEAD_SEARCH_MAX_ROUNDS || 0) > 0
-        ? collectionCapacity.maxRounds
-        : 10;
+    // Ceiling for the in-loop budget extension below.
+    // If LEAD_SEARCH_MAX_ROUNDS_EXTENDED_CEILING is set, respect it.
+    // Otherwise allow up to +2 dynamic rounds beyond collectionCapacity.maxRounds (clamped to 10)
+    // when late rounds are actively producing candidates and target remains unmet.
+    const extendedCeilingEnv = Number(process.env.LEAD_SEARCH_MAX_ROUNDS_EXTENDED_CEILING || 0);
+    const configuredRoundCeiling = extendedCeilingEnv > 0
+      ? extendedCeilingEnv
+      : Math.min(10, collectionCapacity.maxRounds + 2);
     if (collectionCapacity.poolCapped) {
       logEvent(
         `Requested ${targetLimit} prospects exceeds the ${collectionCapacity.rerankPoolTarget}-candidate evidence-pool safety cap; continuing on a best-effort basis.`,
@@ -1579,11 +1580,9 @@ export async function executeDiscoverySession(
           if (verticalWords.length > 3) {
             verticalBase = verticalWords.slice(0, 2).join(" ");
           }
-          const finalWords = verticalBase.split(/\s+/).filter(Boolean);
-          const verticalTerm =
-            finalWords.length > 0 && finalWords.length <= 2
-              ? (verticalBase.includes(" ") ? `"${verticalBase}"` : verticalBase)
-              : verticalBase;
+          // Do not force quotation marks onto multi-word verticals; unquoted natural tokens
+          // permit flexible SERP matches and prevent search engine zero-yield starvation.
+          const verticalTerm = verticalBase;
 
           const saturatedGeos = new Set<string>();
           for (const loc of candidateLocations) {
@@ -1655,6 +1654,36 @@ export async function executeDiscoverySession(
                     ...(tavilyCountry ? { country: tavilyCountry } : {}),
                   });
                   rawReplenishItems = replenishRes.items || [];
+                  if (rawReplenishItems.length === 0 && chosenLoc.includes(" ")) {
+                    // Query ablation: drop country suffix (e.g. "Melbourne Australia" -> "Melbourne")
+                    // or simplify location when compound geo causes zero-yield on LinkedIn.
+                    const ablatedLoc = chosenLoc.split(/\s+/)[0];
+                    const queryWords = replenishQuery.split(/\s+/);
+                    const ablatedRole = queryWords.length >= 2 ? queryWords[queryWords.length - 2] : "owner";
+                    const ablatedReplenishQuery = `${verticalTerm} ${ablatedRole} ${ablatedLoc}`.replace(/\s+/g, " ").trim();
+                    const execAblated = toLinkedInSearchQuery({
+                      query: ablatedReplenishQuery,
+                      lane: "person",
+                    });
+                    const cachedAblated = getSearchCacheEntry(execAblated);
+                    if (cachedAblated && cachedAblated.results.length > 0) {
+                      rawReplenishItems = cachedAblated.results;
+                    } else {
+                      recordProviderUsage("tavily", 1);
+                      const ablatedRes = await tavilySearch(execAblated, {
+                        searchDepth: "basic",
+                        maxResults: 15,
+                        includeDomains: ["linkedin.com"],
+                        signal: sessionAbortController.signal,
+                        ...(tavilyCountry ? { country: tavilyCountry } : {}),
+                      });
+                      rawReplenishItems = ablatedRes.items || [];
+                      if (rawReplenishItems.length > 0) {
+                        upsertSearchCacheEntry(execAblated, rawReplenishItems, "tavily", ttlDays);
+                        stats.cacheWrites++;
+                      }
+                    }
+                  }
                   if (rawReplenishItems.length > 0) {
                     upsertSearchCacheEntry(execReplenishQuery, rawReplenishItems, "tavily", ttlDays);
                     stats.cacheWrites++;

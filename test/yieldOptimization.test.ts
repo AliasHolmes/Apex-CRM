@@ -13,7 +13,6 @@ import {
   buildDeterministicProspectContract,
 } from "../server/leadSearch/prospectContract.js";
 import {
-  classifyTitle,
   evaluateDecisionMakerGate,
 } from "../server/leadSearch/titleTriage.js";
 import {

@@ -171,7 +171,7 @@ test('miningTraceStore manages session live state and subscriber notifications',
 
 import { formatDuration } from '../src/components/TraceTerminal.js';
 
-test('formatDuration accurately handles millisecond, second, and minute ranges', () => {
+test('formatDuration accurately handles millisecond, second, minute, and hour ranges', () => {
   assert.equal(formatDuration(undefined), '0s');
   assert.equal(formatDuration(-10), '0s');
   assert.equal(formatDuration(0), '0ms');
@@ -182,6 +182,9 @@ test('formatDuration accurately handles millisecond, second, and minute ranges',
   assert.equal(formatDuration(60000), '1m 0s');
   assert.equal(formatDuration(65000), '1m 5s');
   assert.equal(formatDuration(130000), '2m 10s');
+  assert.equal(formatDuration(3600000), '1h 0m 0s');
+  assert.equal(formatDuration(5100000), '1h 25m 0s');
+  assert.equal(formatDuration(5130000), '1h 25m 30s');
 });
 
 test('TraceTerminal exports duration metrics card and live session telemetry', () => {

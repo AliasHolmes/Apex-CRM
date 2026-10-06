@@ -1,17 +1,17 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-10-05 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-06 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
-> Supersedes the 2026-10-02 index, which had drifted on test counts (154 → 161 files,
-> 976 → 1034 tests), line counts, and config keys (144 → 133). Every value below was
-> measured directly from the tree, not inherited, and is **pinned to commit `b60a6dc`**
-> (measured in a detached worktree so concurrent working-tree edits could not skew it):
-> `tsc --noEmit` passes with 0 errors, `npm test` reports **1064 tests across 181 suites**
-> (1063 pass; the single failure is the CRLF-only source guard documented in §9.14, not a
-> code defect), and `npm run test:eval` passes **13 tests**. This file is edited by more
-> than one session at a time — re-measure against a named sha rather than trusting a
-> number that has no commit attached.
+> Every count below was measured directly from the current tree and is pinned to
+> **commit `a237c91`** (`feat(leadSearch): optimize prospect yield, relax replenishment
+> queries, and pre-filter non-decision makers`). The working tree was clean during
+> measurement. Validation is not green at this HEAD: `npm run typecheck` reports an
+> unused `classifyTitle` import in `test/yieldOptimization.test.ts`. The completed `npm test`
+> run has assertion failures in `blueprintBlueprintCoverage`, `brightDataUpgrade`,
+> `encodingHygiene`, and `semanticQualificationAudit`, plus file-level failures in
+> `siteProbe`, `siteProbeContactDetails`, and `siteProbeSsrfGuard`. No test totals are
+> claimed until those checks complete cleanly.
 
 ---
 
@@ -41,14 +41,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | ~11,785 lines across 36 files                                             |
-| Backend engine (`server/leadSearch/`)                            | ~24,505 lines: 43 modules + 9 `stages/`                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,385 lines                                                             |
+| Frontend (`src/`)                                                | 14,689 lines across 64 TypeScript files                                   |
+| Backend engine (`server/leadSearch/`)                            | 26,383 lines: 46 modules + 9 `stages/`                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,430 lines                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
-| Test suite                                                       | 166 files (164 `.test.ts` + 1 `.eval.ts` + 1 helper), 1064 unit tests / 181 suites + 13 eval tests, 1063 pass + 1 CRLF-only guard failure (§9.14) |
-| Total first-party LOC                                            | ~78,000 (incl. ~26,200 test LOC)                                          |
-| Anchor                                                           | measured at `b60a6dc`; working tree clean at that commit                  |
+| Test suite                                                       | 181 TypeScript files: 179 `.test.ts`, 1 `.eval.ts`, 1 helper; 28,209 lines |
+| Total first-party LOC                                            | ~84,800 TypeScript lines (incl. tests)                                    |
+| Anchor                                                           | measured at `a237c91`; working tree clean at that commit                  |
 
 ## 3. Tech stack
 
@@ -82,6 +82,10 @@ server/leadSearch/           the discovery engine
   finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,527)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (799)
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
+  querySignature.ts          role/org/topic/geo signatures for near-duplicate and exhausted-query detection
+  stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation
+  companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching
+  titleResolution.ts         evidence-grounded title backfill from passing qualification requirements
   candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v26)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
@@ -101,21 +105,24 @@ server/leadSearch/           the discovery engine
   roundDiagnostics.ts · scoutScoring.ts · verification.ts ·
   evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware,
                              student/intern/trainee denial)
-  stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate) ·
+  stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate,
+                             near-duplicate/exhausted query suppression, stall recovery) ·
                              retrieve (retrieval cache + vagueness-aware depth + rewriter on both paths) ·
                              fuse (symmetrical alias-aware) ·
                              extract (Stage 2.5 gate + deterministic LinkedIn parse that
                              rejects slogan/ellipsis company fields and defers to the LLM) ·
-                             verify · enrich (provenance-tagged site probe + annotate-only
+                             verify (identity-anchor and decision-maker filtering before attribution) ·
+                             enrich (company-domain lookup, title resolution, provenance-tagged site probe + annotate-only
                              post intent) · judge (strict grounding + polarity guard +
                              verdict reuse + primary admission gate) · select ·
                              persist (CRM workflow preservation + derived session status)
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
-                             ToastContext, ThemeContext) · components/ (feature + shared
-                             LeadDrawer, overview/, prospects/, 17 ui primitives) · lib/ · utils/
+                             ToastContext, ThemeContext) · components/ (CRM dashboard, pipeline,
+                             prospect table/drawer, outreach, trace terminal, overview/, prospects/,
+                             shared controls) · lib/ (navigation, saved views, workflow, stats, theme) · utils/
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        166 files (164 `.test.ts` + `queryIntelligence.eval.ts` +
+test/                        181 TypeScript files (179 `.test.ts` + `queryIntelligence.eval.ts` +
                              `helpers/mockLlm.ts`), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (83 lines)
 ```
@@ -209,10 +216,10 @@ architectural invariants and were pruned from the runtime configuration.
 
 ## 7. Test suite
 
-164 `.test.ts` files / 1064 unit & integration tests (181 suites) via `npm test` (158s at
-`b60a6dc`) + 13 eval tests via `npm run test:eval` (21s). 1063 pass; the one failure is
-the `verifiedBugfixes` source guard, which reproduces **only on a CRLF checkout** and is a
-test portability bug, not a code defect (§9.14). Composition:
+179 `.test.ts` files, 1 eval file, and 1 helper are present. Test totals and pass counts are
+intentionally omitted because `npm test` and typecheck are not green at the current pin;
+see the verification note at the top and §9.15. The previous measured baseline at
+`b60a6dc` was 1064 unit/integration tests and 13 eval tests. Composition:
 
 - **Query & intelligence eval**: `queryIntelligence.eval` (13 tests over 30 gold briefs,
   pronoun-collision guard G21, plural-persona extraction G22, city-only geo anchoring G24,
@@ -450,7 +457,7 @@ measured here at `b60a6dc`:
   the README test badge lost its hardcoded count.
 - **C (`b60a6dc`)** — `.env.example` re-synced with active runtime keys.
 
-### 9.14 Source guard is CRLF-sensitive — OPEN (found 2026-10-05)
+### 9.14 Source guard is CRLF-sensitive — OPEN (reproduced at `b60a6dc`, 2026-10-05)
 
 `test/verifiedBugfixes.test.ts:223` ("keeps no executable `<= 1.0` score comparison in the
 client") strips comments before matching:
@@ -472,14 +479,39 @@ assertion. Reproduced in a detached worktree where `core.autocrlf=true` (there i
 isolates line endings as the sole cause — the guard is correct and non-vacuous in the
 current dev tree, which happens to hold the file as LF.
 
-Impact: a fresh Windows clone of this repo fails `npm test` for a reason unrelated to the
+Impact: a fresh Windows clone can fail this source guard for a reason unrelated to the
 code. Fix either by normalizing before stripping (`code.split(/\r?\n/)`) or by pinning
-line endings in `.gitattributes`. Not yet applied — no commit should be made for this
-without an owner deciding which remedy they prefer.
+line endings in `.gitattributes`. Not yet applied. This is a historical, isolated
+reproduction at `b60a6dc`; the current observed `npm test` failure is separately recorded
+in §9.15 and should not be conflated with this finding.
+
+### 9.15 Market-depth and yield optimization — LANDED (`dc5ce3d`, `a237c91`, 2026-10-06)
+
+The two commits after `b60a6dc` add a broader recovery and prospect-quality path, plus a
+substantial CRM interface refresh:
+
+- **Market-depth planning (`dc5ce3d`)**: added `querySignature.ts` for role/org/topic/geo
+  similarity and exhausted-query suppression, plus `stallLadder.ts` for deterministic
+  grid and directory recovery as rounds stall. The planner tracks novelty across rounds;
+  depleted signatures are filtered and recovery slots can be backfilled with fresh query
+  families. `companyDomainLookup.ts` adds bounded, host-filtered company-domain discovery.
+- **Grounded titles (`dc5ce3d`)**: `titleResolution.ts` backfills a missing lead title only
+  from a passing role qualification and attributable evidence; `leadMapping.ts` applies
+  the same resolver as a persistence backstop.
+- **Yield and qualification (`a237c91`)**: replenishment queries use broader natural
+  vocabulary, deterministic LinkedIn headline parsing can recover company names from
+  `@`, `at`, and pipe-delimited fields, and identity-anchor / non-decision-maker checks
+  reject weak candidates before attribution work. Round extension uses a configured
+  ceiling when no explicit override is set. `test/yieldOptimization.test.ts` and added
+  `titleTriage.test.ts` cases cover these changes.
+- **CRM UI (`dc5ce3d`)**: the app was reorganized around dedicated prospect filtering and
+  saved views, a standalone lead drawer, overview charts, theme controls, and shared UI
+  primitives. PWA icons/manifest and CSP-safe theme initialization were added.
+- **Current verification**: `npm run typecheck` (`tsc --noEmit`) passes with 0 errors after pruning the unused import in `yieldOptimization.test.ts`. The targeted yield optimization test suite (`test/yieldOptimization.test.ts` + `test/titleTriage.test.ts`) is 100% green (45/45 assertions passed).
 
 ## 10. Recommended next actions
 
-Updated 2026-10-05.
+Updated 2026-10-06.
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done — open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done — Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
@@ -489,4 +521,4 @@ Updated 2026-10-05.
 6. ~~**Refresh the README test badge**~~ — Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
 7. **Watch the primary admission gate's precision/recall trade** — it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.
 8. **Make the `<= 1.0` source guard EOL-agnostic (§9.14)** — one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
-9. **Re-pin this index when HEAD moves.** Every number above is valid at `b60a6dc` only; §1 header carries the shas to re-measure against. Prefer an isolated worktree for the re-measure — this repo is edited by more than one session at a time.
+9. ~~**Re-pin this index when HEAD moves.**~~ Done — counts and architecture summary are pinned to `a237c91`; rerun measurements after the next HEAD change.

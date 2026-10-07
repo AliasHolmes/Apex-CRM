@@ -148,3 +148,6 @@ The post-judging checkpoint architecture that cleanly segregates verified result
 ### Dual-Channel Company Signal Ingestion (`extractStage.ts`)
 An ingestion pathway that routes non-person search results containing rich organizational intelligence directly into `signalStore.addCompanySignal(...)` instead of discarding them. Discovered companies and client contexts are preserved in the cross-session knowledge graph to fuel downstream account-level discovery and reverse flywheels.
 
+### Mining-Feedback-Driven Development (MFDD) (ADR-0008)
+The empirical engineering methodology where pipeline architecture, pre-filter gates, and LLM model routing are derived directly from live discovery session telemetry, rejection reason distributions, and real candidate payloads rather than theoretical assumptions or isolated mocks. Demonstrated by the elimination of headline company entity drops via multi-tier resolution and the 12x reduction in query planning latency.
+

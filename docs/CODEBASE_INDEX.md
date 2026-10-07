@@ -29,8 +29,9 @@ Primary reference docs:
 
 - [`README.md`](../README.md) — product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary
-- [`docs/adr/0001`…`0007`](adr/) — seven ADRs covering the engine, checkpointing, hardening,
-  lean collection, deterministic pre-filtering, quality grounding, and industry-agnostic dual concurrency
+- [`docs/adr/0001`…`0008`](adr/) — eight ADRs covering the engine, checkpointing, hardening,
+  lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
+  and mining-feedback-driven bottleneck elimination
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is

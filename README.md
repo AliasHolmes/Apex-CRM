@@ -172,6 +172,14 @@ flowchart TD
 - **Company Taxonomy & Attribution Persistence** (`company_profiles`, `company_attribution_verdicts`): Stores verified company business models, offerings, and per-brief attribution verdicts, cutting redundant company-level LLM calls by up to 85%.
 - **Cross-Round Retrieval Cache** (`retrievalCache.ts`): Durable query-hash-keyed cache in front of search APIs, preventing duplicate network queries across runs with identical parameters.
 
+#### 14. Mining-Feedback-Driven Development (MFDD) & Bottleneck Elimination (ADR-0008)
+
+- **Fast Structured Query Planning**: Configures strategist execution with fast structured models (`primary` -> `openrouter`) capped at 20s/25s timeouts with token-dieted historical yield context, dropping query planning latency from 115s timeouts to <10s.
+- **Multi-Tier Company Entity Resolution**: 4-tier pipeline resolves value-prop headlines (delimiters -> domain stems -> vanity handles -> Independent Practice designations) so authentic founders are never dropped as `missing_company_entity`.
+- **Dual-Channel Intelligence Routing**: Routes non-person open-web search results into `signalStore.addCompanySignal(...)` and persists them into `discovered_companies`, completely eliminating search intelligence waste.
+- **Probabilistic Market Saturation**: Continuously tracks signature novelty decay ($S_{market} \ge 0.60$) to softly repel saturated Tier-1 hubs on broad briefs while preserving single-metro locked intent via vertical sub-niche specialization.
+- **First-Class Checkpoint Segregation**: Cleanly separates verified prospects (`acceptedLeads`, 100% qualified) from audit trails (`disqualifiedCandidates`) and seeds seen identity sets on session resume.
+
 ---
 
 
@@ -387,7 +395,7 @@ npm run test:dedupe
 ```text
 docs/
   CODEBASE_INDEX.md          Measured architecture, module inventory, and audit ledger
-  adr/                       Architecture Decision Records (ADR-0001 through ADR-0007)
+  adr/                       Architecture Decision Records (ADR-0001 through ADR-0008)
 src/
   components/                React UI components, modals, tables, badges
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog

@@ -396,3 +396,15 @@ export interface MiningSession {
   traceSummary?: MiningTraceSummary;
   updatedAt: string;
 }
+
+export type LeadActivityType = 'stage_change' | 'notes' | 'merge' | 'import' | 'outreach';
+
+export interface LeadActivityRecord {
+  id: string;
+  leadId: string;
+  type: LeadActivityType;
+  fromValue?: string;
+  toValue: string;
+  actor?: string;
+  createdAt: string;
+}

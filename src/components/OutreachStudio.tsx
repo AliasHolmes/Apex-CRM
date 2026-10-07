@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clipboard,
+  ExternalLink,
   Gauge,
   Layers,
   Link2,
@@ -26,6 +27,8 @@ import {
   WandSparkles,
 } from 'lucide-react';
 import { Lead } from '../types';
+import { useLeads } from '@/context/LeadContext';
+import { useToast } from '@/context/ToastContext';
 import {
   SENDER_PROFILE_STORAGE_KEY,
   parseSenderProfile,
@@ -36,6 +39,13 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface OutreachStudioProps {
   selectedLeadForOutreach: Lead | null;
@@ -177,6 +187,8 @@ const formatDraftDate = (createdAt: string) => {
 };
 
 export default function OutreachStudio({ selectedLeadForOutreach, leads }: OutreachStudioProps) {
+  const { handleUpdateLeadStage } = useLeads();
+  const { triggerToast } = useToast();
   const [currentLeadId, setCurrentLeadId] = useState('');
   const [tone, setTone] = useState('High-Value');
   const [medium, setMedium] = useState('Cold Email');
@@ -187,6 +199,7 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
+  const [advancingStage, setAdvancingStage] = useState(false);
   // Sender details are remembered between sessions; first-run values come from DEFAULT_SENDER_PROFILE.
   const [initialSender] = useState(readSenderProfile);
   const [senderName, setSenderName] = useState(initialSender.senderName);
@@ -421,6 +434,19 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
     () => leads.find((lead) => lead.id === draftLeadId),
     [draftLeadId, leads]
   );
+
+  const handleAdvanceToSequenceActive = async () => {
+    if (!draftLead || advancingStage) return;
+    setAdvancingStage(true);
+    try {
+      await handleUpdateLeadStage(draftLead.id, 'SEQUENCE ACTIVE');
+      triggerToast(`Moved ${draftLead.profile.fullName} to Sequence Active.`, 'success');
+    } catch (err: any) {
+      triggerToast(err.message || 'Could not update pipeline stage.', 'error');
+    } finally {
+      setAdvancingStage(false);
+    }
+  };
 
   const rememberDraft = async (draftText: string, lead: Lead, originConfig: DraftOriginConfig) => {
     if (!draftText.trim() || !isMountedRef.current) return;
@@ -706,31 +732,44 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="lead-selector" className="block text-xs font-bold uppercase tracking-wider text-foreground/80">
-            Target prospect
-          </label>
-          <select
-            id="lead-selector"
-            value={currentLeadId}
-            onChange={(event) => setCurrentLeadId(event.target.value)}
-            disabled={loading || leads.length === 0}
-            aria-describedby={leads.length === 0 ? 'outreach-no-leads' : undefined}
-            className="w-full cursor-pointer rounded-xl border border-border bg-background px-3.5 py-3 text-sm font-semibold text-foreground transition-colors hover:border-input focus:outline-none focus:ring-2 focus:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {leads.length === 0 ? (
-              <option value="">No prospects available</option>
-            ) : (
-              leads.map((lead) => (
-                <option key={lead.id} value={lead.id}>
-                  {lead.profile.fullName} ({lead.profile.currentCompany || 'Independent'})
-                </option>
-              ))
+          <div className="flex items-center justify-between">
+            <label htmlFor="lead-selector" className="block text-xs font-bold uppercase tracking-wider text-foreground/80">
+              Target prospect
+            </label>
+            {targetLead?.profile.contactDetails?.linkedinUrl && (
+              <a
+                href={targetLead.profile.contactDetails.linkedinUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                title={`Open ${targetLead.profile.fullName}'s LinkedIn profile in a new tab`}
+              >
+                <span>LinkedIn profile</span>
+                <ExternalLink className="h-3 w-3" />
+              </a>
             )}
-          </select>
-          {leads.length === 0 && (
+          </div>
+          {leads.length === 0 ? (
             <p id="outreach-no-leads" role="status" className="rounded-lg border border-info/20 bg-info/5 p-3 text-sm text-info">
               Add or discover a prospect first, then return here to create outreach.
             </p>
+          ) : (
+            <Select
+              value={currentLeadId}
+              onValueChange={(val) => setCurrentLeadId(val)}
+              disabled={loading}
+            >
+              <SelectTrigger id="lead-selector" className="h-11 w-full rounded-xl text-sm font-semibold">
+                <SelectValue placeholder="Select target prospect" />
+              </SelectTrigger>
+              <SelectContent>
+                {leads.map((lead) => (
+                  <SelectItem key={lead.id} value={lead.id}>
+                    {lead.profile.fullName} ({lead.profile.currentCompany || 'Independent'})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
         </div>
 
@@ -1052,6 +1091,24 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
                       <Mail className="mr-1.5 h-4 w-4" aria-hidden="true" />
                       Open email app
                     </a>
+                  </Button>
+                )}
+                {draftLead && draftLead.stage !== 'SEQUENCE ACTIVE' && draftLead.stage !== 'MEETING BOOKED' && draftLead.stage !== 'CONVERTED' && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleAdvanceToSequenceActive()}
+                    disabled={advancingStage}
+                    className="border-primary/40 text-primary hover:bg-primary/10"
+                    aria-label={`Move ${draftLead.profile.fullName} to Sequence Active`}
+                  >
+                    {advancingStage ? (
+                      <RefreshCw className="mr-1.5 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    ) : (
+                      <Send className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                    )}
+                    Move to Sequence Active
                   </Button>
                 )}
               </div>

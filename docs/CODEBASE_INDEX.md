@@ -518,7 +518,21 @@ Refined time formatting and live telemetry display across both web terminal UI a
 - **LLM Call Telemetry in Seconds (`TraceTerminal.tsx`, `terminalLog.ts`, engine stages)**: Added `formatLatencySeconds` to format raw millisecond latencies into clean seconds representations (e.g., `117.1s`, `45.0s`, `2.5s`). Updated terminal log parser (`LLM_200_STRUCTURED_RE`) to accept both `ms` and `s` tokens, and converted backend LLM 200 OK log emission to seconds across `discoveryEngine.ts`, `planStage.ts`, `extractStage.ts`, `judgeStage.ts`, `linkedinPostIntent.ts`, and `llm.ts`.
 - **Test Coverage**: Added test cases in `test/uiContracts.test.ts` (18/18 passing) and `test/terminalLog.test.ts` (8/8 passing).
 
+### 9.17 Lead Intelligence, Drawer Editing, Dedupe Merging & State Retention — LANDED (2026-10-08)
+
+Resolved critical data-loss vectors, UI mismatches, and surfaced dormant LLM intelligence across the CRM layer:
+
+- **Pipeline Stage Preservation on CSV Re-Import (`csvFieldMapping.ts`, `LeadTable.tsx`)**: Added `stage` alias mappings (`CSV_FIELD_ALIASES.stage`: `['pipeline stage', 'pipelinestage', 'stage', 'status', 'pipeline']`). Re-imported CSV records now map their incoming stage against `PIPELINE_STAGES` instead of being silently reset to `'SCRAPED'`.
+- **Contact Profile Direct Editing (`LeadDrawer.tsx`, `LeadContext.tsx`)**: Added an inline contact editing mode in the Lead Drawer for Full Name, Current Title, Current Company, Corporate Email, Phone, and LinkedIn Profile URL. Emits `PATCH /api/leads/:id` with optimistic updates, saving indicators, and rollback on error.
+- **Activity Audit Timeline (`LeadDrawer.tsx`, `types.ts`)**: Added a 5th tab ("Activities") to the Lead Drawer querying `GET /api/leads/:id/activities` to display a chronological audit timeline of creation, discovery additions, stage shifts, note edits, deduplication merges, and outreach generation with relative timestamps.
+- **Surfaced Dormant LLM Intelligence (`LeadDrawer.tsx`)**: Surfaced previously unrendered enrichment data in candidate profiles: tech stack hints (`techStackHints` badges), observed pain indicators (`painIndicators` list), seniority level badges, and company size chips.
+- **Non-Destructive Server-Side Duplicate Merging (`LeadTable.tsx`)**: Replaced destructive duplicate hard-deletion with server-side consolidation (`handleServerMergeLead`), which combines winner and duplicate records into a single canonical entry, merging tags, notes, activity history, and preserving canonical identities.
+- **Outreach Studio State Retention (`App.tsx`, `OutreachStudio.tsx`)**: Added `outreach` to `mountedJobTabs` in `App.tsx` and styled with `hidden={activeTab !== 'outreach'}` so in-flight LLM streaming, user drafts, and custom prompts survive tab switches without being unmounted. Standardized prospect selection with accessible Radix UI `<Select />`, added direct LinkedIn external navigation, and 1-click stage progression ("Move to Sequence Active").
+- **UI Layout Rhythm & Design Consistency (`App.tsx`, `PageHeader.tsx`)**: Standardized `<PageHeader />` layout rhythm across the Prospects view to match the rest of the application, and replaced raw HTML `<select>` elements with Radix UI dropdown primitives.
+- **Test Coverage**: Added regression tests in `test/csvFieldMapping.test.ts`, verified `test/uiContracts.test.ts` (18/18 passing), `test/leadDedupe.test.ts` (24/24 passing), `test/encodingHygiene.test.ts`, and full typecheck (`npm run typecheck`, 0 errors).
+
 ## 10. Recommended next actions
+
 
 Updated 2026-10-08.
 

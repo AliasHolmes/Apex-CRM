@@ -142,4 +142,7 @@ export const CSV_FIELD_ALIASES = {
   skills: ["skills keywords", "skills", "tags"],
   reviewStatus: ["review status", "reviewstatus"],
   nextAction: ["next action", "nextaction"],
+  stage: ["pipeline stage", "pipelinestage", "stage", "status", "pipeline"],
 } as const;
+
+export type CsvFieldKey = keyof typeof CSV_FIELD_ALIASES;

@@ -97,7 +97,7 @@ flowchart TD
 
 #### 3b. Multi-Tier Entity Resolution & Value-Prop Headline Recovery
 
-- **Headline Delimiters (Tier 1)**: Extracts real business entities from complex headlines using delimiter splitting (`at`, `@`, `|`, `•`).
+- **Headline Delimiters (Tier 1)**: Extracts real business entities from complex headlines using delimiter splitting (`at`, `@`, `|`, and bullet characters).
 - **Domain & Handle Brands (Tiers 2 & 3)**: Extracts domain stem brands from personal URLs and semantic vanity LinkedIn slugs.
 - **Independent Practice Designation (Tier 4)**: Assigns `[FullName] (Independent Practice)` with provisional provenance (`isProvisionalEntity: true`) to verified owners and founders with client services headlines, eliminating false-negative `missing_company_entity` discards.
 
@@ -180,7 +180,16 @@ flowchart TD
 - **Probabilistic Market Saturation**: Continuously tracks signature novelty decay ($S_{market} \ge 0.60$) to softly repel saturated Tier-1 hubs on broad briefs while preserving single-metro locked intent via vertical sub-niche specialization.
 - **First-Class Checkpoint Segregation**: Cleanly separates verified prospects (`acceptedLeads`, 100% qualified) from audit trails (`disqualifiedCandidates`) and seeds seen identity sets on session resume.
 
+#### 15. Intelligent CRM Workflows & State Preservation
+
+- **Contact Profile Direct Editing**: Primary contact information (Full Name, Current Title, Company, Corporate Email, Phone, and LinkedIn Profile URL) can be edited directly within the Lead Drawer with optimistic updates, status indicators, and rollback protection on error.
+- **Activity Audit Timeline**: An append-only chronological history tab in the Lead Drawer tracks prospect lifecycles (`lead_activities` integration) across creation, discovery sessions, manual edits, stage movements, deduplication merges, and outreach generation with relative timestamps.
+- **Non-Destructive Server-Side Duplicate Merging**: The Prospects table replaces destructive record removal with intelligent server-side consolidation (`handleServerMergeLead`), automatically merging tags, appending notes, migrating audit histories, and preserving canonical identities.
+- **Uninterrupted Outreach Studio Lifecycle**: `App.tsx` retains Outreach Studio within the mounted DOM across tab switches (`mountedJobTabs`), ensuring in-flight LLM generations, custom prompts, and drafted messages are never lost during navigation.
+- **Pipeline Stage Preservation on CSV Re-Import**: The CSV importer maps pipeline stage columns (`CSV_FIELD_ALIASES.stage`), preventing existing prospect stage progressions from resetting to `SCRAPED` upon re-import.
+
 ---
+
 
 
 ## System Architecture

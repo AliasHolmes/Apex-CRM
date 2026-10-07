@@ -9,23 +9,27 @@ import {
   Check,
   CircleHelp,
   Compass,
+  Cpu,
   ExternalLink,
   FileText,
   Flame,
   GraduationCap,
+  History,
   Link2,
   LoaderCircle,
   Mail,
+  Pencil,
   Phone,
   Plus,
   RefreshCw,
+  Save,
   Sparkles,
   Tag,
   Trash2,
   WandSparkles,
   X,
 } from 'lucide-react';
-import type { Lead, LinkedInProfile, NextAction, ReviewStatus } from '@/types';
+import type { Lead, LeadActivityRecord, LinkedInProfile, NextAction, ReviewStatus } from '@/types';
 import { PIPELINE_STAGES } from '@/lib/pipeline';
 import { useLeads } from '@/context/LeadContext';
 import { useToast } from '@/context/ToastContext';
@@ -171,6 +175,7 @@ function LeadDrawerBody({
     handleUpdateLeadNotes,
     handleUpdateLeadTags,
     handleUpdateLeadFields,
+    handleUpdateLeadProfile,
     handleDeleteLead,
   } = useLeads();
   const lockedLeadIds = useLockedLeadIds();
@@ -192,6 +197,90 @@ function LeadDrawerBody({
   const [icebreakerError, setIcebreakerError] = useState('');
   const [loadingIcebreaker, setLoadingIcebreaker] = useState(false);
   const [copied, setCopied] = useState<'email' | 'hook' | null>(null);
+
+  // Contact profile editing states
+  const [isEditingContact, setIsEditingContact] = useState(false);
+  const [contactDraft, setContactDraft] = useState({
+    fullName: lead.profile.fullName || '',
+    currentTitle: lead.profile.currentTitle || '',
+    currentCompany: lead.profile.currentCompany || '',
+    email: lead.profile.contactDetails?.email || '',
+    phone: lead.profile.contactDetails?.phone || '',
+    linkedinUrl: lead.profile.contactDetails?.linkedinUrl || '',
+  });
+  const [savingContact, setSavingContact] = useState(false);
+
+  useEffect(() => {
+    setContactDraft({
+      fullName: lead.profile.fullName || '',
+      currentTitle: lead.profile.currentTitle || '',
+      currentCompany: lead.profile.currentCompany || '',
+      email: lead.profile.contactDetails?.email || '',
+      phone: lead.profile.contactDetails?.phone || '',
+      linkedinUrl: lead.profile.contactDetails?.linkedinUrl || '',
+    });
+    setIsEditingContact(false);
+  }, [lead.id, lead.profile]);
+
+  // Lead activity history states
+  const [activities, setActivities] = useState<LeadActivityRecord[]>([]);
+  const [loadingActivities, setLoadingActivities] = useState(false);
+  const [activitiesError, setActivitiesError] = useState<string | null>(null);
+
+  const fetchActivities = useCallback(async () => {
+    setLoadingActivities(true);
+    setActivitiesError(null);
+    try {
+      const res = await fetch(`/api/leads/${lead.id}/activities?limit=50`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setActivities(Array.isArray(data.activities) ? data.activities : []);
+    } catch (err: any) {
+      setActivitiesError(err.message || 'Could not load activities.');
+    } finally {
+      setLoadingActivities(false);
+    }
+  }, [lead.id]);
+
+  useEffect(() => {
+    if (activeTab === 'activity') {
+      void fetchActivities();
+    }
+  }, [activeTab, fetchActivities]);
+
+  const handleSaveContactDetails = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isLocked || savingContact) return;
+    const trimmedName = contactDraft.fullName.trim();
+    if (!trimmedName) {
+      triggerToast('Full name is required.', 'info');
+      return;
+    }
+    setSavingContact(true);
+    try {
+      const success = await handleUpdateLeadProfile(lead.id, {
+        fullName: trimmedName,
+        currentTitle: contactDraft.currentTitle.trim(),
+        currentCompany: contactDraft.currentCompany.trim(),
+        contactDetails: {
+          ...lead.profile.contactDetails,
+          email: contactDraft.email.trim(),
+          phone: contactDraft.phone.trim(),
+          linkedinUrl: contactDraft.linkedinUrl.trim(),
+        },
+      });
+      if (success) {
+        triggerToast(`Updated contact details for ${trimmedName}.`, 'success');
+        setIsEditingContact(false);
+      } else {
+        triggerToast('Could not save contact details.', 'error');
+      }
+    } catch (err: any) {
+      triggerToast(err.message || 'Error saving contact details.', 'error');
+    } finally {
+      setSavingContact(false);
+    }
+  };
 
   // Only the first render of this lead decides the starting draft.
   const [initialNotes] = useState(() => readRecoveredNote(lead.id) ?? lead.notes ?? '');
@@ -530,9 +619,21 @@ function LeadDrawerBody({
           <SheetHeader>
             <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
               <div className="min-w-0">
-                <Badge variant="brand" className="uppercase tracking-wide">
-                  {profile.industry || 'Tech sector'} lead
-                </Badge>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant="brand" className="uppercase tracking-wide">
+                    {profile.industry || 'Tech sector'} lead
+                  </Badge>
+                  {profile.seniorityLevel && (
+                    <Badge variant="outline" className="text-xs font-semibold">
+                      {profile.seniorityLevel}
+                    </Badge>
+                  )}
+                  {profile.companySizeEst && (
+                    <Badge variant="secondary" className="text-xs font-semibold">
+                      {profile.companySizeEst} staff
+                    </Badge>
+                  )}
+                </div>
                 <SheetTitle className="mt-2 truncate">{profile.fullName}</SheetTitle>
                 <SheetDescription className="mt-1">
                   {[profile.currentTitle, profile.currentCompany].filter(Boolean).join(' at ') || 'Review contact intelligence, update status, and add private notes.'}
@@ -567,7 +668,7 @@ function LeadDrawerBody({
 
           <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
             <div className="border-b px-6 py-3">
-              <TabsList className="grid w-full grid-cols-4">
+              <TabsList className="grid w-full grid-cols-5">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
                 <TabsTrigger value="evidence">Evidence</TabsTrigger>
                 <TabsTrigger value="profile">Profile</TabsTrigger>
@@ -577,6 +678,7 @@ function LeadDrawerBody({
                     <span aria-hidden="true" className="ml-1.5 h-1.5 w-1.5 rounded-full bg-warning" />
                   )}
                 </TabsTrigger>
+                <TabsTrigger value="activity">Activities</TabsTrigger>
               </TabsList>
             </div>
 
@@ -675,55 +777,221 @@ function LeadDrawerBody({
               </section>
 
               <section aria-labelledby="drawer-contact-heading">
-                <SectionHeading icon={Compass}>
-                  <span id="drawer-contact-heading">Contact details</span>
-                </SectionHeading>
-                <div className="space-y-3 rounded-xl border border-border bg-card/60 p-4">
-                  <p className="text-sm font-bold leading-snug text-foreground">{profile.headline || 'No headline found.'}</p>
-                  <div className="grid grid-cols-1 gap-3 border-t border-border pt-3 text-xs md:grid-cols-2">
-                    {email ? (
-                      <div className="flex items-center gap-2 text-foreground/80">
-                        <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate">{email}</span>
-                        <button
-                          type="button"
-                          onClick={() => void copyText(email, 'email')}
-                          className="ml-auto rounded text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          aria-label="Copy email address"
-                        >
-                          {copied === 'email' ? 'Copied' : 'Copy'}
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                        No email on file
-                      </div>
-                    )}
-                    {profile.contactDetails?.phone && (
-                      <div className="flex items-center gap-2 text-foreground/80">
-                        <Phone aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate">{profile.contactDetails.phone}</span>
-                      </div>
-                    )}
-                    {linkedinUrl && (
-                      <div className="col-span-1 flex items-center gap-2 text-foreground/80 md:col-span-2">
-                        <Link2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <a
-                          href={linkedinUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center gap-1 truncate text-primary hover:underline"
-                          aria-label={`Open ${profile.fullName}'s LinkedIn profile in a new tab`}
-                        >
-                          {linkedinUrl}
-                          <ExternalLink aria-hidden="true" className="h-3 w-3" />
-                        </a>
-                      </div>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between mb-2">
+                  <SectionHeading icon={Compass}>
+                    <span id="drawer-contact-heading">Contact details</span>
+                  </SectionHeading>
+                  {!isEditingContact && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setIsEditingContact(true)}
+                      disabled={isLocked}
+                      className="h-7 text-xs text-primary hover:text-primary/80"
+                    >
+                      <Pencil className="mr-1 h-3 w-3" />
+                      Edit contact
+                    </Button>
+                  )}
                 </div>
+
+                {isEditingContact ? (
+                  <form onSubmit={handleSaveContactDetails} className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4">
+                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label htmlFor="contact-edit-name" className="text-xs">Full Name</Label>
+                        <Input
+                          id="contact-edit-name"
+                          value={contactDraft.fullName}
+                          onChange={(e) => setContactDraft(prev => ({ ...prev, fullName: e.target.value }))}
+                          placeholder="Full Name"
+                          className="h-8 text-xs bg-background"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="contact-edit-title" className="text-xs">Job Title</Label>
+                        <Input
+                          id="contact-edit-title"
+                          value={contactDraft.currentTitle}
+                          onChange={(e) => setContactDraft(prev => ({ ...prev, currentTitle: e.target.value }))}
+                          placeholder="Job Title"
+                          className="h-8 text-xs bg-background"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="contact-edit-company" className="text-xs">Company</Label>
+                        <Input
+                          id="contact-edit-company"
+                          value={contactDraft.currentCompany}
+                          onChange={(e) => setContactDraft(prev => ({ ...prev, currentCompany: e.target.value }))}
+                          placeholder="Company"
+                          className="h-8 text-xs bg-background"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="contact-edit-email" className="text-xs">Email</Label>
+                        <Input
+                          id="contact-edit-email"
+                          type="email"
+                          value={contactDraft.email}
+                          onChange={(e) => setContactDraft(prev => ({ ...prev, email: e.target.value }))}
+                          placeholder="Email address"
+                          className="h-8 text-xs bg-background"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="contact-edit-phone" className="text-xs">Phone</Label>
+                        <Input
+                          id="contact-edit-phone"
+                          value={contactDraft.phone}
+                          onChange={(e) => setContactDraft(prev => ({ ...prev, phone: e.target.value }))}
+                          placeholder="Phone number"
+                          className="h-8 text-xs bg-background"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="contact-edit-linkedin" className="text-xs">LinkedIn URL</Label>
+                        <Input
+                          id="contact-edit-linkedin"
+                          value={contactDraft.linkedinUrl}
+                          onChange={(e) => setContactDraft(prev => ({ ...prev, linkedinUrl: e.target.value }))}
+                          placeholder="https://linkedin.com/in/..."
+                          className="h-8 text-xs bg-background"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/50">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setContactDraft({
+                            fullName: profile.fullName || '',
+                            currentTitle: profile.currentTitle || '',
+                            currentCompany: profile.currentCompany || '',
+                            email: email || '',
+                            phone: profile.contactDetails?.phone || '',
+                            linkedinUrl: linkedinUrl || '',
+                          });
+                          setIsEditingContact(false);
+                        }}
+                        disabled={savingContact}
+                        className="h-7 text-xs"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={savingContact || isLocked}
+                        className="h-7 gap-1 text-xs"
+                      >
+                        {savingContact ? (
+                          <>
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <Save className="h-3 w-3" />
+                            Save changes
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="space-y-3 rounded-xl border border-border bg-card/60 p-4">
+                    <p className="text-sm font-bold leading-snug text-foreground">{profile.headline || 'No headline found.'}</p>
+                    <div className="grid grid-cols-1 gap-3 border-t border-border pt-3 text-xs md:grid-cols-2">
+                      {email ? (
+                        <div className="flex items-center gap-2 text-foreground/80">
+                          <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{email}</span>
+                          <button
+                            type="button"
+                            onClick={() => void copyText(email, 'email')}
+                            className="ml-auto rounded text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label="Copy email address"
+                          >
+                            {copied === 'email' ? 'Copied' : 'Copy'}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                          No email on file
+                        </div>
+                      )}
+                      {profile.contactDetails?.phone ? (
+                        <div className="flex items-center gap-2 text-foreground/80">
+                          <Phone aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{profile.contactDetails.phone}</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Phone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                          No phone on file
+                        </div>
+                      )}
+                      {linkedinUrl ? (
+                        <div className="col-span-1 flex items-center gap-2 text-foreground/80 md:col-span-2">
+                          <Link2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <a
+                            href={linkedinUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex items-center gap-1 truncate text-primary hover:underline"
+                            aria-label={`Open ${profile.fullName}'s LinkedIn profile in a new tab`}
+                          >
+                            {linkedinUrl}
+                            <ExternalLink aria-hidden="true" className="h-3 w-3" />
+                          </a>
+                        </div>
+                      ) : (
+                        <div className="col-span-1 flex items-center gap-2 text-muted-foreground md:col-span-2">
+                          <Link2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                          No LinkedIn URL on file
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </section>
+
+              {profile.techStackHints && profile.techStackHints.length > 0 && (
+                <section aria-labelledby="drawer-tech-heading">
+                  <SectionHeading icon={Cpu}>
+                    <span id="drawer-tech-heading">Detected tech stack</span>
+                  </SectionHeading>
+                  <div className="flex flex-wrap gap-1.5 rounded-xl border border-border bg-card/60 p-3">
+                    {profile.techStackHints.map((tech) => (
+                      <Badge key={tech} variant="secondary" className="text-xs font-semibold">
+                        {tech}
+                      </Badge>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {profile.painIndicators && profile.painIndicators.length > 0 && (
+                <section aria-labelledby="drawer-pain-heading" className="space-y-2">
+                  <SectionHeading icon={Flame}>
+                    <span id="drawer-pain-heading">Observed pain indicators</span>
+                  </SectionHeading>
+                  <div className="space-y-1.5 rounded-xl border border-warning/20 bg-warning/5 p-3 text-xs text-foreground/90">
+                    {profile.painIndicators.map((pain, idx) => (
+                      <div key={idx} className="flex items-start gap-2">
+                        <span className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-warning" aria-hidden="true" />
+                        <span>{pain}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               <section aria-labelledby="drawer-tags-heading">
                 <SectionHeading icon={Tag}>
@@ -1065,6 +1333,89 @@ function LeadDrawerBody({
                 rows={10}
                 className="w-full resize-y"
               />
+            </TabsContent>
+
+            <TabsContent value="activity" className="mt-0 flex-1 space-y-4 overflow-y-auto p-6">
+              <div className="flex items-center justify-between">
+                <SectionHeading icon={History}>
+                  <span>Activity & audit timeline</span>
+                </SectionHeading>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void fetchActivities()}
+                  disabled={loadingActivities}
+                  className="h-7 text-xs text-muted-foreground"
+                >
+                  <RefreshCw className={`mr-1 h-3 w-3 ${loadingActivities ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+              </div>
+
+              {loadingActivities ? (
+                <div className="flex items-center justify-center py-12 text-muted-foreground">
+                  <LoaderCircle className="h-6 w-6 animate-spin mr-2" />
+                  <span className="text-xs">Loading activity timeline...</span>
+                </div>
+              ) : activitiesError ? (
+                <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-xs text-danger">
+                  {activitiesError}
+                </div>
+              ) : activities.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border p-8 text-center text-xs text-muted-foreground">
+                  <History className="mx-auto h-8 w-8 opacity-40 mb-2" />
+                  <p className="font-semibold text-foreground">No activities recorded yet</p>
+                  <p className="mt-1">Stage updates, notes, and profile merges will appear here as you work.</p>
+                </div>
+              ) : (
+                <div className="relative pl-6 space-y-4 before:absolute before:bottom-0 before:left-2 before:top-2 before:w-0.5 before:bg-border">
+                  {activities.map((act) => {
+                    const dateStr = new Date(act.createdAt).toLocaleString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+                    return (
+                      <div key={act.id} className="relative group">
+                        <div className="absolute -left-[23px] top-1 h-3.5 w-3.5 rounded-full border-2 border-background bg-primary ring-2 ring-primary/20" />
+                        <div className="rounded-xl border border-border bg-card/60 p-3 shadow-xs space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-bold text-foreground">
+                              {act.type === 'stage_change' && 'Pipeline stage changed'}
+                              {act.type === 'notes' && 'Notes updated'}
+                              {act.type === 'merge' && 'Duplicate profile merged'}
+                              {act.type === 'import' && 'Lead imported'}
+                              {act.type === 'outreach' && 'Outreach logged'}
+                              {!['stage_change', 'notes', 'merge', 'import', 'outreach'].includes(act.type) && act.type}
+                            </span>
+                            <span className="text-xs text-muted-foreground">{dateStr}</span>
+                          </div>
+                          {act.type === 'stage_change' && (
+                            <p className="text-xs text-muted-foreground">
+                              Moved from <span className="font-medium text-foreground">{act.fromValue || 'Initial'}</span> to <span className="font-medium text-primary">{act.toValue}</span>
+                            </p>
+                          )}
+                          {act.type === 'notes' && (
+                            <p className="text-xs text-muted-foreground italic truncate">
+                              &ldquo;{act.toValue}&rdquo;
+                            </p>
+                          )}
+                          {act.type === 'merge' && (
+                            <p className="text-xs text-muted-foreground">
+                              Consolidated duplicate data and identities into this lead.
+                            </p>
+                          )}
+                          <div className="text-xs text-muted-foreground/80 flex items-center gap-1 pt-1">
+                            <span>Actor: {act.actor || 'User'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </TabsContent>
           </Tabs>
 

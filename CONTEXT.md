@@ -151,3 +151,12 @@ An ingestion pathway that routes non-person search results containing rich organ
 ### Mining-Feedback-Driven Development (MFDD) (ADR-0008)
 The empirical engineering methodology where pipeline architecture, pre-filter gates, and LLM model routing are derived directly from live discovery session telemetry, rejection reason distributions, and real candidate payloads rather than theoretical assumptions or isolated mocks. Demonstrated by the elimination of headline company entity drops via multi-tier resolution and the 12x reduction in query planning latency.
 
+### Non-Destructive Server Duplicate Consolidation
+The CRM lead deduplication mechanism (`handleServerMergeLead` via `/api/leads/:winnerId/merge/:duplicateId`) that combines winner and duplicate records into a single canonical entry. Merges tags, appends notes, migrates activity audit trails and outreach drafts, and archives or resolves duplicate identity records in SQLite without discarding historical CRM data.
+
+### Lead Activity Audit Timeline
+The append-only chronological activity log (`lead_activities` table and `GET /api/leads/:id/activities`) recording life-cycle events including lead creation, discovery session ingestion, manual edits, stage movements, deduplication merges, and outreach generation. Surfaced in the Lead Drawer with relative timestamps and event-specific metadata.
+
+### Persistent Job Tab Lifecycle (`mountedJobTabs`)
+The client-side tab mounting strategy in `App.tsx` that maintains long-running or stateful workspaces (e.g. `outreach`, `workspace`, `inventory`) mounted in the DOM using CSS visibility (`hidden={activeTab !== tab}`) rather than unmounting them on tab switches. Protects in-flight LLM generations, drafted copy, and unsaved form modifications from being aborted or lost when navigating between CRM views.
+

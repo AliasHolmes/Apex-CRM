@@ -21,6 +21,7 @@ describe('CSV field mapping', () => {
       email: getField(CSV_FIELD_ALIASES.email),
       linkedin: getField(CSV_FIELD_ALIASES.linkedin),
       fullName: getField(CSV_FIELD_ALIASES.fullName),
+      stage: getField(CSV_FIELD_ALIASES.stage),
     };
   };
 
@@ -97,4 +98,25 @@ describe('CSV field mapping', () => {
     assert.equal(fields.fullName, 'Margaret Hamilton');
     assert.equal(fields.email, 'margaret@example.com');
   });
+
+  it('resolves pipeline stage aliases accurately without collision', () => {
+    const fields1 = read({
+      'Pipeline Stage': 'ENGAGED',
+      'Full Name': 'Ada Lovelace',
+    });
+    assert.equal(fields1.stage, 'ENGAGED');
+
+    const fields2 = read({
+      'stage': 'QUALIFIED',
+      'Full Name': 'Charles Babbage',
+    });
+    assert.equal(fields2.stage, 'QUALIFIED');
+
+    const fields3 = read({
+      'pipeline': 'MEETING_SET',
+      'Full Name': 'Alan Turing',
+    });
+    assert.equal(fields3.stage, 'MEETING_SET');
+  });
 });
+

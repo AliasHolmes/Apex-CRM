@@ -325,7 +325,7 @@ interface LeadContextType {
     leadIds: string[],
     updates: { reviewStatus?: ReviewStatus; nextAction?: NextAction },
   ) => Promise<{ updatedCount: number }>;
-  handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => void;
+  handleUpdateLeadProfile: (leadId: string, profileUpdates: Partial<LinkedInProfile>) => Promise<boolean>;
   handleMergeLead: (updatedLead: Lead) => void;
   handleServerMergeLead: (winnerId: string, duplicateId: string) => Promise<void>;
   handleUpdateLeadTags: (leadId: string, tags: string[]) => Promise<void>;
@@ -970,7 +970,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     return { updatedCount: leadIds.length };
   }, [handleUpdateLeadFields]);
 
-  const handleUpdateLeadProfile = useCallback((leadId: string, profileUpdates: Partial<LinkedInProfile>) => {
+  const handleUpdateLeadProfile = useCallback(async (leadId: string, profileUpdates: Partial<LinkedInProfile>): Promise<boolean> => {
     const rollbackLead = leadsRef.current.find(lead => lead.id === leadId) ?? null;
     let updatedLead: Lead | null = null;
     saveLeadsToStorage(currentLeads => 
@@ -988,10 +988,19 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     );
 
     if (updatedLead) {
-      void reconcileLeadPatch(updatedLead, rollbackLead).catch((err) => {
-        console.error('[LeadContext] Failed to persist background enriched profile fields:', err);
-      });
+      try {
+        const didPersist = await reconcileLeadPatch(updatedLead, rollbackLead);
+        if (!didPersist) {
+          console.error('[LeadContext] Failed to persist edited profile fields to server.');
+          return false;
+        }
+        return true;
+      } catch (err) {
+        console.error('[LeadContext] Error persisting profile updates:', err);
+        return false;
+      }
     }
+    return false;
   }, [reconcileLeadPatch, saveLeadsToStorage]);
 
   const handleMergeLead = useCallback((updatedLead: Lead) => {

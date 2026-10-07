@@ -530,6 +530,7 @@ export default function LeadTable({
     handleUpdateLeadProfile,
     handleBulkLeadsAdded,
     handleMergeLead,
+    handleServerMergeLead,
   } = useLeads();
 
   useEffect(() => {
@@ -564,6 +565,7 @@ export default function LeadTable({
   const [showConfirmBulkDelete, setShowConfirmBulkDelete] = useState(false);
   const [showConfirmPurgeDuplicates, setShowConfirmPurgeDuplicates] = useState(false);
   const [duplicateIdsToDelete, setDuplicateIdsToDelete] = useState<string[]>([]);
+  const [duplicatePairsToMerge, setDuplicatePairsToMerge] = useState<Array<{ winnerId: string; duplicateId: string }>>([]);
   const [leadPendingDelete, setLeadPendingDelete] = useState<Lead | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [bulkMutation, setBulkMutation] = useState<'stage' | 'workflow' | 'delete' | 'purge' | null>(null);
@@ -721,6 +723,7 @@ export default function LeadTable({
   const duplicateAnalysis = useMemo(() => {
     const duplicateIdSet = new Set<string>();
     const redundantIdsToDelete: string[] = [];
+    const duplicatePairs: Array<{ winnerId: string; duplicateId: string }> = [];
     const seenKeyToId = new Map<string, string>();
 
     for (const lead of leads) {
@@ -737,7 +740,10 @@ export default function LeadTable({
       }
 
       if (isRedundant) {
-        if (matchedFirstId) duplicateIdSet.add(matchedFirstId);
+        if (matchedFirstId) {
+          duplicateIdSet.add(matchedFirstId);
+          duplicatePairs.push({ winnerId: matchedFirstId, duplicateId: lead.id });
+        }
         duplicateIdSet.add(lead.id);
         redundantIdsToDelete.push(lead.id);
       } else {
@@ -750,6 +756,7 @@ export default function LeadTable({
     return {
       duplicateIdSet,
       redundantIdsToDelete,
+      duplicatePairs,
     };
   }, [leads]);
 
@@ -765,12 +772,13 @@ export default function LeadTable({
       );
       if (lockedDuplicateCount > 0) {
         triggerToast(
-          `Wait for enrichment to finish before removing ${lockedDuplicateCount} locked duplicate record${lockedDuplicateCount === 1 ? '' : 's'}.`,
+          `Wait for enrichment to finish before merging ${lockedDuplicateCount} locked duplicate record${lockedDuplicateCount === 1 ? '' : 's'}.`,
           'info',
         );
         return;
       }
       setDuplicateIdsToDelete(toDelete);
+      setDuplicatePairsToMerge(duplicateAnalysis.duplicatePairs);
       setShowConfirmPurgeDuplicates(true);
     } else {
       triggerToast('No redundant duplicates found.', 'info');
@@ -781,22 +789,29 @@ export default function LeadTable({
     if (duplicateIdsToDelete.length === 0 || isBulkMutating) return;
     const targetIds = [...duplicateIdsToDelete];
     if (targetIds.some((leadId) => asyncLockedLeadIds.has(leadId))) {
-      triggerToast('Wait for active enrichment before removing these duplicates.', 'info');
+      triggerToast('Wait for active enrichment before merging these duplicates.', 'info');
       return;
     }
     setBulkMutation('purge');
     try {
-      if (handleDeleteLeads) {
+      if (handleServerMergeLead && duplicatePairsToMerge.length > 0) {
+        for (const pair of duplicatePairsToMerge) {
+          await handleServerMergeLead(pair.winnerId, pair.duplicateId);
+        }
+        if (!isMountedRef.current) return;
+        triggerToast(`Successfully consolidated ${duplicatePairsToMerge.length} duplicate leads. Notes and history preserved.`, 'success');
+      } else if (handleDeleteLeads) {
         await handleDeleteLeads(targetIds);
+        if (!isMountedRef.current) return;
+        triggerToast(`Successfully cleaned up ${targetIds.length} duplicate leads.`, 'success');
       } else {
         await Promise.all(targetIds.map((id) => handleDeleteLead(id)));
       }
-      if (!isMountedRef.current) return;
-      triggerToast(`Successfully purged ${targetIds.length} duplicate leads.`, 'success');
       setDuplicateIdsToDelete([]);
+      setDuplicatePairsToMerge([]);
       setShowConfirmPurgeDuplicates(false);
     } catch (error: any) {
-      if (isMountedRef.current) triggerToast(error.message || 'Could not delete duplicate leads.', 'error');
+      if (isMountedRef.current) triggerToast(error.message || 'Could not merge duplicate leads.', 'error');
     } finally {
       if (isMountedRef.current) setBulkMutation(null);
     }
@@ -1403,6 +1418,11 @@ export default function LeadTable({
             const skills = skillsStr ? skillsStr.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
             const importedReviewStatus = getField(CSV_FIELD_ALIASES.reviewStatus).toUpperCase();
             const importedNextAction = getField(CSV_FIELD_ALIASES.nextAction).toUpperCase().replace(/\s+/g, '_');
+            const rawStage = getField(CSV_FIELD_ALIASES.stage).trim().toUpperCase();
+            const matchedStage = PIPELINE_STAGES.find(
+              (s) => s.id === rawStage || s.label.toUpperCase() === rawStage || s.shortLabel.toUpperCase() === rawStage
+            );
+            const stage: Lead['stage'] = matchedStage ? matchedStage.id : 'SCRAPED';
 
             let fullName = getField(CSV_FIELD_ALIASES.fullName);
             if (!fullName && (fName || lName)) {
@@ -1434,7 +1454,7 @@ export default function LeadTable({
                 },
                 skills
               },
-              stage: 'SCRAPED',
+              stage,
               notes: summary || 'Imported via bulk CSV upload.',
               createdAt: new Date().toISOString(),
               tags: ['CSV Import', industry],
@@ -1500,17 +1520,20 @@ export default function LeadTable({
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remove {duplicateIdsToDelete.length} duplicate record{duplicateIdsToDelete.length === 1 ? '' : 's'}?</DialogTitle>
-            <DialogDescription>This keeps one record per prospect and permanently deletes the redundant copies.</DialogDescription>
+            <DialogTitle>Consolidate {duplicateIdsToDelete.length} duplicate record{duplicateIdsToDelete.length === 1 ? '' : 's'}?</DialogTitle>
+            <DialogDescription>
+              This safely unifies primary and duplicate contacts, preserving notes, tags, identities, and activity history.
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => {
               setShowConfirmPurgeDuplicates(false);
               setDuplicateIdsToDelete([]);
+              setDuplicatePairsToMerge([]);
             }} disabled={isBulkMutating}>Cancel</Button>
-            <Button type="button" variant="destructive" onClick={handleExecutePurgeDuplicates} disabled={isBulkMutating || duplicateIdsToDelete.some((leadId) => asyncLockedLeadIds.has(leadId))}>
+            <Button type="button" onClick={handleExecutePurgeDuplicates} disabled={isBulkMutating || duplicateIdsToDelete.some((leadId) => asyncLockedLeadIds.has(leadId))}>
               {bulkMutation === 'purge' && <LoaderCircle className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
-              {bulkMutation === 'purge' ? 'Removing...' : 'Remove duplicates'}
+              {bulkMutation === 'purge' ? 'Consolidating...' : 'Consolidate duplicates'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1536,13 +1559,12 @@ export default function LeadTable({
 
       <Card className="relative shadow-sm" aria-busy={isBulkMutating}>
         <CardContent className="space-y-5 p-4 sm:p-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <h2 className="flex items-center gap-2 text-xl font-extrabold text-foreground">
-                <Layers className="h-5 w-5 text-primary" aria-hidden="true" />
-                Prospects
-              </h2>
-              <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Review saved contacts, enrich selected records, and move them into the right pipeline stage.</p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-foreground">All Contacts</span>
+              <Badge variant="outline" className="text-xs">
+                {filteredLeads.length} {filteredLeads.length === 1 ? 'record' : 'records'}
+              </Badge>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -1577,7 +1599,7 @@ export default function LeadTable({
                     Export all
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuLabel>Clean up</DropdownMenuLabel>
+                  <DropdownMenuLabel>Intelligence & hygiene</DropdownMenuLabel>
                   <DropdownMenuItem onSelect={handleSelectDuplicates} disabled={leads.length === 0 || isBulkMutating}>
                     <Layers aria-hidden="true" />
                     Select duplicates
@@ -1585,10 +1607,10 @@ export default function LeadTable({
                   <DropdownMenuItem
                     onSelect={handleTriggerPurgeDuplicates}
                     disabled={leads.length === 0 || isBulkMutating}
-                    className="text-danger focus:text-danger"
+                    className="text-primary focus:text-primary font-medium"
                   >
-                    <Trash2 aria-hidden="true" />
-                    Remove duplicates
+                    <Sparkles aria-hidden="true" />
+                    Merge duplicates
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

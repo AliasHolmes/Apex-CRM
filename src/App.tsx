@@ -29,6 +29,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   DASHBOARD_NAV_ITEMS,
   getHashForLead,
   getHashForTab,
@@ -164,7 +171,7 @@ function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>(() => getTabFromHash(window.location.hash));
   const [mountedJobTabs, setMountedJobTabs] = useState<Set<DashboardTab>>(() => {
     const initialTab = getTabFromHash(window.location.hash);
-    return new Set(initialTab === 'workspace' || initialTab === 'inventory' ? [initialTab] : []);
+    return new Set(initialTab === 'workspace' || initialTab === 'inventory' || initialTab === 'outreach' ? [initialTab] : []);
   });
   const [hasLoadedCopilot, setHasLoadedCopilot] = useState(false);
   const [prospectPreset, setProspectPreset] = useState<ProspectPreset | null>(null);
@@ -223,7 +230,7 @@ function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'workspace' && activeTab !== 'inventory') return;
+    if (activeTab !== 'workspace' && activeTab !== 'inventory' && activeTab !== 'outreach') return;
     setMountedJobTabs((currentTabs) => {
       if (currentTabs.has(activeTab)) return currentTabs;
       const nextTabs = new Set(currentTabs);
@@ -510,6 +517,11 @@ function Dashboard() {
                 exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
                 transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
               >
+                <PageHeader
+                  id="prospects-heading"
+                  title="Prospects"
+                  description="Review saved contacts, enrich selected records, and move them into the right pipeline stage."
+                />
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="Prospect inventory">
                     <LeadTable onAddManualLead={() => setShowManualModal(true)} onOpenLead={openLead} preset={prospectPreset} />
@@ -518,9 +530,10 @@ function Dashboard() {
               </motion.section>
             )}
 
-            {activeTab === 'outreach' && (
+            {(activeTab === 'outreach' || mountedJobTabs.has('outreach')) && (
               <motion.section
                 key="tab-outreach"
+                hidden={activeTab !== 'outreach'}
                 aria-labelledby="outreach-heading"
                 initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -606,16 +619,19 @@ function Dashboard() {
               </div>
               <div className="space-y-1">
                 <Label htmlFor="manual-industry" className="text-foreground/80">Industry</Label>
-                <select
-                  id="manual-industry"
+                <Select
                   value={manualIndustry}
-                  onChange={(e) => setManualIndustry(e.target.value as (typeof MANUAL_PROSPECT_INDUSTRIES)[number])}
-                  className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onValueChange={(val) => setManualIndustry(val as (typeof MANUAL_PROSPECT_INDUSTRIES)[number])}
                 >
-                  {MANUAL_PROSPECT_INDUSTRIES.map(industry => (
-                    <option key={industry} value={industry}>{industry}</option>
-                  ))}
-                </select>
+                  <SelectTrigger id="manual-industry" className="w-full bg-background border border-border">
+                    <SelectValue placeholder="Select industry" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MANUAL_PROSPECT_INDUSTRIES.map(industry => (
+                      <SelectItem key={industry} value={industry}>{industry}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 

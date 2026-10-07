@@ -51,15 +51,15 @@ flowchart TD
     StreamDual --> StreamB["Stream B: Intent Plane (Tools, Jobs, Pain)"]
 
     subgraph Stages ["Pipelined Intelligent Engine Architecture (9 Stages)"]
-        Plan["1. planStage (CRM Negative Domain Exclusions, Metro & Cross-Session Avoidance)"]
-        Retrieve["2. retrieveStage (Two-Wave Parallel Lanes & Zero-Yield Rewriter)"]
+        Plan["1. planStage (CRM Domain Exclusions, Adaptive Saturation & Fast Planner Routing)"]
+        Retrieve["2. retrieveStage (Two-Wave Parallel Lanes, Intent-Aware Person Routing & Rewriter)"]
         Fuse["3. fuseStage (Corroboration Fusion & Bidirectional Alias Scoring)"]
         PreFilter["Stage 2.5: Fast Deterministic Pre-Filter Gate (0ms CRM Dedupe & Noise Stripping)"]
-        Extract["4. extractStage (Token-Diet Budgeted LLM Extraction)"]
-        Verify["5. verifyStage (Hard Requirement Verification)"]
+        Extract["4. extractStage (Token-Diet Budgeted LLM Extraction & Dual-Channel Signal Ingestion)"]
+        Verify["5. verifyStage (Hard Requirement Verification & Multi-Tier Entity Resolution)"]
         Enrich["6. enrichStage (Provenance-Tagged Site Probe & Annotate-Only Post Intent)"]
-        PreJudge["Pre-Judge: Role Triage (0ms IC Drop)"]
-        Judge["7. judgeStage (Strict Citation Grounding & Polarity-Guarded Evaluation)"]
+        PreJudge["Pre-Judge: Role Triage (0ms IC Drop & Nuanced Executive Preservation)"]
+        Judge["7. judgeStage (Strict Citation Grounding & First-Class Checkpoint Segregation)"]
         Select["8. selectStage (Pareto Skyline & MMR Diversification)"]
         Persist["9. persistStage (CRM-Preserving Upserts & Derived Session Status)"]
 
@@ -90,10 +90,16 @@ flowchart TD
 
 #### 3. Durable Checkpoints & Session Resumption (ADR-0002)
 
-- **Stage Boundaries**: Persists a compact Tier-A snapshot (`MiningSessionCheckpoint`) to SQLite `checkpoint_json` after each round's enrichment stage and before judging.
+- **Stage Boundaries & Segregation**: Persists compact snapshots (`MiningSessionCheckpoint`) to SQLite `checkpoint_json`. Post-judging saves first-class segregated collections: `acceptedLeads` contains 100% qualified prospects (`verdict === 'qualified' | 'qualified_partial'`), while `disqualifiedCandidates` preserves all rejected and unjudged candidates with exact failure reasons.
 - **Boot Sweep**: Automatically reconciles orphaned sessions on server restart into `resumable` status.
 - **One-Click Recovery UI**: `ResumableSessionsBanner` in the UI alerts users of interrupted searches and resumes them from checkpoint with zero duplicate queries.
 - **Dual-Mode HTTP**: Supports synchronous HTTP 200 execution or immediate HTTP 202 Accepted (`?mode=job` / `Prefer: respond-async`) with SSE stream URLs.
+
+#### 3b. Multi-Tier Entity Resolution & Value-Prop Headline Recovery
+
+- **Headline Delimiters (Tier 1)**: Extracts real business entities from complex headlines using delimiter splitting (`at`, `@`, `|`, `•`).
+- **Domain & Handle Brands (Tiers 2 & 3)**: Extracts domain stem brands from personal URLs and semantic vanity LinkedIn slugs.
+- **Independent Practice Designation (Tier 4)**: Assigns `[FullName] (Independent Practice)` with provisional provenance (`isProvisionalEntity: true`) to verified owners and founders with client services headlines, eliminating false-negative `missing_company_entity` discards.
 
 #### 4. Interactive Lead Revision Conflict Resolution (B2 Dialog)
 

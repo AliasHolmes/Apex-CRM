@@ -4616,6 +4616,7 @@ export type MiningSessionCheckpoint = {
   queryRuns: any[];
   acceptedLeads: any[];
   qualifiedLeads: any[];
+  disqualifiedCandidates?: any[];
   finalLeads: any[];
   rejectionCounts: Record<string, number>;
   failureCounts: Record<string, number>;
@@ -4810,6 +4811,9 @@ export function enforceCheckpointByteBudgetWithPayload(
     if (Array.isArray(cp.finalLeads) && cp.finalLeads.length > limit) {
       cp.finalLeads = cp.finalLeads.slice(0, limit);
     }
+    if (Array.isArray(cp.disqualifiedCandidates) && cp.disqualifiedCandidates.length > limit) {
+      cp.disqualifiedCandidates = cp.disqualifiedCandidates.slice(0, limit);
+    }
     if (Array.isArray((cp as any).provisionalLeads) && (cp as any).provisionalLeads.length > limit) {
       (cp as any).provisionalLeads = (cp as any).provisionalLeads.slice(0, limit);
     }
@@ -4851,6 +4855,7 @@ export function enforceCheckpointByteBudgetWithPayload(
   };
   if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.map(stripBulkyFields);
   if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.map(stripBulkyFields);
+  if (Array.isArray(cp.disqualifiedCandidates)) cp.disqualifiedCandidates = cp.disqualifiedCandidates.map(stripBulkyFields);
   if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.map(stripBulkyFields);
   if (Array.isArray((cp as any).finalistPool)) (cp as any).finalistPool = (cp as any).finalistPool.map(stripBulkyFields);
   if (Array.isArray((cp as any).rescuedLeads)) (cp as any).rescuedLeads = (cp as any).rescuedLeads.map(stripBulkyFields);
@@ -4865,6 +4870,7 @@ export function enforceCheckpointByteBudgetWithPayload(
   cp.queryRunsDelta = undefined;
   if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.slice(0, 5);
   if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.slice(0, 5);
+  if (Array.isArray(cp.disqualifiedCandidates)) cp.disqualifiedCandidates = cp.disqualifiedCandidates.slice(0, 5);
   if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.slice(0, 5);
   if (Array.isArray(cp.parkedCandidates)) cp.parkedCandidates = cp.parkedCandidates.slice(0, 5);
   if (Array.isArray(cp.roundHistory)) cp.roundHistory = cp.roundHistory.slice(-5);

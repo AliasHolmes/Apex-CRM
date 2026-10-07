@@ -239,8 +239,17 @@ const familyFor = (item: SearchQueryPlanItem, spec: SearchSpec) =>
 
 const laneFor = (item: SearchQueryPlanItem, spec: SearchSpec): QueryLane => {
   if (item.lane) return item.lane;
+  const isPersonBrief = spec.mode === "person_first" || (spec.person?.includeTitles?.length ?? 0) > 0;
   const family = familyFor(item, spec);
   if (family === "archetype_exploration") return "archetype";
+  // In person-first briefs, local_market, company_type, and industry_vertical search for decision makers
+  // in those segments, so they target the person lane to capture verified profile anchors.
+  if (
+    isPersonBrief &&
+    (family === "local_market" || family === "company_type" || family === "industry_vertical")
+  ) {
+    return "person";
+  }
   if (
     family === "pain_signal" ||
     family === "growth_signal" ||

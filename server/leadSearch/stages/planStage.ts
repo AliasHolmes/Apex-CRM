@@ -110,7 +110,8 @@ export function resolvePlannerProviderOrder(): string[] {
   if (env && env.trim()) {
     return env.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   }
-  return ["primary", "atria"];
+  // Exclude heavy reasoning models from low-latency query planning; prefer fast structured tier
+  return ["primary", "openrouter"];
 }
 
 export async function executePlanStage(
@@ -143,8 +144,9 @@ export async function executePlanStage(
   const { historicalPerformance, crmCompanies, crmDomains, metroSaturation } = (state as any)._planStageCache;
   // G5: key by domain_cluster|family|lane|provider so cluster rows and
   // CRM feedback rows no longer collide on one key and overwrite each other.
+  // Compact to top 12 relevant entries to keep strategist prompt tokens lean & fast.
   const historicalYield = Object.fromEntries(
-    historicalPerformance.slice(0, 30).map((row: any) => [
+    historicalPerformance.slice(0, 12).map((row: any) => [
       centroidEnabled
         ? centroidScopeKey(
             {
@@ -255,9 +257,15 @@ export async function executePlanStage(
   const exploredMetros = allKnownMetros.filter((metro) =>
     lowerPrevQueries.some((q) => q.includes(metro.toLowerCase())),
   );
+  // Non-rigid saturation: If user specifically locked query to a single metro, preserve it;
+  // otherwise, flag high-saturation metros (>=20 leads) to encourage geographic exploration.
+  const isSingleMetroBrief = resolvedGeo.metros.length === 1;
   const saturatedMetros = allKnownMetros.filter((metro) => {
+    if (isSingleMetroBrief && resolvedGeo.metros[0].toLowerCase() === metro.toLowerCase()) {
+      return false;
+    }
     const count = metroSaturation[metro.toLowerCase()] || 0;
-    return count >= 15;
+    return count >= 20;
   });
 
   const eligibleMetros: string[] = [];
@@ -278,7 +286,7 @@ export async function executePlanStage(
     return !isExplored && !isSaturated;
   });
 
-  // 2. Stall Ladder and Exhausted Signatures (Novelty Feedback)
+  // 2. Stall Ladder and Exhausted Signatures (Novelty Feedback + Cross-Session Saturation)
   const roundHistory = (state as any).roundHistory || ((state as any).previousRoundSummary ? [(state as any).previousRoundSummary] : []);
   const stallLevel = computeStallLevel(roundHistory);
 
@@ -290,6 +298,22 @@ export async function executePlanStage(
     const novelty = unique / Math.max(raw, 1);
     if (raw >= 5 && novelty < 0.20 && qr.query) {
       exhaustedSigs.push(buildQuerySignature(qr.query, { contract: config.contract }));
+    }
+  }
+
+  // Cross-session saturation memory: if a query signature in this cluster repeatedly produced >=65% duplicates,
+  // remember it so round 1-2 don't repeat saturated queries.
+  for (const row of historicalPerformance || []) {
+    const raw = Number(row.raw_candidates || 0);
+    const dups = Number(row.duplicate_candidates || 0);
+    const runs = Number(row.runs || 0);
+    if (runs >= 2 && raw >= 15 && dups / Math.max(raw, 1) >= 0.65 && row.family) {
+      exhaustedSigs.push({
+        roleClass: "other_role",
+        orgClass: row.family,
+        topicTokens: [],
+        geoAnchor: row.domain_cluster || "",
+      });
     }
   }
 
@@ -384,7 +408,7 @@ export async function executePlanStage(
           circuitBreaker: state.llmCircuitBreaker,
           signal: effectiveSignal,
           tierProviderOrder: resolvePlannerProviderOrder(),
-          providerHardTimeoutMs: { primary: 35_000, atria: 90_000 },
+          providerHardTimeoutMs: { primary: 20_000, openrouter: 25_000, atria: 25_000 },
           maxRetries: 0,
           reasoningEffort: "low",
           metadata: {

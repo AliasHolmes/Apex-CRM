@@ -133,42 +133,42 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
 1. **plan** — CRM negative-domain exclusion, JSON-aware metro-saturation avoidance
    (`$.profile.location` / `$.profile.city`), cross-session `discovered_companies` seeding
-   (`readDiscoveredCompanyNames(25)`), `resolveGeo` with pronoun-collision and city-only
-   geo guards (no `USA` invention for open-global briefs), strategist query generation,
-   cluster-keyed `historicalYield` (`domain_cluster|family|lane|provider`), and
-   `readOutcomeRate().rate` injection into `scheduleAdaptiveRetrievalTasks` (`planStage.ts`).
+   (`readDiscoveredCompanyNames(25)`), fast planner provider order (`primary` -> `openrouter`)
+   with capped timeouts (20s/25s) to eliminate strategist stall cascades, token-dieted
+   `historicalYield` (top 12), continuous cross-session query signature saturation detection
+   ($S_{market} \ge 0.60$ from SQLite), adaptive single-metro preservation with vertical
+   sub-niche specialization, `resolveGeo` with pronoun-collision and city-only geo guards,
+   and `readOutcomeRate().rate` injection into `scheduleAdaptiveRetrievalTasks` (`planStage.ts`).
    Replenishment metros are suffixed with their own canonical country rather than the
-   session's `targetCountry`, and `namesKnownMetro` (whole-word registry over
-   `COUNTRY_TO_METROS` + `EXTRA_KNOWN_METROS`) stops the context requirement from appending
-   a second country to a query that already names a city — the guard against strings like
-   `"Dallas Canada"` on a Canada+USA brief (`prospectContract.ts`, `discoveryEngine.ts`)
-2. **retrieve** — two-wave parallel Tavily + Bright Data lanes, conditional supplemental
-   fallback when Tavily yield is low, vagueness-aware `maxResults`/depth
-   (`vague: 20`, `rich: precision-tuned`), bounded `queryRewriter` rescue dispatched across
-   both credit-reservation and standard paths with `demotedRequirementId` threading and
-   Tier-1 immutable anchor protection (`retrieveStage.ts`, `queryRewriter.ts`)
+   session's `targetCountry`, and `namesKnownMetro` stops the context requirement from appending
+   a second country to a query that already names a city (`prospectContract.ts`, `discoveryEngine.ts`)
+2. **retrieve** — two-wave parallel Tavily + Bright Data lanes, intent-aware lane alignment
+   (keeping `local_market`, `company_type`, and `industry_vertical` in the `person` lane on
+   person briefs to prevent open-web profile starvation), conditional supplemental fallback
+   when Tavily yield is low, vagueness-aware `maxResults`/depth (`vague: 20`, `rich: precision-tuned`),
+   bounded `queryRewriter` rescue dispatched across both credit-reservation and standard paths with
+   `demotedRequirementId` threading and Tier-1 immutable anchor protection (`retrieveStage.ts`, `searchSpec.ts`, `queryRewriter.ts`)
 3. **fuse** — corroboration fusion, dedupe, ablation tagging, symmetrical bidirectional
    alias-aware term scoring (`MD` <-> `managing director`, `US` <-> `United States`)
    (`fuseStage.ts`, `aliasMap.ts`)
 4. **extract** — Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked;
-   the deterministic LinkedIn parser splits pipe-delimited headlines and refuses company
-   values that `looksLikeCompanyHint` flags as slogan, ellipsis, or marketing tagline,
-   deferring those candidates to the LLM instead of persisting a bad company field
-   (`extractStage.ts`, `observations.ts`)
-5. **verify** — hard-requirement verification, borderline survival band (`verifyStage.ts`)
-6. **judge** — pre-judge alias-aware role triage (`MD`/`VP`/`CTO` expanded; student,
-   intern, trainee, and apprentice titles are demoted to IC even when they claim
-   "founder"), tri-partition by evidence (excluding company-derived locations from
-   `person_location` auto-pass), `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with
-   negation polarity guard (`0.7 * window + 0.3 * setOverlap`), company-scoped `b2b_saas`
-   contradiction checks, `hard_fail` precedence over `fabricatedPass`, contract-aware
-   ranking (hard `1.2x` + soft `0.4x`), and the **primary admission gate**
-   (`evaluatePrimaryAdmission`): a hard `company_type` requirement — the requirement that
-   defines the brief — must be positively proven (one `any_of` member suffices), and a
-   fresh company attribution that is neither `verified_fit` nor `matches_brief` overrides
-   a judge `pass`. Ablated requirements are exempt; withheld candidates are scored `-1`
-   and counted in `withheldByAdmissionGate` (`judgeStage.ts`, `titleTriage.ts`,
-   `finalistJudge.ts`, `profileQuality.ts`, `scoring.ts`)
+   dual-channel extraction that routes non-person search results with organizational context
+   directly into `signalStore.addCompanySignal(...)` instead of dropping them; deterministic
+   LinkedIn parser splits pipe-delimited headlines and refuses company values that
+   `looksLikeCompanyHint` flags as slogan, ellipsis, or marketing tagline (`extractStage.ts`, `observations.ts`)
+5. **verify** — hard-requirement verification, borderline survival band, and **Multi-Tier
+   Company Entity Resolution** (`verifyStage.ts`): resolves value-prop headlines (e.g. "Founder & CEO | Helping B2B firms...")
+   via Tier 1 headline delimiters (`at`, `@`, `|`, `•`), Tier 2 domain stem, Tier 3 vanity handle
+   brand tokens, and Tier 4 Independent Practice designation (`[FullName] (Independent Practice)`)
+   with provisional entity tagging (`isProvisionalEntity: true`)
+6. **judge** — pre-judge role triage (`MD`/`VP`/`CTO` expanded; clear ICs, students, interns,
+   mayors, politicians, retired individuals, accountants, and customer support are discarded in 0ms;
+   while nuanced roles like `founding member` and `practice lead` are protected), tri-partition by
+   evidence, `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with negation polarity guard,
+   company-scoped `b2b_saas` contradiction checks, `hard_fail` precedence, contract-aware ranking,
+   and primary admission gate (`evaluatePrimaryAdmission`). Post-judging saves a segregated
+   checkpoint with strictly qualified leads in `acceptedLeads` and segregated audit records in
+   `disqualifiedCandidates` (`judgeStage.ts`, `titleTriage.ts`, `discoveryEngine.ts`, `server/db.ts`)
 7. **select** — pre-selection intent probing on top qualified candidates (Phase 4 company
    intent + Phase 5 LinkedIn post intent on top `ceil(targetLimit * 1.5)` pool) to activate
    all 4 Pareto dimensions, followed by Pareto skyline + MMR diversification (`selectStage.ts`)

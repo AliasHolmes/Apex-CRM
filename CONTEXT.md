@@ -133,3 +133,18 @@ The persistent company taxonomy tables in SQLite Schema v26. `company_profiles` 
 ### Cross-Round Retrieval Cache (`retrievalCache.ts`)
 A query-hash-keyed cache layer built on `search_cache` with configurable TTL (`LEAD_RETRIEVAL_CACHE_TTL_DAYS`, default 3 days). Identical search queries (e.g. initial persona or location searches) are retrieved in 0ms from SQLite rather than consuming external search provider credits or network latency.
 
+### Multi-Tier Company Entity Resolution (`verifyStage.ts`)
+A 4-tier resolution engine that prevents `missing_company_entity` rejections for verified business owners and partners who write value-proposition headlines (e.g. "Founder & CEO | Helping B2B companies scale with AI"). Tier 1 parses explicit headline delimiters (`at`, `@`, `|`, `•`); Tier 2 extracts website domain stems from verified personal links; Tier 3 parses semantic brand names from vanity LinkedIn URLs; and Tier 4 applies an **Independent Practice Designation** for verified owners offering client services.
+
+### Independent Practice Designation (`isProvisionalEntity`)
+A provisional entity attribution (`[FullName] (Independent Practice)`) assigned to verified decision makers (owners, founders, managing partners) whose headlines confirm client services/advisory/solutions when no explicit corporate brand can be extracted. Prevents false-negative discards at the verification gate while queuing the prospect for downstream domain discovery.
+
+### Probabilistic Market Saturation & Soft Repulsion (`querySignature.ts`, `planStage.ts`)
+A continuous saturation index ($S_{market} \ge 0.60$) based on duplicate rates recorded in SQLite per query signature and geography. For geographically flexible briefs (e.g. "in USA, Canada"), the strategist applies soft repulsion to saturated Tier-1 metros and boosts unvisited secondary hubs. For locked single-metro briefs (e.g. "in Toronto only"), it preserves the target city and pivots dynamically into vertical sub-niche specialization (e.g. "healthcare AI", "legal automation firm") to break the duplicate wall without violating user intent.
+
+### First-Class Checkpoint Segregation (`discoveryEngine.ts`, `server/db.ts`)
+The post-judging checkpoint architecture that cleanly segregates verified results: `acceptedLeads` strictly holds 100% qualified prospects (`verdict === 'qualified' | 'qualified_partial'`), while `disqualifiedCandidates` captures deterministic pre-triage drops, LLM hard fails, and unjudged candidates with exact failure reasons and scores. This ensures CRM views display clean leads while session audit tools retain full funnel visibility.
+
+### Dual-Channel Company Signal Ingestion (`extractStage.ts`)
+An ingestion pathway that routes non-person search results containing rich organizational intelligence directly into `signalStore.addCompanySignal(...)` instead of discarding them. Discovered companies and client contexts are preserved in the cross-session knowledge graph to fuel downstream account-level discovery and reverse flywheels.
+

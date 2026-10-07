@@ -2544,6 +2544,70 @@ export async function executeDiscoverySession(
     }
     checkpointAcceptedLeads(qualifiedLeads, "post_finalist_judge");
 
+    const qualifiedKeySet = new Set<string>();
+    for (const q of qualifiedLeads) {
+      if (q.id) qualifiedKeySet.add(q.id);
+      const url = q.contactDetails?.linkedinUrl || q.sourceUrl || "";
+      if (url) {
+        qualifiedKeySet.add(url);
+        const norm = normalizeLinkedInUrl(url);
+        if (norm) qualifiedKeySet.add(norm);
+        const uName = extractLinkedInUsername(url);
+        if (uName) qualifiedKeySet.add(uName);
+      }
+      buildProfileDedupeKeys(q).forEach((k) => qualifiedKeySet.add(k));
+    }
+
+    const disqualifiedCandidates: any[] = [];
+    for (const lead of acceptedLeads) {
+      const keys = [
+        lead.id,
+        lead.contactDetails?.linkedinUrl,
+        lead.sourceUrl,
+        ...buildProfileDedupeKeys(lead),
+      ].filter(Boolean);
+      const isQualified = keys.some((k) => qualifiedKeySet.has(k as string));
+      if (!isQualified) {
+        disqualifiedCandidates.push(lead);
+      }
+    }
+
+    saveMiningSessionCheckpoint(sessionId, {
+      sessionId,
+      round: stats.rounds || 1,
+      stage: "post_finalist_judge",
+      promptQuery,
+      targetLimit,
+      contract,
+      searchSpec,
+      requestContext: checkpointRequestContext,
+      queryRuns: [],
+      queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
+      acceptedLeads: qualifiedLeads.slice(0, 240),
+      qualifiedLeads: qualifiedLeads.slice(0, 240),
+      disqualifiedCandidates: disqualifiedCandidates.slice(0, 240),
+      finalLeads: [],
+      rejectionCounts: stats.rejectionReasons,
+      failureCounts: brightDataStats.failureReasons,
+      brightDataStats,
+      existingCrmLeadsSkipped: stats.existingCrmLeadsSkipped,
+      previousRoundSummary,
+      roundHistory: roundHistory.slice(-10),
+      evidenceByUrl: buildCheckpointEvidence(
+        evidenceByUrl,
+        qualifiedLeads.slice(0, 240),
+      ),
+      leadQueryRunMap: leadQueryRuns.toJSON(),
+      debugLogsTail: debugLogs.slice(-100),
+      signalStoreState: sessionState.signalStore?.toJSON(),
+      recoveryAttempts: sessionState.recoveryAttempts,
+      datasetSearchAfter: sessionState.datasetSearchAfter,
+      seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
+      parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+      updatedAt: new Date().toISOString(),
+    });
+    checkpointedQueryRunCount = stats.queryRuns.length;
+
     if (acceptedLeads.length > 0 && qualifiedLeads.length > 0) {
       const observedPassRate = Number(
         (qualifiedLeads.length / acceptedLeads.length).toFixed(2),

@@ -1124,6 +1124,19 @@ export async function evaluateIncrementalJudgeBatches(
     logEvent(
       `Incremental Judge Round ${round}: reached target cushion (${cumulativeQualified}/${targetCushion}); skipped ${microBatches.length - startedCount} of ${microBatches.length} remaining batch(es).`,
     );
+    for (let bIdx = startedCount; bIdx < microBatches.length; bIdx++) {
+      for (const skippedCand of microBatches[bIdx]) {
+        if (!judgmentInsights.has(skippedCand.candidateId)) {
+          const skippedInsight = {
+            status: "unjudged" as FinalistOutcomeStatus,
+            score: -1,
+            reason: `Target quota satisfied (${cumulativeQualified}/${targetCushion}); candidate reserved in audit log.`,
+          };
+          judgmentInsights.set(skippedCand.candidateId, skippedInsight);
+          skippedCand.lead.judgmentInsight = skippedInsight;
+        }
+      }
+    }
   }
 
   if (withheldByAdmissionGate > 0) {

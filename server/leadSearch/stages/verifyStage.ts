@@ -249,6 +249,42 @@ export async function executeVerifyStage(
             }
           } catch {}
         }
+
+        // Tier 3: LinkedIn vanity URL slug analysis
+        if (!resolvedCompany) {
+          const profileUrl = String(lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || lead?.url || "");
+          const username = extractLinkedInUsername(profileUrl);
+          if (username && username.includes("-")) {
+            const agencySlugMatch = username.match(/^[a-z]+-[a-z]+-((?:ai-)?(?:agency|consulting|studio|solutions|labs|partners|media|group|digital))/i);
+            if (agencySlugMatch && agencySlugMatch[1]) {
+              const formattedSlug = agencySlugMatch[1]
+                .replace(/-/g, " ")
+                .replace(/\b\w/g, (c: string) => c.toUpperCase());
+              if (looksLikeCompanyHint(formattedSlug)) {
+                resolvedCompany = formattedSlug;
+              }
+            }
+          }
+        }
+
+        // Tier 4: Independent Practice designation with provenance
+        // Captures verified agency owners/principals with value-prop headlines rather than hard-dropping them
+        if (!resolvedCompany) {
+          const headlineText = String(lead?.headline || lead?.currentTitle || "");
+          const isVerifiedOwner = /\b(founder|owner|ceo|principal|managing partner|co-founder|proprietor)\b/i.test(lead?.currentTitle || headlineText);
+          const hasServiceKeywords = /\b(agency|consulting|consultancy|services|solutions|studio|partners|lab|advisory|digital)\b/i.test(headlineText);
+          const fullName = String(lead?.fullName || "").trim();
+
+          if (isVerifiedOwner && hasServiceKeywords && fullName && fullName.length >= 3) {
+            resolvedCompany = `${fullName} (Independent Practice)`;
+            lead.companyEntityResolution = {
+              verified: true,
+              companyName: resolvedCompany,
+              source: "independent_practice_heuristic",
+              isProvisionalEntity: true,
+            };
+          }
+        }
       }
 
       if (resolvedCompany) {

@@ -28,6 +28,9 @@ const {
   getSavedSearchExcludeList,
   updateSavedSearchExcludeList,
   upsertSavedSearch,
+  saveMiningSessionCheckpoint,
+  readMiningSessionCheckpoint,
+  enforceCheckpointByteBudget,
 } = await import('../server/db.ts');
 
 const { mapCandidateToPersistedLead } = await import('../server/leadSearch/discoveryEngine.ts');
@@ -587,3 +590,56 @@ test('Fix 3A: recordQueryPerformance merges JSON requirement_fail_digest via jso
   assert.equal(parsed['req-new'], 3, 'Should include first update key');
   assert.equal(parsed['req-final'], 7, 'Should json_patch second update key');
 });
+
+test('Component 5: checkpoint stores segregated disqualifiedCandidates alongside qualified acceptedLeads', () => {
+  const sessionId = 'cp-segregation-test';
+  const cp = {
+    sessionId,
+    round: 1,
+    stage: 'post_finalist_judge',
+    promptQuery: 'AI agency owner',
+    targetLimit: 10,
+    contract: {},
+    queryRuns: [],
+    acceptedLeads: [
+      { id: 'lead-qualified-1', fullName: 'Alice Founder', qualification: { verdict: 'qualified' } },
+    ],
+    qualifiedLeads: [
+      { id: 'lead-qualified-1', fullName: 'Alice Founder', qualification: { verdict: 'qualified' } },
+    ],
+    disqualifiedCandidates: [
+      { id: 'lead-disqualified-1', fullName: 'Bob Intern', judgmentInsight: { status: 'hard_fail', reason: 'Non-decision maker role' } },
+      { id: 'lead-disqualified-2', fullName: 'Charlie Student', judgmentInsight: { status: 'hard_fail', reason: 'Student profile' } },
+    ],
+    finalLeads: [],
+    rejectionCounts: {},
+    failureCounts: {},
+    brightDataStats: {},
+    updatedAt: new Date().toISOString(),
+  };
+
+  upsertMiningSession({
+    id: sessionId,
+    status: 'running',
+    prompt: 'AI agency owner',
+    requestedLimit: 10,
+    startedAt: new Date().toISOString(),
+  });
+
+  saveMiningSessionCheckpoint(sessionId, cp as any);
+
+  const restored = readMiningSessionCheckpoint(sessionId);
+  assert.ok(restored, 'Should read checkpoint');
+  assert.equal(restored.stage, 'post_finalist_judge');
+  assert.equal(restored.acceptedLeads.length, 1);
+  assert.equal(restored.acceptedLeads[0].fullName, 'Alice Founder');
+  assert.equal(restored.disqualifiedCandidates?.length, 2);
+  assert.equal(restored.disqualifiedCandidates?.[0].fullName, 'Bob Intern');
+  assert.equal(restored.disqualifiedCandidates?.[0].judgmentInsight?.status, 'hard_fail');
+
+  // Verify byte budget enforcement preserves disqualifiedCandidates
+  const budgeted = enforceCheckpointByteBudget(cp as any);
+  assert.ok(Array.isArray(budgeted.disqualifiedCandidates));
+  assert.equal(budgeted.disqualifiedCandidates.length, 2);
+});
+

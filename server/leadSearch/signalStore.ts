@@ -231,6 +231,28 @@ export class SignalStore {
     );
   }
 
+  addCompanySignal(
+    companyName: string,
+    meta?: {
+      query?: string;
+      url?: string;
+      confidence?: number;
+      text?: string;
+      round?: number;
+    },
+  ): void {
+    const rawCompany = String(companyName || '').trim();
+    if (!rawCompany || !looksLikeCompanyHint(rawCompany)) return;
+    this.add({
+      companyName: rawCompany,
+      text: meta?.text || `${rawCompany} entity context`,
+      url: meta?.url || '',
+      query: meta?.query || '',
+      round: meta?.round || 1,
+      confidence: meta?.confidence || 0.7,
+    });
+  }
+
   registerDiscoveredCompany(
     companyName: string,
     signalText: string,

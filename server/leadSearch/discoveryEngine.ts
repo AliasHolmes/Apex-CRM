@@ -1217,6 +1217,31 @@ export async function executeDiscoverySession(
           if (stableId) seenCandidateKeys.add(stableId);
         }
       }
+      if (Array.isArray(cp.disqualifiedCandidates)) {
+        for (const lead of cp.disqualifiedCandidates) {
+          buildProfileDedupeKeys(lead).forEach((k) => {
+            existingKeys.add(k);
+            seenCandidateKeys.add(k);
+          });
+          const stableId = candidateStableId(lead);
+          if (stableId) seenCandidateKeys.add(stableId);
+          const linkedinUrl =
+            lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "";
+          const username = extractLinkedInUsername(linkedinUrl);
+          if (username) {
+            seenCandidateKeys.add(`linkedin:${username}`);
+            seenCandidateKeys.add(username);
+          }
+          const normalized = normalizeLinkedInUrl(linkedinUrl);
+          if (normalized) {
+            seenCandidateKeys.add(normalized);
+            seenCandidateKeys.add(`linkedin:${normalized}`);
+            seenCandidateKeys.add(`url:${normalized}`);
+          }
+          const personKey = normalized || username || stableId || linkedinUrl;
+          if (personKey) seenPersonIdentifiers.add(personKey);
+        }
+      }
       if (Array.isArray((cp as any).seenCandidateKeys)) {
         for (const k of (cp as any).seenCandidateKeys) {
           if (typeof k === "string" && k) seenCandidateKeys.add(k);
@@ -2558,6 +2583,7 @@ export async function executeDiscoverySession(
       buildProfileDedupeKeys(q).forEach((k) => qualifiedKeySet.add(k));
     }
 
+    const seenDisqualifiedKeys = new Set<string>();
     const disqualifiedCandidates: any[] = [];
     for (const lead of acceptedLeads) {
       const keys = [
@@ -2568,7 +2594,11 @@ export async function executeDiscoverySession(
       ].filter(Boolean);
       const isQualified = keys.some((k) => qualifiedKeySet.has(k as string));
       if (!isQualified) {
-        disqualifiedCandidates.push(lead);
+        const primaryKey = (lead.id || lead.contactDetails?.linkedinUrl || lead.sourceUrl || keys[0]) as string;
+        if (primaryKey && !seenDisqualifiedKeys.has(primaryKey)) {
+          seenDisqualifiedKeys.add(primaryKey);
+          disqualifiedCandidates.push(lead);
+        }
       }
     }
 

@@ -301,21 +301,6 @@ export async function executePlanStage(
     }
   }
 
-  // Cross-session saturation memory: if a query signature in this cluster repeatedly produced >=65% duplicates,
-  // remember it so round 1-2 don't repeat saturated queries.
-  for (const row of historicalPerformance || []) {
-    const raw = Number(row.raw_candidates || 0);
-    const dups = Number(row.duplicate_candidates || 0);
-    const runs = Number(row.runs || 0);
-    if (runs >= 2 && raw >= 15 && dups / Math.max(raw, 1) >= 0.65 && row.family) {
-      exhaustedSigs.push({
-        roleClass: "other_role",
-        orgClass: row.family,
-        topicTokens: [],
-        geoAnchor: row.domain_cluster || "",
-      });
-    }
-  }
 
   const minedRefinementTerms = mineQueryRefinements(
     (state as any).acceptedLeads || (state as any).qualifiedLeads || [],

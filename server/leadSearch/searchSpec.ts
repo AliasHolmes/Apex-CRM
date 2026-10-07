@@ -542,13 +542,6 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
     lowerQueries.some((q) => q.includes(metro.toLowerCase())),
   );
 
-  // Detect CRM-saturated metros
-  const metroSaturation = params.metroSaturation || {};
-  const saturatedMetros = allKnownMetros.filter((metro) => {
-    const count = metroSaturation[metro.toLowerCase()] || 0;
-    return count >= 15;
-  });
-
   // Determine target countries from brief or contract
   const briefText = params.contract?.brief || params.query || "";
   const resolvedGeo = resolveGeo(briefText);
@@ -562,6 +555,17 @@ ${params.contract.requirements.map((r) => `  - [${r.importance}/${r.scope}/${r.e
       }
     }
   }
+
+  // Detect CRM-saturated metros (preserve targeted single metro)
+  const isSingleMetroBrief = resolvedGeo.metros.length === 1;
+  const metroSaturation = params.metroSaturation || {};
+  const saturatedMetros = allKnownMetros.filter((metro) => {
+    if (isSingleMetroBrief && resolvedGeo.metros[0].toLowerCase() === metro.toLowerCase()) {
+      return false;
+    }
+    const count = metroSaturation[metro.toLowerCase()] || 0;
+    return count >= 20;
+  });
 
   const eligibleMetros: string[] = [];
   if (targetCountryCanonical) {

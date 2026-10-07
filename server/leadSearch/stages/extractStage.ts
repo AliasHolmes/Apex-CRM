@@ -368,13 +368,14 @@ export async function executeExtractStage(
     // If item is from a signal lane and has no LinkedIn URL, route company signal to signalStore if available
     const isSignalLane = item._queryLane === "signal" || item.lane === "signal";
     if (!isExplicitLinkedInProfile && isSignalLane) {
-      if (state.signalStore && typeof (state.signalStore as any).addCompanySignal === "function") {
+      if (state.signalStore) {
         const companyHint = item.title?.split(/[-|:]/)[0]?.trim();
         if (companyHint) {
-          (state.signalStore as any).addCompanySignal(companyHint, {
+          state.signalStore.addCompanySignal(companyHint, {
             query: item._sourceQuery || "",
             url: effectiveUrl,
             confidence: 0.7,
+            round,
           });
         }
       }
@@ -411,13 +412,14 @@ export async function executeExtractStage(
         item.url = rescuedUrl;
       } else {
         // Dual-Channel Ingestion: Capture company evidence from non-person search results rather than losing the intelligence
-        if (state.signalStore && typeof (state.signalStore as any).addCompanySignal === "function") {
+        if (state.signalStore) {
           const companyHint = item.title?.split(/[-|:•·]/)[0]?.trim();
           if (companyHint && companyHint.length >= 3 && !/linkedin|google|login|search|jobs|directory/i.test(companyHint)) {
-            (state.signalStore as any).addCompanySignal(companyHint, {
+            state.signalStore.addCompanySignal(companyHint, {
               query: item._sourceQuery || "",
               url: effectiveUrl,
               confidence: 0.65,
+              round,
             });
           }
         }

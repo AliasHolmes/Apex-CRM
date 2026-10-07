@@ -130,6 +130,7 @@ export type MiningSessionCheckpoint = {
   queryRuns: QueryRunStats[];
   acceptedLeads: any[];
   qualifiedLeads: any[];
+  disqualifiedCandidates?: any[];
   finalLeads: any[];
   rejectionCounts: Record<string, number>;
   failureCounts?: Record<string, number>;

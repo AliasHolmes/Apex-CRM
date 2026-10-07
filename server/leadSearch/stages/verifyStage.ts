@@ -289,6 +289,11 @@ export async function executeVerifyStage(
 
       if (resolvedCompany) {
         lead.currentCompany = resolvedCompany;
+        if (!lead.company) lead.company = resolvedCompany;
+        if (lead.profile && typeof lead.profile === "object") {
+          lead.profile.currentCompany = resolvedCompany;
+          if (!lead.profile.company) lead.profile.company = resolvedCompany;
+        }
       }
     }
 

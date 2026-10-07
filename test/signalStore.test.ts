@@ -224,3 +224,15 @@ test('Fix 5E: harvestSignalsFromSearchItems harvests company signals and persist
   const persisted = readDiscoveredCompanyNames(50);
   assert.ok(persisted.includes('OrbitOps AI'));
 });
+
+test('addCompanySignal registers valid company and ignores non-company names', () => {
+  const store = new SignalStore();
+  store.addCompanySignal('Valid Studio AI', { query: 'test query', round: 2, confidence: 0.8 });
+  store.addCompanySignal('linkedin', { query: 'test query' });
+  store.addCompanySignal('   ', { query: 'test query' });
+
+  assert.equal(store.size, 1);
+  const names = store.getUniqueCompanyNames();
+  assert.ok(names.includes('Valid Studio AI'));
+  assert.ok(!names.includes('linkedin'));
+});

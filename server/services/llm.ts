@@ -1991,9 +1991,10 @@ async function sendChatCompletion(
 
     const stageName = stage || options?.metadata?.operation;
     const stageTag = stageName ? ` \x1b[94m[${stageName}]\x1b[0m` : "";
+    const latencySec = (latencyMs / 1000).toFixed(1);
     // Rich ANSI colored console log
     console.log(
-      `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencyMs}ms\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m${stageTag}`,
+      `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencySec}s\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m${stageTag}`,
     );
 
     sendDirectLangfuseTrace({

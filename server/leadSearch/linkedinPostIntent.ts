@@ -14,6 +14,7 @@ import {
 } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
 import { applyPostIntentDelta } from './scoring.js';
+import { formatLatencySeconds } from './terminalLog.js';
 import type { ProspectContract } from './prospectContract.js';
 import type { BrightDataSearchResult, BrightDataSearchOptions } from '../services/brightdata.js';
 
@@ -321,7 +322,7 @@ Analyze the snippets and classify the prospect's intent:`;
     const latency = Date.now() - startedAt;
     const tokens = usage?.totalTokens;
     logEvent?.(
-      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent: ${name} -> ${category} (${quality})]`,
+      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent: ${name} -> ${category} (${quality})]`,
     );
 
     recordTrace?.({
@@ -467,7 +468,7 @@ ${promptSections}`;
     const latency = Date.now() - startedAt;
     const tokens = usage?.totalTokens;
     logEvent?.(
-      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent Batch: ${candidates.length} candidates]`,
+      `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [LinkedIn Post Intent Batch: ${candidates.length} candidates]`,
     );
 
     recordTrace?.({

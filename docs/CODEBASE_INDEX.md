@@ -510,9 +510,17 @@ substantial CRM interface refresh:
   primitives. PWA icons/manifest and CSP-safe theme initialization were added.
 - **Current verification**: `npm run typecheck` (`tsc --noEmit`) passes with 0 errors after pruning the unused import in `yieldOptimization.test.ts`. The targeted yield optimization test suite (`test/yieldOptimization.test.ts` + `test/titleTriage.test.ts`) is 100% green (45/45 assertions passed).
 
+### 9.16 Terminal Telemetry and Duration Formatting — LANDED (2026-10-08)
+
+Refined time formatting and live telemetry display across both web terminal UI and backend logs:
+
+- **Hours-aware Session Duration (`TraceTerminal.tsx`)**: `formatDuration` handles hours when session duration $\ge 1\text{ hour}$ (`${hours}h ${minutes}m ${seconds}s`), avoiding large unsegmented minute numbers (e.g., `1h 25m 0s` instead of `85m 0s`) while preserving active ticking seconds.
+- **LLM Call Telemetry in Seconds (`TraceTerminal.tsx`, `terminalLog.ts`, engine stages)**: Added `formatLatencySeconds` to format raw millisecond latencies into clean seconds representations (e.g., `117.1s`, `45.0s`, `2.5s`). Updated terminal log parser (`LLM_200_STRUCTURED_RE`) to accept both `ms` and `s` tokens, and converted backend LLM 200 OK log emission to seconds across `discoveryEngine.ts`, `planStage.ts`, `extractStage.ts`, `judgeStage.ts`, `linkedinPostIntent.ts`, and `llm.ts`.
+- **Test Coverage**: Added test cases in `test/uiContracts.test.ts` (18/18 passing) and `test/terminalLog.test.ts` (8/8 passing).
+
 ## 10. Recommended next actions
 
-Updated 2026-10-06.
+Updated 2026-10-08.
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done — open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done — Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.

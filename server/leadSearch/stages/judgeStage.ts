@@ -16,6 +16,7 @@ import {
   type LLMUsage,
 } from "../../services/llm.js";
 import { estimateTokenCount } from "../llmBudget.js";
+import { formatLatencySeconds } from "../terminalLog.js";
 import { summarizeLLM } from "../telemetry.js";
 import { rankLeadForFinalSelection } from "../scoring.js";
 import { effectiveScore as sharedEffectiveScore } from "../sessionHelpers.js";
@@ -900,7 +901,7 @@ export async function evaluateIncrementalJudgeBatches(
       const latency = Date.now() - judgeStarted;
       const tokens = judgeUsage?.totalTokens;
       logEvent(
-        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Incremental Judge: ${batchQualified.length}/${batch.length} qualified]`,
+        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Incremental Judge: ${batchQualified.length}/${batch.length} qualified]`,
       );
 
       recordTrace({

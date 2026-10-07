@@ -47,6 +47,7 @@ import {
   buildStallGridQueries,
   buildDirectoryDiscoveryQueries,
 } from "../stallLadder.js";
+import { formatLatencySeconds } from "../terminalLog.js";
 import {
   scheduleAdaptiveRetrievalTasks,
   deriveContractDomainCluster,
@@ -422,7 +423,7 @@ export async function executePlanStage(
       const latency = Date.now() - strategyStarted;
       const tokens = strategyUsage?.totalTokens;
       logEvent(
-        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Strategist Planning: ${normalizeQueryPlanItems(queryResult).length} queries]`,
+        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Strategist Planning: ${normalizeQueryPlanItems(queryResult).length} queries]`,
       );
 
       const reqLog = {

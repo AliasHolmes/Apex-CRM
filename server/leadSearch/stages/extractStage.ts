@@ -51,6 +51,7 @@ import {
   companyEqualsLocation,
   cleanCompanyNameFromUrlOrTitle,
 } from "../observations.js";
+import { formatLatencySeconds } from "../terminalLog.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceQuality, LeadSourceProvider } from "../scoring.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -1203,7 +1204,7 @@ Evidence:
       const latency = Date.now() - extractionStarted;
       const tokens = extractionUsage?.totalTokens;
       logEvent(
-        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Extraction Chunk ${chunkIndex}/${chunks.length}: ${extractedLeads.length} leads]`,
+        `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Extraction Chunk ${chunkIndex}/${chunks.length}: ${extractedLeads.length} leads]`,
       );
 
       const verboseDebugLogs =

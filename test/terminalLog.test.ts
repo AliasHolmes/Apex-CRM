@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { colorizeTerminalLog, ANSI } from '../server/leadSearch/terminalLog.js';
+import { colorizeTerminalLog, formatLatencySeconds, ANSI } from '../server/leadSearch/terminalLog.js';
 
 describe('colorizeTerminalLog', () => {
   it('colorizes the exact screenshot judge summary line with timestamp', () => {
@@ -63,10 +63,21 @@ describe('colorizeTerminalLog', () => {
     assert.strictEqual(colored, raw);
   });
 
-  it('does not double colorize lines that already have ANSI codes', () => {
-    const alreadyColored = `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1mAtria\x1b[0m`;
-    const colored = colorizeTerminalLog(alreadyColored);
+  it('colorizes LLM 200 line with latency in seconds', () => {
+    const raw =
+      '[2026-10-04T23:28:53.911Z] [LLM 200 OK] Atria \u00b7 model: Atria-Dawn-Preview \u00b7 117.1s \u00b7 4,855 tok [Incremental Judge: 1/5 qualified]';
+    const colored = colorizeTerminalLog(raw);
 
-    assert.strictEqual(colored, alreadyColored);
+    assert.ok(colored.includes(`${ANSI.yellow}117.1s${ANSI.reset}`));
+    assert.ok(colored.includes(`${ANSI.green}[LLM 200 OK]${ANSI.reset}`));
+  });
+
+  it('formatLatencySeconds converts ms to clean seconds representation', () => {
+    assert.strictEqual(formatLatencySeconds(117139), '117.1s');
+    assert.strictEqual(formatLatencySeconds(45000), '45.0s');
+    assert.strictEqual(formatLatencySeconds(2500), '2.5s');
+    assert.strictEqual(formatLatencySeconds(450), '0.45s');
+    assert.strictEqual(formatLatencySeconds(50), '0.05s');
+    assert.strictEqual(formatLatencySeconds(0), '0.0s');
   });
 });

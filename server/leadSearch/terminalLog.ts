@@ -21,9 +21,23 @@ export const ANSI = {
 const TIMESTAMP_PREFIX_RE = /^(\[\d{4}-\d{2}-\d{2}T[0-9:.]+Z\])\s+(.*)$/;
 const HAS_ANSI_RE = /\x1b\[[0-9;]*m/;
 
-// Strict parser for standard structured [LLM 200 OK] lines
+export function formatLatencySeconds(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0.0s";
+  const sec = ms / 1000;
+  if (sec < 0.1) {
+    return `${(Math.round(sec * 1000) / 1000).toFixed(2)}s`;
+  }
+  if (sec < 1) {
+    const rounded = Math.round(sec * 100) / 100;
+    return Number.isInteger(rounded * 10) ? `${rounded.toFixed(1)}s` : `${rounded}s`;
+  }
+  const rounded = Math.round(sec * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}.0s` : `${rounded}s`;
+}
+
+// Strict parser for standard structured [LLM 200 OK] lines (accepts both ms and s)
 const LLM_200_STRUCTURED_RE =
-  /^\[LLM 200 OK\]\s+([^\s\u00b7·]+)\s+[\u00b7·]\s+model:\s+([^\s\u00b7·]+)\s+[\u00b7·]\s+([\d,]+ms)(?:\s+[\u00b7·]\s+([\d,]+ tok))?(?:\s+(.*))?$/;
+  /^\[LLM 200 OK\]\s+([^\s\u00b7·]+)\s+[\u00b7·]\s+model:\s+([^\s\u00b7·]+)\s+[\u00b7·]\s+([\d,]+(?:\.\d+)?(?:ms|s))(?:\s+[\u00b7·]\s+([\d,]+ tok))?(?:\s+(.*))?$/;
 
 // Generic fallback for any other [LLM 200 OK] lines
 const LLM_200_GENERIC_RE = /^\[LLM 200 OK\](?:\s+(.*))?$/;

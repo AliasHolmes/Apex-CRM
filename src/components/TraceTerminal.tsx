@@ -568,13 +568,37 @@ export const TraceSummaryViewer = ({
   );
 };
 
+export function formatLatencySeconds(latencyStr?: string): string {
+  if (!latencyStr) return '';
+  const cleaned = latencyStr.replace(/,/g, '').trim();
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return latencyStr;
+
+  if (cleaned.endsWith('s') && !cleaned.endsWith('ms')) {
+    return cleaned;
+  }
+
+  const sec = num / 1000;
+  if (sec <= 0) return '0.0s';
+  if (sec < 0.1) {
+    return `${(Math.round(sec * 1000) / 1000).toFixed(2)}s`;
+  }
+  if (sec < 1) {
+    const rounded = Math.round(sec * 100) / 100;
+    return Number.isInteger(rounded * 10) ? `${rounded.toFixed(1)}s` : `${rounded}s`;
+  }
+  const rounded = Math.round(sec * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}.0s` : `${rounded}s`;
+}
+
 function renderTerminalLog(log: string) {
   if (log.includes('[LLM 200 OK]')) {
     const match = log.match(
-      /\[LLM 200 OK\]\s+([^\s\u00b7]+)\s+\u00b7\s+model:\s+([^\s\u00b7]+)\s+\u00b7\s+([\d,]+ms)(?:\s+\u00b7\s+([\d,]+ tok))?(?:\s+(.*))?/,
+      /\[LLM 200 OK\]\s+([^\s\u00b7]+)\s+\u00b7\s+model:\s+([^\s\u00b7]+)\s+\u00b7\s+([\d,]+(?:\.\d+)?(?:ms|s))(?:\s+\u00b7\s+([\d,]+ tok))?(?:\s+(.*))?/,
     );
     if (match) {
-      const [, provider, model, latency, tokens, details] = match;
+      const [, provider, model, rawLatency, tokens, details] = match;
+      const latency = formatLatencySeconds(rawLatency);
       return (
         <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
           <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-success/20 text-success border border-success/40 shadow-sm shadow-success">
@@ -608,7 +632,10 @@ function renderTerminalLog(log: string) {
   if (log.includes('[LLM ERROR') || log.startsWith('WARN:')) {
     const isError = log.includes('[LLM ERROR');
     const badgeText = isError ? 'LLM ERROR' : 'WARNING';
-    const cleanLog = log.replace(/^\[LLM ERROR[^\]]*\]\s*/, '').replace(/^WARN:\s*/, '');
+    const cleanLog = log
+      .replace(/^\[LLM ERROR[^\]]*\]\s*/, '')
+      .replace(/^WARN:\s*/, '')
+      .replace(/\b([\d,]+(?:\.\d+)?)\s*ms\b/g, (_, msVal) => formatLatencySeconds(`${msVal}ms`));
     return (
       <span className="inline-flex flex-wrap items-center gap-1.5 py-0.5">
         <span

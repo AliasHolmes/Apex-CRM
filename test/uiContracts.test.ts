@@ -169,7 +169,7 @@ test('miningTraceStore manages session live state and subscriber notifications',
   miningTraceStore.resetSession(sessionId);
 });
 
-import { formatDuration } from '../src/components/TraceTerminal.js';
+import { formatDuration, formatLatencySeconds } from '../src/components/TraceTerminal.js';
 
 test('formatDuration accurately handles millisecond, second, minute, and hour ranges', () => {
   assert.equal(formatDuration(undefined), '0s');
@@ -187,10 +187,22 @@ test('formatDuration accurately handles millisecond, second, minute, and hour ra
   assert.equal(formatDuration(5130000), '1h 25m 30s');
 });
 
+test('formatLatencySeconds converts ms strings and preserves seconds', () => {
+  assert.equal(formatLatencySeconds('117139ms'), '117.1s');
+  assert.equal(formatLatencySeconds('45000ms'), '45.0s');
+  assert.equal(formatLatencySeconds('2500ms'), '2.5s');
+  assert.equal(formatLatencySeconds('450ms'), '0.45s');
+  assert.equal(formatLatencySeconds('50ms'), '0.05s');
+  assert.equal(formatLatencySeconds('0ms'), '0.0s');
+  assert.equal(formatLatencySeconds('2.5s'), '2.5s');
+  assert.equal(formatLatencySeconds('117.1s'), '117.1s');
+});
+
 test('TraceTerminal exports duration metrics card and live session telemetry', () => {
   const terminalSource = readFileSync(path.resolve('src/components/TraceTerminal.tsx'), 'utf8');
   assert.match(terminalSource, /useSessionDuration/);
   assert.match(terminalSource, /formatDuration/);
+  assert.match(terminalSource, /formatLatencySeconds/);
   assert.match(terminalSource, /<span>Duration<\/span>/);
   assert.match(terminalSource, /Running:\s*\$\{formatDuration/);
 });

@@ -145,7 +145,7 @@ import {
   requestContextFromOptions,
   resumeOptionsFromCheckpoint,
 } from "./sessionHelpers.js";
-import { colorizeTerminalLog } from "./terminalLog.js";
+import { colorizeTerminalLog, formatLatencySeconds } from "./terminalLog.js";
 
 export interface DiscoveryRequest {
   sessionId?: string;
@@ -731,12 +731,12 @@ export async function executeDiscoverySession(
           const droppedCount = contract.droppedUngroundedRequirements?.length || 0;
           const droppedInfo = droppedCount > 0 ? `, ${droppedCount} dropped ungrounded` : "";
           logEvent(
-            `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${latency}ms${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Contract Compilation: v${contract.policyVersion} (${hardCount} hard reqs${droppedInfo})]`,
+            `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Contract Compilation: v${contract.policyVersion} (${hardCount} hard reqs${droppedInfo})]`,
           );
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
         } catch (err: any) {
           logEvent(
-            `[LLM ERROR] Prospect contract compiler failed (${Date.now() - contractStarted}ms): ${err.message || String(err)}. Using deterministic contract.`,
+            `[LLM ERROR] Prospect contract compiler failed (${formatLatencySeconds(Date.now() - contractStarted)}): ${err.message || String(err)}. Using deterministic contract.`,
           );
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, fallbackContract);
         }

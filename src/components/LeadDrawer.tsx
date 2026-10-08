@@ -1151,7 +1151,7 @@ function LeadDrawerBody({
                 </section>
               )}
 
-              {lead.companyAccount && (
+              {lead.companyAccount && (lead.companyAccount.painSummary || (Array.isArray(lead.companyAccount.buyingSignals) && lead.companyAccount.buyingSignals.length > 0) || typeof lead.companyAccount.operationalPainScore === 'number') && (
                 <section aria-labelledby="drawer-company-heading" className="space-y-3 rounded-2xl border border-success/20 bg-success/5 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -1161,7 +1161,9 @@ function LeadDrawerBody({
                       </h3>
                       <p className="mt-1 text-xs text-muted-foreground">{lead.companyAccount.painSummary}</p>
                     </div>
-                    <Badge variant="success" className="shrink-0">Pain {lead.companyAccount.operationalPainScore}</Badge>
+                    {typeof lead.companyAccount.operationalPainScore === 'number' && (
+                      <Badge variant="success" className="shrink-0">Pain {lead.companyAccount.operationalPainScore}</Badge>
+                    )}
                   </div>
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                     {Array.isArray(lead.companyAccount.buyingSignals) && lead.companyAccount.buyingSignals.map((signal, index) => (
@@ -1384,11 +1386,11 @@ function LeadDrawerBody({
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-xs font-bold text-foreground">
                               {act.type === 'stage_change' && 'Pipeline stage changed'}
-                              {act.type === 'notes' && 'Notes updated'}
+                              {act.type === 'note' && 'Notes updated'}
+                              {act.type === 'enrichment' && 'Enrichment updated'}
                               {act.type === 'merge' && 'Duplicate profile merged'}
                               {act.type === 'import' && 'Lead imported'}
-                              {act.type === 'outreach' && 'Outreach logged'}
-                              {!['stage_change', 'notes', 'merge', 'import', 'outreach'].includes(act.type) && act.type}
+                              {!['stage_change', 'note', 'enrichment', 'merge', 'import'].includes(act.type) && act.type}
                             </span>
                             <span className="text-xs text-muted-foreground">{dateStr}</span>
                           </div>
@@ -1397,7 +1399,7 @@ function LeadDrawerBody({
                               Moved from <span className="font-medium text-foreground">{act.fromValue || 'Initial'}</span> to <span className="font-medium text-primary">{act.toValue}</span>
                             </p>
                           )}
-                          {act.type === 'notes' && (
+                          {act.type === 'note' && (
                             <p className="text-xs text-muted-foreground italic truncate">
                               &ldquo;{act.toValue}&rdquo;
                             </p>

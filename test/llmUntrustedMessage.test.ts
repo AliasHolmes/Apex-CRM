@@ -64,9 +64,9 @@ describe('LLM failure classification ignores untrusted model text', () => {
     }
   });
 
-  it('still cascades to the next provider when malformed output contains "aborted"', async () => {
-    // Atria + Byesu: the in-pair partner is the "next provider" (the failsafe is reserved for
-    // when both primaries are out).
+  it('still cascades to the second-priority provider when malformed output contains "aborted"', async () => {
+    // Atria + Byesu: the second chain member is the "next provider" (the failsafe is
+    // reserved for when both primaries are out).
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
@@ -95,6 +95,8 @@ describe('LLM failure classification ignores untrusted model text', () => {
     // every remaining provider, so only one call was made and the request failed outright.
     assert.equal(calls.length, 2, 'should have fallen through to the second provider');
     assert.deepEqual(result, { leads: [] });
+    assert.ok(calls[0].includes('atria'), 'the primary chain must try Atria first');
+    assert.ok(calls[1].includes('byesu'), 'then cascade to Byesu');
   });
 
   it('does not cooldown a healthy provider when malformed output contains "timeout"', async () => {

@@ -144,9 +144,12 @@ const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 // Atria is a self-hosted vLLM deployment (see docs/adr/0007-industry-agnostic-pipeline-and-dual-provider-concurrency.md).
 // It is a REASONING model: reasoning_content is emitted and billed before any visible
 // content, so a small max_tokens yields content:null with finish_reason:"length".
-// Registered only when ATRIA_API_KEY is set. When registered it is the first provider of the
-// primary pair (Atria + Byesu, one request each, in parallel); Groq and OpenRouter/Mistral
-// form the failsafe tier.
+// Registered only when ATRIA_API_KEY is set. When registered it is the engine's primary
+// provider and runs up to its full slot count on every default-tier stage; Byesu is the
+// second-priority chain member - it takes any call Atria cannot serve (failed attempt or
+// saturated slots) and leads the fast tier for query planning. Groq and OpenRouter/Mistral
+// form the failsafe tier, invoked only when both primaries are out.
+// See docs/adr/0011-atria-primary-with-byesu-second-priority.md.
 const DEFAULT_ATRIA_BASE = "https://api.atria-asi.ai/v1";
 const DEFAULT_ATRIA_MODEL = "Atria-Dawn-Preview";
 
@@ -748,8 +751,12 @@ export function isCircuitBreakingProviderFailure(error: Error): boolean {
 export const providerCooldowns = new Map<string, number>();
 
 // --- Provider-Affinity Concurrency & Parallel Execution ---
-// User requirement: Atria (primary) and Byesu (secondary) run concurrently with 1 request each.
-// Atria is prioritized whenever idle.
+// The primary tier is an ordered chain: Atria first (up to ATRIA_CONCURRENT_SLOTS parallel
+// requests), Byesu second priority (BYESU_CONCURRENT_SLOTS parallel slots of its own).
+// acquireSlot hands a call to the first free, non-cooling chain member - so Byesu absorbs
+// both the overflow when Atria's slots are saturated and the retry after a failed Atria
+// attempt. Only when BOTH primaries are out does the call reach the failsafe tier
+// (Groq, then OpenRouter/Mistral).
 
 export function getProviderConcurrencyLimit(providerId: string): number {
   if (providerId === "atria") {
@@ -1183,8 +1190,19 @@ async function withProviderFallback<T>(
     executionOptions.tierProviderOrder && executionOptions.tierProviderOrder.length > 0
       ? executionOptions.tierProviderOrder
       : parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
+  const primaryCandidates = allConfigured.filter(
+    (p) => p.id === "atria" || p.id === "primary",
+  );
+  // Provider policy (docs/adr/0011-atria-primary-with-byesu-second-priority.md):
+  // The primary tier is an ORDERED CHAIN. Default-tier calls run Atria first, up to its
+  // full slot count, and Byesu is second priority: it takes the call the moment Atria
+  // cannot serve it - a failed Atria attempt, or saturated Atria slots (acquireSlot
+  // spills to the next free chain member). Byesu is therefore in the chain on every
+  // call, not only during an outage; Groq/OpenRouter remain the failsafe tier, invoked
+  // only when both primaries are out. The fast tier (query strategist) reorders the
+  // same pair via its explicit tier order so planning runs on the low-latency router.
   const primaryTier = orderProvidersForTier(
-    allConfigured.filter((p) => p.id === "atria" || p.id === "primary"),
+    primaryCandidates,
     executionOptions.tierProviderOrder?.length ? "fast" : executionOptions.routingTier,
     fastIds,
   );
@@ -1375,7 +1393,10 @@ async function withProviderFallback<T>(
 
   let lastPrimaryError: Error | undefined;
 
-  // 1. PRIMARY PAIR (Atria first, Byesu in parallel). Busy partners are waited for.
+  // 1. PRIMARY CHAIN (Atria first, Byesu second priority): the first attempt goes to the
+  //    first free chain member, and a failed or timed-out attempt cascades to the next
+  //    member. Busy chain heads are waited for in the slot queue only when every member
+  //    is saturated. Groq/Mistral stay reserved for when both primaries are out.
   const eligiblePrimaries = primaryTier.filter((p) => !isProviderOut(p.id, breaker));
   if (eligiblePrimaries.length > 0) {
     const first = await runOn(eligiblePrimaries);
@@ -1432,7 +1453,7 @@ async function withProviderFallback<T>(
     }
   }
 
-  // 2. FAILSAFE GATE: Groq/Mistral only when BOTH primaries are out (policy). A busy,
+  // 2. PRIMARY-OUT GATE: Groq/Mistral serve only when BOTH primaries are out (policy). A busy,
   // cooling-down, or once-failed primary never escalates; the failure returns to the stage.
   const allPrimariesOut =
     primaryTier.length > 0 && primaryTier.every((p) => isProviderOut(p.id, breaker));

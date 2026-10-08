@@ -1149,14 +1149,38 @@ export function buildContractFallbackQueries(
     }
   }
 
-  const briefLower = (brief || '').toLowerCase();
+  const rawBrief = String(brief || '');
+  const briefLower = rawBrief.toLowerCase();
+  const ISO_PRONOUN_COLLISIONS = new Set([
+    'us', 'me', 'am', 'in', 'is', 'at', 'as', 'an', 'be', 'by', 'do', 'go',
+    'he', 'if', 'it', 'my', 'no', 'of', 'on', 'or', 'so', 'to', 'up', 'we',
+  ]);
   for (const [key, canonical] of Object.entries(COUNTRY_CANONICAL_MAP)) {
     const escapedKey = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
     const keyRegex = new RegExp(`(^|[^a-zA-Z0-9])${escapedKey}([^a-zA-Z0-9]|$)`, 'i');
-    if (!seenCountryKeys.has(canonical.toLowerCase()) && keyRegex.test(briefLower)) {
-      seenCountryKeys.add(canonical.toLowerCase());
-      detectedCountries.push(canonical);
+    if (seenCountryKeys.has(canonical.toLowerCase()) || !keyRegex.test(briefLower)) {
+      continue;
     }
+    // Zero default-invention: a bare 2-char ISO code must never anchor a country
+    // from lowercase prose ("help us find ... in Canada" -> USA). Mirror the
+    // resolveGeo guard so fallback queries and geo resolution agree.
+    if (key.length <= 2) {
+      const upperHit = new RegExp(`\\b${escapedKey.toUpperCase()}\\b`).test(rawBrief);
+      const metroHit = (COUNTRY_TO_METROS[key] || COUNTRY_TO_METROS[canonical.toLowerCase()] || [])
+        .filter((m: string) => !AMBIGUOUS_METRO_NAMES.has(m.toLowerCase()))
+        .some((m: string) => briefLower.includes(m.toLowerCase()));
+      if (ISO_PRONOUN_COLLISIONS.has(key.toLowerCase())) {
+        const prepositionalHit = new RegExp(
+          `\\b(?:in|from|based\\s+in|located\\s+in|across|near)\\s+${escapedKey}\\b`,
+          'i',
+        ).test(rawBrief);
+        if (!prepositionalHit && !upperHit && !metroHit) continue;
+      } else if (!upperHit && !metroHit && briefLower.length < 24) {
+        continue;
+      }
+    }
+    seenCountryKeys.add(canonical.toLowerCase());
+    detectedCountries.push(canonical);
   }
 
   // Deduplicate synonym terms (e.g. don't keep United States if USA is present)
@@ -1171,7 +1195,12 @@ export function buildContractFallbackQueries(
     }
   }
 
-  const locations = detectedCountries.length >= 2
+  // Use any real detected country anchor (brief scan is now pronoun-safe).
+  // The old `>= 2` threshold silently dropped a single explicitly-mentioned
+  // country ("...in Canada" with no other geo); zero default-invention is still
+  // preserved because an empty detectedCountries falls through to the (empty)
+  // defaults, leaving the search global.
+  const locations = detectedCountries.length > 0
     ? detectedCountries
     : (deduplicatedLocations.length > 0 ? deduplicatedLocations : defaultLocations);
   const hasGeo = locations.length > 0;

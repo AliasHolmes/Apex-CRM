@@ -177,11 +177,29 @@ export async function executePersistStage(
     schemaVersion: (traceSummary as any).schemaVersion || 1,
   });
 
+  const shortfall = Math.max(0, targetLimit - mappedLeads.length);
+  const shortfallReason =
+    mappedLeads.length < targetLimit
+      ? `Found ${mappedLeads.length}/${targetLimit} verified matches after exhausting search queries.`
+      : undefined;
+
   upsertMiningSession({
     id: sessionId,
     status: derivedStatus as any,
     completedAt: new Date().toISOString(),
-    stats: { ...stats, persistedCount, persistenceStatus },
+    // Merge the real persistence counts + shortfall into the persisted stats so
+    // the client's "N duplicates skipped" / "N new, M refreshed" notices are live
+    // (they previously read undefined on the job-mode stats blob).
+    stats: {
+      ...stats,
+      persistedCount,
+      persistenceStatus,
+      createdCount: persistence.createdCount,
+      updatedCount: persistence.updatedCount,
+      duplicateCount: persistence.duplicateCount,
+      shortfall,
+      shortfallReason,
+    },
     traceSummary,
   });
 
@@ -209,11 +227,8 @@ export async function executePersistStage(
     sessionId,
     total: mappedLeads.length,
     requestedLimit: targetLimit,
-    shortfall: Math.max(0, targetLimit - mappedLeads.length),
-    shortfallReason:
-      mappedLeads.length < targetLimit
-        ? `Found ${mappedLeads.length}/${targetLimit} verified matches after exhausting search queries.`
-        : undefined,
+    shortfall,
+    shortfallReason,
     stopReason: stats.stopReason,
     cancelled: false,
   };

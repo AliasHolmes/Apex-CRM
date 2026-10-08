@@ -7,11 +7,11 @@ import {
 } from '../server/services/llm.js';
 import { resolvePlannerProviderOrder } from '../server/leadSearch/stages/planStage.js';
 
-test('resolvePlannerProviderOrder defaults to primary (Byesu) first, then openrouter', () => {
+test('resolvePlannerProviderOrder defaults to the fast tier order (primary, atria, openrouter)', () => {
   const originalEnv = process.env.LEAD_PLANNER_PROVIDER_ORDER;
   try {
     delete process.env.LEAD_PLANNER_PROVIDER_ORDER;
-    assert.deepEqual(resolvePlannerProviderOrder(), ['primary', 'openrouter']);
+    assert.deepEqual(resolvePlannerProviderOrder(), ['primary', 'atria', 'openrouter']);
 
     process.env.LEAD_PLANNER_PROVIDER_ORDER = 'atria, primary';
     assert.deepEqual(resolvePlannerProviderOrder(), ['atria', 'primary']);

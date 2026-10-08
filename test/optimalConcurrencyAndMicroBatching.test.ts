@@ -48,33 +48,40 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
   });
 
   it('validates engine configuration bounds for Atria slots and micro-batch sizes', () => {
-    // 1. Clean recommended configuration: no warnings for 4 slots, chunk 3, batch 2
-    process.env.ATRIA_CONCURRENT_SLOTS = '4';
+    // 1. Clean recommended configuration: no warnings for the shipped 8-slot Atria config
+    process.env.ATRIA_CONCURRENT_SLOTS = '8';
+    process.env.BYESU_CONCURRENT_SLOTS = '10';
     process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK = '3';
     process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE = '2';
-    process.env.LEAD_EXTRACTION_CONCURRENCY = '4';
-    process.env.FINALIST_JUDGE_CONCURRENCY = '4';
+    process.env.LEAD_EXTRACTION_CONCURRENCY = '8';
+    process.env.FINALIST_JUDGE_CONCURRENCY = '6';
 
     const cleanWarnings = validateEngineConfig();
     assert.deepEqual(
       cleanWarnings.filter(w =>
         w.includes('ATRIA_CONCURRENT_SLOTS') ||
+        w.includes('BYESU_CONCURRENT_SLOTS') ||
         w.includes('LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK') ||
         w.includes('FINALIST_JUDGE_MICRO_BATCH_SIZE')
       ),
       [],
-      'Recommended quad micro-batch config must not emit warnings',
+      'The stress-tested 8-slot Atria / 10-slot Byesu config must not emit warnings',
     );
 
-    // 2. Over-budget configuration: warning emitted when slots > 4 or batch > 5
-    process.env.ATRIA_CONCURRENT_SLOTS = '6';
+    // 2. Over-budget configuration: warning emitted past the stress-tested envelopes
+    process.env.ATRIA_CONCURRENT_SLOTS = '12';
+    process.env.BYESU_CONCURRENT_SLOTS = '24';
     process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK = '8';
     process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE = '10';
 
     const badWarnings = validateEngineConfig();
     assert.ok(
       badWarnings.some(w => w.includes('ATRIA_CONCURRENT_SLOTS')),
-      'Should warn when ATRIA_CONCURRENT_SLOTS > 4',
+      'Should warn when ATRIA_CONCURRENT_SLOTS > 10',
+    );
+    assert.ok(
+      badWarnings.some(w => w.includes('BYESU_CONCURRENT_SLOTS')),
+      'Should warn when BYESU_CONCURRENT_SLOTS > 16',
     );
     assert.ok(
       badWarnings.some(w => w.includes('LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK')),
@@ -86,15 +93,15 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     );
   });
 
-  it('allows Atria to handle up to 4 concurrent requests simultaneously when ATRIA_CONCURRENT_SLOTS=4', async () => {
+  it('allows Atria to handle up to 8 concurrent requests simultaneously when ATRIA_CONCURRENT_SLOTS=8', async () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
-    process.env.ATRIA_CONCURRENT_SLOTS = '4';
+    process.env.ATRIA_CONCURRENT_SLOTS = '8';
     delete process.env.OPENAI_API_KEY;
     delete process.env.BYESU_API_KEY;
 
     const originalFetch = globalThis.fetch;
-    const llm = await importLLM('atria-quad-slots');
+    const llm = await importLLM('atria-eight-slots');
     llm.clearProviderCooldowns();
 
     let activeAtriaInFlight = 0;
@@ -103,7 +110,7 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     globalThis.fetch = async () => {
       activeAtriaInFlight++;
       maxAtriaInFlight = Math.max(maxAtriaInFlight, activeAtriaInFlight);
-      // Hold each call briefly so all 4 overlap concurrently
+      // Hold each call briefly so all 8 overlap concurrently
       await new Promise((r) => setTimeout(r, 60));
       activeAtriaInFlight--;
       return jsonResponse({
@@ -112,21 +119,20 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     };
 
     try {
-      // Fire 4 requests simultaneously
-      const results = await Promise.all([
-        llm.openAIStructured<{ status: string }>('Task 1', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 2', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 3', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 4', { type: 'object' }),
-      ]);
+      // Fire 8 requests simultaneously
+      const results = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          llm.openAIStructured<{ status: string }>(`Task ${i + 1}`, { type: 'object' }),
+        ),
+      );
 
-      assert.equal(results.length, 4);
+      assert.equal(results.length, 8);
       assert.ok(results.every(r => r.status === 'ok'));
-      // All 4 requests must have been running in parallel on Atria simultaneously!
+      // All 8 requests must have been running in parallel on Atria simultaneously!
       assert.equal(
         maxAtriaInFlight,
-        4,
-        `Expected max in-flight on Atria to reach 4, got ${maxAtriaInFlight}`,
+        8,
+        `Expected max in-flight on Atria to reach 8, got ${maxAtriaInFlight}`,
       );
       assert.equal(llm.getProviderActiveSlots('atria'), 0, 'All slots must be released cleanly');
     } finally {
@@ -134,15 +140,15 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     }
   });
 
-  it('queues a 5th request when Atria 4-slot capacity is fully saturated', async () => {
+  it('queues a 9th request when Atria 8-slot capacity is fully saturated', async () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
-    process.env.ATRIA_CONCURRENT_SLOTS = '4';
+    process.env.ATRIA_CONCURRENT_SLOTS = '8';
     delete process.env.OPENAI_API_KEY;
     delete process.env.BYESU_API_KEY;
 
     const originalFetch = globalThis.fetch;
-    const llm = await importLLM('atria-quad-saturation');
+    const llm = await importLLM('atria-eight-saturation');
     llm.clearProviderCooldowns();
 
     let activeAtriaInFlight = 0;
@@ -159,21 +165,19 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     };
 
     try {
-      // Launch 5 requests simultaneously
-      const results = await Promise.all([
-        llm.openAIStructured<{ status: string }>('Task 1', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 2', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 3', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 4', { type: 'object' }),
-        llm.openAIStructured<{ status: string }>('Task 5', { type: 'object' }),
-      ]);
+      // Launch 9 requests simultaneously
+      const results = await Promise.all(
+        Array.from({ length: 9 }, (_, i) =>
+          llm.openAIStructured<{ status: string }>(`Task ${i + 1}`, { type: 'object' }),
+        ),
+      );
 
-      assert.equal(results.length, 5);
-      // Max in-flight must never exceed 4 (the slot limit)
+      assert.equal(results.length, 9);
+      // Max in-flight must never exceed 8 (the slot limit)
       assert.equal(
         maxAtriaInFlight,
-        4,
-        `In-flight must strictly cap at 4, got ${maxAtriaInFlight}`,
+        8,
+        `In-flight must strictly cap at 8, got ${maxAtriaInFlight}`,
       );
       assert.equal(llm.getProviderActiveSlots('atria'), 0);
     } finally {

@@ -46,7 +46,7 @@ test('distinct role classes or substantive verticals are kept', () => {
   assert.equal(isNearDuplicateQuery(sigDirector, [sigFounder]), false);
 });
 
-test('isSignatureExhausted blocks any query with matching role, org, and geo regardless of topic', () => {
+test('isSignatureExhausted only blocks when role, org, geo, AND topic overlap', () => {
   const exhausted: QuerySignature[] = [
     {
       roleClass: 'owner-principal',
@@ -56,13 +56,24 @@ test('isSignatureExhausted blocks any query with matching role, org, and geo reg
     },
   ];
 
-  // Different topic (e.g. machine learning, data science), but same role + org + geo
-  const newQuerySig = buildQuerySignature('CEO machine learning boutique New Zealand');
-  assert.equal(newQuerySig.roleClass, 'owner-principal');
-  assert.equal(newQuerySig.orgClass, 'container_org');
-  assert.equal(newQuerySig.geoAnchor, 'new zealand');
+  // Same topic (ai) + same role/org/geo -> exhausted (blocks).
+  const sameTopicSig = buildQuerySignature('CEO AI boutique New Zealand');
+  assert.equal(sameTopicSig.roleClass, 'owner-principal');
+  assert.equal(sameTopicSig.orgClass, 'container_org');
+  assert.equal(sameTopicSig.geoAnchor, 'new zealand');
+  assert.ok(isSignatureExhausted(sameTopicSig, exhausted), 'same topic should be exhausted');
 
-  assert.ok(isSignatureExhausted(newQuerySig, exhausted));
+  // Different topic (machine learning), same role/org/geo -> NOT exhausted.
+  // A distinct vertical must not be suppressed as an "exhausted" duplicate.
+  const diffTopicSig = buildQuerySignature('CEO machine learning boutique New Zealand');
+  assert.equal(diffTopicSig.roleClass, 'owner-principal');
+  assert.equal(diffTopicSig.orgClass, 'container_org');
+  assert.equal(diffTopicSig.geoAnchor, 'new zealand');
+  assert.equal(
+    isSignatureExhausted(diffTopicSig, exhausted),
+    false,
+    'different topic must not be treated as exhausted',
+  );
 });
 
 test('Session 3 real queries fixture: catches same-geo duplicate variations', () => {

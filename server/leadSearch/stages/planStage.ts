@@ -111,8 +111,10 @@ export function resolvePlannerProviderOrder(): string[] {
   if (env && env.trim()) {
     return env.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   }
-  // Exclude heavy reasoning models from low-latency query planning; prefer fast structured tier
-  return ["primary", "openrouter"];
+  // Fast tier: prefer the low-latency router (Byesu) for query planning, then the primary
+  // engine provider (Atria), then the OpenRouter/Mistral failsafe. Heavy reasoning models
+  // are deprioritized for this low-latency planning call. See docs/adr/0011.
+  return ["primary", "atria", "openrouter"];
 }
 
 export async function executePlanStage(

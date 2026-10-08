@@ -129,7 +129,10 @@ describe('reasoning-model truncation handling', () => {
     }
   });
 
-  it('cascades to the next provider when reasoning consumes the whole budget', async () => {
+  it('cascades to Byesu (second priority) when reasoning consumes the whole budget', async () => {
+    // ADR-0011: the primary chain is ordered (Atria, Byesu). A budget truncation is a
+    // same-provider budget problem, not an outage, so the retry goes straight to the
+    // second-priority provider instead of surfacing to the stage.
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
     process.env.OPENAI_API_KEY = 'test-primary-key';
@@ -163,7 +166,7 @@ describe('reasoning-model truncation handling', () => {
 
     assert.equal(res.text, 'recovered');
     assert.equal(res.provider, 'Byesu');
-    assert.equal(calls.length, 2, 'should have cascaded to the second provider');
+    assert.equal(calls.length, 2, 'should have cascaded to the second-priority provider');
     assert.match(calls[0], /atria-asi\.ai/);
     assert.match(calls[1], /byesu\.com/);
   });
@@ -526,6 +529,7 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
       });
     };
 
+    // A gateway 524 on the Atria attempt cascades to Byesu as the second-priority provider.
     const res: { ok: boolean } = await llm.openAIStructured(
       'Test fallback to Byesu GPT',
       { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },

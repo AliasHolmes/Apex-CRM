@@ -30,10 +30,19 @@ export function validateEngineConfig(): string[] {
     ["TAVILY_SEARCH_CONCURRENCY", 8, undefined],
     ["BRIGHTDATA_SEARCH_CONCURRENCY", 8, undefined],
     ["BRIGHTDATA_PROFILE_CONCURRENCY", 8, undefined],
-    ["LEAD_EXTRACTION_CONCURRENCY", 6, undefined],
+    ["LEAD_EXTRACTION_CONCURRENCY", 8, undefined],
     ["FINALIST_JUDGE_CONCURRENCY", 8, undefined],
     ["LINKEDIN_POST_INTENT_CONCURRENCY", 8, undefined],
-    ["ATRIA_CONCURRENT_SLOTS", 4, "ATRIA_CONCURRENT_SLOTS exceeds the recommended maximum of 4; vLLM GPU KV-cache contention may degrade generation speed."],
+    [
+      "ATRIA_CONCURRENT_SLOTS",
+      10,
+      "ATRIA_CONCURRENT_SLOTS exceeds the stress-tested envelope of 8-10; vLLM GPU KV-cache contention may degrade generation speed. See docs/adr/0011-atria-primary-with-byesu-second-priority.md.",
+    ],
+    [
+      "BYESU_CONCURRENT_SLOTS",
+      16,
+      "BYESU_CONCURRENT_SLOTS exceeds the recommended maximum of 16; the stress test sustained 50+, but under the second-priority policy Byesu serves overflow, fast-tier planning, and Atria outage windows.",
+    ],
     ["LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK", 5, "LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK exceeds recommended micro-chunk size of 2-3; large chunks increase latency and timeout risk."],
     ["FINALIST_JUDGE_MICRO_BATCH_SIZE", 5, "FINALIST_JUDGE_MICRO_BATCH_SIZE exceeds recommended micro-batch size of 2-3; large batches diminish rolling pool early-stopping gains."],
   ] as const) {

@@ -86,6 +86,8 @@ describe('LLM routing policy (Atria primary, Byesu secondary, failsafe only when
       return okChat('byesu ok');
     };
 
+    // Atria's auth failure marks it OUT mid-call: the chain drops the OUT member and the
+    // second-priority provider (Byesu) serves before any failsafe provider (ADR-0011).
     const first = await llm.openAIText('p1', undefined, { circuitBreaker: breaker });
     assert.equal(first.text, 'byesu ok');
     assert.equal(breaker.disabledProviderIds.has('atria'), true);
@@ -118,6 +120,8 @@ describe('LLM routing policy (Atria primary, Byesu secondary, failsafe only when
   });
 
   it('prefers the partner over a provider that is only cooling down', async () => {
+    // A cooling-down Atria is not OUT, but it cannot take the call right now: acquireSlot
+    // skips it in favor of the next free chain member (Byesu, second priority).
     process.env.ATRIA_API_KEY = 'a';
     process.env.BYESU_API_KEY = 'b';
     process.env.GROQ_API_KEY = 'g';

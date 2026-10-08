@@ -148,13 +148,13 @@ test('the prompt keeps reasons for fail and unknown requirements', () => {
   assert.match(FINALIST_JUDGE_SYSTEM_PROMPT, /"fail" or "unknown"[^.]*reason/i);
 });
 
-test('provider slot limits honor 4 for both Atria and Byesu', () => {
+test('provider slot limits honor the shipped 8 (Atria) / 10 (Byesu) configuration', () => {
   const saved = [process.env.ATRIA_CONCURRENT_SLOTS, process.env.BYESU_CONCURRENT_SLOTS];
   try {
-    process.env.ATRIA_CONCURRENT_SLOTS = '4';
-    process.env.BYESU_CONCURRENT_SLOTS = '4';
-    assert.equal(getProviderConcurrencyLimit('atria'), 4);
-    assert.equal(getProviderConcurrencyLimit('primary'), 4);
+    process.env.ATRIA_CONCURRENT_SLOTS = '8';
+    process.env.BYESU_CONCURRENT_SLOTS = '10';
+    assert.equal(getProviderConcurrencyLimit('atria'), 8);
+    assert.equal(getProviderConcurrencyLimit('primary'), 10);
   } finally {
     for (const [key, value] of [
       ['ATRIA_CONCURRENT_SLOTS', saved[0]],

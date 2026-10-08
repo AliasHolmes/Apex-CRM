@@ -1489,10 +1489,10 @@ export default function ScrapeWorkspace() {
                   </div>
                 ) : (
                   searchLogs.map(log => (
-                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-success/20 bg-success/5' : log.status === 'partial_success' ? 'border-warning/20 bg-warning/5' : log.status === 'running' ? 'border-warning/20 bg-warning/5' : log.status === 'cancelled' ? 'border-info/20 bg-info/5' : 'border-danger/20 bg-danger/5'}`}>
+                    <div key={log.id} className={`p-4 rounded-lg border ${log.status === 'success' ? 'border-success/20 bg-success/5' : log.status === 'partial_success' ? 'border-warning/20 bg-warning/5' : log.status === 'running' ? 'border-warning/20 bg-warning/5' : log.status === 'cancelled' ? 'border-info/20 bg-info/5' : log.status === 'interrupted' || log.status === 'cancellation_requested' ? 'border-warning/20 bg-warning/5' : 'border-danger/20 bg-danger/5'}`}>
                       <div className="flex items-start justify-between mb-2">
                         <div className="text-xs text-muted-foreground">{new Date(log.timestamp).toLocaleString()}</div>
-                        <Badge variant="outline" className={log.status === 'success' ? 'text-success border-success/30' : log.status === 'partial_success' ? 'text-warning border-warning/30' : log.status === 'running' ? 'text-warning border-warning/30' : log.status === 'cancelled' ? 'text-info border-info/30' : 'text-danger border-danger/30'}>
+                        <Badge variant="outline" className={log.status === 'success' ? 'text-success border-success/30' : log.status === 'partial_success' ? 'text-warning border-warning/30' : log.status === 'running' ? 'text-warning border-warning/30' : log.status === 'cancelled' ? 'text-info border-info/30' : log.status === 'interrupted' || log.status === 'cancellation_requested' ? 'text-warning border-warning/30' : 'text-danger border-danger/30'}>
                           {log.status.toUpperCase()}
                         </Badge>
                       </div>

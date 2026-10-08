@@ -64,6 +64,8 @@ import {
   getLLMProviderSummaries,
   getProviderHealthSummaries,
   isProviderSlotFree,
+  getProviderActiveSlots,
+  getProviderConcurrencyLimit,
   getTavilyKeyStatus,
 } from "../services/llm.js";
 import { buildOutboundPrompt } from "../services/outboundPrompt.js";
@@ -898,7 +900,18 @@ router.get("/key-rotation-status", (_req, res) => {
 
 router.get("/llm-health", async (req, res) => {
   const configuredProviders = getLLMProviderSummaries();
-  const healthSummaries = getProviderHealthSummaries();
+  // Slot utilization makes provider saturation observable (ADR-0011): a session whose
+  // queue sums grow is starved of Atria slots, not throttled by the provider.
+  const healthSummaries = Object.fromEntries(
+    Object.entries(getProviderHealthSummaries()).map(([id, health]) => [
+      id,
+      {
+        ...health,
+        activeSlots: getProviderActiveSlots(id),
+        slotLimit: getProviderConcurrencyLimit(id),
+      },
+    ]),
+  );
   const force = req.query.force === "true";
 
   if (!force && _llmHealthCache && Date.now() < _llmHealthCache.expiresAt) {
@@ -947,36 +960,34 @@ router.get("/llm-health", async (req, res) => {
       model: response.model,
       ok: isOk,
       cached: false,
-      healthSummaries: getProviderHealthSummaries(),
+      healthSummaries,
       ...(isOk ? {} : { error: `Unexpected response: ${response.text}` }),
     };
     _llmHealthCache = { result, expiresAt: Date.now() + LLM_HEALTH_CACHE_MS };
-    res.json({ ...result, configuredProviders, healthSummaries: getProviderHealthSummaries() });
+    res.json({ ...result, configuredProviders, healthSummaries });
   } catch (error: any) {
     _llmHealthCache = null; // Do not cache failures
     const message = error?.message || String(error);
     // A probe never queues: busy primaries reject immediately. That is "busy", not "down".
     if (/busy or unavailable/i.test(message)) {
-      return res.json({
-        mode: "direct-fallback",
-        ok: configuredPrimaries.some(
-          (p) => getProviderHealthSummaries()[p.id]?.status !== "out",
-        ),
-        busy: true,
-        cached: false,
-        configuredProviders,
-        healthSummaries: getProviderHealthSummaries(),
-        note: "Providers are busy with other requests; reported from tracked provider health.",
-      });
-    }
-    res.json({
-      mode: "direct-fallback",
-      configuredProviders,
-      healthSummaries: getProviderHealthSummaries(),
-      ok: false,
-      cached: false,
-      error: message,
-    });
+          return res.json({
+            mode: "direct-fallback",
+            ok: configuredPrimaries.some((p) => healthSummaries[p.id]?.status !== "out"),
+            busy: true,
+            cached: false,
+            configuredProviders,
+            healthSummaries,
+            note: "Providers are busy with other requests; reported from tracked provider health.",
+          });
+        }
+        res.json({
+          mode: "direct-fallback",
+          configuredProviders,
+          healthSummaries,
+          ok: false,
+          cached: false,
+          error: message,
+        });
   }
 });
 

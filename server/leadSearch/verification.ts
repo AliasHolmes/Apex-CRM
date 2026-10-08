@@ -28,7 +28,7 @@ const POSITIVE_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'vp', pattern: /\b(vp|svp|evp|vice president)\b/ },
   { label: 'director', pattern: /\b(director|executive director)\b/ },
   { label: 'principal', pattern: /\b(managing\s+principal|senior\s+principal|principal\s+consultant|principal\s+advisor|principal\s+partner)\b/ },
-  { label: 'principal', pattern: /\bprincipal\b(?!\s+(engineer|software|architect|developer|designer|researcher|scientist))\b/ }
+  { label: 'principal', pattern: /\bprincipal\b(?!\s+(?:(?:software|ai|ml|data|systems?|machine\s+learning)\s+)?(?:engineer|software|architect|developer|designer|researcher|scientist))\b/ }
 ];
 
 const POSITIVE_SENIORITY_PATTERNS = [

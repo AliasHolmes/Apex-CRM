@@ -138,6 +138,12 @@ export function mapCandidateToPersistedLead(
     scoreBreakdown: p.scoreBreakdown,
     postIntentEvidence: p.postIntentEvidence,
     intentEnrichmentState: p.intentEnrichmentState,
+    // Preserve engine-derived attribution so outreach generation (outboundPrompt)
+    // and the lead drawer can use them after persistence. These were previously
+    // dropped by this whitelist even though the UI/prompt read them.
+    hiringSignalUrl: p.hiringSignalUrl,
+    qualification: p.qualification,
+    companyIntentEvidence: p.companyIntentEvidence,
     paretoSkyline: p.paretoSkyline,
     confidenceInterval:
       p.scoreBreakdown?.confidenceInterval || p.confidenceInterval,

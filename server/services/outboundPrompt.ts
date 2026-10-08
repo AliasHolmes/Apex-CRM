@@ -64,26 +64,23 @@ export function buildOutboundPrompt(options: BuildOutboundPromptOptions): string
       ? evidence.evidenceBlock.slice(0, 1000)
       : "";
 
+  const postSnippetList = Array.isArray(postIntentEvidence?.postSnippets)
+    ? postIntentEvidence.postSnippets.filter(
+        (s: unknown): s is string => typeof s === "string" && s.trim().length > 0,
+      )
+    : [];
+  const postIntentKeywords = Array.isArray(postIntentEvidence?.intentKeywords)
+    ? postIntentEvidence.intentKeywords.filter(Boolean)
+    : [];
   const postIntentSnippets =
-    Array.isArray(postIntentEvidence?.recentPosts) &&
-    postIntentEvidence.recentPosts.length > 0
-      ? postIntentEvidence.recentPosts
-          .map((p: any) =>
-            typeof p === "string"
-              ? p
-              : [
-                  p.topic ? `Topic: ${p.topic}` : "",
-                  p.quote ? `Quote: "${p.quote}"` : "",
-                  p.postDate ? `Date: ${p.postDate}` : "",
-                ]
-                  .filter(Boolean)
-                  .join(" | "),
-          )
-          .filter(Boolean)
-          .join("\n")
-      : typeof postIntentEvidence?.summary === "string"
-        ? postIntentEvidence.summary
-        : "";
+    postSnippetList.length > 0
+      ? postSnippetList.join("\n")
+      : typeof postIntentEvidence?.llmReason === "string" &&
+          postIntentEvidence.llmReason.trim()
+        ? postIntentEvidence.llmReason
+        : postIntentKeywords.length > 0
+          ? `Signals: ${postIntentKeywords.join(", ")}`
+          : "";
 
   const companyIntentSnippets = Array.isArray(companyIntentEvidence?.snippets)
     ? companyIntentEvidence.snippets.join(" | ")

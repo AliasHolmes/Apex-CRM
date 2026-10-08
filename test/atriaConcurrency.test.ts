@@ -131,13 +131,18 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
     }
   });
 
-  it('runs Atria and Byesu in parallel (1 request each) when concurrent requests arrive', async () => {
+  it('runs Atria first and spills to Byesu as second priority when Atria slots are saturated', async () => {
+    // ADR-0011: the primary tier is an ordered chain (Atria, Byesu). While Atria has free
+    // slots it serves every call; once its slots fill, concurrently arriving calls spill to
+    // Byesu (second priority) instead of queueing behind Atria.
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
+    process.env.ATRIA_CONCURRENT_SLOTS = '2';
+    process.env.BYESU_CONCURRENT_SLOTS = '2';
     process.env.BYESU_API_KEY = 'test-byesu-key';
     process.env.OPENAI_MODEL = 'gpt-5.6-terra';
 
-    const llm = await importLLM('atria-byesu-parallel');
+    const llm = await importLLM('atria-primary-byesu-second');
     llm.clearProviderCooldowns();
 
     const inFlightByProvider: Record<string, number> = { atria: 0, byesu: 0 };
@@ -154,7 +159,7 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
         inFlightByProvider[providerKey],
       );
 
-      // Simulate network / model execution delay
+      // Hold each call briefly so all 4 overlap across the two 2-slot chains
       await new Promise((r) => setTimeout(r, 60));
 
       inFlightByProvider[providerKey]--;
@@ -165,30 +170,94 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
       });
     };
 
-    // Launch two requests simultaneously
-    const [res1, res2] = await Promise.all([
-      llm.openAIStructured<{ ok: boolean }>('Request 1', { type: 'object' }),
-      llm.openAIStructured<{ ok: boolean }>('Request 2', { type: 'object' }),
-    ]);
+    try {
+      // Launch four requests simultaneously: 2 fill the Atria slots, 2 spill to Byesu.
+      const results = await Promise.all([
+        llm.openAIStructured<{ ok: boolean }>('Request 1', { type: 'object' }),
+        llm.openAIStructured<{ ok: boolean }>('Request 2', { type: 'object' }),
+        llm.openAIStructured<{ ok: boolean }>('Request 3', { type: 'object' }),
+        llm.openAIStructured<{ ok: boolean }>('Request 4', { type: 'object' }),
+      ]);
 
-    assert.equal(res1.ok, true);
-    assert.equal(res2.ok, true);
+      assert.equal(results.length, 4);
+      assert.ok(results.every(r => r.ok === true));
 
-    // Both requests must have completed: one on Atria, one on Byesu!
-    assert.equal(executedProviders.includes('atria'), true, 'Atria must have executed one request');
-    assert.equal(executedProviders.includes('byesu'), true, 'Byesu must have executed one request');
+      // Atria served its full slot count and Byesu absorbed the overflow.
+      assert.equal(maxInFlightByProvider.atria, 2, 'Atria must fill its configured slots');
+      assert.equal(maxInFlightByProvider.byesu, 2, 'Byesu must absorb the overflow');
+      assert.equal(executedProviders.filter((p) => p === 'atria').length, 2);
+      assert.equal(executedProviders.filter((p) => p === 'byesu').length, 2);
+      assert.equal(llm.getProviderActiveSlots('atria'), 0, 'All Atria slots must be released');
+      assert.equal(llm.getProviderActiveSlots('primary'), 0, 'All Byesu slots must be released');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 
-    // Concurrency bound per provider must NEVER exceed 1
-    assert.equal(
-      maxInFlightByProvider.atria,
-      1,
-      `Atria in-flight must never exceed 1, got ${maxInFlightByProvider.atria}`,
-    );
-    assert.equal(
-      maxInFlightByProvider.byesu,
-      1,
-      `Byesu in-flight must never exceed 1, got ${maxInFlightByProvider.byesu}`,
-    );
+  it('serves on Byesu (second priority) when Atria is marked OUT', async () => {
+    process.env.ATRIA_API_KEY = 'test-atria-key';
+    process.env.ATRIA_PRIORITY = 'primary';
+    process.env.BYESU_API_KEY = 'test-byesu-key';
+    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+
+    const llm = await importLLM('atria-out-secondary');
+    llm.clearProviderCooldowns();
+
+    const atriaHealth = llm.getProviderHealth('atria');
+    atriaHealth.status = 'out';
+    atriaHealth.outUntil = Date.now() + 60_000;
+    atriaHealth.outReason = 'fatal_error';
+
+    const usedProviders: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      const urlStr = String(url);
+      usedProviders.push(/atria/i.test(urlStr) ? 'atria' : 'byesu');
+      return jsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
+      });
+    };
+
+    try {
+      const res = await llm.openAIStructured<{ ok: boolean }>('Request', { type: 'object' });
+      assert.equal(res.ok, true);
+      // Atria is OUT -> the chain skips it and serves on Byesu; Groq/Mistral stay cold.
+      assert.deepEqual(usedProviders, ['byesu'], `expected Byesu to serve, got: ${usedProviders.join(', ')}`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('serves fast-tier (strategist) calls on Byesu first, Atria second', async () => {
+    process.env.ATRIA_API_KEY = 'test-atria-key';
+    process.env.ATRIA_PRIORITY = 'primary';
+    process.env.BYESU_API_KEY = 'test-byesu-key';
+    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+
+    const llm = await importLLM('fast-tier-byesu');
+    llm.clearProviderCooldowns();
+
+    const usedProviders: string[] = [];
+    globalThis.fetch = async (url: any) => {
+      const urlStr = String(url);
+      usedProviders.push(/atria/i.test(urlStr) ? 'atria' : 'byesu');
+      return jsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
+      });
+    };
+
+    try {
+      // The query strategist passes an explicit tier order (planStage.resolvePlannerProviderOrder).
+      const res = await llm.openAIStructured<{ ok: boolean }>(
+        'Strategy request',
+        { type: 'object' },
+        undefined,
+        { tierProviderOrder: ['primary', 'atria'] },
+      );
+      assert.equal(res.ok, true);
+      assert.deepEqual(usedProviders, ['byesu'], `fast tier must prefer Byesu, got: ${usedProviders.join(', ')}`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('queues subsequent requests when single provider is configured without exceeding slot limit', async () => {
@@ -356,10 +425,10 @@ describe('Multi-Provider 4-Tier Concurrency & Policy (Atria -> Byesu -> Groq -> 
       });
     };
 
-    // Fire 3 simultaneous calls:
+    // Fire 3 simultaneous calls with the default single slot each:
     // Call 1 -> Atria (slot 1)
     // Call 2 -> Byesu (slot 1)
-    // Call 3 -> Must wait in queue for free primary slot, NEVER escalate to Groq!
+    // Call 3 -> Must wait in queue for a free primary slot, NEVER escalate to Groq!
     const [r1, r2, r3] = await Promise.all([
       llm.openAIStructured<{ ok: boolean }>('Req 1', { type: 'object' }),
       llm.openAIStructured<{ ok: boolean }>('Req 2', { type: 'object' }),
@@ -373,7 +442,7 @@ describe('Multi-Provider 4-Tier Concurrency & Policy (Atria -> Byesu -> Groq -> 
     // Verify all 3 went to primaries (Atria / Byesu), zero calls went to Groq or OpenRouter
     assert.ok(
       usedProviders.every((p) => p === 'atria' || p === 'primary'),
-      `Expected all requests to be served by primary pair, got: ${usedProviders.join(', ')}`,
+      `Expected all requests to be served by primary chain, got: ${usedProviders.join(', ')}`,
     );
     assert.ok(!(usedProviders as string[]).includes('groq'), 'Failsafe Groq was wrongly invoked when primaries were only busy!');
     assert.ok(!(usedProviders as string[]).includes('openrouter'), 'Failsafe OpenRouter was wrongly invoked!');

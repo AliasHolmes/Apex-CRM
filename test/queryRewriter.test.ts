@@ -9,8 +9,9 @@ describe('Phase 2: queryRewriter + aliasMap + understanding', () => {
   it('vague query broadens by dropping trailing token', () => {
     const contract: any = { brief: 'founders', requirements: [] };
     const r = rewriteZeroYieldQuery('SaaS founders Berlin', contract, 1);
-    assert.ok(['broaden', 'synonym_swap', 'relax', 'none'].includes(r.strategy));
-    assert.ok(r.query.length > 0);
+    assert.equal(r.strategy, 'broaden', 'a vague brief must actually broaden, not silently no-op');
+    assert.ok(!r.query.toLowerCase().includes('berlin'), 'broaden should drop the trailing/low-salience token');
+    assert.ok(r.query.toLowerCase().includes('founders'), 'the core role token must survive the rewrite');
   });
   it('rich query relaxes lowest-salience covered hard', () => {
     const contract: any = {

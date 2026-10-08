@@ -755,6 +755,60 @@ export function applySiteProbeSignals(
     lead.companyAccount.description = signals.services;
   }
 
+  // 3b. Build the typed company-account surface from the already-extracted
+  //     signals. Previously only employeeCount/description were set, leaving
+  //     buyingSignals, operationalPainScore, painSummary and qualificationStatus
+  //     empty forever, so the CRM "Company pain qualification" panel always
+  //     rendered blank and the account-score path never fired.
+  const accountSignals: Array<{
+    type: 'LEAD_FLOW' | 'OPERATIONAL_COMPLEXITY' | 'GROWTH_SIGNAL';
+    label: string;
+    evidence: string;
+    confidence: number;
+  }> = [];
+  if (signals.openRoles) {
+    accountSignals.push({ type: 'GROWTH_SIGNAL', label: 'Actively hiring', evidence: signals.openRoles, confidence: 0.8 });
+  }
+  if (signals.pricingModel) {
+    accountSignals.push({ type: 'LEAD_FLOW', label: 'Active pricing model', evidence: signals.pricingModel, confidence: 0.7 });
+  }
+  if (signals.caseStudies) {
+    accountSignals.push({ type: 'GROWTH_SIGNAL', label: 'Customer case studies', evidence: signals.caseStudies, confidence: 0.6 });
+  }
+  if (signals.techStack) {
+    accountSignals.push({ type: 'OPERATIONAL_COMPLEXITY', label: 'Tech stack in use', evidence: signals.techStack, confidence: 0.6 });
+  }
+
+  if (accountSignals.length > 0 && !Array.isArray(lead.companyAccount.buyingSignals)) {
+    lead.companyAccount.buyingSignals = accountSignals.map((s) => ({ ...s, sourceUrl: signals.sourceUrl }));
+  }
+  if (accountSignals.length > 0 && typeof lead.companyAccount.operationalPainScore !== 'number') {
+    // Transparent, capped 0-10 heuristic from the presence/strength of signals.
+    const painWeight =
+      (signals.openRoles ? 4 : 0) +
+      (signals.pricingModel ? 3 : 0) +
+      (signals.caseStudies ? 2 : 0) +
+      (signals.techStack ? 1 : 0);
+    lead.companyAccount.operationalPainScore = Math.min(10, painWeight);
+  }
+  if (!lead.companyAccount.painSummary) {
+    const summaryParts = [
+      signals.services ? `Services: ${signals.services}` : '',
+      signals.openRoles ? `Hiring: ${signals.openRoles}` : '',
+      signals.pricingModel ? `Pricing: ${signals.pricingModel}` : '',
+    ].filter(Boolean);
+    if (summaryParts.length > 0) {
+      lead.companyAccount.painSummary = summaryParts.join(' | ').slice(0, 240);
+    }
+  }
+  if (!lead.companyAccount.qualificationStatus) {
+    lead.companyAccount.qualificationStatus = 'DISCOVERED';
+  }
+  if (!lead.companyAccount.name) {
+    const coName = String(lead.currentCompany || lead.profile?.currentCompany || lead.company || '').trim();
+    if (coName) lead.companyAccount.name = coName;
+  }
+
   // 4. Append site evidence line with provenance tag
   const evidenceLines: string[] = [];
   if (signals.location) evidenceLines.push(`Location: ${signals.location}`);

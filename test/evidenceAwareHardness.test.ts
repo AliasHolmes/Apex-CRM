@@ -96,7 +96,8 @@ describe('Phase 4: Evidence-Aware Hardness & Modality Routing', () => {
 
     it('tracks covered hard requirement IDs accurately', () => {
       const selected = selectEvidenceForFinalist(lead, contract);
-      assert.ok(selected.coveredHardRequirementIds.includes('req-owner') || selected.coveredHardRequirementIds.includes('req-hiring'));
+      assert.ok(selected.coveredHardRequirementIds.includes('req-owner'), 'req-owner must be tracked as covered');
+      assert.ok(selected.coveredHardRequirementIds.includes('req-hiring'), 'req-hiring must be tracked as covered');
     });
   });
 });

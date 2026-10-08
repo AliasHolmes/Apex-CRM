@@ -267,6 +267,7 @@ export function isNearDuplicateQuery(
 export function isSignatureExhausted(
   sig: QuerySignature,
   exhaustedSigs: QuerySignature[],
+  threshold = QUERY_DEDUPE_TOPIC_JACCARD,
 ): boolean {
   for (const ex of exhaustedSigs) {
     if (
@@ -274,7 +275,16 @@ export function isSignatureExhausted(
       ex.orgClass === sig.orgClass &&
       ex.geoAnchor === sig.geoAnchor
     ) {
-      return true;
+      // Treat as exhausted only when the topical focus also matches. Without
+      // this, "founder AI agency Berlin" and "founder logistics company Berlin"
+      // (same role/org/geo, different verticals) are treated as identical and the
+      // second is wrongly dropped, starving vertical diversification. Mirrors the
+      // strictness of isNearDuplicateQuery. (Two empty topic sets => jaccard 1.0,
+      // so genuinely identical topic-less queries are still throttled.)
+      const similarity = computeTopicJaccard(ex.topicTokens, sig.topicTokens);
+      if (similarity >= threshold) {
+        return true;
+      }
     }
   }
   return false;

@@ -89,7 +89,7 @@ test('big-tech employer filter fails the employer, not agencies named after a pl
   } as any;
   const agencyLead = { fullName: 'Ana', currentTitle: 'Founder', currentCompany: 'Amazon Growth Agency' };
   const result = checkStrictContradiction(agencyLead, agencyContract);
-  assert.ok(!result || !/non-agency tech enterprise/.test(result.reason), `false fail: ${result?.reason}`);
+  assert.equal(result, null, 'Amazon Growth Agency is an agency named after a platform and must not be failed by the big-tech employer filter');
 
   const brand = /\b(microsoft|google|meta|apple|amazon|aws|azure)\b/i;
   assert.equal(isBigTechEmployerName('amazon web services', brand), true);

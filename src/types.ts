@@ -354,7 +354,7 @@ export interface SearchLog {
   timestamp: string;
   prompt: string;
   generatedQueries: string[];
-  status: 'success' | 'partial_success' | 'error' | 'running' | 'cancelled';
+  status: 'success' | 'partial_success' | 'error' | 'running' | 'cancelled' | 'interrupted' | 'cancellation_requested';
   errorMessage?: string;
   rawResultsCount: number;
   leadsFound: number;
@@ -397,7 +397,7 @@ export interface MiningSession {
   updatedAt: string;
 }
 
-export type LeadActivityType = 'stage_change' | 'notes' | 'merge' | 'import' | 'outreach';
+export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge';
 
 export interface LeadActivityRecord {
   id: string;

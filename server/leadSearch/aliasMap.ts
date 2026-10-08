@@ -136,6 +136,18 @@ export const GENERIC_GEO_NAMES: ReadonlySet<string> = new Set([
   ...EXTRA_GENERIC_GEO_NAMES,
 ]);
 
+// 2-letter ISO codes that collide with common English words/prepositions
+// ("in", "it") or are otherwise ambiguous on their own. Expanding them at the
+// token level makes any sentence containing the English word match the country
+// ("...founders in Austin" -> India). GENERIC_GEO_NAMES already treats only
+// us/uk/au/nz/ca as safe to anchor on without extra context, so mirror that
+// here: never expand the remaining short codes from a haystack token (an
+// explicit needle is still normalized via normalizeAliasTerm).
+const SAFE_SHORT_GEO_CODES: ReadonlySet<string> = new Set(['us', 'uk', 'au', 'nz', 'ca']);
+const AMBIGUOUS_SHORT_GEO_TOKENS: ReadonlySet<string> = new Set(
+  Object.keys(GEO_ALIASES).filter(k => k.length === 2 && !SAFE_SHORT_GEO_CODES.has(k)),
+);
+
 const escapeRegExp = (str: string) => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
 /** Normalize a single term to its canonical alias (lowercased). */
@@ -178,7 +190,9 @@ export function aliasIncludes(haystack: unknown, needle: unknown): boolean {
     phraseHay = phraseHay.replace(new RegExp(` ${escaped} `, 'g'), ` ${ALL_ALIASES[key]} `);
   }
   const hayTokens = phraseHay.split(/[^a-z0-9]+/).filter(Boolean);
-  const normHayTokens = hayTokens.map(t => normalizeAliasTerm(t) || t);
+  const normHayTokens = hayTokens.map(t =>
+    AMBIGUOUS_SHORT_GEO_TOKENS.has(t) ? t : (normalizeAliasTerm(t) || t)
+  );
   const normHay = ` ${normHayTokens.join(' ')} `;
   const combinedHay = `${rawHay} ${phraseHay} ${normHay} `;
   // Whole-phrase alias: normalize the full needle phrase too

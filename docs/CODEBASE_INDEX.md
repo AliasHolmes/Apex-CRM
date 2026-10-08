@@ -29,10 +29,11 @@ Primary reference docs:
 
 - [`README.md`](../README.md) — product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary
-- [`docs/adr/0001`…`0010`](adr/) — ten ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`…`0011`](adr/) — eleven ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
-  mining-feedback-driven bottleneck elimination, Atria quad concurrency with micro-batching, and
-  dev-server HMR forced-reload containment
+  mining-feedback-driven bottleneck elimination, Atria quad concurrency with micro-batching,
+  dev-server HMR forced-reload containment, and the Atria-primary / Byesu second-priority
+  routing and concurrency policy
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is

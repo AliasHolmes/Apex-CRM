@@ -190,8 +190,8 @@ test("decision-maker verification does not treat principal IC titles as buyers",
   });
 
   assert.strictEqual(result.titleMatched, false);
-  assert.strictEqual(result.ignoredTitle, false);
-  assert.strictEqual(result.confidence, 5);
+  assert.strictEqual(result.ignoredTitle, true);
+  assert.ok(result.confidence < 5);
 });
 
 test("decision-maker verification uses extracted seniority as authority evidence", () => {

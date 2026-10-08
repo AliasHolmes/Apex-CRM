@@ -414,7 +414,7 @@ export async function executeExtractStage(
       } else {
         // Dual-Channel Ingestion: Capture company evidence from non-person search results rather than losing the intelligence
         if (state.signalStore) {
-          const companyHint = item.title?.split(/[-|:•·]/)[0]?.trim();
+          const companyHint = item.title?.split(/[-|:\u2022\u00b7]/)[0]?.trim();
           if (companyHint && companyHint.length >= 3 && !/linkedin|google|login|search|jobs|directory/i.test(companyHint)) {
             state.signalStore.addCompanySignal(companyHint, {
               query: item._sourceQuery || "",

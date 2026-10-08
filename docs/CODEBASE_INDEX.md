@@ -29,9 +29,10 @@ Primary reference docs:
 
 - [`README.md`](../README.md) — product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary
-- [`docs/adr/0001`…`0009`](adr/) — nine ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`…`0010`](adr/) — ten ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
-  mining-feedback-driven bottleneck elimination, and Atria quad concurrency with micro-batching
+  mining-feedback-driven bottleneck elimination, Atria quad concurrency with micro-batching, and
+  dev-server HMR forced-reload containment
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
@@ -530,6 +531,16 @@ Resolved critical data-loss vectors, UI mismatches, and surfaced dormant LLM int
 - **Outreach Studio State Retention (`App.tsx`, `OutreachStudio.tsx`)**: Added `outreach` to `mountedJobTabs` in `App.tsx` and styled with `hidden={activeTab !== 'outreach'}` so in-flight LLM streaming, user drafts, and custom prompts survive tab switches without being unmounted. Standardized prospect selection with accessible Radix UI `<Select />`, added direct LinkedIn external navigation, and 1-click stage progression ("Move to Sequence Active").
 - **UI Layout Rhythm & Design Consistency (`App.tsx`, `PageHeader.tsx`)**: Standardized `<PageHeader />` layout rhythm across the Prospects view to match the rest of the application, and replaced raw HTML `<select>` elements with Radix UI dropdown primitives.
 - **Test Coverage**: Added regression tests in `test/csvFieldMapping.test.ts`, verified `test/uiContracts.test.ts` (18/18 passing), `test/leadDedupe.test.ts` (24/24 passing), `test/encodingHygiene.test.ts`, and full typecheck (`npm run typecheck`, 0 errors).
+
+### 9.18 Dev-Server HMR Forced-Reload Containment (ADR-0010) — LANDED (2026-10-09)
+
+Eliminated unprompted full-page browser reloads during active discovery sessions in development:
+
+- **HMR Kill Switch (`server.ts`)**: Gated both `ws` and `hmr` configurations on `DISABLE_HMR` (`ws: hmrDisabled ? false : { server }, hmr: hmrDisabled ? false : { server }`), fixing the issue where inline server configs overrode `vite.config.ts`.
+- **Hardened Watcher Ignores (`vite.config.ts`)**: Expanded `server.watch.ignored` to cover runtime files (`**/*.sqlite*`, `**/*.log`, `**/*.tmp`, `**/*.bak`, `**/scratch/**`), preventing non-module files from triggering Vite's unconditional `full-reload` broadcast.
+- **WebSocket Upgrade Instrumentation (`server.ts`)**: Added logging for HMR websocket connection upgrades and close events on the shared HTTP listener for full observability.
+- **Lossless Recovery and Rehydration (`App.tsx`, `ScrapeWorkspace.tsx`)**: `ScrapeWorkspace` records running session IDs to `sessionStorage` (`apex-active-mining-session-id`), and `App.tsx` force-mounts the `workspace` tab across reloads (with persisted `apex-mounted-job-tabs`), automatically re-attaching the live SSE trace to ongoing sessions.
+- **Strict Regression Suite (`test/hmrReloadGuard.test.ts`)**: Added comprehensive tests verifying HMR gating, watcher ignores, session rehydration, pre-bundled dependencies, and 0 runtime-discovered dependencies. Entire test suite passing cleanly (1,244/1,244 tests).
 
 ## 10. Recommended next actions
 

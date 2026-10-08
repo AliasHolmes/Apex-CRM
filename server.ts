@@ -235,15 +235,36 @@ async function startServer() {
   });
 
   if (!isProduction) {
+    // HMR must honor the same flag that disables file watching in vite.config.ts.
+    // The inline createViteServer config wins over the config file, so passing an
+    // unconditional `{ server }` here silently re-arms the Vite client's forced
+    // full-page reload channel (vite:ws:disconnect -> location.reload()) even when
+    // DISABLE_HMR=true. See docs/adr/0010-dev-server-hmr-reload-containment.md.
+    const hmrDisabled = process.env.DISABLE_HMR === "true";
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        ws: { server },
-        hmr: { server },
+        ws: hmrDisabled ? false : { server },
+        hmr: hmrDisabled ? false : { server },
       },
       appType: "spa",
     });
     app.use(vite.middlewares);
+
+    // Instrumentation: the Vite HMR socket shares this HTTP listener with the REST
+    // and SSE endpoints, so it can drop under mining load. Vite's browser client
+    // reacts to any drop with an unconditional location.reload(). Log upgrade and
+    // close events so a drop is observable instead of surfacing as an unexplained
+    // mid-session page reload.
+    if (!hmrDisabled) {
+      server.on("upgrade", (req, socket) => {
+        const upgradePath = (req.url || "/").split("?")[0] || "/";
+        console.log(`[Vite] HMR websocket upgrade: ${upgradePath}`);
+        socket.on("close", () => {
+          console.log(`[Vite] HMR websocket closed: ${upgradePath}`);
+        });
+      });
+    }
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use((req, res, next) => {

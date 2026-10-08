@@ -171,7 +171,7 @@ export const companyEqualsLocation = (company?: string, location?: string): bool
 
   const segments = String(location)
     .toLowerCase()
-    .split(/[,;\/|•·-]+/)
+    .split(/[,;\/|\u2022\u00b7-]+/)
     .map(s =>
       s
         .replace(/[^a-z0-9\s]/g, ' ')

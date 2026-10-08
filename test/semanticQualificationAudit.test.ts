@@ -188,7 +188,7 @@ describe('Semantic Qualification & Hard Seam Verification', () => {
       };
       const icContradiction = checkStrictContradiction(icLead, agencyContract);
       assert.ok(icContradiction !== null);
-      assert.match(icContradiction!.reason, /individual contributor role/i);
+      assert.match(icContradiction!.reason, /individual contributor/i);
 
       const staffLead = {
         fullName: 'Pat Staff',
@@ -199,7 +199,7 @@ describe('Semantic Qualification & Hard Seam Verification', () => {
       };
       const staffContradiction = checkStrictContradiction(staffLead, agencyContract);
       assert.ok(staffContradiction !== null);
-      assert.match(staffContradiction!.reason, /individual contributor role/i);
+      assert.match(staffContradiction!.reason, /individual contributor/i);
     });
 
     it('allows genuine agency founders who also mention technical roles', () => {

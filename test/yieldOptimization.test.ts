@@ -55,7 +55,7 @@ test("Yield Optimization - Target 2: Headline Company Fallback Resolution", asyn
 
   await t.test("Extracts company from '@ Company' in headline", () => {
     const headline = "Founder & CEO @ NeuralEdge AI | Automating Enterprises";
-    const atMatch = headline.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|•|\n|,|$))/i);
+    const atMatch = headline.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|\u2022|\n|,|$))/i);
     assert.ok(atMatch, "Regex should match @ pattern");
     const company = cleanCompanyHint(atMatch[1]);
     assert.equal(company, "NeuralEdge AI");
@@ -63,8 +63,8 @@ test("Yield Optimization - Target 2: Headline Company Fallback Resolution", asyn
   });
 
   await t.test("Extracts company from 'at Company' in headline", () => {
-    const headline = "Owner at Apex Integrations • Building LLM Workflows";
-    const atMatch = headline.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|•|\n|,|$))/i);
+    const headline = "Owner at Apex Integrations \u2022 Building LLM Workflows";
+    const atMatch = headline.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|\u2022|\n|,|$))/i);
     assert.ok(atMatch, "Regex should match at pattern");
     const company = cleanCompanyHint(atMatch[1]);
     assert.equal(company, "Apex Integrations");
@@ -73,7 +73,7 @@ test("Yield Optimization - Target 2: Headline Company Fallback Resolution", asyn
 
   await t.test("Extracts company from pipe separator when at/of is absent", () => {
     const headline = "Founder | HyperScale Labs";
-    const parts = headline.split(/\s*(?:\||\u2013|\u2014|•)\s*/).map(p => p.trim()).filter(Boolean);
+    const parts = headline.split(/\s*(?:\||\u2013|\u2014|\u2022)\s*/).map(p => p.trim()).filter(Boolean);
     assert.ok(parts.length > 1);
     const candidate = cleanCompanyHint(parts[parts.length - 1]);
     assert.equal(candidate, "HyperScale Labs");

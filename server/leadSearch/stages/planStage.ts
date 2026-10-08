@@ -123,11 +123,16 @@ export async function executePlanStage(
     round,
     remaining,
     generatedQueries,
-    seenQueryTexts,
     searchSpec,
     discoveryProviderMode,
     stats,
   } = input;
+  // Speculative planning is a dry run: proposed queries must be inspectable
+  // without mutating the caller's committed dedupe set. Operate on a copy so a
+  // speculative pass never pollutes the running round's seen-query state.
+  const seenQueryTexts = input.isSpeculative
+    ? new Set(input.seenQueryTexts)
+    : input.seenQueryTexts;
   const { config, state, logEvent, recordTrace } = ctx;
 
   const briefText = config.contract?.brief || config.promptQuery || "";

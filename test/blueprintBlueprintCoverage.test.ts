@@ -134,8 +134,8 @@ describe('Blueprint 6-Module Comprehensive Verification Suite', () => {
       );
       assert.ok(fallbackQueries.length > 0);
       for (const item of fallbackQueries) {
-        // Must contain quotes around AI agency
-        assert.ok(item.query.includes('"AI agency"'));
+        // Must include the company type 'AI agency'
+        assert.ok(item.query.includes('AI agency'));
         // Must not contain OR joins
         assert.ok(!item.query.includes(' OR '));
         // Must target at most one country

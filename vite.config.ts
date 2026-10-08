@@ -17,8 +17,21 @@ export default defineConfig(() => {
       // Do not modify - file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
+      // Keep runtime-generated files ignored: Vite broadcasts full-reload for any
+      // watched change that is not in the module graph (needFullReload when the file
+      // maps to zero modules), so SQLite WAL/SHM, logs, and temp files must never
+      // reach the watcher. See docs/adr/0010-dev-server-hmr-reload-containment.md.
       watch: process.env.DISABLE_HMR === 'true' ? null : {
-        ignored: ['**/.apex-data/**', '**/test/**', '**/docs/**']
+        ignored: [
+          '**/.apex-data/**',
+          '**/test/**',
+          '**/docs/**',
+          '**/*.sqlite*',
+          '**/*.log',
+          '**/*.tmp',
+          '**/*.bak',
+          '**/scratch/**',
+        ]
       },
     },
     optimizeDeps: {

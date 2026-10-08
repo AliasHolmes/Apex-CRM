@@ -37,7 +37,7 @@ export function formatLatencySeconds(ms: number): string {
 
 // Strict parser for standard structured [LLM 200 OK] lines (accepts both ms and s)
 const LLM_200_STRUCTURED_RE =
-  /^\[LLM 200 OK\]\s+([^\s\u00b7·]+)\s+[\u00b7·]\s+model:\s+([^\s\u00b7·]+)\s+[\u00b7·]\s+([\d,]+(?:\.\d+)?(?:ms|s))(?:\s+[\u00b7·]\s+([\d,]+ tok))?(?:\s+(.*))?$/;
+  /^\[LLM 200 OK\]\s+([^\s\u00b7\u00b7]+)\s+[\u00b7\u00b7]\s+model:\s+([^\s\u00b7\u00b7]+)\s+[\u00b7\u00b7]\s+([\d,]+(?:\.\d+)?(?:ms|s))(?:\s+[\u00b7\u00b7]\s+([\d,]+ tok))?(?:\s+(.*))?$/;
 
 // Generic fallback for any other [LLM 200 OK] lines
 const LLM_200_GENERIC_RE = /^\[LLM 200 OK\](?:\s+(.*))?$/;

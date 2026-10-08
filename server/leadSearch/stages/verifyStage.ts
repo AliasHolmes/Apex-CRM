@@ -214,7 +214,7 @@ export async function executeVerifyStage(
       } else {
         const headlineText = String(lead?.headline || lead?.currentTitle || "").trim();
         if (headlineText) {
-          const atMatch = headlineText.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|•|\n|,|$))/i);
+          const atMatch = headlineText.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|\u2022|\n|,|$))/i);
           if (atMatch && atMatch[1]) {
             const candidate = cleanCompanyHint(atMatch[1]);
             if (looksLikeCompanyHint(candidate)) {
@@ -222,7 +222,7 @@ export async function executeVerifyStage(
             }
           }
           if (!resolvedCompany) {
-            const parts = headlineText.split(/\s*(?:\||\u2013|\u2014|•)\s*/).map(p => p.trim()).filter(Boolean);
+            const parts = headlineText.split(/\s*(?:\||\u2013|\u2014|\u2022)\s*/).map(p => p.trim()).filter(Boolean);
             if (parts.length > 1) {
               const last = cleanCompanyHint(parts[parts.length - 1]);
               if (looksLikeCompanyHint(last) && !/\b(founder|owner|ceo|executive|leader|director|manager)\b/i.test(last)) {

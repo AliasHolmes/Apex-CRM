@@ -56,6 +56,36 @@ const CrmCopilot = lazy(() => import('./components/CrmCopilot'));
 const LeadDrawer = lazy(() => import('./components/LeadDrawer'));
 import TabErrorBoundary from './components/TabErrorBoundary';
 
+// ScrapeWorkspace marks a running discovery in sessionStorage. If the page is
+// force-reloaded (e.g. the Vite dev-server HMR client's websocket-drop reload),
+// this marker re-mounts the workspace so its mount effect can re-attach to the
+// still-running server-side mining session. See docs/adr/0010-dev-server-hmr-reload-containment.md.
+const ACTIVE_SESSION_STORAGE_KEY = 'apex-active-mining-session-id';
+const MOUNTED_JOB_TABS_STORAGE_KEY = 'apex-mounted-job-tabs';
+const JOB_TABS: readonly DashboardTab[] = ['workspace', 'inventory', 'outreach'];
+
+const hasActiveMiningSessionMarker = (): boolean => {
+  try {
+    return Boolean(sessionStorage.getItem(ACTIVE_SESSION_STORAGE_KEY));
+  } catch {
+    return false;
+  }
+};
+
+const readPersistedJobTabs = (): DashboardTab[] => {
+  try {
+    const raw = sessionStorage.getItem(MOUNTED_JOB_TABS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((tab): tab is DashboardTab =>
+      JOB_TABS.includes(tab as DashboardTab),
+    );
+  } catch {
+    return [];
+  }
+};
+
 interface NavigationItem {
   id: DashboardTab;
   hash: string;
@@ -170,8 +200,14 @@ function Dashboard() {
   const shouldReduceMotion = useReducedMotion();
   const [activeTab, setActiveTab] = useState<DashboardTab>(() => getTabFromHash(window.location.hash));
   const [mountedJobTabs, setMountedJobTabs] = useState<Set<DashboardTab>>(() => {
+    // A forced dev-server reload must not lose an active mining session: when one
+    // is marked as running, (re)mount the workspace so its mount effect re-attaches
+    // to the live server-side session (ADR-0010).
+    if (hasActiveMiningSessionMarker()) return new Set<DashboardTab>(['workspace']);
     const initialTab = getTabFromHash(window.location.hash);
-    return new Set(initialTab === 'workspace' || initialTab === 'inventory' || initialTab === 'outreach' ? [initialTab] : []);
+    const persisted = new Set<DashboardTab>(readPersistedJobTabs());
+    if (JOB_TABS.includes(initialTab)) persisted.add(initialTab);
+    return persisted;
   });
   const [hasLoadedCopilot, setHasLoadedCopilot] = useState(false);
   const [prospectPreset, setProspectPreset] = useState<ProspectPreset | null>(null);
@@ -238,6 +274,27 @@ function Dashboard() {
       return nextTabs;
     });
   }, [activeTab]);
+
+  // Keep the mounted job tabs across forced reloads (see ADR-0010): a reload
+  // that detaches the workspace would drop live trace state and in-flight drafts.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(MOUNTED_JOB_TABS_STORAGE_KEY, JSON.stringify([...mountedJobTabs]));
+    } catch {
+      // sessionStorage unavailable - mounted-tab restoration is best-effort.
+    }
+  }, [mountedJobTabs]);
+
+  // Mount-only: if a discovery session is running after a forced reload, bring the
+  // user straight back to the workspace with the live trace instead of leaving them
+  // on the hash tab watching a detached UI. Deliberately not keyed on activeTab so
+  // navigating away mid-session is never yanked back.
+  useEffect(() => {
+    if (!hasActiveMiningSessionMarker()) return;
+    if (getTabFromHash(window.location.hash) === 'workspace') return;
+    navigateToTab('workspace');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     void refreshStats();

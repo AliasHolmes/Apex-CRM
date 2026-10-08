@@ -38,6 +38,30 @@ import { TraceTerminal, TraceSummaryViewer } from "@/components/TraceTerminal";
 import { miningTraceStore } from "@/lib/traceStore";
 import { classifySessionStatus, isTerminalSessionStatus } from "@/lib/sessionStatus";
 
+// Marks a running discovery session in sessionStorage. The Vite dev-server HMR
+// client force-reloads the page on websocket drops (vite:ws:disconnect ->
+// location.reload()), which would otherwise silently detach the UI from a
+// still-running server-side mining session. This marker lets App.tsx re-mount
+// this workspace after such a reload so the mount effect below re-attaches.
+// See docs/adr/0010-dev-server-hmr-reload-containment.md.
+const ACTIVE_SESSION_STORAGE_KEY = 'apex-active-mining-session-id';
+
+const rememberActiveSession = (sessionId: string) => {
+  try {
+    sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, sessionId);
+  } catch {
+    // sessionStorage unavailable (private mode/quota) - rehydration is best-effort.
+  }
+};
+
+const forgetActiveSession = () => {
+  try {
+    sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+  } catch {
+    // sessionStorage unavailable - nothing to clean up.
+  }
+};
+
 const DebugLogsViewer = ({ debugLogsStr }: { debugLogsStr?: string }) => {
   const panelId = useId();
   const [expanded, setExpanded] = useState(false);
@@ -385,6 +409,7 @@ export default function ScrapeWorkspace() {
       settled = true;
       teardownWatcher();
       setLoading(false);
+      forgetActiveSession();
     };
 
     activeDiscoveryRef.current = {
@@ -395,6 +420,7 @@ export default function ScrapeWorkspace() {
       sseSource: null,
       cleanup: teardownWatcher,
     };
+    rememberActiveSession(sessionId);
 
     watchTimer = setInterval(() => {
       // The watcher is only ever stopped through its own controller (cancel / replacement /
@@ -545,6 +571,9 @@ export default function ScrapeWorkspace() {
           const taskId = handleTaskAdd('search', taskQuery);
           attachActiveSessionWatcher(activeId, { taskId, promptQuery: data.session?.prompt });
         } else {
+          // No live session on the server: clear any stale marker so the next
+          // boot does not force-mount this workspace for a finished session.
+          forgetActiveSession();
           void rehydrateLeads(true);
         }
       } catch {
@@ -855,6 +884,7 @@ export default function ScrapeWorkspace() {
       updateTaskStatus(taskId, 'failed', 0);
       setLoading(false);
       setCurrentSessionId(null);
+      forgetActiveSession();
     }
   };
 
@@ -885,6 +915,7 @@ export default function ScrapeWorkspace() {
           }
           setLoading(false);
           updateTaskStatus(undefined, 'cancelled', savedCount);
+          forgetActiveSession();
           await rehydrateLeads(true);
           notifyLeadsUpdated();
           if (savedCount > 0) {
@@ -935,6 +966,7 @@ export default function ScrapeWorkspace() {
       updateTaskStatus(taskId, 'failed');
       setLoading(false);
       setCurrentSessionId(null);
+      forgetActiveSession();
     }
   };
 

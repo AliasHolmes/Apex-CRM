@@ -188,6 +188,12 @@ flowchart TD
 - **Uninterrupted Outreach Studio Lifecycle**: `App.tsx` retains Outreach Studio within the mounted DOM across tab switches (`mountedJobTabs`), ensuring in-flight LLM generations, custom prompts, and drafted messages are never lost during navigation.
 - **Pipeline Stage Preservation on CSV Re-Import**: The CSV importer maps pipeline stage columns (`CSV_FIELD_ALIASES.stage`), preventing existing prospect stage progressions from resetting to `SCRAPED` upon re-import.
 
+#### 16. Atria Quad Concurrency & Micro-Batching (ADR-0009)
+
+- **Quad Provider Concurrency**: Enables Atria to execute up to 4 concurrent in-flight requests simultaneously (`ATRIA_CONCURRENT_SLOTS=4`, `LEAD_EXTRACTION_CONCURRENCY=4`, `FINALIST_JUDGE_CONCURRENCY=4`), fully saturating vLLM capacity without crashing.
+- **Micro-Batch Sizing**: Clamps extraction to 3 candidate profiles per chunk (`LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging to 2 candidates per batch (`FINALIST_JUDGE_MICRO_BATCH_SIZE=2`). Small payloads keep individual call latencies under ~25s-35s and prevent borderline prospects from stalling sibling candidates.
+- **Rolling-Pool Early Stopping**: Micro-batching unlocks fine-grained quota fulfillment in `runRollingPool`, halting evaluation as soon as the target cushion is reached and skipping remaining batches to save 50%+ in token costs and execution time.
+
 ---
 
 
@@ -246,9 +252,9 @@ cp .env.example .env
 A minimal `.env` setup:
 
 ```env
-# Primary LLM Provider: Atria with provider-affinity concurrency & reasoning headroom
+# Primary LLM Provider: Atria with quad concurrency & reasoning headroom
 ATRIA_API_KEY="your_atria_api_key"
-ATRIA_CONCURRENT_SLOTS="1"
+ATRIA_CONCURRENT_SLOTS="4"
 ATRIA_MAX_TIMEOUT_MS="600000"
 ATRIA_MIN_TIMEOUT_MS="120000"
 
@@ -257,7 +263,13 @@ OPENAI_API_KEY="your_byesu_or_openai_key"
 OPENAI_BASE="https://byesu.com/v1"
 OPENAI_MODEL="gpt-5.5"
 OPENAI_PROVIDER_NAME="Byesu"
-BYESU_CONCURRENT_SLOTS="1"
+BYESU_CONCURRENT_SLOTS="4"
+
+# Optimal Micro-Batching & Quad Concurrency (ADR-0009)
+LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"
+LEAD_EXTRACTION_CONCURRENCY="4"
+FINALIST_JUDGE_MICRO_BATCH_SIZE="2"
+FINALIST_JUDGE_CONCURRENCY="4"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'
 TAVILY_API_KEY="tavily_key_3"
@@ -404,7 +416,7 @@ npm run test:dedupe
 ```text
 docs/
   CODEBASE_INDEX.md          Measured architecture, module inventory, and audit ledger
-  adr/                       Architecture Decision Records (ADR-0001 through ADR-0008)
+  adr/                       Architecture Decision Records (ADR-0001 through ADR-0009)
 src/
   components/                React UI components, modals, tables, badges
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog

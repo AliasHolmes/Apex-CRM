@@ -26,18 +26,21 @@ export function validateEngineConfig(): string[] {
     );
   }
 
-  for (const [name, max] of [
-    ["TAVILY_SEARCH_CONCURRENCY", 8],
-    ["BRIGHTDATA_SEARCH_CONCURRENCY", 8],
-    ["BRIGHTDATA_PROFILE_CONCURRENCY", 8],
-    ["LEAD_EXTRACTION_CONCURRENCY", 6],
-    ["FINALIST_JUDGE_CONCURRENCY", 8],
-    ["LINKEDIN_POST_INTENT_CONCURRENCY", 8],
+  for (const [name, max, customMsg] of [
+    ["TAVILY_SEARCH_CONCURRENCY", 8, undefined],
+    ["BRIGHTDATA_SEARCH_CONCURRENCY", 8, undefined],
+    ["BRIGHTDATA_PROFILE_CONCURRENCY", 8, undefined],
+    ["LEAD_EXTRACTION_CONCURRENCY", 6, undefined],
+    ["FINALIST_JUDGE_CONCURRENCY", 8, undefined],
+    ["LINKEDIN_POST_INTENT_CONCURRENCY", 8, undefined],
+    ["ATRIA_CONCURRENT_SLOTS", 4, "ATRIA_CONCURRENT_SLOTS exceeds the recommended maximum of 4; vLLM GPU KV-cache contention may degrade generation speed."],
+    ["LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK", 5, "LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK exceeds recommended micro-chunk size of 2-3; large chunks increase latency and timeout risk."],
+    ["FINALIST_JUDGE_MICRO_BATCH_SIZE", 5, "FINALIST_JUDGE_MICRO_BATCH_SIZE exceeds recommended micro-batch size of 2-3; large batches diminish rolling pool early-stopping gains."],
   ] as const) {
     const value = num(name);
     if (value !== undefined && !Number.isNaN(value) && value > max) {
       warnings.push(
-        `${name}=${value} exceeds the recommended maximum of ${max}; provider rate limits may trigger.`,
+        customMsg || `${name}=${value} exceeds the recommended maximum of ${max}; provider rate limits may trigger.`,
       );
     }
   }

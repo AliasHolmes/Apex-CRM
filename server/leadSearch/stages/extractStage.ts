@@ -1077,7 +1077,7 @@ Evidence:
   );
   const maxBlocksPerChunk = Math.max(
     2,
-    Math.min(12, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 6)),
+    Math.min(12, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 3)),
   );
   const chunks = chunkEvidenceBlocksByTokenBudget(
     evidenceBlocks,
@@ -1322,13 +1322,13 @@ Evidence:
   });
 
   // 6 is the recommended maximum in configValidation.ts (provider slots bound real
-  // concurrency); default stays 1 unless opted in.
+  // concurrency); defaults to 4 for parallel micro-chunk execution.
   const extractionConcurrency = Math.min(
     Math.max(
       Number(
         config.extractionConcurrency ||
           process.env.LEAD_EXTRACTION_CONCURRENCY ||
-          1,
+          4,
       ),
       1,
     ),

@@ -561,7 +561,7 @@ export async function evaluateIncrementalJudgeBatches(
   const configuredMaxBatchCandidates =
     Number.isFinite(explicitBatchSize) && explicitBatchSize > 0
       ? Math.max(1, Math.min(12, Math.floor(explicitBatchSize)))
-      : 10;
+      : 2;
   const firstPassRoute = describeLLMRoute("fast");
   const maxBatchCandidates = Math.min(
     configuredMaxBatchCandidates,
@@ -574,7 +574,7 @@ export async function evaluateIncrementalJudgeBatches(
   const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 4500);
   const judgeConcurrency = Math.max(
     1,
-    Math.min(8, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 1)),
+    Math.min(8, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 4)),
   );
 
   const reusedQualified: any[] = [];

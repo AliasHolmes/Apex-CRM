@@ -13,6 +13,7 @@ import {
   upsertSearchCacheEntry,
 } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
+import { resolvePlannerProviderOrder } from './plannerRouting.js';
 import { applyPostIntentDelta } from './scoring.js';
 import { formatLatencySeconds } from './terminalLog.js';
 import type { ProspectContract } from './prospectContract.js';
@@ -292,6 +293,8 @@ Analyze the snippets and classify the prospect's intent:`;
       maxTokens: Math.max(600, Math.ceil(userPrompt.length / 3)),
       temperature: 0,
       signal: llmContext?.signal,
+      // Low-latency planning family: fast router first, engine provider second.
+      tierProviderOrder: resolvePlannerProviderOrder(),
       metadata: {
         stage: 'post_intent',
         sessionId: llmContext?.sessionId,
@@ -420,6 +423,8 @@ ${promptSections}`;
       maxTokens: Math.max(800, candidates.length * 400),
       temperature: 0,
       signal: llmContext?.signal,
+      // Low-latency planning family: fast router first, engine provider second.
+      tierProviderOrder: resolvePlannerProviderOrder(),
       metadata: {
         stage: 'post_intent',
         sessionId: llmContext?.sessionId,

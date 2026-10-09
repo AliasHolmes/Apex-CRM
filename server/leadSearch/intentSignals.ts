@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { openAIStructured } from '../services/llm.js';
+import { resolvePlannerProviderOrder } from './plannerRouting.js';
 import type { ProspectContract } from './prospectContract.js';
 
 export type CategorizedIntentSignals = {
@@ -184,6 +185,9 @@ Return JSON with "dynamic_signals": array of strings and "categorized": object w
         maxTokens: dynamicSignalTokens,
         temperature: 0,
         circuitBreaker,
+        // Low-latency planning family: run on the fast router with the engine as second
+        // choice instead of defaulting to the primary reasoning model.
+        tierProviderOrder: resolvePlannerProviderOrder(),
         metadata: {
           stage: 'intent_signals',
           itemCount: contract.requirements.length,

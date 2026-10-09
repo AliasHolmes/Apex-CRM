@@ -43,6 +43,8 @@ export class BrightDataError extends Error {
   providerDisabled: boolean;
   clearClient: boolean;
   statusCode?: number;
+  /** Applied rate limit (requests/min) parsed from the provider message, when present. */
+  rateLimitPerMinute?: number;
 
   constructor(
     message: string,
@@ -52,6 +54,7 @@ export class BrightDataError extends Error {
       providerDisabled?: boolean;
       clearClient?: boolean;
       statusCode?: number;
+      rateLimitPerMinute?: number;
     } = {},
   ) {
     super(message);
@@ -61,6 +64,7 @@ export class BrightDataError extends Error {
     this.providerDisabled = Boolean(options.providerDisabled);
     this.clearClient = Boolean(options.clearClient);
     this.statusCode = options.statusCode;
+    this.rateLimitPerMinute = options.rateLimitPerMinute;
   }
 }
 
@@ -418,17 +422,34 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     });
   }
   if (
-    /your system is sending too many|sending too many of this type|contact your account manager/.test(
+    /your system is sending too many|sending too many of this type|contact your account manager|exceeded the allowed rate limits|reduce requests rate/.test(
       lower,
     )
   ) {
+    // Official BD docs (bucket_rate_limit / account-level 429): the response names the
+    // applied limit ("decrease your request rate to <N>/min") and, when throttled
+    // per-host (sr_rate_limit), that limit is dynamic. Retrying immediately always fails;
+    // the only remedy is backing off for the stated period, which the provider-level
+    // cooldown in markProviderFailure provides.
     return new BrightDataError(message, {
       reasonCode: "provider_rate_limit",
       retryable: false,
       statusCode: statusCode || 429,
+      rateLimitPerMinute: parseRateLimitPerMinute(message),
     });
   }
   return new BrightDataError(message, { reasonCode: "unknown", statusCode });
+}
+
+/**
+ * Extracts the applied limit from a rate-limit message, e.g. "decrease your request rate
+ * to 120/min" -> 120. Returns undefined when the message carries no numeric limit.
+ */
+function parseRateLimitPerMinute(message: string): number | undefined {
+  const match = /(\d+(?:\.\d+)?)\s*(?:\/|per\s*)\s*(?:min|minute)/i.exec(message);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 export const isBrightDataRetryableError = (error: unknown) =>
@@ -688,8 +709,12 @@ const markProviderFailure = (
 
   if (Date.now() >= cooldownLogMutedUntil) {
     const seconds = Math.max(1, Math.ceil((disabledUntil - Date.now()) / 1000));
+    const limitHint =
+      classified.reasonCode === "provider_rate_limit" && classified.rateLimitPerMinute
+        ? ` (applied limit: ${classified.rateLimitPerMinute} req/min - back off, immediate retries always fail)`
+        : "";
     console.warn(
-      `[brightdata] ${label} failed; cooling down for ${seconds}s: ${message}`,
+      `[brightdata] ${label} failed; cooling down for ${seconds}s: ${message}${limitHint}`,
     );
     cooldownLogMutedUntil = disabledUntil;
   }

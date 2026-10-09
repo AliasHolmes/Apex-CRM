@@ -97,6 +97,7 @@ import {
   evaluateIncrementalJudgeBatches,
   promoteSafetyNetCandidates,
 } from "./stages/judgeStage.js";
+import { createLiveRollingPool } from "./liveRollingPool.js";
 import { executeSelectStage } from "./stages/selectStage.js";
 import { executePersistStage } from "./stages/persistStage.js";
 import type {
@@ -1905,6 +1906,114 @@ export async function executeDiscoverySession(
         // Prune auto-failed leads from enrichment
         candidateLeadsForEnrichment = postFilterLeads.filter(pfl => !pfl.lead._autoFailed);
 
+        // --- Streaming judge seam (ADR-0012) ---
+        // Judge candidates are submitted to a live pool as profile enrichment completes,
+        // so the judge stage overlaps enrichment instead of waiting for it. Site-probe
+        // signals are absent at submit time but are NOT part of the judge prompt (they
+        // only gate admission via companyProbeOutcome), so verdicts are unchanged; the
+        // admission/site-probe-dependent checks still run at drain time.
+        const streamingJudgeEnabled =
+          process.env.LEAD_PIPELINE_STREAMING_JUDGE !== "false";
+        const pendingJudgeCandidates = new Map<any, FinalistCandidate>();
+        const submittedJudgeLeads = new Set<any>();
+        const streamAutoQualified: any[] = [];
+        const streamJudgeQualified: FinalistCandidate[] = [];
+        const streamRequirementFailCounts: Record<string, number> = {};
+        const currentQualifiedCountForJudge = () =>
+          Math.floor(
+            qualifiedLeads.reduce((acc, lead) => {
+              if (lead.qualification?.verdict === "qualified") return acc + 1;
+              if (lead.qualification?.verdict === "qualified_partial") return acc + 0.75;
+              return acc;
+            }, 0),
+          );
+        let judgePool: ReturnType<typeof createLiveRollingPool<FinalistCandidate[], {
+          qualifiedCandidates: FinalistCandidate[];
+          requirementFailCounts: Record<string, number>;
+        }>> | null = null;
+        if (streamingJudgeEnabled) {
+          for (const candidate of triage.needsJudge) {
+            pendingJudgeCandidates.set(candidate.lead, candidate);
+          }
+          judgePool = createLiveRollingPool<
+            FinalistCandidate[],
+            {
+              qualifiedCandidates: FinalistCandidate[];
+              requirementFailCounts: Record<string, number>;
+            }
+          >({
+            // One group at a time; each group parallelizes internally at judge concurrency.
+            concurrency: 1,
+            run: async (group) => {
+              if (group.length === 0) return { qualifiedCandidates: [], requirementFailCounts: {} };
+              const result = await evaluateIncrementalJudgeBatches(sessionCtx, {
+                candidates: group,
+                contract,
+                stats,
+                leadQueryRuns,
+                round,
+                targetCushion: qualifiedTargetWithCushion,
+                currentQualifiedCount: currentQualifiedCountForJudge(),
+              });
+              // Accumulate group results for the drain-time commit below.
+              streamJudgeQualified.push(...(result.qualifiedCandidates || []));
+              for (const [reqId, cnt] of Object.entries(result.requirementFailCounts || {})) {
+                streamRequirementFailCounts[reqId] =
+                  (streamRequirementFailCounts[reqId] || 0) + Number(cnt || 0);
+              }
+              return {
+                qualifiedCandidates: result.qualifiedCandidates || [],
+                requirementFailCounts: result.requirementFailCounts || {},
+              };
+            },
+          });
+        }
+
+        const onTargetsReady = (readyLeads: any[]) => {
+          if (!judgePool) return;
+          const group: FinalistCandidate[] = [];
+          for (const lead of readyLeads) {
+            const preBuilt = pendingJudgeCandidates.get(lead);
+            if (!preBuilt || submittedJudgeLeads.has(lead)) continue;
+            submittedJudgeLeads.add(lead);
+
+            // Re-derive evidence: profile enrichment may have upgraded the block since
+            // the pre-enrichment triage snapshot.
+            const evidence =
+              findEvidenceForLead(lead, evidenceByUrl) ||
+              buildFallbackEvidence(lead, promptQuery, round);
+            const candidate = finalistCandidateFromLead(
+              preBuilt.candidateId,
+              lead,
+              evidence?.evidenceBlock,
+              contract,
+            );
+            const partition = triPartitionCandidatesByEvidence([candidate], contract);
+
+            for (const { candidate: c, qualification } of partition.autoQualified) {
+              c.lead.qualification = qualification;
+              c.lead.whyThisLead = qualification.reason;
+              c.lead.finalSelectionScore = qualification.finalScore;
+              if (c.lead.scoreBreakdown) {
+                c.lead.scoreBreakdown.finalScore = qualification.finalScore;
+              }
+              c.lead.scoreOverride = qualification.finalScore;
+              streamAutoQualified.push(c.lead);
+            }
+            for (const { candidate: c, failedRequirementId } of partition.autoFailed) {
+              c.lead._autoFailed = true;
+              const qRun = leadQueryRuns.get(c.lead);
+              if (qRun && failedRequirementId) {
+                qRun.requirementFailCounts = qRun.requirementFailCounts || {};
+                qRun.requirementFailCounts[failedRequirementId] =
+                  (qRun.requirementFailCounts[failedRequirementId] || 0) + 1;
+              }
+            }
+            for (const candidate of partition.needsJudge) group.push(candidate);
+          }
+          if (group.length > 0) judgePool.submit(group);
+        };
+
         const enrichStartedAt = Date.now();
         const enrichResult = await executeEnrichStage(sessionCtx, {
           round,
@@ -1923,6 +2032,7 @@ export async function executeDiscoverySession(
           stats,
           leadQueryRuns,
           trackableBrightDataSearch,
+          ...(streamingJudgeEnabled ? { onTargetsReady } : {}),
         });
         addStageWall("enrich", enrichStartedAt);
 
@@ -1961,7 +2071,108 @@ export async function executeDiscoverySession(
         const acceptedInRound = acceptedLeads
           .slice(acceptedCountBeforeRound)
           .filter((lead) => !lead.qualification && !lead._autoFailed);
-        if (acceptedInRound.length > 0) {
+        if (streamingJudgeEnabled && judgePool) {
+          // --- Streaming drain (ADR-0012) ---
+          // Groups were judged while enrichment ran; finish the remainder here.
+          if (sessionState.reInjectedCandidates && sessionState.reInjectedCandidates.length > 0) {
+            for (const reinjected of sessionState.reInjectedCandidates) {
+              logEvent(
+                `Round ${round}: Parked candidate ${reinjected.lead.fullName || reinjected.candidateId} re-injected for judging.`,
+              );
+            }
+            judgePool.submit([...sessionState.reInjectedCandidates]);
+            sessionState.reInjectedCandidates = [];
+          }
+          // Safety net: candidates that never became ready (e.g. aborted enrichment).
+          const neverReady = Array.from(pendingJudgeCandidates.values()).filter(
+            (candidate) => !submittedJudgeLeads.has(candidate.lead),
+          );
+          if (neverReady.length > 0) judgePool.submit(neverReady);
+
+          const drainStartedAt = Date.now();
+          try {
+            await judgePool.drain();
+          } catch (drainError: any) {
+            console.warn(
+              `[llm] Streaming judge pool drained with an error: ${drainError?.message || drainError}`,
+            );
+          }
+          addStageWall("judge", drainStartedAt);
+
+          // Drain-time admission: candidates submitted before the acceptance phase finished
+          // may have been rejected by enrichment; only survivors qualify (same rule as the
+          // deferred auto-qualified commit above).
+          const acceptedIdentityKeys = new Set<string>();
+          const identityKey = (lead: any) =>
+            String(lead?.id || lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "");
+          for (const lead of acceptedLeads) {
+            const key = identityKey(lead);
+            if (key) acceptedIdentityKeys.add(key);
+          }
+          const survivedEnrichment = (lead: any) =>
+            acceptedLeads.includes(lead) ||
+            (identityKey(lead) ? acceptedIdentityKeys.has(identityKey(lead)) : false);
+
+          let streamAutoCommitted = 0;
+          for (const lead of streamAutoQualified) {
+            if (!survivedEnrichment(lead)) continue;
+            if (tryAddQualifiedLead(lead)) streamAutoCommitted++;
+          }
+          let streamQualified = 0;
+          for (const qCand of streamJudgeQualified) {
+            if (!survivedEnrichment(qCand)) continue;
+            if (tryAddQualifiedLead(qCand)) streamQualified++;
+          }
+          logEvent(
+            `Round ${round} Streaming Judge: auto-qualified ${streamAutoCommitted}, qualified ${streamQualified} (overlapped with enrichment). Cumulative qualified: ${qualifiedLeads.length}.`,
+          );
+
+          // Judge-failure-triggered constraint relaxation (Fix 6C), same rule as the
+          // wholesale path but over merged group fail counts.
+          const judgedCount = submittedJudgeLeads.size;
+          if (
+            streamJudgeQualified.length === 0 &&
+            judgedCount >= 2 &&
+            qualifiedLeads.length < targetLimit * 0.5
+          ) {
+            const judgeFailCounts =
+              Object.keys(streamRequirementFailCounts).length > 0
+                ? streamRequirementFailCounts
+                : (() => {
+                    const counts: Record<string, number> = {};
+                    for (const run of stats.queryRuns.filter((r) => r.round === round)) {
+                      for (const [reqId, cnt] of Object.entries(run.requirementFailCounts || {})) {
+                        counts[reqId] = (counts[reqId] || 0) + Number(cnt);
+                      }
+                    }
+                    return counts;
+                  })();
+            const universallyFailed = Object.entries(judgeFailCounts)
+              .filter(([, cnt]) => cnt >= judgedCount)
+              .sort((a, b) => b[1] - a[1]);
+            for (const [failedReqId] of universallyFailed) {
+              const ablation = ablateSearchSpec(searchSpec, contract, failedReqId);
+              if (ablation.ablated) {
+                searchSpec = ablation.spec;
+                contract = ablation.contract;
+                sessionConfig.contract = contract;
+                stats.scout.contract = contract;
+                stats.scout.spec = searchSpec;
+                previousRoundSummary.shouldRecover = true;
+                previousRoundSummary.missingHardRequirementIds = Array.from(
+                  new Set([
+                    ...(previousRoundSummary.missingHardRequirementIds || []),
+                    failedReqId,
+                  ]),
+                );
+                logEvent(
+                  `Round ${round}: 100% of judged candidates failed requirement "${ablation.ablatedRequirementId}" (Tier ${ablation.tier}). Relaxed constraint to soft and triggered recovery.`,
+                );
+                break;
+              }
+            }
+          }
+        } else if (acceptedInRound.length > 0) {
           const roundFinalists: FinalistCandidate[] = acceptedInRound.map((lead, idx) => {
             const evidence = findEvidenceForLead(lead, evidenceByUrl) || buildFallbackEvidence(lead, promptQuery, round);
             const dedupeKey = normalizeDedupeValue(lead.contactDetails?.linkedinUrl || lead.sourceUrl || "");

@@ -508,19 +508,34 @@ export async function probeCompanySites(
   }
 
   // --- Tier 2: Conditional Subpath Probing ---
-  // Identify domains where root content was extracted but thin (< 400 chars) or missing signals
+  // Identify domains where root content was extracted but thin (< 400 chars) or missing signals.
+  // Thin roots are the dominant probe failure mode in live sessions (~50% success), so thin
+  // domains get the wider subpath set. Domains with NO root content at all are only probed
+  // when the domain is verified (not a slug guess), because an unreachable root on a guessed
+  // slug is a dead end, while a JS-heavy real site often still serves /about statically.
   const subpathUrlsToExtract: string[] = [];
   for (const domain of uniqueDomains) {
     const contents = extractedByDomain.get(domain) || [];
     const rootText = contents.join('\n\n').trim();
+    const cleanRoot = domain.replace(/\/$/, '');
+    const verifiedDomain = domainProvenanceMap.get(domain) !== 'slug_guess';
     if (!rootText) {
-      // Unreachable / failed root: do not waste calls on subpaths
+      if (verifiedDomain) {
+        for (const u of [`${cleanRoot}/about`]) {
+          subpathUrlsToExtract.push(u);
+          probeUrlsToDomain.set(u, domain);
+        }
+      }
       continue;
     }
     const hasSignals = Boolean(extractSiteSignals(rootText));
     if (!hasSignals || rootText.length < 400) {
-      const cleanRoot = domain.replace(/\/$/, '');
-      const subUrls = [`${cleanRoot}/about`, `${cleanRoot}/team`];
+      const subUrls = [
+        `${cleanRoot}/about`,
+        `${cleanRoot}/team`,
+        `${cleanRoot}/services`,
+        `${cleanRoot}/careers`,
+      ];
       for (const u of subUrls) {
         subpathUrlsToExtract.push(u);
         probeUrlsToDomain.set(u, domain);

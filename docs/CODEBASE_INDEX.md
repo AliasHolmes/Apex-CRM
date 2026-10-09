@@ -29,11 +29,12 @@ Primary reference docs:
 
 - [`README.md`](../README.md) — product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) — domain glossary
-- [`docs/adr/0001`…`0011`](adr/) — eleven ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`…`0012`](adr/) — twelve ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, Atria quad concurrency with micro-batching,
-  dev-server HMR forced-reload containment, and the Atria-primary / Byesu second-priority
-  routing and concurrency policy
+  dev-server HMR forced-reload containment, the Atria-primary / Byesu second-priority
+  routing and concurrency policy, and engine bottleneck remediation (streaming judge seam,
+  signature/market-slice caches, saturation response, queue-wait telemetry)
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
@@ -48,9 +49,9 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Backend engine (`server/leadSearch/`)                            | 26,383 lines: 46 modules + 9 `stages/`                                   |
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,430 lines                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 23 base tables + `leads_fts` (fts5), schema **v26**, WAL                   |
-| Test suite                                                       | 181 TypeScript files: 179 `.test.ts`, 1 `.eval.ts`, 1 helper; 28,209 lines |
-| Total first-party LOC                                            | ~84,800 TypeScript lines (incl. tests)                                    |
+| SQLite                                                           | 23 base tables + `leads_fts` (fts5), schema **v27**, WAL                   |
+| Test suite                                                       | 186 TypeScript files: 184 `.test.ts`, 1 `.eval.ts`, 1 helper; 28,800 lines |
+| Total first-party LOC                                            | ~85,600 TypeScript lines (incl. tests)                                    |
 | Anchor                                                           | measured at `a237c91`; working tree clean at that commit                  |
 
 ## 3. Tech stack
@@ -71,7 +72,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 ```
 server.ts                    Express app + static Vite serve (335 lines)
-server/db.ts                 SQLite layer: schema v26, migrations, 40+ readers/writers (5,651)
+server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,651)
 server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,430)
 server/services/             llm.ts (3,261, provider-affinity dual concurrency, Atria reasoning headroom, completion cache;
                              legacy single-mutex queue and Token Harbor/ProviderTrafficController removed) ·
@@ -79,8 +80,11 @@ server/services/             llm.ts (3,261, provider-affinity dual concurrency, 
                              sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
                              outboundPrompt · langfuse
 server/leadSearch/           the discovery engine
-  discoveryEngine.ts         session loop, round budget, checkpoints, resume (2,815)
+  discoveryEngine.ts         session loop, round budget, checkpoints, resume, streaming judge seam (2,815)
   rollingPool.ts             bounded rolling-window task pool used to parallelize judge micro-batches (42)
+  liveRollingPool.ts         bounded live rolling-window pool for streaming judge execution across enrichment (ADR-0012)
+  planCache.ts               signature-keyed & market-slice query plan cache (ADR-0012)
+  plannerRouting.ts          fast-tier route resolver for strategist/plan families (ADR-0012)
   prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support, known-metro registry (2,038)
   finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,527)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (799)
@@ -89,10 +93,10 @@ server/leadSearch/           the discovery engine
   stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation
   companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching
   titleResolution.ts         evidence-grounded title backfill from passing qualification requirements
-  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v26)
+  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v26/v27, evidence-anchor normalized)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
-  retrievalCache.ts          cross-round query-hash-keyed search retrieval cache
+  retrievalCache.ts          cross-round query-hash-keyed search retrieval cache (normalized query tokens)
   aliasMap.ts                symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
   queryRewriter.ts           bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection)
   companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v26)
@@ -101,7 +105,7 @@ server/leadSearch/           the discovery engine
   searchSpec.ts · strategist.ts · adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ·
   collectionCapacity.ts · constraintAblation.ts · evidenceSelection.ts (alias-aware, location provenance guard) ·
   intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
-  companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard) ·
+  companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard, subpath probe) ·
   signalStore.ts · telemetry.ts · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts (company-hint sanitizer: slogans, ellipses,
                              marketing taglines) · profileEnrichment.ts · rejections.ts ·

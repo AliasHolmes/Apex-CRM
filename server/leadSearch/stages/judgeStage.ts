@@ -12,6 +12,8 @@ import {
   openAIStructured,
   DEFAULT_PRIMARY_MODEL,
   describeLLMRoute,
+  getProviderConcurrencyLimit,
+  getProviderActiveSlots,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -572,10 +574,34 @@ export async function evaluateIncrementalJudgeBatches(
     ),
   );
   const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 4500);
+  const configuredJudgeConcurrency = Number(
+    process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 4,
+  );
+  // Adaptive headroom: when extraction/intent work is not occupying the Atria slot pool,
+  // the judge can use the free slots (still bounded by the hard ceiling of 8, which keeps
+  // the heaviest reasoning stage clear of the observed KV-cache contention zone). An
+  // explicitly configured value stays authoritative as the floor.
+  const freeAtriaSlots = Math.max(
+    0,
+    getProviderConcurrencyLimit("atria") - getProviderActiveSlots("atria"),
+  );
   const judgeConcurrency = Math.max(
     1,
-    Math.min(8, Number(process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 4)),
+    Math.min(8, Math.max(configuredJudgeConcurrency, freeAtriaSlots)),
   );
+  // First wave runs batches of up to 3 candidates (provider capacity permitting) so the
+  // pool's first `judgeConcurrency` calls amortize prefill over 50% more candidates.
+  // Later waves keep the configured micro-batch size, preserving the rolling pool's
+  // early-stop granularity. An explicitly configured FINALIST_JUDGE_MICRO_BATCH_SIZE
+  // stays authoritative for every wave.
+  const batchCapacityCap = computeJudgeBatchCapacity(
+    firstPassRoute.outputTokenCap,
+    contract?.requirements?.length || 4,
+    firstPassRoute.reasoning,
+  );
+  const firstWaveBatchSize =
+    explicitBatchSize > 0 ? maxBatchCandidates : Math.min(3, batchCapacityCap);
+  const firstWaveCandidates = firstWaveBatchSize * judgeConcurrency;
 
   const reusedQualified: any[] = [];
   let withheldByAdmissionGate = 0;
@@ -641,6 +667,7 @@ export async function evaluateIncrementalJudgeBatches(
   const microBatches: FinalistCandidate[][] = [];
   let currentBatch: FinalistCandidate[] = [];
   let currentBatchTokens = 0;
+  let packedCandidates = 0;
   for (const cand of candidatesToJudge) {
     const evText = Array.isArray(cand.evidence)
       ? cand.evidence
@@ -649,12 +676,15 @@ export async function evaluateIncrementalJudgeBatches(
           .join("\n")
       : "";
     const candTokens = Math.max(150, estimateTokenCount(evText) + 120);
+    const batchCap =
+      packedCandidates < firstWaveCandidates ? firstWaveBatchSize : maxBatchCandidates;
     if (
       currentBatch.length > 0 &&
-      (currentBatch.length >= maxBatchCandidates ||
+      (currentBatch.length >= batchCap ||
         currentBatchTokens + candTokens > targetBatchTokens)
     ) {
       microBatches.push(currentBatch);
+      packedCandidates += currentBatch.length;
       currentBatch = [cand];
       currentBatchTokens = candTokens;
     } else {
@@ -664,6 +694,7 @@ export async function evaluateIncrementalJudgeBatches(
   }
   if (currentBatch.length > 0) {
     microBatches.push(currentBatch);
+    packedCandidates += currentBatch.length;
   }
 
   const pastDecisions = readPastUserDecisions({

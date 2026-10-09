@@ -563,6 +563,10 @@ export class MiningTelemetryRecorder {
       traceEvent.status !== "started"
     ) {
       try {
+        const attempts = traceEvent.llm?.providerAttempts;
+        const queueWaitMs = Array.isArray(attempts)
+          ? attempts.reduce((sum, a) => sum + (Number(a?.queueWaitMs) || 0), 0)
+          : 0;
         llmStageLogger({
           searchLogId: this.sessionId,
           stage: traceEvent.phase || traceEvent.operation || "unknown",
@@ -571,6 +575,7 @@ export class MiningTelemetryRecorder {
           inputTokens: traceEvent.llm?.inputTokens ?? 0,
           outputTokens: traceEvent.llm?.outputTokens ?? 0,
           latencyMs: traceEvent.latencyMs ?? 0,
+          queueWaitMs,
           modelName: traceEvent.model || traceEvent.llm?.model || undefined,
           provider: traceEvent.llm?.route || "llm",
           createdAt: traceEvent.timestamp,
@@ -737,6 +742,8 @@ export type LlmStageLogEntry = {
   inputTokens?: number;
   outputTokens?: number;
   latencyMs?: number;
+  /** Sum of provider-slot wait across this call's attempts (0 when a slot was free). */
+  queueWaitMs?: number;
   modelName?: string;
   provider?: string;
   createdAt?: string;

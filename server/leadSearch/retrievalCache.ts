@@ -1,4 +1,6 @@
 import { getSearchCacheEntry, upsertSearchCacheEntry } from "../db.js";
+import { buildQuerySignature } from "./querySignature.js";
+import type { ProspectContract } from "./prospectContract.js";
 
 export type CachedSearchResult = { text: string; sources: any[]; items: any[] };
 
@@ -35,6 +37,29 @@ export function buildRetrievalCacheKey(
     `topic=${options.topic ?? ""}`,
     `country=${String(options.country ?? "").toLowerCase()}`,
     String(query || "").trim().toLowerCase().replace(/\s+/g, " "),
+  ].join("|");
+}
+
+/**
+ * Coarse-grain cache key at the market-slice level (role class, org class, geo anchor,
+ * top topic tokens) instead of the literal query. Re-mined briefs generate slightly
+ * different query strings for the same slice; this key lets them share SERP results that
+ * the exact-query key misses. Downstream fusion and CRM dedupe still apply.
+ */
+export function buildRetrievalSignatureKey(
+  provider: string,
+  query: string,
+  options: { contract?: ProspectContract; maxResults?: number } = {},
+): string {
+  const sig = buildQuerySignature(query, { contract: options.contract });
+  const topics = [...new Set(sig.topicTokens)].sort().slice(0, 8).join(",");
+  return [
+    `retrieval-sig:${provider}`,
+    `role=${sig.roleClass}`,
+    `org=${sig.orgClass}`,
+    `geo=${sig.geoAnchor}`,
+    `topics=${topics}`,
+    `max=${options.maxResults ?? ""}`,
   ].join("|");
 }
 

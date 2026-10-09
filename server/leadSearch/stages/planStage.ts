@@ -106,16 +106,15 @@ const pushStateDebugLog = (state: { debugLogs: any[] }, log: any, maxLogs = 500)
   state.debugLogs.push(log);
 };
 
-export function resolvePlannerProviderOrder(): string[] {
-  const env = process.env.LEAD_PLANNER_PROVIDER_ORDER;
-  if (env && env.trim()) {
-    return env.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-  }
-  // Fast tier: prefer the low-latency router (Byesu) for query planning, then the primary
-  // engine provider (Atria), then the OpenRouter/Mistral failsafe. Heavy reasoning models
-  // are deprioritized for this low-latency planning call. See docs/adr/0011.
-  return ["primary", "atria", "openrouter"];
-}
+// Re-exported from the shared planner-routing module so the fast-tier order has a single
+// source of truth across the strategist, intent-signal, and post-intent call sites.
+export {
+  resolvePlannerProviderOrder,
+  PLANNER_PROVIDER_HARD_TIMEOUT_MS,
+} from "../plannerRouting.js";
+import { resolvePlannerProviderOrder, PLANNER_PROVIDER_HARD_TIMEOUT_MS } from "../plannerRouting.js";
+import { readPlanCache, writePlanCache } from "../planCache.js";
+import { createHash } from "node:crypto";
 
 export async function executePlanStage(
   ctx: SessionContext,
@@ -234,7 +233,41 @@ export async function executePlanStage(
       (state.previousRoundSummary as any)?.accepted ??
       -1,
   );
-  const lowYieldBoost = isRecoveryMode || (round > 1 && prevAccepted >= 0 && prevAccepted <= 2) ? 1.5 : 1.0;
+  // CRM-saturation detection (ADR-0012): the share of the most recent round's rejections
+  // that were duplicate_existing_lead. A dominant share means persona queries keep
+  // re-finding companies already in the CRM; the engine then sweeps more metros and
+  // injects account-first queries at signal companies instead of re-mining the persona
+  // surface.
+  const lastRoundRejections = (() => {
+    const runs: QueryRunStats[] = (state as any).queryRuns || [];
+    if (runs.length === 0) return {};
+    let lastRound = -1;
+    for (const run of runs) {
+      lastRound = Math.max(lastRound, Number(run.round || 0));
+    }
+    const merged: Record<string, number> = {};
+    for (const run of runs) {
+      if (Number(run.round || 0) !== lastRound) continue;
+      for (const [reason, count] of Object.entries(run.rejectionReasons || {})) {
+        merged[reason] = (merged[reason] || 0) + Number(count || 0);
+      }
+    }
+    return merged;
+  })();
+  const lastRoundRejectionTotal = Object.values(lastRoundRejections).reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  const crmDuplicateShare =
+    lastRoundRejectionTotal > 0
+      ? (lastRoundRejections.duplicate_existing_lead || 0) / lastRoundRejectionTotal
+      : 0;
+  const lowYieldBoost =
+    crmDuplicateShare >= 0.5
+      ? 2.0
+      : isRecoveryMode || (round > 1 && prevAccepted >= 0 && prevAccepted <= 2)
+        ? 1.5
+        : 1.0;
   const shortfallDrivenTasks = Math.ceil(Math.max(remaining, config.capacity?.candidateBatchSize || 12) / 3.5);
   const maxTasks =
     Number.isFinite(envTasks) && envTasks > 0
@@ -268,12 +301,16 @@ export async function executePlanStage(
   // Non-rigid saturation: If user specifically locked query to a single metro, preserve it;
   // otherwise, flag high-saturation metros (>=20 leads) to encourage geographic exploration.
   const isSingleMetroBrief = resolvedGeo.metros.length === 1;
+  const crmSaturationDominates = crmDuplicateShare >= 0.5 && !isSingleMetroBrief;
   const saturatedMetros = allKnownMetros.filter((metro) => {
     if (isSingleMetroBrief && resolvedGeo.metros[0].toLowerCase() === metro.toLowerCase()) {
       return false;
     }
     const count = metroSaturation[metro.toLowerCase()] || 0;
-    return count >= 20;
+    // When CRM duplicates dominate the round, the existing-metro threshold tightens from
+    // 20 to 10 so the strategist pivots to unmined metros earlier.
+    const saturationThreshold = crmSaturationDominates ? 10 : 20;
+    return count >= saturationThreshold;
   });
 
   const eligibleMetros: string[] = [];
@@ -326,6 +363,56 @@ export async function executePlanStage(
 
   let planItems: SearchQueryPlanItem[] = [];
 
+  // Round-level plan cache (ADR-0012): skip the strategist call when nothing that
+  // changes its output has changed since an identical plan was generated. Recovery
+  // rounds, speculative dry runs, and stall-directive rounds always re-plan.
+  const planCacheEnabled = process.env.LEAD_PLAN_CACHE_ENABLED !== "false";
+  const planCacheable =
+    planCacheEnabled &&
+    !input.isSpeculative &&
+    !isRecoveryMode &&
+    round > 1 &&
+    stallDirective.effectiveLevel === 0;
+  let planCacheKey = "";
+  if (planCacheable) {
+    const planCacheKeyInput = JSON.stringify({
+      cluster: domainCluster,
+      spec: searchSpec,
+      target: config.targetLimit,
+      maxTasks,
+      saturatedMetros: Object.entries(metroSaturation || {})
+        .filter(([, count]) => Number(count || 0) >= 20)
+        .map(([metro]) => metro)
+        .sort(),
+      signalCompanies: (signalCompanies || []).slice(0, 20),
+      knownCompanyEntities: Array.from(knownCompanyEntities || []).slice(0, 20).sort(),
+      previousQueryCount: (generatedQueries || []).length,
+      missingRequirementIds:
+        (state.previousRoundSummary as any)?.missingHardRequirementIds || [],
+    });
+    planCacheKey = createHash("sha1")
+      .update(planCacheKeyInput)
+      .digest("hex")
+      .slice(0, 16);
+    const cachedPlan = readPlanCache(planCacheKey) as SearchQueryPlanItem[] | null;
+    if (cachedPlan && cachedPlan.length > 0) {
+      planItems = cachedPlan;
+      logEvent(
+        `Round ${round}: plan cache hit (key ${planCacheKey}); skipping the Strategist LLM call and reusing ${planItems.length} planned queries.`,
+      );
+      recordTrace({
+        phase: "strategy",
+        operation: "strategist_planning",
+        status: "success",
+        provider: "llm",
+        round,
+        latencyMs: 0,
+        counts: { generatedQueries: planItems.length },
+        metadata: { planCacheHit: true },
+      });
+    }
+  }
+
   // Round 1 optimization: use contract.initialQueries directly when available,
   // avoiding a redundant 5-20s Strategist LLM call (the contract compiler already
   // generated these queries during prospect contract compilation).
@@ -369,9 +456,12 @@ export async function executePlanStage(
       logEvent,
     });
 
+    const crmSaturationDirective = crmSaturationDominates
+      ? `\nCRM SATURATION DIRECTIVE: ${(crmDuplicateShare * 100).toFixed(0)}% of the previous round's rejections were duplicate_existing_lead. Do NOT re-target the metros already mined (${saturatedMetros.slice(0, 8).join(", ") || "none"}). Prefer unvisited secondary metros and different query framings.`
+      : "";
     const effectivePrompt = stallDirective.directiveText
-      ? `${strategistPrompt}\n${stallDirective.directiveText}`
-      : strategistPrompt;
+      ? `${strategistPrompt}\n${stallDirective.directiveText}${crmSaturationDirective}`
+      : `${strategistPrompt}${crmSaturationDirective}`;
 
     const strategyStarted = Date.now();
     const strategyProviderAttempts: LLMProviderAttempt[] = [];
@@ -401,7 +491,7 @@ export async function executePlanStage(
           circuitBreaker: state.llmCircuitBreaker,
           signal: effectiveSignal,
           tierProviderOrder: resolvePlannerProviderOrder(),
-          providerHardTimeoutMs: { primary: 20_000, openrouter: 25_000, atria: 25_000 },
+          providerHardTimeoutMs: PLANNER_PROVIDER_HARD_TIMEOUT_MS,
           maxRetries: 0,
           reasoningEffort: "low",
           metadata: {
@@ -447,6 +537,9 @@ export async function executePlanStage(
         pushStateDebugLog(state, reqLog);
       }
       planItems = normalizeQueryPlanItems(queryResult);
+      if (planCacheable && planCacheKey && planItems.length > 0) {
+        writePlanCache(planCacheKey, planItems);
+      }
       if (isRecoveryMode && planItems.length > 0 && !input.isSpeculative) {
         state.recoveryAttempts = (state.recoveryAttempts || 0) + 1;
       }
@@ -531,6 +624,19 @@ export async function executePlanStage(
   }
 
   planItems = enforceContractQueries(planItems, config.contract);
+
+  // Reverse flywheel (ADR-0012): when CRM duplicates dominated the previous round, query
+  // the decision-makers at the specific companies discovered with hiring signals instead
+  // of re-mining the same persona surface.
+  if (crmSaturationDominates) {
+    const accountItems = buildAccountFlywheelItems(signalCompanies, searchSpec, maxTasks);
+    if (accountItems.length > 0) {
+      planItems = [...planItems, ...accountItems];
+      logEvent(
+        `Round ${round}: CRM saturation dominant (${(crmDuplicateShare * 100).toFixed(0)}% duplicate_existing_lead); injected ${accountItems.length} account-flywheel queries at signal companies.`,
+      );
+    }
+  }
 
   const rawTasks = buildRetrievalTasks(planItems, searchSpec).map(t => ({
     ...t,
@@ -811,4 +917,35 @@ export async function executePlanStage(
     adaptiveSchedulerState,
     debugLogs: localDebugLogs,
   };
+}
+
+/**
+ * Reverse-flywheel plan items (ADR-0012): decision-maker queries aimed at the specific
+ * companies already discovered with hiring/tooling signals, used when the CRM-duplicate
+ * share of the previous round made broader persona queries unproductive.
+ */
+export function buildAccountFlywheelItems(
+  companies: string[],
+  searchSpec: SearchSpec,
+  maxTasks: number,
+): SearchQueryPlanItem[] {
+  const titles =
+    Array.isArray(searchSpec?.person?.includeTitles) && searchSpec.person.includeTitles.length > 0
+      ? searchSpec.person.includeTitles.slice(0, 3)
+      : ["founder", "CEO", "owner"];
+  const companyBudget = Math.max(1, Math.min(3, Math.floor(maxTasks / 4) || 1));
+  const items: SearchQueryPlanItem[] = [];
+  for (const company of companies.slice(0, companyBudget)) {
+    const cleanCompany = String(company || "").trim();
+    if (cleanCompany.length < 3) continue;
+    const roleClause = titles.map((title) => `"${title}"`).join(" OR ");
+    items.push({
+      query: `"${cleanCompany}" (${roleClause})`,
+      family: "company_type",
+      intent: "find_decision_makers",
+      lane: "account",
+      priority: 60,
+    });
+  }
+  return items;
 }

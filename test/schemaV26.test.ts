@@ -7,15 +7,18 @@ import {
 
 const later = new Date(Date.now() + 400 * 24 * 3600 * 1000);
 
-test('creates the v26 tables and columns', () => {
+test('creates the v26 tables and columns (schema now at v27)', () => {
   const db = getLeadsDb();
-  assert.equal(LATEST_SCHEMA_VERSION, 26);
-  assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 26);
+  assert.equal(LATEST_SCHEMA_VERSION, 27);
+  assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 27);
   for (const table of ['company_profiles', 'company_attribution_verdicts']) {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table), table);
   }
   const cols = (db.prepare('PRAGMA table_info(candidate_verdicts)').all() as any[]).map(c => c.name);
   assert.ok(cols.includes('evidence_hash') && cols.includes('qualification_json'));
+  // v27 added the slot-queue wait column.
+  const stageCols = (db.prepare('PRAGMA table_info(llm_stage_logs)').all() as any[]).map(c => c.name);
+  assert.ok(stageCols.includes('queue_wait_ms'), 'llm_stage_logs.queue_wait_ms must exist');
 });
 
 test('round-trips pass verdicts with evidence hash and qualification', () => {

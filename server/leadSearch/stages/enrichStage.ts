@@ -94,6 +94,13 @@ export type EnrichStageInput = {
     options?: any,
     lane?: string,
   ) => Promise<any[]>;
+  /**
+   * Streaming seam (ADR-0012): invoked as each target's profile enrichment completes so
+   * the caller can start judging before the whole enrichment phase finishes. The leads
+   * arrive with their final profile evidence; site-probe signals are applied later and
+   * gate admission at drain time, so judge verdicts are unaffected by the earlier start.
+   */
+  onTargetsReady?: (leads: any[]) => void;
 };
 
 export type EnrichStageOutput = {
@@ -119,6 +126,7 @@ export async function executeEnrichStage(
     stats,
     leadQueryRuns,
     trackableBrightDataSearch: _trackableBrightDataSearch,
+    onTargetsReady,
   } = input;
   const authorityRelevant = isAuthorityRelevant(contract);
 
@@ -208,6 +216,15 @@ export async function executeEnrichStage(
     logEvent(
       `Round ${round}: ${selectedRows.length} leads selected for deep profile enrichment.`,
     );
+    // Streaming seam: targets that will not be enriched are judge-ready immediately
+    // (their evidence is already final). Enriched targets fire the hook as they complete.
+    if (onTargetsReady) {
+      const selectedSet = new Set<PostFilterLead>(selectedRows);
+      const readyNow = postFilterLeads
+        .filter((target) => !selectedSet.has(target))
+        .map((target) => target.lead);
+      if (readyNow.length > 0) onTargetsReady(readyNow);
+    }
     recordTrace({
       phase: "enrichment",
       operation: "brightdata_profile_selection",
@@ -523,6 +540,7 @@ export async function executeEnrichStage(
           highValue: true,
         };
         refreshLeadEvidence(cachedTarget);
+        if (onTargetsReady) onTargetsReady([lead]);
         continue;
       }
 
@@ -563,6 +581,7 @@ export async function executeEnrichStage(
         if (isAuthwalledUrl(target.url)) {
           target.enriched = true;
           refreshLeadEvidence(target);
+          if (onTargetsReady) onTargetsReady([target.lead]);
         }
       }
     } else {
@@ -571,7 +590,7 @@ export async function executeEnrichStage(
         isAuthwalledUrl(t.url),
       );
 
-      const enrichConcurrency = 3;
+      const enrichConcurrency = Math.max(1, profileConcurrency || 3);
       let targetIdx = 0;
       const processTarget = async (target: any) => {
         // 1. If lead was already discovered via brightdata_dataset, it's already pre-enriched
@@ -657,6 +676,8 @@ export async function executeEnrichStage(
             if (state.abortController.signal.aborted) break;
             const target = authwalledTargets[targetIdx++];
             await processTarget(target);
+            // Streaming seam: this target's profile evidence is final; fire per target.
+            if (onTargetsReady) onTargetsReady([target.lead]);
           }
         }
       );
@@ -793,6 +814,9 @@ export async function executeEnrichStage(
             }
           }
         }
+        // Streaming seam: this batch's profile work is done; its targets are judge-ready
+        // (targets queued for retry fire again when the retry queue settles).
+        if (onTargetsReady) onTargetsReady(batchTargets.map((target) => target.lead));
       },
     }));
 
@@ -896,6 +920,8 @@ export async function executeEnrichStage(
           }
         }
         urlRetryQueue.delete(target.normalizedUrl);
+        // Streaming seam: retries are the last enrichment step for this target.
+        if (onTargetsReady) onTargetsReady([target.lead]);
       },
     }));
 
@@ -915,6 +941,12 @@ export async function executeEnrichStage(
       logEvent(
         "Bright Data profile enrichment had target-level failures, but provider remains available for other Bright Data work.",
       );
+    // Streaming seam: any target that never fired above (skipped before scraping) is
+    // judge-ready now with its snippet evidence.
+    if (onTargetsReady) {
+      const remaining = uncachedTargets.filter((t) => !t.enriched);
+      if (remaining.length > 0) onTargetsReady(remaining.map((t) => t.lead));
+    }
 
     // 1b. Company Site Probe Fallback for candidates missing rich profile data
     const siteProbeEnabled = process.env.LEAD_SITE_PROBE_ENABLED !== "false";

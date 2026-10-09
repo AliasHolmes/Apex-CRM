@@ -28,8 +28,8 @@ export function validateEngineConfig(): string[] {
 
   for (const [name, max, customMsg] of [
     ["TAVILY_SEARCH_CONCURRENCY", 8, undefined],
-    ["BRIGHTDATA_SEARCH_CONCURRENCY", 8, undefined],
-    ["BRIGHTDATA_PROFILE_CONCURRENCY", 8, undefined],
+    ["BRIGHTDATA_SEARCH_CONCURRENCY", 8, "BRIGHTDATA_SEARCH_CONCURRENCY exceeds the recommended maximum of 8; the SERP API documents no hard cap for funded accounts, but dynamic per-host auto-throttling (sr_rate_limit) raises 429 risk."],
+    ["BRIGHTDATA_PROFILE_CONCURRENCY", 4, "BRIGHTDATA_PROFILE_CONCURRENCY exceeds the recommended maximum of 4; the MCP person-profile tool is single-URL, so higher concurrency mostly raises per-query lockout risk."],
     ["LEAD_EXTRACTION_CONCURRENCY", 8, undefined],
     ["FINALIST_JUDGE_CONCURRENCY", 8, undefined],
     ["LINKEDIN_POST_INTENT_CONCURRENCY", 8, undefined],

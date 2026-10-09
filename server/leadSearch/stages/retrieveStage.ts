@@ -23,7 +23,12 @@ import type { QueryRunStats } from "../strategist.js";
 import { ablateQueryTask, createAblationTracker } from "../constraintAblation.js";
 import { classifyQueryComplexity } from "../queryUnderstanding.js";
 import { rewriteZeroYieldQuery } from "../queryRewriter.js";
-import { buildRetrievalCacheKey, readCachedSearch, writeCachedSearch } from "../retrievalCache.js";
+import {
+  buildRetrievalCacheKey,
+  buildRetrievalSignatureKey,
+  readCachedSearch,
+  writeCachedSearch,
+} from "../retrievalCache.js";
 import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
 
 export type RetrieveStageInput = {
@@ -154,7 +159,19 @@ export async function executeRetrieveStage(
               ...tavilyOptions,
               maxResults: dynamicTavilyMaxResults,
             });
-            const cachedResult = readCachedSearch(cacheKey);
+            let cachedResult = readCachedSearch(cacheKey);
+            let signatureCacheHit = false;
+            if (!cachedResult) {
+              // Coarse-grain fallback: same market slice (role/org/geo/topics), slightly
+              // different query string (re-mined briefs, metro variation).
+              const signatureKey = buildRetrievalSignatureKey(
+                "tavily",
+                plan.executableQuery,
+                { contract: config.contract, maxResults: dynamicTavilyMaxResults },
+              );
+              cachedResult = readCachedSearch(signatureKey);
+              signatureCacheHit = Boolean(cachedResult);
+            }
             if (cachedResult) {
               // P13: Filter out URLs/slugs matching existing CRM leads when replaying cached search results
               const filteredItems = (cachedResult.items || []).filter((it: any) => {
@@ -169,8 +186,11 @@ export async function executeRetrieveStage(
               });
               const resultToUse = { ...cachedResult, items: filteredItems };
               stats.retrievalCacheHits = (stats.retrievalCacheHits || 0) + 1;
+              if (signatureCacheHit) {
+                stats.retrievalSignatureHits = (stats.retrievalSignatureHits || 0) + 1;
+              }
               logEvent(
-                `Round ${round}: Tavily cache hit for "${plan.executableQuery}" (${filteredItems.length} un-seen / ${cachedResult.items.length} total results, 0 credits).`,
+                `Round ${round}: Tavily ${signatureCacheHit ? "signature" : "exact"} cache hit for "${plan.executableQuery}" (${filteredItems.length} un-seen / ${cachedResult.items.length} total results, 0 credits).`,
               );
               recordTrace({
                 phase: "search",
@@ -181,7 +201,7 @@ export async function executeRetrieveStage(
                 query: plan.executableQuery,
                 latencyMs: Date.now() - searchStarted,
                 counts: { rawCandidates: filteredItems.length },
-                metadata: { cacheHit: true },
+                metadata: { cacheHit: true, signatureHit: signatureCacheHit },
               });
               tavilyResultsByIndex.set(index, resultToUse);
               return;
@@ -405,6 +425,14 @@ export async function executeRetrieveStage(
               })),
             });
             writeCachedSearch(cacheKey, res);
+            // Also publish under the market-slice signature key so near-duplicate
+            // queries in later rounds/sessions can reuse these results.
+            const signatureKey = buildRetrievalSignatureKey(
+              "tavily",
+              plan.executableQuery,
+              { contract: config.contract, maxResults: dynamicTavilyMaxResults },
+            );
+            if (signatureKey !== cacheKey) writeCachedSearch(signatureKey, res);
             tavilyResultsByIndex.set(index, res);
           } catch (e: any) {
             recordTrace({

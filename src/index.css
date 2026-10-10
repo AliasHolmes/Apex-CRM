@@ -213,3 +213,27 @@
 .recharts-tooltip-cursor {
   fill: hsl(var(--muted) / 0.45);
 }
+
+/* Tab enter fade (ADR-0013): replaces the motion/react wrapper in App.tsx so the animation
+   engine stays out of the entry chunk. The prefers-reduced-motion query preserves the
+   useReducedMotion contract the motion wrapper had. */
+@keyframes apex-tab-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.apex-tab-enter {
+  animation: apex-tab-enter 0.2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .apex-tab-enter {
+    animation: none;
+  }
+}

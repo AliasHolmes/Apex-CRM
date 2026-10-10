@@ -45,6 +45,16 @@ export type RetrieveStageInput = {
   tavilyCapabilities: any;
   brightDataCapabilities: any;
   stats: any;
+  /**
+   * Streaming seam (ADR-0013): invoked as each query's search settles so the caller can
+   * fuse and start extracting that query's results while the remaining searches run.
+   * Failures in the hook must not fail the search.
+   */
+  onQuerySettled?: (batch: {
+    items: any[];
+    plans: ExecutableQueryPlan[];
+    queryRuns: QueryRunStats[];
+  }) => Promise<void> | void;
 };
 
 export type RetrieveStageOutput = {
@@ -70,6 +80,7 @@ export async function executeRetrieveStage(
     tavilyCapabilities,
     brightDataCapabilities,
     stats,
+    onQuerySettled,
   } = input;
 
   let brightDataProviderDisabled = input.brightDataProviderDisabled;
@@ -461,6 +472,19 @@ export async function executeRetrieveStage(
             });
           } finally {
             queryRuns[index].searchLatencyMs += Date.now() - searchStarted;
+            // Streaming seam: hand this query's results to the caller before the
+            // remaining searches settle. A hook failure degrades to the normal path.
+            try {
+              await onQuerySettled?.({
+                items: tavilyResultsByIndex.get(index)?.items || [],
+                plans: [plan],
+                queryRuns: [queryRuns[index]],
+              });
+            } catch (hookErr: any) {
+              logEvent(
+                `WARN: streaming extraction hook failed for "${plan.executableQuery}": ${hookErr?.message || hookErr}`,
+              );
+            }
           }
         },
       })),

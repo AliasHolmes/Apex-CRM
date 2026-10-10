@@ -187,6 +187,14 @@ export async function executePersistStage(
     id: sessionId,
     status: derivedStatus as any,
     completedAt: new Date().toISOString(),
+    // A session that reached a terminal success/partial status is no longer "interrupted":
+    // clear any stale error message carried from an earlier run of the same session
+    // (server restarts write one via reconcileOrphanedMiningSessions). Without this the
+    // completed row keeps the old "Session was active when server process stopped" text.
+    errorMessage:
+      derivedStatus === "success" || derivedStatus === "partial_success"
+        ? null
+        : `persistence ${persistenceStatus}`,
     // Merge the real persistence counts + shortfall into the persisted stats so
     // the client's "N duplicates skipped" / "N new, M refreshed" notices are live
     // (they previously read undefined on the job-mode stats blob).

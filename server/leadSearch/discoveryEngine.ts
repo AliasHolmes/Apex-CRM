@@ -9,6 +9,7 @@ import {
   insertSearchLog,
   upsertMiningSession,
   pruneExpiredEnrichmentCache,
+  pruneExpiredKnowledgeGraph,
   recordProviderUsage,
   saveMiningSessionCheckpoint,
   readMiningSessionCheckpoint,
@@ -928,6 +929,12 @@ export async function executeDiscoverySession(
     if (expiredRows > 0)
       logEvent(`Pruned ${expiredRows} expired enrichment cache rows.`);
 
+    // Schema v26 knowledge-graph tables (candidate verdicts, company profiles, attribution
+    // verdicts) had no pruner of their own before ADR-0013.
+    const expiredGraphRows = pruneExpiredKnowledgeGraph();
+    if (expiredGraphRows > 0)
+      logEvent(`Pruned ${expiredGraphRows} expired knowledge-graph rows.`);
+
     const existingKeys = readExistingIdentityKeys();
     const excludedValues = new Set<string>();
     for (const exclusion of excludeList) {
@@ -1059,9 +1066,14 @@ export async function executeDiscoverySession(
       // Ceilings match the recommended maximums in configValidation.ts and the per-provider
       // slot capacity (ATRIA_CONCURRENT_SLOTS + BYESU_CONCURRENT_SLOTS); the default stays 1
       // so behaviour is unchanged unless opted in.
-      extractionConcurrency: Math.min(
-        Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1),
-        6,
+      // The cap is 8 so extraction can fill Atria's full slot count; provider slots bound
+      // real concurrency, a lower code ceiling would idle slots during extraction waves.
+      extractionConcurrency: Math.max(
+        Math.min(
+          Math.max(Number(process.env.LEAD_EXTRACTION_CONCURRENCY || 1), 1),
+          8,
+        ),
+        1,
       ),
       judgeConcurrency: Math.min(
         Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 1), 1),
@@ -1405,6 +1417,90 @@ export async function executeDiscoverySession(
         const { roundPlans, queryRuns } = planResult;
         stats.queryRuns.push(...queryRuns);
 
+        // --- Streaming extraction seam (ADR-0013) ---
+        // Fuse and extract each query's results as its search settles, instead of letting
+        // the fastest query wait for the slowest one in the round. The final pass below
+        // still runs for the remainder (and for replenishment items).
+        const streamingExtractionEnabled =
+          process.env.LEAD_STREAMING_EXTRACTION !== "false";
+        const earlyProcessedItems = new Set<any>();
+        const earlyExtractedKeys = new Set<string>();
+        const earlyFusedItems: any[] = [];
+        const earlyProfiles: any[] = [];
+        const earlyWaveStopReasons: string[] = [];
+        const itemIdentityKey = (item: any) =>
+          String(item?._normalizedUrl || item?._linkedinUsername || item?.url || "");
+        let earlyExtractPool: ReturnType<
+          typeof createLiveRollingPool<any[], void>
+        > | null = null;
+        if (streamingExtractionEnabled) {
+          earlyExtractPool = createLiveRollingPool<any[], void>({
+            // One wave at a time; each wave's chunks fill the provider slots internally.
+            concurrency: 1,
+            run: async (items) => {
+              if (!items || items.length === 0) return;
+              try {
+                const wave = await executeExtractStage(sessionCtx, {
+                  round,
+                  candidateItems: items,
+                  rerankPoolTarget: roundStagePoolTarget,
+                  candidateCeiling: collectionCapacity.candidateCeiling,
+                  brightDataReady,
+                  brightDataProviderDisabled,
+                  tavilyCapabilities,
+                  brightDataCapabilities,
+                  consecutiveFailedExtractionRounds,
+                  failedExtractionRoundsBeforeStop,
+                  evidenceByUrl,
+                  stats,
+                });
+                earlyProfiles.push(...wave.extractedProfiles);
+                consecutiveFailedExtractionRounds =
+                  wave.consecutiveFailedExtractionRounds;
+                if (wave.stopReason) earlyWaveStopReasons.push(wave.stopReason);
+              } catch (waveErr: any) {
+                // Un-mark so the final pass retries these candidates.
+                for (const item of items) {
+                  const key = itemIdentityKey(item);
+                  if (key) earlyExtractedKeys.delete(key);
+                }
+                console.warn(
+                  `[llm] Early extraction wave failed (final pass will retry): ${waveErr?.message || waveErr}`,
+                );
+              }
+            },
+          });
+        }
+        const onQuerySettled = async (batch: {
+          items: any[];
+          plans: any[];
+          queryRuns: any[];
+        }) => {
+          if (!earlyExtractPool || batch.items.length === 0) return;
+          const fresh = batch.items.filter((item) => !earlyProcessedItems.has(item));
+          if (fresh.length === 0) return;
+          for (const item of fresh) earlyProcessedItems.add(item);
+          const batchFuse = await executeFuseStage(sessionCtx, {
+            round,
+            roundItems: fresh.map((item) => ({ item, resultIndex: 0 })),
+            roundPlans: batch.plans,
+            queryRuns: batch.queryRuns,
+            searchSpec,
+            stats,
+          });
+          const fused = batchFuse.candidateItems || [];
+          if (fused.length === 0) return;
+          earlyFusedItems.push(...fused);
+          for (const item of fused) {
+            const key = itemIdentityKey(item);
+            if (key) {
+              earlyExtractedKeys.add(key);
+              seenPersonIdentifiers.add(key);
+            }
+          }
+          earlyExtractPool.submit(fused);
+        };
+
         const searchStartedAt = Date.now();
         const retrieveResult = await executeRetrieveStage(sessionCtx, {
           round,
@@ -1420,18 +1516,35 @@ export async function executeDiscoverySession(
           tavilyCapabilities,
           brightDataCapabilities,
           stats,
+          ...(streamingExtractionEnabled ? { onQuerySettled } : {}),
         });
 
-        const { roundItems } = retrieveResult;
+        // Let in-flight early waves finish before the final pass so two extractStage
+        // runs never compete for the same candidate.
+        if (earlyExtractPool) {
+          try {
+            await earlyExtractPool.drain();
+          } catch (drainErr: any) {
+            console.warn(
+              `[llm] Early extraction pool drained with an error: ${drainErr?.message || drainErr}`,
+            );
+          }
+        }
+
         brightDataProviderDisabled = retrieveResult.brightDataProviderDisabled;
         brightDataTransportRetryAfter =
           retrieveResult.brightDataTransportRetryAfter;
 
         // Fuse provider observations before extraction. This retains independent
         // corroboration rather than discarding Bright Data results as duplicates.
+        // Items already fused by the streaming seam are excluded (object identity), so
+        // rawCandidates counters and the signal store stay exact.
+        const remainingRoundItems = retrieveResult.roundItems.filter(
+          (entry) => !earlyProcessedItems.has(entry.item),
+        );
         const fuseResult = await executeFuseStage(sessionCtx, {
           round,
-          roundItems,
+          roundItems: remainingRoundItems,
           roundPlans,
           queryRuns,
           searchSpec,
@@ -1445,7 +1558,7 @@ export async function executeDiscoverySession(
         }
 
         const { roundCandidateKeys } = fuseResult;
-        let candidateItems = [...fuseResult.candidateItems];
+        let candidateItems = [...earlyFusedItems, ...fuseResult.candidateItems];
         for (const item of candidateItems) {
           const key = item._normalizedUrl || item._linkedinUsername || item.url;
           if (key) seenPersonIdentifiers.add(key);
@@ -1814,9 +1927,15 @@ export async function executeDiscoverySession(
         stats.rawCandidates = rawResultsCount;
 
         const extractStartedAt = Date.now();
+        // The streaming seam already extracted the queries that settled early; only the
+        // remainder (late queries, replenishment items) goes through the final pass.
+        const itemsForFinalExtraction = candidateItems.filter((item) => {
+          const key = itemIdentityKey(item);
+          return !key || !earlyExtractedKeys.has(key);
+        });
         const extractResult = await executeExtractStage(sessionCtx, {
           round,
-          candidateItems,
+          candidateItems: itemsForFinalExtraction,
           rerankPoolTarget: roundStagePoolTarget,
           candidateCeiling: collectionCapacity.candidateCeiling,
           brightDataReady,
@@ -1834,12 +1953,12 @@ export async function executeDiscoverySession(
         consecutiveFailedExtractionRounds =
           extractResult.consecutiveFailedExtractionRounds;
 
-        if (extractResult.stopReason) {
-          stats.stopReason = extractResult.stopReason;
+        if (extractResult.stopReason || earlyWaveStopReasons.length > 0) {
+          stats.stopReason = extractResult.stopReason || earlyWaveStopReasons[0];
           break;
         }
 
-        const provisionalLeads = extractResult.extractedProfiles;
+        const provisionalLeads = [...earlyProfiles, ...extractResult.extractedProfiles];
 
         const { postFilterLeads } = await executeVerifyStage(sessionCtx, {
           round,
@@ -1931,6 +2050,46 @@ export async function executeDiscoverySession(
           qualifiedCandidates: FinalistCandidate[];
           requirementFailCounts: Record<string, number>;
         }>> | null = null;
+        // Readiness coalescing (ADR-0013): enrichStage fires per-target, so ready leads are
+        // buffered into micro-batches of ~3 (or flushed after a short debounce) instead of
+        // submitting one candidate per judge call. This restores the prefill amortization
+        // the micro-batching design exists for and keeps the judge prompt batching intact.
+        const readyBatchTarget = Math.max(
+          1,
+          Math.min(8, Number(process.env.LEAD_STREAMING_JUDGE_BATCH_TARGET || 3)),
+        );
+        const readyFlushMs = Math.max(
+          0,
+          Number(process.env.LEAD_STREAMING_JUDGE_FLUSH_MS || 120),
+        );
+        const pendingReadyGroup: FinalistCandidate[] = [];
+        let readyFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushReadyGroup = () => {
+          if (readyFlushTimer) {
+            clearTimeout(readyFlushTimer);
+            readyFlushTimer = null;
+          }
+          if (!judgePool || pendingReadyGroup.length === 0) return;
+          judgePool.submit([...pendingReadyGroup]);
+          pendingReadyGroup.length = 0;
+        };
+        const queueReadyCandidates = (candidates: FinalistCandidate[]) => {
+          pendingReadyGroup.push(...candidates);
+          if (
+            pendingReadyGroup.length >= readyBatchTarget ||
+            sessionAbortController.signal.aborted
+          ) {
+            flushReadyGroup();
+            return;
+          }
+          if (!readyFlushTimer) {
+            readyFlushTimer = setTimeout(() => {
+              readyFlushTimer = null;
+              flushReadyGroup();
+            }, readyFlushMs);
+            readyFlushTimer.unref?.();
+          }
+        };
         if (streamingJudgeEnabled) {
           for (const candidate of triage.needsJudge) {
             pendingJudgeCandidates.set(candidate.lead, candidate);
@@ -1942,8 +2101,9 @@ export async function executeDiscoverySession(
               requirementFailCounts: Record<string, number>;
             }
           >({
-            // One group at a time; each group parallelizes internally at judge concurrency.
-            concurrency: 1,
+            // Two groups may run at once; real parallelism is bounded by the Atria slot
+            // queue (8 slots), and each group parallelizes internally at judge concurrency.
+            concurrency: 2,
             run: async (group) => {
               if (group.length === 0) return { qualifiedCandidates: [], requirementFailCounts: {} };
               const result = await evaluateIncrementalJudgeBatches(sessionCtx, {
@@ -2011,7 +2171,7 @@ export async function executeDiscoverySession(
             }
             for (const candidate of partition.needsJudge) group.push(candidate);
           }
-          if (group.length > 0) judgePool.submit(group);
+          if (group.length > 0) queueReadyCandidates(group);
         };
 
         const enrichStartedAt = Date.now();
@@ -2087,7 +2247,9 @@ export async function executeDiscoverySession(
           const neverReady = Array.from(pendingJudgeCandidates.values()).filter(
             (candidate) => !submittedJudgeLeads.has(candidate.lead),
           );
-          if (neverReady.length > 0) judgePool.submit(neverReady);
+          if (neverReady.length > 0) queueReadyCandidates(neverReady);
+          // Flush the coalescing buffer so nothing is left unjudged at drain.
+          flushReadyGroup();
 
           const drainStartedAt = Date.now();
           try {
@@ -3034,6 +3196,11 @@ export class DiscoverySessionEngine {
   addLog(sessionId: string, message: string): void {
     const logs = this.activeSessions.get(sessionId) || [];
     logs.push(message);
+    // Same bound as the internal logEvent path (last 1,500 lines) so external callers
+    // (e.g. the cancel route) cannot grow a session buffer without limit.
+    if (logs.length > 1500) {
+      logs.splice(0, logs.length - 1500);
+    }
     this.activeSessionLogTotals.set(
       sessionId,
       (this.activeSessionLogTotals.get(sessionId) || 0) + 1,

@@ -72,8 +72,20 @@ export function ResumableSessionsBanner({
 
   useEffect(() => {
     void fetchResumable();
-    const interval = setInterval(() => void fetchResumable(), 15000);
-    return () => clearInterval(interval);
+    // ADR-0013: a hidden tab cannot act on the banner, so the 15s poll pauses while hidden
+    // and resumes on the first visible tick (a fresh fetch fires on visibility return).
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void fetchResumable();
+    }, 15000);
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden) void fetchResumable();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [fetchResumable]);
 
   const handleResume = async (session: ResumableSession) => {

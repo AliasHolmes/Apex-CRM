@@ -16,8 +16,10 @@ import apiRouter from "./server/routes/api.js";
 import {
   getLeadsDb,
   pruneExpiredEnrichmentCache,
+  pruneExpiredKnowledgeGraph,
   purgeLlmCacheExpired,
   reconcileOrphanedMiningSessions,
+  clearStaleSessionErrorMessages,
 } from "./server/db.js";
 import { validateEngineConfig } from "./server/configValidation.js";
 import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
@@ -184,6 +186,14 @@ async function startServer() {
         `[Startup] Reconciled ${reconciled} orphaned mining sessions to 'interrupted'.`,
       );
     }
+    // One-time hygiene for rows written before the persist path cleared stale error
+    // messages: terminal sessions must not keep an older run's failure text.
+    const clearedErrors = clearStaleSessionErrorMessages();
+    if (clearedErrors > 0) {
+      console.log(
+        `[Startup] Cleared stale error messages on ${clearedErrors} completed session(s).`,
+      );
+    }
   } catch (error) {
     console.error("Failed to eagerly initialize database:", error);
     process.exitCode = 1;
@@ -309,6 +319,11 @@ async function startServer() {
       if (pruned > 0)
         console.log(
           `[Maintenance] Pruned ${pruned} expired enrichment cache records.`,
+        );
+      const prunedGraph = pruneExpiredKnowledgeGraph();
+      if (prunedGraph > 0)
+        console.log(
+          `[Maintenance] Pruned ${prunedGraph} expired knowledge-graph records (verdicts, company profiles, attribution).`,
         );
       const purgedLlm = purgeLlmCacheExpired();
       if (purgedLlm > 0)

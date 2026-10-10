@@ -786,25 +786,41 @@ export async function runLinkedInPostIntentEnrichment(
     return stats;
   }
 
-  // Phase B: Batched LLM classification (chunks of up to 5)
+  // Phase B: Batched LLM classification (chunks of up to 5). Batches are independent
+  // (disjoint candidate sets, per-item side effects), so they run concurrently through
+  // the provider queue - the fast-tier route to Byesu has slots to spare. Runs serially
+  // before ADR-0013, which cost ~75% of the phase on multi-batch pools.
   const BATCH_SIZE = 5;
+  const postIntentConcurrency = Math.max(
+    1,
+    Math.min(
+      8,
+      Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 3),
+    ),
+  );
+  const batches: Array<{ batch: typeof pendingLlm; index: number }> = [];
   for (let i = 0; i < pendingLlm.length; i += BATCH_SIZE) {
-    if (sessionAbortSignal?.aborted) break;
-    const batch = pendingLlm.slice(i, i + BATCH_SIZE);
-    const candidateInputs = batch.map((item, idx) => ({
-      candidateId: String(item.lead.id || `${item.handle}-${i + idx}`),
-      postContext: item.postContext,
-      lead: item.lead,
-    }));
+    batches.push({ batch: pendingLlm.slice(i, i + BATCH_SIZE), index: i });
+  }
 
-    try {
-      const classifications = await classifyLinkedInPostIntentBatch(
-        candidateInputs,
-        contract.brief,
-        logEvent,
-        recordTrace,
-        { sessionId: options.sessionId, signal: options.sessionAbortSignal },
-      );
+  await runProviderQueue(
+    batches.map(({ batch }, batchNo): ProviderQueueTask<void> => ({
+      id: `post-intent-batch-${batchNo + 1}`,
+      run: async () => {
+      const candidateInputs = batch.map((item, idx) => ({
+        candidateId: String(item.lead.id || `${item.handle}-${batchNo + idx}`),
+        postContext: item.postContext,
+        lead: item.lead,
+      }));
+
+      try {
+        const classifications = await classifyLinkedInPostIntentBatch(
+          candidateInputs,
+          contract.brief,
+          logEvent,
+          recordTrace,
+          { sessionId: options.sessionId, signal: options.sessionAbortSignal },
+        );
 
       for (let j = 0; j < batch.length; j++) {
         const item = batch[j];
@@ -863,7 +879,13 @@ export async function runLinkedInPostIntentEnrichment(
         }
       }
     }
-  }
+      },
+    })),
+    {
+      concurrency: postIntentConcurrency,
+      signal: sessionAbortSignal,
+    },
+  );
 
   recordTrace({
     phase: 'candidate_processing',

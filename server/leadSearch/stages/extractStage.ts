@@ -1141,7 +1141,8 @@ Evidence:
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
               reasoningEffort: "low",
-              routingTier: "fast",
+              // No routingTier here: extraction is engine work and must stay on Atria
+              // (ADR-0011). A "fast" tier without a provider order is inert anyway.
               timeoutMs: extractionTimeoutMs,
               metadata: {
                 stage: "extraction",
@@ -1321,18 +1322,22 @@ Evidence:
     }
   });
 
-  // 6 is the recommended maximum in configValidation.ts (provider slots bound real
-  // concurrency); defaults to 4 for parallel micro-chunk execution.
-  const extractionConcurrency = Math.min(
-    Math.max(
-      Number(
-        config.extractionConcurrency ||
-          process.env.LEAD_EXTRACTION_CONCURRENCY ||
-          4,
+  // Ceiling of 8 matches the Atria slot count (ADR-0011): provider slots bound real
+  // concurrency, so a lower code ceiling would idle slots during extraction waves.
+  // Defaults to 4 for parallel micro-chunk execution.
+  const extractionConcurrency = Math.max(
+    Math.min(
+      Math.max(
+        Number(
+          config.extractionConcurrency ||
+            process.env.LEAD_EXTRACTION_CONCURRENCY ||
+            4,
+        ),
+        1,
       ),
-      1,
+      8,
     ),
-    6,
+    1,
   );
   const extractionResults = await runProviderQueue(
     extractionTasks.map((run, index) => ({

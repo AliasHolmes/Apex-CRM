@@ -182,3 +182,13 @@ The saturated-market escape in planStage. The share of the previous round's reje
 
 ### Adaptive Judge Concurrency
 The judge-stage sizing rule (judgeStage.ts): min(8, max(FINALIST_JUDGE_CONCURRENCY, freeAtriaSlots)), where free slots come from the live provider slot maps. The first judge wave packs micro-batches of 3 candidates (provider capacity permitting; an explicitly configured FINALIST_JUDGE_MICRO_BATCH_SIZE stays authoritative for every wave) to amortize prefill, later waves keep 2 to preserve rolling-pool early-stop granularity.
+
+### Retrieval-Extraction Streaming Seam (ADR-0013)
+The round-pipeline overlap that removes the retrieval barrier from the critical path. `retrieveStage` fires an `onQuerySettled` hook per query as its search completes; `discoveryEngine` fuses that batch immediately and submits it to an early-extraction live pool that runs `executeExtractStage` per wave while the remaining queries still search. The final pass fuses the remainder (early items excluded by object identity so `rawCandidates` stays exact) and extracts only what the early waves did not; `provisionalLeads` is the concatenation of early and final profiles. Wave failures un-mark their items so the final pass retries them. Gated by `LEAD_STREAMING_EXTRACTION` (default on; `false` restores the wholesale pass).
+
+### Coalesced Streaming Judge Submissions (ADR-0013)
+The readiness-buffering rule for the ADR-0012 judge seam: ready leads are buffered up to `LEAD_STREAMING_JUDGE_BATCH_TARGET` (default 3) or flushed after `LEAD_STREAMING_JUDGE_FLUSH_MS` (default 120ms) so enriched candidates are judged in micro-batches of ~3 rather than one candidate per call, and the pool runs two groups at once (bounded by the 8 Atria slots). The buffer always flushes before drain.
+
+### Delta Lead Hydration (ADR-0013)
+The client hydration model in `LeadContext.tsx`: an id-keyed hydration map plus a server updated_at high-water mark. Rehydrates fetch the leads endpoint with `updatedSince=<mark>` and merge only changed rows, transferring KB instead of the full ~24MB payload set (a ~0.5s main-thread freeze at 2.8k leads); a row-count mismatch falls back to a full refetch. Per-lead derived values (dedupe keys, search text) are cached by lead id and invalidated by `updatedAt|revision`, so unchanged leads cost nothing on rehydration.
+

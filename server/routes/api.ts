@@ -16,7 +16,7 @@ import {
   replaceStoredLeads,
   normalizeIncomingLeads,
   getLeadsDb,
-  readSearchLogs,
+  readSearchLogDigests,
   readSearchLogById,
   readMiningSessionById,
   readMiningSessionSummaryById,
@@ -248,6 +248,7 @@ router.get("/leads", (req, res): any => {
       limit,
       offset,
       summaryOnly,
+      updatedSince,
     } = req.query as Record<string, string | undefined>;
     const parsedLimit =
       limit !== undefined
@@ -255,6 +256,10 @@ router.get("/leads", (req, res): any => {
         : undefined;
     const parsedOffset = parseOptionalPositiveInt(offset);
     const isSummary = summaryOnly === "true";
+    const deltaSince =
+      typeof updatedSince === "string" && updatedSince.trim()
+        ? updatedSince.trim()
+        : undefined;
 
     // Direct JSON assembly fast-path for the default unfiltered lead list
     if (
@@ -267,19 +272,36 @@ router.get("/leads", (req, res): any => {
       parsedOffset === undefined
     ) {
       const db = getLeadsDb();
-      const rows = db
-        .prepare(
-          "SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC",
-        )
-        .all() as { payload: string }[];
+      // Delta path (ADR-0013): a client with a hydration high-water mark only needs the
+      // rows that changed since, so a rehydrate after a mining round transfers a few KB
+      // instead of the full ~24MB payload set.
+      const rows = deltaSince
+        ? (db
+            .prepare(
+              "SELECT payload FROM leads WHERE updated_at > ? ORDER BY created_at DESC, updated_at DESC",
+            )
+            .all(deltaSince) as { payload: string }[])
+        : (db
+            .prepare(
+              "SELECT payload FROM leads ORDER BY created_at DESC, updated_at DESC",
+            )
+            .all() as { payload: string }[]);
       const total =
         (db.prepare("SELECT COUNT(*) as count FROM leads").get() as any)
           ?.count ?? rows.length;
       const stats = readLeadsStats();
       const initialized = hasLeadStoreBeenInitialized();
+      const latestUpdatedAt =
+        (db.prepare("SELECT MAX(updated_at) as m FROM leads").get() as any)?.m ||
+        deltaSince ||
+        "";
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       return res.send(
-        `{"apiVersion":1,"leads":[${rows.map((r) => r.payload).join(",")}],"total":${total},"stats":${JSON.stringify(stats)},"initialized":${initialized}}`,
+        `{${deltaSince ? '"delta":true,' : ""}"apiVersion":1,"leads":[${rows
+          .map((r) => r.payload)
+          .join(",")}],"total":${total},"latestUpdatedAt":${JSON.stringify(
+          latestUpdatedAt,
+        )},"stats":${JSON.stringify(stats)},"initialized":${initialized}}`,
       );
     }
 
@@ -1143,7 +1165,7 @@ router.get("/search-logs", (req, res): any => {
     const sessionById = new Map(
       readMiningSessions(parsedLimit).map((session) => [session.id, session]),
     );
-    const logs = readSearchLogs(parsedLimit).map((log: any) => {
+    const logs = readSearchLogDigests(parsedLimit).map((log: any) => {
       const session = sessionById.get(log.id) || readMiningSessionSummaryById(log.id);
       const sessionTrace = (session?.traceSummary as any) || {};
       const providerSummary =

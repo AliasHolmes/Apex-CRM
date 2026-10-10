@@ -111,6 +111,58 @@ export interface ProspectPreset {
   filters: Partial<ProspectFilters>;
 }
 
+// --- Per-lead derived values (ADR-0013) ---
+// Hydration rebuilds every lead object (sanitizeLeads maps each payload), so useMemo over
+// the leads array recomputed ~100ms of dedupe keys + search text on every rehydrate even
+// when nothing changed. Cache by lead id, invalidated by the lead's version fields, so a
+// rehydrate after a mining round only pays for the leads that actually changed.
+type DerivedLeadValues = {
+  version: string;
+  dedupeKeys: Set<string>;
+  searchText: string;
+};
+const derivedLeadCache = new Map<string, DerivedLeadValues>();
+const DERIVED_LEAD_CACHE_MAX = 6000;
+
+const leadVersionKey = (lead: Lead): string => {
+  const l = lead as any;
+  return `${l.updatedAt || l.updated_at || ''}|${l.revision ?? ''}`;
+};
+
+const getDerivedLeadValues = (lead: Lead): DerivedLeadValues => {
+  const id = String((lead as any)?.id || '');
+  const version = leadVersionKey(lead);
+  const cached = id ? derivedLeadCache.get(id) : undefined;
+  if (cached && cached.version === version) return cached;
+
+  const provenance = getLeadProvenance(lead);
+  const derived: DerivedLeadValues = {
+    version,
+    dedupeKeys: buildProfileDedupeKeys(lead),
+    searchText: [
+      lead.profile?.fullName,
+      lead.profile?.currentTitle,
+      lead.profile?.currentCompany,
+      provenance.location,
+      provenance.industry,
+      provenance.discoveryQuery,
+      ...provenance.matchedCriteria,
+      ...provenance.uncertainties,
+    ]
+      .filter(Boolean)
+      .join('\u0000')
+      .toLocaleLowerCase(),
+  };
+  if (id) {
+    derivedLeadCache.set(id, derived);
+    if (derivedLeadCache.size > DERIVED_LEAD_CACHE_MAX) {
+      const oldest = derivedLeadCache.keys().next().value;
+      if (oldest !== undefined) derivedLeadCache.delete(oldest);
+    }
+  }
+  return derived;
+};
+
 interface LeadTableRowProps {
   lead: Lead;
   dataIndex?: number;
@@ -164,6 +216,13 @@ const LeadTableRow = React.memo(
       <TableRow
         ref={ref}
         data-index={dataIndex}
+        // Browser-level row virtualization (ADR-0013): off-screen rows skip subtree
+        // rendering while keeping the real table layout. With 100 rows per page this keeps
+        // ~5-7k DOM nodes per page down to the ~15-25 rows actually in view.
+        style={{
+          contentVisibility: 'auto',
+          containIntrinsicSize: 'auto 56px',
+        }}
         className={`${isSelected ? 'bg-muted/50' : ''} ${
           isDuplicate ? 'border-l-2 border-l-warning bg-warning/5' : ''
         }`}
@@ -682,25 +741,10 @@ export default function LeadTable({
     [leads],
   );
   const searchableLeads = useMemo(
-    () => leads.map((lead) => {
-      const provenance = getLeadProvenance(lead);
-      return {
-        lead,
-        searchText: [
-          lead.profile?.fullName,
-          lead.profile?.currentTitle,
-          lead.profile?.currentCompany,
-          provenance.location,
-          provenance.industry,
-          provenance.discoveryQuery,
-          ...provenance.matchedCriteria,
-          ...provenance.uncertainties,
-        ]
-          .filter(Boolean)
-          .join('\u0000')
-          .toLocaleLowerCase(),
-      };
-    }),
+    () => leads.map((lead) => ({
+      lead,
+      searchText: getDerivedLeadValues(lead).searchText,
+    })),
     [leads],
   );
   const unsortedFilteredLeads = useMemo(
@@ -727,7 +771,7 @@ export default function LeadTable({
     const seenKeyToId = new Map<string, string>();
 
     for (const lead of leads) {
-      const keys = buildProfileDedupeKeys(lead);
+      const keys = getDerivedLeadValues(lead).dedupeKeys;
       let isRedundant = false;
       let matchedFirstId: string | undefined;
 

@@ -386,6 +386,7 @@ export default function ScrapeWorkspace() {
     });
 
     let watchTimer: ReturnType<typeof setInterval> | undefined;
+    let watcherTick = 0;
 
     // Set once this watcher is finished, so an in-flight poll cannot write state afterwards
     // (it used to setState after unmount, and after being replaced by a newer watcher).
@@ -432,6 +433,16 @@ export default function ScrapeWorkspace() {
         setInfoMsg(isResume ? 'Detached from resumed session.' : 'Discovery cancelled.');
         return;
       }
+
+      // ADR-0013: while the SSE stream is healthy it already delivers session status on
+      // every change, so this poll runs at fallback cadence (every 3rd tick). If the stream
+      // dies the poll returns to full cadence and keeps the completion accounting alive.
+      watcherTick += 1;
+      const streamHealthy = miningTraceStore.isStreamConnected(sessionId);
+      if (streamHealthy && watcherTick % 3 !== 0) return;
+      // A hidden tab cannot show status; the SSE keeps streaming server-side. Pause the
+      // poll entirely while hidden and catch up on the first visible tick.
+      if (typeof document !== 'undefined' && document.hidden) return;
 
       void (async () => {
         try {

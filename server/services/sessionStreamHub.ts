@@ -24,6 +24,8 @@ type SessionBroadcast = {
   missingTicks: number;
   lastDbReadAt: number;
   cachedSession: Record<string, any> | null;
+  /** updated_at of the session row last embedded in a frame (null = never). */
+  lastEmittedSessionUpdatedAt: string | null;
 };
 
 const POLL_INTERVAL_MS = 250;
@@ -42,6 +44,7 @@ class SessionStreamHub {
         missingTicks: 0,
         lastDbReadAt: 0,
         cachedSession: null,
+        lastEmittedSessionUpdatedAt: null,
       };
       this.broadcasts.set(sessionId, broadcast);
     }
@@ -161,10 +164,25 @@ class SessionStreamHub {
         session!.status !== "cancellation_requested";
 
       if (hasNewContent || isTerminal) {
+        // Slim frames (ADR-0013): the session row (stats_json + trace_summary_json, ~20KB)
+        // is embedded only when it actually changed, not on every log/trace delta. The
+        // client keeps its last snapshot when `session` is null, and terminal frames always
+        // carry the final row.
+        const sessionUpdatedAt = session
+          ? String((session as any).updatedAt || (session as any).updated_at || "")
+          : "";
+        const sessionChanged =
+          Boolean(session) &&
+          (isTerminal ||
+            !sessionUpdatedAt ||
+            broadcast.lastEmittedSessionUpdatedAt !== sessionUpdatedAt);
+        if (sessionChanged) {
+          broadcast.lastEmittedSessionUpdatedAt = sessionUpdatedAt || null;
+        }
         const frame: SessionStreamFrame = {
           logs: newLogs,
           traceEvents: newTrace,
-          session,
+          session: sessionChanged ? session : null,
         };
         for (const subscriber of Array.from(broadcast.subscribers)) {
           try {

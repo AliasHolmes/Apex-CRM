@@ -15,7 +15,6 @@ import { Skeleton } from './components/ui/skeleton';
 import type { ProspectPreset } from './components/LeadTable';
 import type { ProspectFilters } from './lib/prospectViews';
 import { IconProvider, NAV_ICONS } from './components/icons';
-import { motion, useReducedMotion } from 'motion/react';
 import { 
   Plus, 
   BotMessageSquare,
@@ -197,7 +196,6 @@ function Dashboard() {
     handleUpdateLeadStage,
   } = useLeads();
   const { triggerToast } = useToast();
-  const shouldReduceMotion = useReducedMotion();
   const [activeTab, setActiveTab] = useState<DashboardTab>(() => getTabFromHash(window.location.hash));
   const [mountedJobTabs, setMountedJobTabs] = useState<Set<DashboardTab>>(() => {
     // A forced dev-server reload must not lose an active mining session: when one
@@ -493,14 +491,11 @@ function Dashboard() {
 
       <main id="main-content" tabIndex={-1} className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10 focus:outline-none">
             {(activeTab === 'workspace' || mountedJobTabs.has('workspace')) && (
-              <motion.section
-                key="tab-workspace"
+              <section
+                className="apex-tab-enter"
+                    key="tab-workspace"
                 hidden={activeTab !== 'workspace'}
-                aria-labelledby="discover-heading"
-                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
-                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+                aria-labelledby="discover-heading"
               >
                 <PageHeader
                   id="discover-heading"
@@ -512,16 +507,13 @@ function Dashboard() {
                     <ScrapeWorkspace />
                   </TabErrorBoundary>
                 </Suspense>
-              </motion.section>
+              </section>
             )}
             {activeTab === 'overview' && (
-              <motion.section
-                key="tab-overview"
-                aria-labelledby="overview-heading"
-                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
-                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+              <section
+                className="apex-tab-enter"
+                    key="tab-overview"
+                aria-labelledby="overview-heading"
               >
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="CRM overview">
@@ -535,16 +527,13 @@ function Dashboard() {
                     />
                   </TabErrorBoundary>
                 </Suspense>
-              </motion.section>
+              </section>
             )}
             {activeTab === 'pipeline' && (
-              <motion.section
-                key="tab-pipeline"
-                aria-labelledby="pipeline-heading"
-                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
-                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+              <section
+                className="apex-tab-enter"
+                    key="tab-pipeline"
+                aria-labelledby="pipeline-heading"
               >
                 <PageHeader
                   id="pipeline-heading"
@@ -561,18 +550,15 @@ function Dashboard() {
                     />
                   </TabErrorBoundary>
                 </Suspense>
-              </motion.section>
+              </section>
             )}
 
             {(activeTab === 'inventory' || mountedJobTabs.has('inventory')) && (
-              <motion.section
-                key="tab-inventory"
+              <section
+                className="apex-tab-enter"
+                    key="tab-inventory"
                 hidden={activeTab !== 'inventory'}
-                aria-label="Prospect inventory"
-                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
-                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+                aria-label="Prospect inventory"
               >
                 <PageHeader
                   id="prospects-heading"
@@ -584,18 +570,15 @@ function Dashboard() {
                     <LeadTable onAddManualLead={() => setShowManualModal(true)} onOpenLead={openLead} preset={prospectPreset} />
                   </TabErrorBoundary>
                 </Suspense>
-              </motion.section>
+              </section>
             )}
 
             {(activeTab === 'outreach' || mountedJobTabs.has('outreach')) && (
-              <motion.section
-                key="tab-outreach"
+              <section
+                className="apex-tab-enter"
+                    key="tab-outreach"
                 hidden={activeTab !== 'outreach'}
-                aria-labelledby="outreach-heading"
-                initial={shouldReduceMotion ? false : { opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={shouldReduceMotion ? undefined : { opacity: 0, y: -8 }}
-                transition={{ duration: shouldReduceMotion ? 0 : 0.2 }}
+                aria-labelledby="outreach-heading"
               >
                 <PageHeader
                   id="outreach-heading"
@@ -610,7 +593,7 @@ function Dashboard() {
                     />
                   </TabErrorBoundary>
                 </Suspense>
-              </motion.section>
+              </section>
             )}
       </main>
 

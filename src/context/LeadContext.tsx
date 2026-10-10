@@ -93,12 +93,45 @@ let lastLeadsEtag: string | null = null;
 let lastLeadsResponse: StoredLeadsResponse | null = null;
 let lastStatsEtag: string | null = null;
 let lastStatsResponse: LeadContextStats | null = null;
+// Delta-hydration state (ADR-0013): the id-keyed hydration map plus the high-water mark
+// of server updated_at values. A rehydrate then transfers only changed rows instead of
+// the full lead table (measured: ~24MB / ~0.5s freeze per rehydrate at 2.8k leads).
+let hydratedLeadsById: Map<string, Lead> | null = null;
+let hydratedHighWater = '';
 
 function invalidateClientLeadsCache(): void {
   lastLeadsEtag = null;
   lastLeadsResponse = null;
   lastStatsEtag = null;
   lastStatsResponse = null;
+  hydratedLeadsById = null;
+  hydratedHighWater = '';
+}
+
+function leadIdentity(lead: Lead): string {
+  return String((lead as any)?.id || '');
+}
+
+/**
+ * Merges a delta response into the hydration map. Changed leads replace their previous
+ * version by id; the high-water mark advances to the server's latest updated_at.
+ */
+function mergeLeadsDelta(
+  changed: Lead[],
+  latestUpdatedAt: string,
+): StoredLeadsResponse | null {
+  if (!hydratedLeadsById) return null;
+  for (const lead of changed) {
+    const id = leadIdentity(lead);
+    if (id) hydratedLeadsById.set(id, lead);
+  }
+  if (latestUpdatedAt && (!hydratedHighWater || latestUpdatedAt > hydratedHighWater)) {
+    hydratedHighWater = latestUpdatedAt;
+  }
+  return {
+    leads: [...hydratedLeadsById.values()],
+    initialized: true,
+  };
 }
 
 async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
@@ -106,7 +139,11 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
   if (lastLeadsEtag) {
     headers['If-None-Match'] = lastLeadsEtag;
   }
-  const response = await fetch('/api/leads', {
+  const deltaUrl =
+    hydratedLeadsById && hydratedHighWater
+      ? `/api/leads?updatedSince=${encodeURIComponent(hydratedHighWater)}`
+      : '/api/leads';
+  const response = await fetch(deltaUrl, {
     cache: 'no-cache',
     headers,
   });
@@ -128,11 +165,42 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
   }
 
   const data = await response.json();
+  const sanitized = Array.isArray(data.leads) ? sanitizeLeads(data.leads) : [];
+
+  // Delta response: merge changed rows into the hydration map and keep the previous
+  // ETag/response pair untouched (the ETag already covers the updatedSince param).
+  if (data.delta === true && hydratedLeadsById) {
+    const serverTotal = Number(data.total);
+    // Guard against deletions the delta cannot express: if the map no longer matches the
+    // server's row count, drop to a full refetch on the next pass.
+    if (Number.isFinite(serverTotal) && hydratedLeadsById.size + sanitized.length < serverTotal) {
+      hydratedLeadsById = null;
+      hydratedHighWater = '';
+    } else {
+      const merged = mergeLeadsDelta(sanitized, String(data.latestUpdatedAt || ''));
+      if (merged) {
+        if (etag) {
+          lastLeadsEtag = etag;
+          lastLeadsResponse = merged;
+        }
+        return { ...merged, leads: [...merged.leads] };
+      }
+    }
+  }
+
   const result: StoredLeadsResponse = {
-    leads: Array.isArray(data.leads) ? sanitizeLeads(data.leads) : [],
+    leads: sanitized,
     initialized: Boolean(data.initialized),
     stats: data.stats,
   };
+  // Full response: (re)build the hydration map and high-water mark for later deltas.
+  hydratedLeadsById = new Map();
+  for (const lead of result.leads) {
+    const id = leadIdentity(lead);
+    if (id) hydratedLeadsById.set(id, lead);
+  }
+  const fullHighWater = String(data.latestUpdatedAt || '');
+  if (fullHighWater) hydratedHighWater = fullHighWater;
   if (etag) {
     lastLeadsEtag = etag;
     lastLeadsResponse = result;

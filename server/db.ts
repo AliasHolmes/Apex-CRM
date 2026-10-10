@@ -2996,6 +2996,49 @@ export function pruneExpiredEnrichmentCache(now = new Date()) {
   return Number(result.changes || 0);
 }
 
+/**
+ * Prunes the schema v26 knowledge-graph tables by their expires_at columns. These tables
+ * had no pruner of their own (only enrichment_cache did), so candidate verdicts, company
+ * profiles, and attribution verdicts grew monotonically across sessions (ADR-0013).
+ * Returns the total rows removed across the three tables.
+ */
+export function pruneExpiredKnowledgeGraph(now = new Date()) {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const verdicts = db
+    .prepare("DELETE FROM candidate_verdicts WHERE expires_at <= ?")
+    .run(cutoff);
+  const companyProfiles = db
+    .prepare("DELETE FROM company_profiles WHERE expires_at <= ?")
+    .run(cutoff);
+  const attribution = db
+    .prepare("DELETE FROM company_attribution_verdicts WHERE expires_at <= ?")
+    .run(cutoff);
+  return (
+    Number(verdicts.changes || 0) +
+    Number(companyProfiles.changes || 0) +
+    Number(attribution.changes || 0)
+  );
+}
+
+/**
+ * One-time hygiene for rows written before ADR-0013: a session that later completed
+ * successfully could keep the error message from an earlier interrupted run (the persist
+ * path did not clear it). Terminal sessions no longer need that text.
+ */
+export function clearStaleSessionErrorMessages(): number {
+  const db = getLeadsDb();
+  const result = db
+    .prepare(
+      `UPDATE mining_sessions
+       SET error_message = NULL
+       WHERE error_message IS NOT NULL
+         AND status IN ('success', 'partial_success')`,
+    )
+    .run();
+  return Number(result.changes || 0);
+}
+
 export function getEnrichmentCacheEntry(
   lookup: EnrichmentCacheLookup,
   now = new Date(),
@@ -3738,6 +3781,20 @@ export function readSearchLogs(limit = 30) {
   const rows = getLeadsDb()
     .prepare(
       "SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, detailed_logs, debug_logs, trace_events, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?",
+    )
+    .all(limit) as any[];
+  return rows.map(toSearchLogRecord);
+}
+
+/**
+ * List view for the session history: the light columns only. detailed_logs / debug_logs /
+ * trace_events are ~430KB per row and the history route drops them, so reading them cost
+ * ~10MB of SQLite work per dialog open for nothing (ADR-0013).
+ */
+export function readSearchLogDigests(limit = 30) {
+  const rows = getLeadsDb()
+    .prepare(
+      "SELECT id, timestamp, prompt, generated_queries, status, error_message, raw_results_count, leads_found, provider_summary, cost_summary, phase_timeline, schema_version FROM search_logs ORDER BY timestamp DESC LIMIT ?",
     )
     .all(limit) as any[];
   return rows.map(toSearchLogRecord);

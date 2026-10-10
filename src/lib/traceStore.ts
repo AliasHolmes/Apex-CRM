@@ -94,6 +94,16 @@ class MiningTraceStore {
     }
   }
 
+  /**
+   * True when the SSE stream for this session is live (used by the workspace watcher to
+   * run its status poll at fallback cadence while the stream is healthy - ADR-0013).
+   */
+  isStreamConnected(sessionId: string): boolean {
+    if (typeof EventSource === 'undefined') return false;
+    const sse = this.activeEventSources.get(sessionId);
+    return Boolean(sse && sse.readyState === EventSource.OPEN);
+  }
+
   connect(sessionId: string, onPersistenceEvent?: () => void): () => void {
     if (!sessionId) return () => {};
 
@@ -104,7 +114,6 @@ class MiningTraceStore {
     if (existing && existing.readyState !== EventSource.CLOSED) {
       return () => this.releaseConnection(sessionId);
     }
-
     const current = this.ensureSession(sessionId);
     this.sessions.set(sessionId, {
       ...current,

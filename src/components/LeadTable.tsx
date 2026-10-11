@@ -44,6 +44,7 @@ import { Lead, NextAction, ReviewStatus } from '../types';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import {
@@ -617,6 +618,9 @@ export default function LeadTable({
   const [hiddenColumns, setHiddenColumns] = useState<ProspectColumnId[]>(() => readTablePrefs().hiddenColumns);
   const [views, setViews] = useState<ProspectView[]>(() => readSavedViews());
   const [currentPage, setCurrentPage] = useState(1);
+  // Local string for the jump-to-page field so the user can clear/retype it without
+  // the clamped page number snapping the caret back mid-edit.
+  const [pageInput, setPageInput] = useState('1');
   const handleOpenDetails = useCallback((selectedLead: Lead) => {
     onOpenLead(selectedLead.id);
   }, [onOpenLead]);
@@ -882,6 +886,15 @@ export default function LeadTable({
   const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
   const pageStart = filteredLeads.length === 0 ? 0 : currentPageStartIndex + 1;
   const pageEnd = Math.min(currentPageStartIndex + paginatedLeads.length, filteredLeads.length);
+  // Commits the typed page: clamps into [1, totalPages] and falls back to the
+  // current page for empty or unparseable values instead of jumping to page 1.
+  const commitPageInput = useCallback(() => {
+    const raw = pageInput.trim();
+    const parsed = Number.parseInt(raw, 10);
+    const nextPage = raw && Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), totalPages) : activePage;
+    setCurrentPage(nextPage);
+    setPageInput(String(nextPage));
+  }, [pageInput, activePage, totalPages]);
   const leadIdSet = useMemo(() => new Set(leads.map((lead) => lead.id)), [leads]);
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
@@ -944,6 +957,13 @@ export default function LeadTable({
   React.useEffect(() => {
     setCurrentPage(prev => Math.min(prev, totalPages));
   }, [totalPages]);
+
+  // Keep the jump-to-page field in sync with page changes made outside it
+  // (prev/next buttons, filter resets, result-set shrinking). Typing does not
+  // change activePage, so an in-progress edit is never overwritten.
+  React.useEffect(() => {
+    setPageInput(String(activePage));
+  }, [activePage]);
 
   React.useEffect(() => {
     setSelectedLeadIds((previous) => {
@@ -1876,9 +1896,31 @@ export default function LeadTable({
                     <ChevronLeft className="h-4 w-4" />
                     <span className="sr-only">Previous page</span>
                   </Button>
-                  <span className="min-w-24 text-center text-xs font-bold text-foreground/80">
-                    Page {activePage} of {totalPages}
-                  </span>
+                  <div className="flex min-w-24 items-center justify-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <span className="hidden sm:inline">Page</span>
+                    <Input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={pageInput}
+                      disabled={totalPages <= 1}
+                      onChange={(event) => setPageInput(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                      onBlur={commitPageInput}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          commitPageInput();
+                        } else if (event.key === 'Escape') {
+                          setPageInput(String(activePage));
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      aria-label="Page number"
+                      title={`Jump to a page between 1 and ${totalPages}`}
+                      className="h-8 w-14 px-1 text-center text-xs font-bold tabular-nums text-foreground/80 [appearance:textfield]"
+                    />
+                    <span className="whitespace-nowrap">of {totalPages}</span>
+                  </div>
                   <Button
                     variant="outline"
                     size="sm"

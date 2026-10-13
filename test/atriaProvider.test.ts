@@ -494,7 +494,7 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
     process.env.BYESU_API_KEY = 'test-byesu-key';
-    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+    process.env.OPENAI_MODEL = 'gpt-6.1-sol';
 
     const llm = await importLLM('byesu-second-priority');
     llm.clearProviderCooldowns();
@@ -524,7 +524,7 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
         return jsonResponse({ error: { message: 'Atria gateway timeout' } }, 524);
       }
       return jsonResponse({
-        model: 'gpt-5.6-terra',
+        model: 'gpt-6.1-sol',
         choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
       });
     };
@@ -541,7 +541,7 @@ describe('Atria consecutive provider priority & dynamic reasoning', () => {
     assert.equal(capturedCalls.length, 2);
     assert.match(capturedCalls[0].url, /atria-asi\.ai/);
     assert.match(capturedCalls[1].url, /byesu\.com/);
-    assert.equal(capturedCalls[1].body.model, 'gpt-5.6-terra');
+    assert.equal(capturedCalls[1].body.model, 'gpt-6.1-sol');
     assert.equal(capturedCalls[1].body.reasoning_effort, 'low');
   });
 

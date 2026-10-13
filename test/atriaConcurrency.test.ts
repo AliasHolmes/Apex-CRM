@@ -140,7 +140,7 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
     process.env.ATRIA_CONCURRENT_SLOTS = '2';
     process.env.BYESU_CONCURRENT_SLOTS = '2';
     process.env.BYESU_API_KEY = 'test-byesu-key';
-    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+    process.env.OPENAI_MODEL = 'gpt-6.1-sol';
 
     const llm = await importLLM('atria-primary-byesu-second');
     llm.clearProviderCooldowns();
@@ -198,7 +198,7 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
     process.env.BYESU_API_KEY = 'test-byesu-key';
-    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+    process.env.OPENAI_MODEL = 'gpt-6.1-sol';
 
     const llm = await importLLM('atria-out-secondary');
     llm.clearProviderCooldowns();
@@ -231,7 +231,7 @@ describe('Provider-Affinity Dual-Model Concurrency', () => {
     process.env.ATRIA_API_KEY = 'test-atria-key';
     process.env.ATRIA_PRIORITY = 'primary';
     process.env.BYESU_API_KEY = 'test-byesu-key';
-    process.env.OPENAI_MODEL = 'gpt-5.6-terra';
+    process.env.OPENAI_MODEL = 'gpt-6.1-sol';
 
     const llm = await importLLM('fast-tier-byesu');
     llm.clearProviderCooldowns();

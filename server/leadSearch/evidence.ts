@@ -1,17 +1,8 @@
 import type { EvidenceQuality, LeadSourceProvider } from './scoring.js';
+import type { LeadEvidence } from '../../src/types.js';
+import { normalizeWhitespace } from '../../src/utils/leadDedupe.js';
 
-export type LeadEvidence = {
-  sourceUrl: string;
-  sourceProvider: LeadSourceProvider;
-  sourceQuery: string;
-  sourceRound: number;
-  evidenceQuality: EvidenceQuality;
-  snippets: string[];
-  evidenceBlock?: string;
-  whyThisLead?: string;
-};
-
-const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim();
+export type { LeadEvidence };
 
 export function snippetsFromEvidenceBlock(evidenceBlock: string, maxSnippets = 3) {
   return evidenceBlock

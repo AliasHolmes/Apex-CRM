@@ -8,8 +8,28 @@
  * Single source of truth across judgeStage, verification, finalistJudge, verifyStage, and enrichStage.
  */
 
-export const NON_DECISION_MAKER_REGEX =
-  /\b(?:intern|student|trainee|apprentice|volunteer|assistant|coordinator|associate|specialist|representative|consultant|recruiter|talent acquisition|sourcer|staffing|sdr|bdr|sales development|account executive|account manager|key account manager|brand ambassador|ambassador|community manager|community lead|customer success|support specialist|customer\s+support|support\s+agent|customer\s+care|clerk|cashier|accountant|bookkeeper|mayor|city\s+council|politician|retired|individual contributor|staff\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|software\s+engineer(?:\s+ii|\s+iii|\s+iv)?|swe|frontend engineer|backend engineer|full stack engineer|data scientist|data analyst|machine learning engineer|ml engineer|devops engineer|site reliability engineer|sre|qa engineer|test engineer|product manager|product leader|group product manager|associate product manager|apm|project manager|scrum master|business analyst|partnership manager|alliances manager|principal\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+product\s+manager|principal\s+architect|principal\s+scientist|research\s+scientist|applied\s+scientist)\b/i;
+export const COMMON_IC_ROLE_PATTERNS =
+  'intern|student|trainee|apprentice|volunteer|assistant|coordinator|associate|representative|' +
+  'recruiter|talent acquisition|sourcer|staffing|sdr|bdr|sales development|account executive|' +
+  'account manager|key account manager|brand ambassador|ambassador|community manager|community lead|' +
+  'customer success|support specialist|customer\\s+support|support\\s+agent|customer\\s+care|' +
+  'clerk|cashier|accountant|bookkeeper|mayor|city\\s+council|politician|retired|individual contributor|' +
+  'staff\\s+(?:software\\s+|ai\\s+|ml\\s+|data\\s+|systems?\\s+|machine\\s+learning\\s+)?engineer|' +
+  'software\\s+engineer(?:\\s+ii|\\s+iii|\\s+iv)?|swe|frontend engineer|backend engineer|' +
+  'full stack engineer|data scientist|data analyst|machine learning engineer|ml engineer|' +
+  'devops engineer|site reliability engineer|sre|qa engineer|test engineer|product manager|' +
+  'product leader|group product manager|associate product manager|apm|project manager|scrum master|' +
+  'business analyst|partnership manager|alliances manager|' +
+  'principal\\s+(?:software\\s+|ai\\s+|ml\\s+|data\\s+|systems?\\s+|machine\\s+learning\\s+)?engineer|' +
+  'principal\\s+product\\s+manager|principal\\s+architect|principal\\s+scientist|research\\s+scientist|applied\\s+scientist';
+
+/** Titles that are individual-contributor roles even when they contain "consultant" or "specialist". */
+export const STRICT_IC_REGEX = new RegExp(`\\b(?:${COMMON_IC_ROLE_PATTERNS})\\b`, 'i');
+
+export const NON_DECISION_MAKER_REGEX = new RegExp(
+  `\\b(?:specialist|consultant|${COMMON_IC_ROLE_PATTERNS})\\b`,
+  'i'
+);
 
 export const EXECUTIVE_OVERRIDE_REGEX =
   /\b(?:(?<!product\s+|process\s+|content\s+|component\s+)owner|co-owner|founder|co-founder|founding\s+member|founding\s+partner|practice\s+lead|ceo|chief executive|managing partner|general partner|proprietor|president|principal(?!\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?(?:engineer|architect|scientist|developer|designer|product manager))\b|partner|chair|chairwoman|chairman|director|vp|vice president|head of|chief|cto|cmo|coo|cfo|cro|cio|cpo)\b/i;
@@ -18,9 +38,12 @@ export const EXECUTIVE_OVERRIDE_REGEX =
 export const SUBORDINATE_ROLE_REGEX =
   /\b(?:assistant|secretary|aide|ea|pa)\s+(?:to|for)\b|\bchief\s+of\s+staff\s+to\b|\boffice\s+of\s+the\s+(?:ceo|founder|president|chairman)\b/i;
 
+export const STUDENT_CAMPUS_ORG_REGEX =
+  /\b(?:student|campus|university|college)\s+(?:club|organization|society|association)\b/i;
+
 /** Student, intern, and trainee roles must never be promoted to executive decision-makers even if they claim "founder". */
 export const STUDENT_INTERN_ROLE_REGEX =
-  /\b(?:(?<!former\s+|ex-)(?:student|intern|trainee|apprentice|studying|undergraduate|currently\s+enrolled|(?:pursuing\s+(?:a|an)?\s*(?:degree|bachelor|master|mba|phd))|(?:(?:bachelor|master|mba|phd)'?s?\s*candidate))(?:\s+(?:at\b|founder|researcher))?)\b/i;
+  /\b(?:(?<!former\s+|ex-)(?:student|intern|trainee|apprentice|studying|undergraduate|currently\s+enrolled|(?:pursuing\s+(?:a|an)?\s*(?:degree|bachelor|master|mba|phd))|(?:(?:bachelor|master|mba|phd)'?s?\s*candidate)|(?:student|campus|university|college)\s+(?:club|organization|society|association))(?:\s+(?:at\b|founder|researcher))?)\b/i;
 
 export function hasStudentSignal(...texts: (string | undefined | null)[]): boolean {
   const combined = texts.filter(Boolean).join(" ");
@@ -29,9 +52,6 @@ export function hasStudentSignal(...texts: (string | undefined | null)[]): boole
 
 const OWNER_OPERATOR_REGEX =
   /\b(?:independent|solo|freelance|boutique|fractional|advisory|principal|managing|founding)\s+(?:[a-z0-9.&+#-]+\s+){0,2}(?:consultant|specialist|advisor|practitioner|partner)\b|\b(?:consultant|specialist|advisor)\s*(?:&|and|\/|\|)\s*(?:founder|owner|director|principal|president|ceo)\b|\b(?:owner[- ]operator|self[- ]employed)\b/i;
-
-/** Titles that are individual-contributor roles even when they contain "consultant" or "specialist". */
-export const STRICT_IC_REGEX = /\b(?:intern|student|trainee|apprentice|volunteer|assistant|coordinator|associate|representative|recruiter|talent acquisition|sourcer|staffing|sdr|bdr|sales development|account executive|account manager|key account manager|brand ambassador|ambassador|community manager|community lead|customer success|support specialist|customer\s+support|support\s+agent|customer\s+care|clerk|cashier|accountant|bookkeeper|mayor|city\s+council|politician|retired|individual contributor|staff\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|software\s+engineer(?:\s+ii|\s+iii|\s+iv)?|swe|frontend engineer|backend engineer|full stack engineer|data scientist|data analyst|machine learning engineer|ml engineer|devops engineer|site reliability engineer|sre|qa engineer|test engineer|product manager|product leader|group product manager|associate product manager|apm|project manager|scrum master|business analyst|partnership manager|alliances manager|principal\s+(?:software\s+|ai\s+|ml\s+|data\s+|systems?\s+|machine\s+learning\s+)?engineer|principal\s+product\s+manager|principal\s+architect|principal\s+scientist|research\s+scientist|applied\s+scientist)\b/i;
 
 export const DM_MIN_CONFIDENCE = 4;
 

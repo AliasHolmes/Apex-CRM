@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { canonicalLinkedInIdentity, getLinkedInHandle } from "../../src/utils/leadDedupe.js";
+import { canonicalLinkedInIdentity, getLinkedInHandle, getLeadLinkedInUrl } from "../../src/utils/leadDedupe.js";
 
 /** Stable cross-session key for a LinkedIn profile URL ("linkedin:<handle>"), or "". */
 export function candidateVerdictKeyForUrl(url?: string | null): string {
@@ -13,18 +13,8 @@ export function candidateVerdictKeyForUrl(url?: string | null): string {
 
 /** Reads the LinkedIn URL from every field the pipeline actually populates. */
 export function candidateVerdictKey(lead: Record<string, any> | null | undefined): string {
-  const urls = [
-    lead?.contactDetails?.linkedinUrl,
-    lead?.profile?.contactDetails?.linkedinUrl,
-    lead?.sourceUrl,
-    lead?.evidence?.sourceUrl,
-    lead?.url,
-  ];
-  for (const url of urls) {
-    const key = candidateVerdictKeyForUrl(url);
-    if (key) return key;
-  }
-  return "";
+  const url = getLeadLinkedInUrl(lead);
+  return candidateVerdictKeyForUrl(url);
 }
 
 /** "default" is shared by every brief without requirements and must never key a cache. */

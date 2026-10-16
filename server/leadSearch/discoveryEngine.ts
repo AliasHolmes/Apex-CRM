@@ -2,6 +2,7 @@ import crypto from "crypto";
 import {
   buildProfileDedupeKeys,
   normalizeDedupeValue,
+  getLeadLinkedInUrl,
 } from "../../src/utils/leadDedupe.js";
 
 import {
@@ -201,14 +202,7 @@ export function candidateStableId(
   lead: Record<string, any>,
   rawUrl?: string,
 ): string {
-  const url =
-    rawUrl ||
-    lead.contactDetails?.linkedinUrl ||
-    lead.profile?.contactDetails?.linkedinUrl ||
-    lead.sourceUrl ||
-    lead.profile?.sourceUrl ||
-    lead.url ||
-    "";
+  const url = rawUrl || getLeadLinkedInUrl(lead);
   const username = extractLinkedInUsername(url);
   if (username) return `linkedin:${username.toLowerCase()}`;
   const normalizedUrl = normalizeLinkedInUrl(url);
@@ -227,6 +221,19 @@ export function candidateStableId(
   return `id:${crypto.randomUUID()}`;
 }
 
+function createAcceptedLeadSurvivesChecker(acceptedLeads: any[]): (lead: any) => boolean {
+  const acceptedIdentityKeys = new Set<string>();
+  const identityKey = (lead: any) =>
+    String(lead?.id || lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "");
+  for (const lead of acceptedLeads) {
+    const key = identityKey(lead);
+    if (key) acceptedIdentityKeys.add(key);
+  }
+  return (lead: any) =>
+    acceptedLeads.includes(lead) ||
+    (identityKey(lead) ? acceptedIdentityKeys.has(identityKey(lead)) : false);
+}
+
 export function isExcludedCandidate(
   lead: any,
   excludedValues: Iterable<string>,
@@ -235,15 +242,7 @@ export function isExcludedCandidate(
   const email = normalizeDedupeValue(
     lead?.contactDetails?.email || lead?.email || lead?.profile?.contactDetails?.email,
   );
-  const rawCandidateUrl =
-    lead?.contactDetails?.linkedinUrl ||
-    lead?.profileUrl ||
-    lead?.linkedinUrl ||
-    lead?.sourceUrl ||
-    lead?.profile?.sourceUrl ||
-    lead?.url ||
-    lead?.profile?.contactDetails?.linkedinUrl ||
-    "";
+  const rawCandidateUrl = getLeadLinkedInUrl(lead) || lead?.profileUrl || "";
   const linkedin = normalizeDedupeValue(rawCandidateUrl);
   const username = extractLinkedInUsername(rawCandidateUrl);
   const canonicalKey = username ? `linkedin:${username}` : "";
@@ -2205,19 +2204,10 @@ export async function executeDiscoverySession(
         // post-enrichment set; anything absent from it was rejected as not_decision_maker or
         // score_below_minimum and must not reach selectStage.
         if (autoQualifiedLeads.length > 0) {
-          const acceptedIdentityKeys = new Set<string>();
-          const identityKey = (lead: any) =>
-            String(lead?.id || lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "");
-          for (const lead of acceptedLeads) {
-            const key = identityKey(lead);
-            if (key) acceptedIdentityKeys.add(key);
-          }
+          const survivedEnrichment = createAcceptedLeadSurvivesChecker(acceptedLeads);
           let committed = 0;
           for (const lead of autoQualifiedLeads) {
-            const key = identityKey(lead);
-            const survivedEnrichment =
-              acceptedLeads.includes(lead) || (key ? acceptedIdentityKeys.has(key) : false);
-            if (!survivedEnrichment) continue;
+            if (!survivedEnrichment(lead)) continue;
             if (tryAddQualifiedLead(lead)) committed += 1;
           }
           const dropped = autoQualifiedLeads.length - committed;
@@ -2263,17 +2253,7 @@ export async function executeDiscoverySession(
 
           // Drain-time admission: candidates submitted before the acceptance phase finished
           // may have been rejected by enrichment; only survivors qualify (same rule as the
-          // deferred auto-qualified commit above).
-          const acceptedIdentityKeys = new Set<string>();
-          const identityKey = (lead: any) =>
-            String(lead?.id || lead?.contactDetails?.linkedinUrl || lead?.sourceUrl || "");
-          for (const lead of acceptedLeads) {
-            const key = identityKey(lead);
-            if (key) acceptedIdentityKeys.add(key);
-          }
-          const survivedEnrichment = (lead: any) =>
-            acceptedLeads.includes(lead) ||
-            (identityKey(lead) ? acceptedIdentityKeys.has(identityKey(lead)) : false);
+          const survivedEnrichment = createAcceptedLeadSurvivesChecker(acceptedLeads);
 
           let streamAutoCommitted = 0;
           for (const lead of streamAutoQualified) {

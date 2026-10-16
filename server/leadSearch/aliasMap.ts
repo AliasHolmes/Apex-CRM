@@ -148,7 +148,8 @@ const AMBIGUOUS_SHORT_GEO_TOKENS: ReadonlySet<string> = new Set(
   Object.keys(GEO_ALIASES).filter(k => k.length === 2 && !SAFE_SHORT_GEO_CODES.has(k)),
 );
 
-const escapeRegExp = (str: string) => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+export const escapeRegExp = (str: string) => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+export const escapeRegex = escapeRegExp;
 
 /** Normalize a single term to its canonical alias (lowercased). */
 export function normalizeAliasTerm(term: unknown): string {

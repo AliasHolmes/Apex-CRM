@@ -3,23 +3,13 @@ import { parseSnippetFreshnessDays, computeFreshnessMultiplier } from './intentS
 import type { ProspectRequirement } from './prospectContract.js';
 import { wordBoundaryOrAliasMatches } from './aliasMap.js';
 
-export type LeadSourceProvider = 'tavily' | 'brightdata' | 'cache' | 'manual' | 'import';
-export type EvidenceQuality = 'weak' | 'partial' | 'good';
+import type {
+  LeadSourceProvider,
+  EvidenceQuality,
+  ScoreBreakdown,
+} from '../../src/types.js';
 
-export type ScoreBreakdown = {
-  fitScore: number;
-  intentScore: number;
-  timingScore: number;
-  evidenceQualityScore: number;
-  sourceConfidenceScore: number;
-  finalScore: number;
-  postIntentScore?: number;
-  confidenceInterval?: {
-    lower: number;
-    upper: number;
-    uncertainty: number;
-  };
-};
+export type { LeadSourceProvider, EvidenceQuality, ScoreBreakdown };
 
 const scoreOrDefault = (value: unknown, fallback: number) => {
   const numeric = Number(value);

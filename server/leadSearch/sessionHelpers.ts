@@ -2,6 +2,7 @@ import { extractLinkedInUsername, normalizeLinkedInUrl } from "../services/linke
 import { canonicalLinkedInIdentity } from "../../src/utils/leadDedupe.js";
 import { getLeadScore, type EvidenceQuality, type LeadSourceProvider } from "./scoring.js";
 import { isFlagEnabled } from "./featureFlags.js";
+import { abortableSleep } from "../services/sleepUtils.js";
 
 /**
  * Shared per-session helpers used across the discovery engine and stage
@@ -24,6 +25,17 @@ export type SessionEvidenceMeta = {
 
 const normalizeDedupeValue = (value?: string) =>
   (value || "").trim().toLowerCase();
+
+export function boundedNumber(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.floor(parsed), min), max);
+}
 
 export function clampEnvInt(
   name: string,
@@ -192,19 +204,7 @@ export function sleepWithAbort(
   signal?: AbortSignal,
   message = "Session cancelled",
 ): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  if (signal?.aborted) return Promise.reject(new Error(message));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error(message));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
+  return abortableSleep(ms, signal, message);
 }
 
 /**

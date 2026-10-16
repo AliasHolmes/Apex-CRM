@@ -99,6 +99,7 @@ import {
   SessionAlreadyActiveError,
 } from "../leadSearch/discoveryEngine.js";
 import { sessionStreamHub } from "../services/sessionStreamHub.js";
+import { executeAgentBrainDiscovery } from "../leadSearch/agentBrainRunner.js";
 
 const router = Router();
 
@@ -1962,6 +1963,25 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
       limit: maxConcurrentSessions,
       retryAfter: 30,
     });
+  }
+
+  const isAgentBrain =
+    req.body?.brain === "agent" ||
+    req.body?.discoveryMode === "agent_brain" ||
+    process.env.APEX_LLM_BRAIN === "agent";
+
+  if (isAgentBrain) {
+    try {
+      const agentResult = await executeAgentBrainDiscovery({
+        sessionId: targetSessionId,
+        promptQuery,
+        requestedLimit,
+      });
+      return res.status(200).json(agentResult);
+    } catch (agentErr: any) {
+      console.error(`[Agent Brain Error] ${targetSessionId}:`, agentErr);
+      return res.status(500).json({ error: agentErr?.message || "Agent Brain discovery failed." });
+    }
   }
 
   if (isAsyncMode) {

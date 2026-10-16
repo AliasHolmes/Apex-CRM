@@ -2,16 +2,14 @@ import {
   EXECUTIVE_OVERRIDE_REGEX,
   classifyTitle,
   STRICT_IC_REGEX,
+  STUDENT_INTERN_ROLE_REGEX,
+  STUDENT_CAMPUS_ORG_REGEX,
+  SUBORDINATE_ROLE_REGEX,
 } from './titleTriage.js';
 
-export type DecisionMakerVerification = {
-  titleMatched: boolean;
-  companyMatched: boolean;
-  ignoredTitle: boolean;
-  confidence: number;
-  reason: string;
-  trajectoryScore?: number;
-};
+import type { DecisionMakerVerification } from '../../src/types.js';
+
+export type { DecisionMakerVerification };
 
 const POSITIVE_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
   { label: 'founder', pattern: /\b(co[-\s]?founder|founder|founding partner)\b/ },
@@ -37,14 +35,14 @@ const POSITIVE_SENIORITY_PATTERNS = [
 ];
 
 const WEAK_TITLE_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
-  { label: 'assistant', pattern: /\b(executive assistant|assistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)|assistant\s+(director|manager|principal)|assistant)\b/ },
-  { label: 'student', pattern: /\b(student|student club|student organization|campus club|university club|college club|studying|undergraduate|currently\s+enrolled|(?:pursuing\s+(?:a|an)?\s*(?:degree|bachelor|master|mba|phd))|(?:(?:bachelor|master|mba|phd)'?s?\s*candidate))\b/i },
-  { label: 'intern', pattern: /\bintern(ship)?\b/ },
-  { label: 'coordinator', pattern: /\bcoordinator\b/ },
-  { label: 'associate', pattern: /\bassociate\b/ },
-  { label: 'specialist', pattern: /\bspecialist\b/ },
-  { label: 'representative', pattern: /\brepresentative\b/ },
-  { label: 'consultant', pattern: /\bconsultant\b(?!\s+(principal|lead|director))/ }
+  { label: 'assistant', pattern: /\b(executive assistant|assistant\s+(?:to|for)|assistant\s+(?:director|manager|principal)|assistant)\b/i },
+  { label: 'student', pattern: STUDENT_INTERN_ROLE_REGEX },
+  { label: 'intern', pattern: /\bintern(ship)?\b/i },
+  { label: 'coordinator', pattern: /\bcoordinator\b/i },
+  { label: 'associate', pattern: /\bassociate\b/i },
+  { label: 'specialist', pattern: /\bspecialist\b/i },
+  { label: 'representative', pattern: /\brepresentative\b/i },
+  { label: 'consultant', pattern: /\bconsultant\b(?!\s+(principal|lead|director))/i }
 ];
 
 const WEAK_REQUEST_PATTERNS = [
@@ -153,8 +151,8 @@ export function verifyDecisionMakerFromEvidence(input: {
     if ((label === 'consultant' || label === 'specialist') && !STRICT_IC_REGEX.test(profileIdentityText)) return false;
     return true;
   });
-  const hasStudentOrgConflict = /\b(student|campus|university|college)\s+(club|organization|society|association)\b/.test(profileIdentityText);
-  const hasAssistantAuthorityConflict = /\bassistant\s+(to|for)\s+(the\s+)?(ceo|cfo|coo|cto|cio|cro|cmo|chief|president|founder|owner|partner)\b/.test(profileIdentityText);
+  const hasStudentOrgConflict = STUDENT_CAMPUS_ORG_REGEX.test(profileIdentityText);
+  const hasAssistantAuthorityConflict = SUBORDINATE_ROLE_REGEX.test(profileIdentityText);
   const classification = classifyTitle(profileIdentityText);
   const hasPositiveTitle = positiveMatches.length > 0 || seniorityPositive || classification.isExecutive;
   const hasWeakTitle = weakMatches.length > 0 || classification.isIC;

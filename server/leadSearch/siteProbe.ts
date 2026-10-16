@@ -18,6 +18,8 @@ export { isPrivateOrInternalHost };
 import { Agent, buildConnector } from 'undici';
 import dns from 'node:dns';
 import type { EnrichmentTarget } from './stages/enrichStage.js';
+import { CORE_BLOCKED_DOMAINS } from './domainBlocklists.js';
+import { COMPANY_LEGAL_AND_BIZ_SUFFIXES_REGEX } from '../../src/utils/leadDedupe.js';
 
 const ssrfConnector = buildConnector({
   lookup: (hostname, _options, callback) => {
@@ -53,34 +55,7 @@ const GENERIC_SHORT_SLUGS = new Set([
   'forge', 'zenith', 'prism', 'flux', 'vertex', 'shift', 'core', 'spark', 'stride'
 ]);
 
-const BLOCKED_DOMAINS = new Set([
-  'linkedin.com',
-  'www.linkedin.com',
-  'google.com',
-  'www.google.com',
-  'facebook.com',
-  'www.facebook.com',
-  'instagram.com',
-  'www.instagram.com',
-  'twitter.com',
-  'www.twitter.com',
-  'x.com',
-  'www.x.com',
-  'crunchbase.com',
-  'www.crunchbase.com',
-  'glassdoor.com',
-  'www.glassdoor.com',
-  'youtube.com',
-  'www.youtube.com',
-  'github.com',
-  'www.github.com',
-  'tiktok.com',
-  'www.tiktok.com',
-  'reddit.com',
-  'www.reddit.com',
-  't.co',
-  'bit.ly'
-]);
+const BLOCKED_DOMAINS = CORE_BLOCKED_DOMAINS;
 
 const PARKED_JUNK_PATTERNS = [
   /domain\s+(?:is\s+)?(?:for\s+sale|available\s+for\s+purchase|parked)/i,
@@ -201,7 +176,7 @@ export function deriveCompanyDomainWithProvenance(lead: Record<string, any>): De
   if (rawCompany && typeof rawCompany === 'string') {
     const slug = rawCompany
       .toLowerCase()
-      .replace(/\b(?:inc|llc|ltd|corp|corporation|gmbh|co|company|group|holdings|services|solutions|agency|consulting)\b/gi, '')
+      .replace(COMPANY_LEGAL_AND_BIZ_SUFFIXES_REGEX, '')
       .replace(/[^a-z0-9]/g, '')
       .trim();
 

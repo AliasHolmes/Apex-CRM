@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-8.2-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v26-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v26" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v27-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v27" />
     <img src="https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
     <img src="https://img.shields.io/badge/Lead_Engine-Passing-10B981" alt="Lead Engine Tests" />
   </p>
@@ -30,7 +30,7 @@ Its primary workflow is intentionally practical:
    - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`), cross-round **Retrieval Cache** (`retrievalCache.ts`), and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
    - Enforces **Provider-Affinity Dual Concurrency** (`withProviderFallback`): prioritizes Atria (primary model) when idle with 10-minute dynamic reasoning headroom, and seamlessly overflows to Byesu (secondary model) in parallel under load (1 in-flight slot each) to achieve safe dual-model concurrency without triggering 429 rate limits or timeouts.
-   - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v26.
+   - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v27.
    - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
 5. **Multi-Source Intent Enrichment**: Analyzes company websites (**TF-IDF Intent**) and public prospect activity (**LinkedIn Post SERP Intent with Temporal Freshness Decay**).
@@ -70,7 +70,7 @@ flowchart TD
     StreamA --> Plan
     StreamB --> Plan
 
-    Persist --> Checkpoint[("Durable SQLite Checkpoint (Schema v26)")]
+    Persist --> Checkpoint[("Durable SQLite Checkpoint (Schema v27)")]
     Persist --> Inventory["Local Prospect Inventory"]
 ```
 
@@ -203,7 +203,7 @@ flowchart TD
 ```mermaid
 graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
-    API --> DB[("SQLite Database (node:sqlite, Schema v26, WAL mode)")]
+    API --> DB[("SQLite Database (node:sqlite, Schema v27, WAL mode)")]
 
     API --> Direct["Direct OpenAI-Compatible Provider Chain"]
     Direct --> Primary["Atria / Byesu Provider"]
@@ -221,7 +221,7 @@ graph TD
 
 - **Frontend**: React 19, Vite 8, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
-- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v26**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
+- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v27**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
 - **LLM Routing**: Direct OpenAI-compatible provider chain with provider-affinity dual concurrency (Atria primary + Byesu secondary), automatic fallback (OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
@@ -352,7 +352,7 @@ All API routes are mounted under `/api`:
 
 ---
 
-## Database & Schema (v26)
+## Database & Schema (v27)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
@@ -467,7 +467,7 @@ server/
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v26 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts)
+  db.ts                      SQLite v27 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts)
 test/                        Automated unit, integration, replay, and eval test suites (154 files via tsx --test)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings

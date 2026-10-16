@@ -90,6 +90,7 @@ export interface LeadEvidence {
   sourceRound: number;
   evidenceQuality: EvidenceQuality;
   snippets: string[];
+  evidenceBlock?: string;
   whyThisLead?: string;
 }
 
@@ -232,7 +233,17 @@ export interface ScrapingTask {
 }
 
 export type MiningProvider = 'llm' | 'tavily' | 'brightdata' | 'sqlite' | 'system';
-export type MiningPhase = 'session' | 'strategy' | 'search' | 'candidate_processing' | 'extraction' | 'filtering' | 'enrichment' | 'persistence';
+export type MiningPhase =
+  | 'session'
+  | 'strategy'
+  | 'search'
+  | 'candidate_processing'
+  | 'candidate_auditor'
+  | 'extraction'
+  | 'filtering'
+  | 'lead_explainer'
+  | 'enrichment'
+  | 'persistence';
 export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
 
 export interface MiningTraceEvent {

@@ -1,27 +1,9 @@
 import { spawn, spawnSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const isWindows = process.platform === 'win32';
-
-function loadEnvFile(): Record<string, string> {
-  const values: Record<string, string> = {};
-  const envPath = path.join(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) return values;
-
-  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
-  for (const line of lines) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
-    if (!match) continue;
-    values[match[1]] = match[2].trim().replace(/^["']|["']$/g, '');
-  }
-  return values;
-}
-
-const envFileValues = loadEnvFile();
-for (const [key, value] of Object.entries(envFileValues)) {
-  if (process.env[key] === undefined) process.env[key] = value;
-}
 console.log('[dev-entry] Starting Apex CRM dev server...');
 // `spawn('npm.cmd', ..., { shell: false })` throws EINVAL on Windows, while
 // `shell: true` triggers Node's unescaped-argument warning. Invoke cmd.exe

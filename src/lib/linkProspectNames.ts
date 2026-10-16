@@ -1,9 +1,7 @@
+import { escapeRegExp } from '../utils/leadDedupe.js';
+
 /** Markdown link scheme the Copilot uses for prospect names, resolved to the lead drawer. */
 export const LEAD_LINK_SCHEME = 'apex-lead:';
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /**
  * Wraps known prospect names in markdown links (apex-lead:<id>) so the answer can open them.

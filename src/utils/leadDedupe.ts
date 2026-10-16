@@ -1,5 +1,12 @@
 import type { LinkedInProfile } from '../types';
 
+export const escapeRegExp = (str: string) =>
+  String(str || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+export const escapeRegex = escapeRegExp;
+
+export const normalizeWhitespace = (value?: string): string =>
+  String(value || '').replace(/\s+/g, ' ').trim();
+
 export const normalizeDedupeValue = (value?: string) =>
   (typeof value === 'string' ? value : '')
     .toLowerCase()
@@ -26,6 +33,9 @@ export function normalizeCompanyName(name?: string): string {
   }
   return normalized;
 }
+
+export const COMPANY_LEGAL_AND_BIZ_SUFFIXES_REGEX =
+  /\b(?:inc|llc|ltd|corp|corporation|gmbh|co|company|group|holdings|services|solutions|agency|consulting)\b\.?/gi;
 
 export function unwrapRedirectUrl(rawUrl?: string): string {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
@@ -162,6 +172,24 @@ export const getProfileDomain = (input?: Partial<LinkedInProfile> | Record<strin
   return '';
 };
 
+export const getLeadLinkedInUrl = (input?: Partial<LinkedInProfile> | Record<string, any> | null): string => {
+  if (!input || typeof input !== 'object') return '';
+  const record = input as Record<string, any>;
+  const p = record.profile && typeof record.profile === 'object' ? (record.profile as Record<string, any>) : undefined;
+  return (
+    p?.contactDetails?.linkedinUrl ||
+    record.contactDetails?.linkedinUrl ||
+    p?.linkedinUrl ||
+    record.linkedinUrl ||
+    p?.sourceUrl ||
+    record.sourceUrl ||
+    record.evidence?.sourceUrl ||
+    p?.url ||
+    record.url ||
+    ''
+  );
+};
+
 export const buildProfileDedupeKeys = (input?: Partial<LinkedInProfile> | Record<string, any>) => {
   if (!input || typeof input !== 'object') return new Set<string>();
   const record = input as Record<string, any>;
@@ -169,9 +197,7 @@ export const buildProfileDedupeKeys = (input?: Partial<LinkedInProfile> | Record
   const cd = (p.contactDetails && typeof p.contactDetails === 'object' ? p.contactDetails : undefined) ||
              (record.contactDetails && typeof record.contactDetails === 'object' ? record.contactDetails : {});
   const email = normalizeDedupeValue(cd.email || record.email || p.email);
-  const linkedinIdentity = canonicalLinkedInIdentity(
-    cd.linkedinUrl || record.linkedinUrl || p.linkedinUrl || record.sourceUrl || p.sourceUrl
-  );
+  const linkedinIdentity = canonicalLinkedInIdentity(getLeadLinkedInUrl(input));
   const name = normalizeDedupeValue(p.fullName || record.fullName || p.name || record.name);
   const company = normalizeCompanyName(p.currentCompany || record.currentCompany || p.company || record.company);
   const domain = getProfileDomain(input);

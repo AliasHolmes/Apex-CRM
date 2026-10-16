@@ -1,4 +1,4 @@
-import { getLinkedInHandle, unwrapRedirectUrl, isValidLinkedInHandle } from '../../src/utils/leadDedupe.js';
+import { getLinkedInHandle, normalizeWhitespace } from '../../src/utils/leadDedupe.js';
 
 export type ScrapeQuality = 'good' | 'partial' | 'bad';
 
@@ -63,67 +63,13 @@ const IMPORTANT_SECTION_MARKERS = [
   'skills'
 ];
 
-const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim();
-
-export function normalizeLinkedInUrl(rawUrl?: string) {
+export function normalizeLinkedInUrl(rawUrl?: string): string {
   if (!rawUrl) return '';
-  const url = unwrapRedirectUrl(rawUrl);
-  try {
-    const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
-    const match = parsed.pathname.match(/\/in\/([^/?#]+)/i);
-    if (match?.[1]) {
-      let raw = match[1];
-      try { raw = decodeURIComponent(raw); } catch {}
-      raw = raw.replace(/[.,;:)\]]+$/, '').trim();
-      const handle = raw.toLowerCase();
-      if (isValidLinkedInHandle(handle)) return `linkedin.com/in/${handle}`;
-    }
-    const postMatch = parsed.pathname.match(/\/posts\/([^/?#]+)/i);
-    if (postMatch?.[1]) {
-      let segment = postMatch[1];
-      if (segment.includes('_')) segment = segment.split('_')[0];
-      else if (segment.includes('-activity-')) segment = segment.split('-activity-')[0];
-      else if (/-activity$/i.test(segment)) segment = segment.replace(/-activity$/i, '');
-      segment = segment.replace(/[.,;:)\]]+$/, '').trim();
-      const handle = segment.toLowerCase();
-      if (isValidLinkedInHandle(handle)) return `linkedin.com/in/${handle}`;
-    }
-    const pulseMatch = parsed.pathname.match(/\/pulse\/([^/?#]+)/i);
-    if (pulseMatch?.[1]) {
-      const segment = pulseMatch[1].replace(/[.,;:)\]]+$/, '').trim().toLowerCase();
-      if (isValidLinkedInHandle(segment)) return `linkedin.com/in/${segment}`;
-    }
-    return '';
-  } catch {
-    const lowered = url.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '').trim();
-    const match = lowered.match(/linkedin\.com\/in\/([^/?#]+)/i);
-    if (match?.[1]) {
-      let raw = match[1];
-      try { raw = decodeURIComponent(raw); } catch {}
-      raw = raw.replace(/[.,;:)\]]+$/, '').trim();
-      const handle = raw.toLowerCase();
-      if (isValidLinkedInHandle(handle)) return `linkedin.com/in/${handle}`;
-    }
-    const postMatch = lowered.match(/linkedin\.com\/posts\/([^/?#]+)/i);
-    if (postMatch?.[1]) {
-      let segment = postMatch[1];
-      if (segment.includes('_')) segment = segment.split('_')[0];
-      else if (segment.includes('-activity-')) segment = segment.split('-activity-')[0];
-      else if (/-activity$/i.test(segment)) segment = segment.replace(/-activity$/i, '');
-      segment = segment.replace(/[.,;:)\]]+$/, '').trim();
-      const handle = segment.toLowerCase();
-      if (isValidLinkedInHandle(handle)) return `linkedin.com/in/${handle}`;
-    }
-    const pulseMatch = lowered.match(/linkedin\.com\/pulse\/([^/?#]+)/i);
-    if (pulseMatch?.[1]) {
-      const segment = pulseMatch[1].replace(/[.,;:)\]]+$/, '').trim().toLowerCase();
-      if (isValidLinkedInHandle(segment)) return `linkedin.com/in/${segment}`;
-    }
-    return '';
-  }
+  const handle = getLinkedInHandle(rawUrl);
+  return handle ? `linkedin.com/in/${handle}` : '';
 }
 
-export function extractLinkedInUsername(url?: string) {
+export function extractLinkedInUsername(url?: string): string {
   return getLinkedInHandle(url);
 }
 

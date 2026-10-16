@@ -7,6 +7,8 @@ import {
 import { getSearchCacheEntry, upsertSearchCacheEntry } from '../db.js';
 import type { SearchSpec } from './searchSpec.js';
 import { UNIVERSAL_SIGNALS, type IntentSignalSpec } from './intentSignals.js';
+import { isDomainOrSubdomainBlocked, ALL_OBSERVATION_BLOCKED_DOMAINS } from './domainBlocklists.js';
+import { COMPANY_LEGAL_AND_BIZ_SUFFIXES_REGEX } from '../../src/utils/leadDedupe.js';
 
 export type CompanyIntentEvidence = {
   websiteUrl?: string;
@@ -100,11 +102,6 @@ export function computeTfidfScore(
 
 type SearchResult = { title: string; url: string; content: string };
 
-const BLOCKED_DOMAINS = [
-  'linkedin.com', 'facebook.com', 'instagram.com', 'twitter.com', 'x.com',
-  'crunchbase.com', 'indeed.com', 'glassdoor.com', 'yelp.com'
-];
-
 const normalizeCompanyToken = (value: string) => value
   .toLowerCase()
   .replace(/\b(inc|llc|ltd|limited|corp|corporation|company|co|pllc|pc|group)\b/g, ' ')
@@ -123,7 +120,7 @@ const isPublicDomain = (hostname: string) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9
 
 const isBlockedUrl = (url: string) => {
   const host = hostnameFor(url);
-  return !isPublicDomain(host) || BLOCKED_DOMAINS.some(domain => host === domain || host.endsWith(`.${domain}`));
+  return !isPublicDomain(host) || isDomainOrSubdomainBlocked(host, ALL_OBSERVATION_BLOCKED_DOMAINS);
 };
 
 const PRESERVED_2LETTER_TECH_TOKENS = new Set([
@@ -157,10 +154,7 @@ export function cleanCompanyForDomainSearch(raw: string): string {
   if (!raw) return "";
   return raw
     .replace(/[,.;:?!\'\"()\[\]{}\u00AE\u2122\u00A9\u201C\u201D\u2018\u2019]/g, " ")
-    .replace(
-      /\b(?:inc|llc|ltd|corp|corporation|gmbh|co|company|group|holdings|services|solutions|agency|consulting)\b\.?/gi,
-      " ",
-    )
+    .replace(COMPANY_LEGAL_AND_BIZ_SUFFIXES_REGEX, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

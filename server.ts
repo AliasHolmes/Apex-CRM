@@ -28,16 +28,23 @@ const app = express();
 
 const guardedSockets = new WeakSet<object>();
 
+export function isClientSocketAbortError(err: any): boolean {
+  if (!err) return false;
+  const code = err.code;
+  const message = err.message || (typeof err === "string" ? err : "");
+  return (
+    code === "ECONNRESET" ||
+    code === "EPIPE" ||
+    code === "ERR_STREAM_PREMATURE_CLOSE" ||
+    message.includes("ECONNRESET") ||
+    message.includes("EPIPE")
+  );
+}
+
 // Guard against unhandled client disconnect errors (e.g. ECONNRESET/EPIPE when closing browser tab)
 app.use((req, res, next) => {
   const handleSocketError = (err: any) => {
-    if (
-      err?.code === "ECONNRESET" ||
-      err?.code === "EPIPE" ||
-      err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
-      err?.message?.includes("ECONNRESET") ||
-      err?.message?.includes("EPIPE")
-    ) {
+    if (isClientSocketAbortError(err)) {
       return;
     }
     console.warn("[Server] Socket warning:", err?.message || err);
@@ -204,12 +211,7 @@ async function startServer() {
 
   // Safely close and destroy abruptly aborted client sockets (e.g. closing browser tab)
   server.on("clientError", (err: any, socket) => {
-    if (
-      err?.code === "ECONNRESET" ||
-      err?.code === "EPIPE" ||
-      err?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
-      !socket.writable
-    ) {
+    if (isClientSocketAbortError(err) || !socket.writable) {
       socket.destroy();
       return;
     }
@@ -218,13 +220,7 @@ async function startServer() {
 
   // Global guards to prevent client socket resets from terminating the Node process
   process.on("uncaughtException", (error: any) => {
-    if (
-      error?.code === "ECONNRESET" ||
-      error?.code === "EPIPE" ||
-      error?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
-      error?.message?.includes("ECONNRESET") ||
-      error?.message?.includes("EPIPE")
-    ) {
+    if (isClientSocketAbortError(error)) {
       return;
     }
     console.error("[Server] Fatal Uncaught Exception:", error);
@@ -232,13 +228,7 @@ async function startServer() {
   });
 
   process.on("unhandledRejection", (reason: any) => {
-    const message = reason?.message || String(reason);
-    if (
-      reason?.code === "ECONNRESET" ||
-      reason?.code === "EPIPE" ||
-      message.includes("ECONNRESET") ||
-      message.includes("EPIPE")
-    ) {
+    if (isClientSocketAbortError(reason)) {
       return;
     }
     console.error("[Server] Unhandled Promise Rejection:", reason);

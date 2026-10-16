@@ -9,6 +9,7 @@ import {
   setLlmStageLogger,
   type LlmStageLogEntry,
 } from "./leadSearch/telemetry.js";
+import { COMMON_PUBLIC_DOMAINS } from "./leadSearch/domainBlocklists.js";
 import {
   REVIEW_STATUS_SET as REVIEW_STATUSES,
   NEXT_ACTION_SET as NEXT_ACTIONS,
@@ -16,6 +17,7 @@ import {
 import {
   canonicalLinkedInIdentity,
   normalizeDedupeValue,
+  getLeadLinkedInUrl,
 } from "../src/utils/leadDedupe.js";
 
 // Captured BEFORE dotenv.config() so an explicitly-provided path (shell, CI, or a test
@@ -2209,12 +2211,7 @@ export type LeadWriteOptions = {
 
 export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
   const keys = new Set<string>();
-  const rawUrl =
-    lead?.profile?.contactDetails?.linkedinUrl ||
-    lead?.contactDetails?.linkedinUrl ||
-    lead?.linkedinUrl ||
-    lead?.sourceUrl ||
-    lead?.url;
+  const rawUrl = getLeadLinkedInUrl(lead);
   const linkedinIdentity = canonicalLinkedInIdentity(rawUrl);
   if (linkedinIdentity) keys.add(linkedinIdentity);
 
@@ -5581,25 +5578,6 @@ export function readStoredCompanyNames(limit = 100): string[] {
   }
 }
 
-const COMMON_PUBLIC_DOMAINS = new Set([
-  'linkedin.com',
-  'twitter.com',
-  'x.com',
-  'facebook.com',
-  'instagram.com',
-  'youtube.com',
-  'github.com',
-  'google.com',
-  'gmail.com',
-  'yahoo.com',
-  'outlook.com',
-  'hotmail.com',
-  'icloud.com',
-  'protonmail.com',
-  'reddit.com',
-  'medium.com',
-  'substack.com',
-]);
 
 export function extractValidCompanyDomain(rawUrlOrDomain?: string): string | null {
   if (!rawUrlOrDomain || typeof rawUrlOrDomain !== 'string') return null;

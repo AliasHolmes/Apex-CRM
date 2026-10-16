@@ -7,29 +7,13 @@ import {
 import { estimateTokenCount } from "./llmBudget.js";
 import type { RequirementClass, ProspectContract } from "./prospectContract.js";
 
-export type MiningProvider =
-  | "llm"
-  | "tavily"
-  | "brightdata"
-  | "sqlite"
-  | "system";
-export type MiningPhase =
-  | "session"
-  | "strategy"
-  | "search"
-  | "candidate_processing"
-  | "candidate_auditor"
-  | "extraction"
-  | "filtering"
-  | "lead_explainer"
-  | "enrichment"
-  | "persistence";
-export type MiningEventStatus =
-  | "started"
-  | "success"
-  | "error"
-  | "skipped"
-  | "info";
+import type {
+  MiningProvider,
+  MiningPhase,
+  MiningEventStatus,
+} from "../../src/types.js";
+
+export type { MiningProvider, MiningPhase, MiningEventStatus };
 
 export function summarizeLLM(
   purpose: string,

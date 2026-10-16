@@ -1,16 +1,9 @@
 import type { SearchSpec } from './searchSpec.js';
 import { wordBoundaryOrAliasMatches } from './aliasMap.js';
 
-export type ScoutEvidence = {
-  matchedCriteria: string[];
-  sourceCount: number;
-  sourceProviders: string[];
-  lanes: string[];
-  criteriaCoverageScore: number;
-  corroborationScore: number;
-  evidenceCoverageScore: number;
-  uncertainties: string[];
-};
+import type { ScoutEvidence } from '../../src/types.js';
+
+export type { ScoutEvidence };
 
 const unique = (values: string[]) => Array.from(new Set(values.filter(Boolean)));
 const normalized = (value: unknown) => String(value || '').toLowerCase();

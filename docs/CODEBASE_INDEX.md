@@ -1,17 +1,16 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-10-06 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-16 · Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> **commit `a237c91`** (`feat(leadSearch): optimize prospect yield, relax replenishment
-> queries, and pre-filter non-decision makers`). The working tree was clean during
-> measurement. Validation is not green at this HEAD: `npm run typecheck` reports an
-> unused `classifyTitle` import in `test/yieldOptimization.test.ts`. The completed `npm test`
-> run has assertion failures in `blueprintBlueprintCoverage`, `brightDataUpgrade`,
-> `encodingHygiene`, and `semanticQualificationAudit`, plus file-level failures in
-> `siteProbe`, `siteProbeContactDetails`, and `siteProbeSsrfGuard`. No test totals are
-> claimed until those checks complete cleanly.
+> **commit `425f567`** (`feat(llm): update secondary Byesu model from gpt-5.6-terra to
+> gpt-6.1-sol`) plus the uncommitted overlay described in §9.22 (Agent Brain runner).
+> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. `npm test` completes in ~4m
+> across 193 suites: **1,281 pass / 1 fail**. The only failure is `encodingHygiene.test.ts`,
+> which rejects non-ASCII bytes in the uncommitted overlay files (`✅` in
+> `scripts/agent-brain.ts`, `–` in `agentBrainRunner.ts:217`); no committed source or
+> test fails. Line counts are physical lines (blank lines included).
 
 ---
 
@@ -47,14 +46,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 14,689 lines across 64 TypeScript files                                   |
-| Backend engine (`server/leadSearch/`)                            | 26,383 lines: 46 modules + 9 `stages/`                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | ~15,430 lines                                                             |
+| Frontend (`src/`)                                                | 15,470 lines across 63 TypeScript files (`components/` alone: 37 files / 10,989 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 28,095 lines: 52 modules + 9 `stages/` (stages: 7,406 lines)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,670 lines (db 5,732 · llm 3,325 · api 2,483 · brightdata 2,193 · rest 1,937)                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 23 base tables + `leads_fts` (fts5), schema **v27**, WAL                   |
-| Test suite                                                       | 186 TypeScript files: 184 `.test.ts`, 1 `.eval.ts`, 1 helper; 28,800 lines |
-| Total first-party LOC                                            | ~85,600 TypeScript lines (incl. tests)                                    |
-| Anchor                                                           | measured at `a237c91`; working tree clean at that commit                  |
+| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v27**, WAL                   |
+| Test suite                                                       | 189 TypeScript files: 188 `.test.ts` + 1 `.eval.ts`; 29,306 lines |
+| Total first-party LOC                                            | 88,772 TypeScript lines (incl. tests)                                    |
+| Anchor                                                           | measured at `425f567` + uncommitted overlay (§9.22); HEAD dated 2026-10-13                  |
 
 ## 3. Tech stack
 
@@ -63,9 +62,10 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 - **Backend**: Express 5 · `node:sqlite` (schema-versioned, migrated in-transaction with
   pre-migration backups pruned to 3) · TypeScript, run by `tsx`
 - **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP (scrape/search),
-  cross-round query retrieval cache, OpenAI-compatible LLM with Provider-Affinity Dual Concurrency
-  (Atria primary with 10-minute dynamic reasoning headroom + Byesu secondary parallel overflow),
-  OpenRouter/Groq fallback chain, Langfuse telemetry
+  cross-round query retrieval cache, OpenAI-compatible LLM under the ADR-0011 ordered provider
+  chain (Atria primary — 8 runtime slots, 10-minute dynamic reasoning headroom; Byesu second
+  priority — 10 runtime slots, spill-not-queue overflow), Groq/OpenRouter failsafe tier,
+  Langfuse telemetry
 - **Discipline**: `tsc --noEmit` under `strict`, `noImplicitAny`, `noUnusedLocals`,
   `noUnusedParameters`; `prebuild` gates on typecheck; strict ASCII enforced by
   `test/encodingHygiene.test.ts`
@@ -73,28 +73,29 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (335 lines)
-server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,651)
-server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,430)
-server/services/             llm.ts (3,261, provider-affinity dual concurrency, Atria reasoning headroom, completion cache;
-                             legacy single-mutex queue and Token Harbor/ProviderTrafficController removed) ·
-                             brightdata.ts (2,168) · keyRotator ·
-                             sessionStreamHub (SSE) · linkedinEvidence · privateHosts (SSRF) ·
-                             outboundPrompt · langfuse
+server.ts                    Express app + static Vite serve (371 lines)
+server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,732)
+server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,483)
+server/services/             llm.ts (3,325, ADR-0011 ordered provider chain, Atria reasoning headroom,
+                             completion cache, queue-wait telemetry) · brightdata.ts (2,193) ·
+                             keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) · linkedinEvidence.ts (318) ·
+                             privateHosts.ts (162, SSRF) · outboundPrompt.ts (167) · langfuse.ts (122)
 server/leadSearch/           the discovery engine
-  discoveryEngine.ts         session loop, round budget, checkpoints, resume, streaming judge seam (2,815)
+  discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming seams (3,348)
   rollingPool.ts             bounded rolling-window task pool used to parallelize judge micro-batches (42)
   liveRollingPool.ts         bounded live rolling-window pool for streaming judge execution across enrichment (ADR-0012)
   planCache.ts               signature-keyed & market-slice query plan cache (ADR-0012)
   plannerRouting.ts          fast-tier route resolver for strategist/plan families (ADR-0012)
-  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support, known-metro registry (2,038)
-  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,527)
+  agentBrainRunner.ts        UNCOMMITTED Agent Brain path: standalone Tavily retrieval + deterministic
+                             title/entity filters writing through the standard persistence APIs (440; see §9.22)
+  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support, known-metro registry (2,079)
+  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,533)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (799)
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
-  querySignature.ts          role/org/topic/geo signatures for near-duplicate and exhausted-query detection
-  stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation
-  companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching
-  titleResolution.ts         evidence-grounded title backfill from passing qualification requirements
+  querySignature.ts          role/org/topic/geo signatures for near-duplicate and exhausted-query detection (291)
+  stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation (234)
+  companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching (212)
+  titleResolution.ts         evidence-grounded title backfill from passing qualification requirements (136)
   candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v26/v27, evidence-anchor normalized)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
@@ -131,9 +132,10 @@ src/                         App.tsx (tab shell + error boundaries) · context/ 
                              shared controls) · lib/ (navigation, saved views, workflow, stats, theme) · utils/
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        181 TypeScript files (179 `.test.ts` + `queryIntelligence.eval.ts` +
-                             `helpers/mockLlm.ts`), node:test runner via tsx
+test/                        189 TypeScript files (188 `.test.ts` + `queryIntelligence.eval.ts`; the
+                             former `helpers/mockLlm.ts` no longer exists), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (83 lines)
+scripts/agent-brain.ts       UNCOMMITTED CLI for the Agent Brain path (`agent:mine` / `agent:verify`; §9.22) (148 lines)
 ```
 
 ## 5. The discovery pipeline
@@ -191,23 +193,44 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
 Cross-cutting invariants:
 
-- **Provider-Affinity Dual Concurrency** (`llm.ts`) routes LLM calls to Atria (primary,
-  1 concurrent slot) and Byesu (secondary, 1 concurrent slot, runs in parallel with Atria).
-  When both are busy, calls wait in queue and are dispatched first-fit as provider slots become free. Failsafe 1
-  (Groq, 950 output token cap) and Failsafe 2 (OpenRouter) activate only when both
-  primary and secondary providers are out. Dynamic reasoning effort: low for extraction/retrieval,
-  medium for strategist, finalist judge, and contract extraction.
-  `ExecuteDiscoveryOptions` supports `parentSessionId`/`deltaBrief` follow-ups
-  and `interactive=false` headless expander fallback. The MAB pools priors by
-  24 quantized brief centroids while preserving all `contract_guard` tasks above the
-  `maxTasks+2` cap so hard-requirement coverage is never pruned.
+- **Provider-Affinity Ordered Chain (ADR-0011)** (`llm.ts`) routes LLM calls Atria-first (up to
+  `ATRIA_CONCURRENT_SLOTS`, runtime 8) and Byesu second (up to `BYESU_CONCURRENT_SLOTS`, runtime
+  10). Saturated or failed Atria calls **spill to Byesu rather than queue**; the fast-tier
+  strategist reorders the same pair (`["primary","atria","openrouter"]`). Groq (950 output
+  token cap) and OpenRouter/Mistral are the failsafe tier, invoked only when both primaries are
+  out (fatal auth failure, exhausted quota 429/1300, or consecutive circuit-breaker trips).
+  Dynamic reasoning effort: low for extraction/retrieval/strategist/intent/attribution,
+  medium for finalist judge and contract extraction. Slot utilization is observable via
+  `/api/llm-health` (`activeSlots`/`slotLimit`).
+- **Streaming pipeline seams (ADR-0012/0013)**: `retrieveStage` fires `onQuerySettled` per query
+  (early fuse+extract pool; `LEAD_STREAMING_EXTRACTION`, default on) and `enrichStage` fires
+  `onTargetsReady` into a live rolling pool (`liveRollingPool.ts`) judged in coalesced
+  micro-batches (`LEAD_PIPELINE_STREAMING_JUDGE`, default on; `LEAD_STREAMING_JUDGE_BATCH_TARGET=3`,
+  `LEAD_STREAMING_JUDGE_FLUSH_MS=120`). Judge prompts exclude site-probe signals, so pre-probe
+  verdicts match post-probe ones; a drain-time `survivedEnrichment` re-check guards late rejects.
+- **Cache leverage layer (ADR-0012)**: `computeEvidenceHash` (evidence ids + normalized lengths,
+  so re-scraped profiles reuse `candidate_verdicts` rows), `buildRetrievalSignatureKey`
+  (market-slice keys alongside exact-query keys in `search_cache`), and the in-memory
+  `planCache.ts` (LRU 64 entries, 6h TTL; gated to non-speculative, non-recovery, post-first,
+  non-stall rounds).
+- **CRM saturation response (ADR-0012)**: when duplicate-existing-lead rejections reach 50%+ of
+  a round (and the brief is not metro-locked), the task boost rises to 2.0x, the saturated-metro
+  threshold tightens 20 -> 10 CRM leads, a CRM-saturation directive enters the strategist prompt,
+  and 1-3 account-lane flywheel queries (`buildAccountFlywheelItems`) target signal-store accounts.
+- **Adaptive judge concurrency**: `min(8, max(FINALIST_JUDGE_CONCURRENCY, freeAtriaSlots))`; the
+  first judge wave packs 3-candidate micro-batches when provider capacity permits, later waves
+  keep 2 to preserve rolling-pool early-stop granularity.
 - **Stage-boundary checkpoints** (`mining_sessions.checkpoint_json`, 512KB guard) power
   1-click resume; resume rebuilds `seenCandidateKeys` and _replaces_ checkpoint counters.
 - **Per-provider circuit breaker** with cooldown ladders, key rotation, and health probes.
+- `ExecuteDiscoveryOptions` supports `parentSessionId`/`deltaBrief` follow-ups
+  and `interactive=false` headless expander fallback. The MAB pools priors by
+  24 quantized brief centroids while preserving all `contract_guard` tasks above the
+  `maxTasks+2` cap so hard-requirement coverage is never pruned.
 
 ## 6. Configuration surface
 
-133 keys in `.env` (135 mirrored by `.env.example`). Notable:
+134 keys in `.env` (139 mirrored by `.env.example`). Notable:
 
 - `EVIDENCE_GROUNDING_MODE` (`.env.example` = `"strict"`) — enforces verbatim, alias, or
   polarity-guarded fuzzy quote citations on every `pass` verdict (`"legacy"`/`"permissive"`
@@ -215,20 +238,32 @@ Cross-cutting invariants:
 - `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) — authoritative round budget; the in-loop
   extension ceiling now defers to it when set (was hard-coded 10, which is how a run
   configured for 6 reached 10).
+- **ADR-0011 runtime concurrency** (`.env`): `ATRIA_CONCURRENT_SLOTS="8"`,
+  `BYESU_CONCURRENT_SLOTS="10"`, `LEAD_EXTRACTION_CONCURRENCY="8"`,
+  `FINALIST_JUDGE_CONCURRENCY="6"`, `ATRIA_MAX_TIMEOUT_MS="600000"`,
+  `ATRIA_MIN_TIMEOUT_MS="120000"`. Code fallback when unset is 1 slot per primary.
+  `.env.example` still carries the pre-ADR-0011 4/4 values — re-sync pending.
+- **ADR-0012/0013 streaming seams**: `LEAD_STREAMING_EXTRACTION` and
+  `LEAD_PIPELINE_STREAMING_JUDGE` (both default on; `false` restores the wholesale passes),
+  `LEAD_STREAMING_JUDGE_BATCH_TARGET` (default 3), `LEAD_STREAMING_JUDGE_FLUSH_MS` (default 120).
+- `LEAD_RETRIEVAL_CACHE_TTL_DAYS` (default 3; 0 disables, max 30) — market-slice + exact-query
+  retrieval reuse.
 - `LLM_MAX_RETRIES=0` is now honoured; a 429 falls through immediately with a 5s cooldown.
 - `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` clamped 1–20 (default 10).
 - `LEAD_SEARCH_TIMEOUT_MS=0` disables the 15-minute safety timeout.
+- `APEX_LLM_BRAIN="agent"` (uncommitted, §9.22) reroutes `POST /find-leads` to the Agent Brain path.
 - `server/configValidation.ts` emits non-fatal boot warnings for misconfigurations.
 
-`featureFlags.ts` exposes 10 active flags; 6 earlier flags have graduated into permanent
-architectural invariants and were pruned from the runtime configuration.
+`featureFlags.ts` exposes 10 env-overridable flags (8 default-on; `LEAD_ADAPTIVE_REWARD_V2`
+and `LEAD_MARGINAL_YIELD_STOP_ENABLED` default-off / shadow mode). Earlier graduated flags
+live on as unconditional architectural invariants.
 
 ## 7. Test suite
 
-179 `.test.ts` files, 1 eval file, and 1 helper are present. Test totals and pass counts are
-intentionally omitted because `npm test` and typecheck are not green at the current pin;
-see the verification note at the top and §9.15. The previous measured baseline at
-`b60a6dc` was 1064 unit/integration tests and 13 eval tests. Composition:
+188 `.test.ts` files and 1 eval file are present; suite totals at this pin: **1,281 pass / 1 fail**
+across 193 suites (~4m wall clock), the single failure being `encodingHygiene` against the
+uncommitted overlay (§9.22). The previous measured baseline at `b60a6dc` was 1064
+unit/integration tests and 13 eval tests. Composition:
 
 - **Query & intelligence eval**: `queryIntelligence.eval` (13 tests over 30 gold briefs,
   pronoun-collision guard G21, plural-persona extraction G22, city-only geo anchoring G24,
@@ -236,7 +271,12 @@ see the verification note at the top and §9.15. The previous measured baseline 
 - **Engine behaviour**: `deepAuditRegression` (25), `prospectQuality` (31), `contractShape`
   (34), `constraintAblation` (16), `scoutPipeline` (12), `progressiveQualification` (12),
   `attributionSpotCheck` (3), `fuzzyQuoteGrounding`, `profileQuality`, `siteProbe`, `adaptiveScheduler`
-- **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (29), `keyRotator`,
+- **Engine remediation (ADR-0012/0013)**: `engineBottleneckRemediation` (streaming judge seam,
+  caches, saturation response), `engineRemediationWiring` + `engineRemediationWiring2`
+  (retrieval streaming, coalesced judge submissions, delta hydration), `schemaV27QueueWait`
+  (queue-wait telemetry column), `liveRollingPool`, `planCache`
+- **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (29), `atriaConcurrency`,
+  `atriaProvider`, `llmRoutingPolicy`, `llmRoutingTier`, `keyRotator`,
   `tavilyRotation`, `kalmanStability`, `serverResilience`, `sessionStreamHubPruning`
 - **Persistence**: `leadPersistence` (incl. G15 CRM workflow preservation), `leadDedupe`,
   `leadIdentityMigration`, `sessionPersistenceAndResume`, `concurrencyShieldAndBulkDelete`,
@@ -549,17 +589,95 @@ Eliminated unprompted full-page browser reloads during active discovery sessions
 - **Lossless Recovery and Rehydration (`App.tsx`, `ScrapeWorkspace.tsx`)**: `ScrapeWorkspace` records running session IDs to `sessionStorage` (`apex-active-mining-session-id`), and `App.tsx` force-mounts the `workspace` tab across reloads (with persisted `apex-mounted-job-tabs`), automatically re-attaching the live SSE trace to ongoing sessions.
 - **Strict Regression Suite (`test/hmrReloadGuard.test.ts`)**: Added comprehensive tests verifying HMR gating, watcher ignores, session rehydration, pre-bundled dependencies, and 0 runtime-discovered dependencies. Entire test suite passing cleanly (1,244/1,244 tests).
 
+### 9.19 ADR-0011 Atria-Primary / Byesu Second-Priority Chain — LANDED (`d15a19a`, 2026-10-09)
+
+The provider model moved from "dual affinity, one slot each" to an ordered chain:
+
+- Atria serves every default-tier stage up to `ATRIA_CONCURRENT_SLOTS` (runtime 8); when its
+  slots are saturated the call **spills to Byesu** (`BYESU_CONCURRENT_SLOTS`, runtime 10)
+  instead of queueing, and a failed Atria attempt (5xx, timeout, truncation, parse failure)
+  cascades to Byesu immediately.
+- The fast tier (query strategist) passes an explicit order (`["primary","atria","openrouter"]`
+  via `resolvePlannerProviderOrder`) so planning runs on the low-latency router.
+- Groq and OpenRouter/Mistral remain failsafes, invoked only when both primaries are out.
+- Stage concurrency must be able to fill the slots: `LEAD_EXTRACTION_CONCURRENCY=8`,
+  `FINALIST_JUDGE_CONCURRENCY=6` (heaviest reasoning stage capped below the slot ceiling).
+- Slot observability: `/api/llm-health` exposes `activeSlots`/`slotLimit` per provider.
+
+### 9.20 ADR-0012 Engine Bottleneck Remediation — LANDED (`2366792`, 2026-10-09)
+
+- **Streaming enrichment-judge seam**: `enrichStage` fires `onTargetsReady` at each enrichment
+  completion point; `discoveryEngine` feeds a live rolling pool (`liveRollingPool.ts`) running
+  `evaluateIncrementalJudgeBatches` while enrichment continues. Quality-preserving because the
+  judge prompt never contains site-probe signals; a drain-time `survivedEnrichment` re-check
+  guards late rejects (`LEAD_PIPELINE_STREAMING_JUDGE`, default on).
+- **Cache leverage**: `computeEvidenceHash` (evidence ids + normalized lengths), market-slice
+  `buildRetrievalSignatureKey`, and `planCache.ts` (LRU 64, 6h TTL; gated to non-speculative,
+  non-recovery, post-first, non-stall rounds).
+- **CRM saturation response**: >= 50% duplicate-existing-lead rejections in a round triggers a
+  2.0x task boost, saturated-metro threshold 20 -> 10, a strategist directive, and 1-3
+  account-lane flywheel queries (`buildAccountFlywheelItems`).
+- **Queue-wait telemetry (schema v27)**: `llm_stage_logs.queue_wait_ms` plus adaptive judge
+  concurrency `min(8, max(FINALIST_JUDGE_CONCURRENCY, freeAtriaSlots))`.
+
+### 9.21 ADR-0013 Post-Overhaul Engine Remediation — LANDED (`8d4c4b8`, 2026-10-10)
+
+- **Retrieval-extraction streaming seam**: `retrieveStage` fires `onQuerySettled` per query;
+  `discoveryEngine` fuses and extracts each settled wave early (`LEAD_STREAMING_EXTRACTION`,
+  default on; `false` restores the wholesale pass). The final pass excludes early items by
+  object identity so `rawCandidates` stays exact; wave failures are re-marked for retry.
+- **Coalesced streaming judge submissions**: ready leads buffer to
+  `LEAD_STREAMING_JUDGE_BATCH_TARGET` (3) or flush after `LEAD_STREAMING_JUDGE_FLUSH_MS` (120ms);
+  the pool runs two groups at once, bounded by the 8 Atria slots. The buffer always flushes
+  before drain.
+- **Delta lead hydration (client)**: `LeadContext.tsx` keeps an id-keyed hydration map plus a
+  server `updated_at` high-water mark; rehydrates fetch with `updatedSince=<mark>` and merge
+  only changed rows (KB instead of the full ~24MB payload set), with a row-count mismatch
+  falling back to a full refetch. Per-lead derived values are cached by
+  `updatedAt|revision`.
+- **UI**: jump-to-page numeric input in `LeadTable` pagination (`ab87401`, 2026-10-12).
+
+### 9.22 Uncommitted working-tree overlay: Agent Brain path — IN PROGRESS (2026-10-13..16)
+
+The working tree carries an alternative discovery route that bypasses the 9-stage engine:
+
+- `server/leadSearch/agentBrainRunner.ts` (untracked, 440 lines): standalone
+  `executeAgentBrainDiscovery` — direct `tavilySearch` retrieval over US metro hubs, regex
+  decision-maker/IC filters (`DISQUALIFIED_TITLE_REGEX`, `DECISION_MAKER_REGEX`,
+  `NON_AGENCY_ENTITY_REGEX`), then standard persistence
+  (`upsertLeadsWithIdentity`, `insertLeadActivity`, `upsertMiningSession`, `insertSearchLog`).
+- `scripts/agent-brain.ts` (untracked, 148 lines): CLI runner with a manual SQLite/FTS/identity
+  verification suite; wired as `npm run agent:mine` / `npm run agent:verify` (package.json diff).
+- `server/routes/api.ts` (modified): `POST /find-leads` dispatches to the Agent Brain when
+  `body.brain === "agent"`, `body.discoveryMode === "agent_brain"`, or `APEX_LLM_BRAIN=agent`.
+- **Known issue**: `test/encodingHygiene.test.ts` fails on these files (non-ASCII `✅` in
+  `scripts/agent-brain.ts`, U+2013 in `agentBrainRunner.ts:217`). The repo enforces strict ASCII;
+  replacing the glyphs with ASCII markers clears the only red test.
+
+### 9.23 Documentation drift — README schema version — RESOLVED (2026-10-16)
+
+`README.md` claimed **Schema v26** in current-state spots (badge, both mermaid diagram labels,
+the Persistence tech-stack bullet, the feature bullet at line 33, the `## Database & Schema`
+heading, and the `db.ts` file-table entry) while `server/db.ts` is at
+`LATEST_SCHEMA_VERSION = 27` (v27 = `llm_stage_logs.queue_wait_ms`).
+All seven current-state claims were re-synced to v27 during this index refresh. The remaining
+`(Schema v26)` attributions on `candidate_verdicts` / `company_profiles` / `company_attribution_verdicts`
+(lines 169, 455, 463) are introduction-version facts and stay as-is, matching
+`CONTEXT.md`.
+
+
 ## 10. Recommended next actions
 
-
-Updated 2026-10-08.
+Updated 2026-10-16.
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done — open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done — Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
-3. ~~**Provider-Affinity Dual Concurrency & Atria Reasoning Timeouts.**~~ Done (`129173a`) — Atria 10m reasoning cap, dual 1-slot affinity routing.
+3. ~~**Provider-Affinity Dual Concurrency & Atria Reasoning Timeouts.**~~ Superseded by ADR-0011 (§9.19) — Atria 10m reasoning cap retained; slot model is now Atria-primary 8 / Byesu-second 10 with spill-not-queue overflow.
 4. ~~**Merge to main and branch cleanup.**~~ Done — fast-forward merged to `main`, pushed to `origin/main`, secondary branch deleted.
-5. **Run a live production discovery session** to monitor real-time Atria vs. Byesu parallel dispatch in `search_logs.trace_events` under live network traffic.
+5. **Run a live production discovery session** to monitor the ADR-0011 spill cadence (`/api/llm-health` `activeSlots`/`slotLimit`), the two streaming seams' round critical-path telemetry, and plan-cache hit rate under live network traffic.
 6. ~~**Refresh the README test badge**~~ — Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
 7. **Watch the primary admission gate's precision/recall trade** — it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.
 8. **Make the `<= 1.0` source guard EOL-agnostic (§9.14)** — one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
-9. ~~**Re-pin this index when HEAD moves.**~~ Done — counts and architecture summary are pinned to `a237c91`; rerun measurements after the next HEAD change.
+9. **Decide the fate of the uncommitted Agent Brain path (§9.22)** — fix the non-ASCII bytes to clear `encodingHygiene` (the only red test), then either commit it as a documented alternative mode or fold its useful parts (metro-hub sweep, deterministic title filters) into the main engine; do not leave it in the working tree unmarked.
+10. ~~**Re-sync README schema claims to v27 (§9.23)**~~ — Done. Still open: `.env.example` concurrency defaults (4/4) vs the ADR-0011 runtime values in `.env` (8/10).
+11. ~~**Re-pin this index when HEAD moves.**~~ Done — counts and architecture summary are now pinned to `425f567` + the §9.22 overlay; rerun measurements after the next HEAD change.

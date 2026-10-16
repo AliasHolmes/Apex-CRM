@@ -9,11 +9,13 @@ import {
   type FailureClassification,
 } from "./keyRotator.js";
 import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
+import { boundedNumber } from "../leadSearch/sessionHelpers.js";
 import { normalizeLinkedInUrl } from "./linkedinEvidence.js";
 import { unwrapRedirectUrl } from "../../src/utils/leadDedupe.js";
 import { hasTavilyKey, tavilyExtract } from "./llm.js";
 import { isPrivateOrInternalHost } from "./privateHosts.js";
-export { isPrivateOrInternalHost };
+import { abortableSleep } from "./sleepUtils.js";
+export { isPrivateOrInternalHost, abortableSleep };
 
 type BrightDataTransport = "hosted" | "local";
 export type BrightDataReasonCode =
@@ -191,16 +193,6 @@ const attachFilteredMcpStderr = (stderr: any) => {
   });
 };
 
-const boundedNumber = (
-  value: string | undefined,
-  fallback: number,
-  min: number,
-  max: number,
-) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(parsed, min), max);
-};
 
 export const baseTimeoutSeconds = () =>
   boundedNumber(
@@ -458,32 +450,6 @@ export const isBrightDataProviderDisabledError = (error: unknown) =>
   classifyBrightDataError(error).providerDisabled;
 export const isBrightDataTransientTargetError = (error: unknown) =>
   classifyBrightDataError(error).reasonCode === "target_transient";
-
-export function abortableSleep(delayMs: number, signal?: AbortSignal | null): Promise<void> {
-  if (signal?.aborted) {
-    const error = new Error("Bright Data operation was aborted.");
-    error.name = "AbortError";
-    return Promise.reject(error);
-  }
-  return new Promise<void>((resolve, reject) => {
-    let onAbort: (() => void) | undefined;
-    const timer = setTimeout(() => {
-      if (signal && onAbort) {
-        signal.removeEventListener("abort", onAbort);
-      }
-      resolve();
-    }, delayMs);
-    if (signal) {
-      onAbort = () => {
-        clearTimeout(timer);
-        const error = new Error("Bright Data operation was aborted.");
-        error.name = "AbortError";
-        reject(error);
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  });
-}
 
 export type BrightDataSearchRetryOptions = {
   maxRetries?: number;
@@ -874,6 +840,11 @@ export function getBrightDataStatus() {
     clientHot,
     batchTool: { ...batchToolState },
   };
+}
+
+export function getTraceBrightDataStatus() {
+  const status = getBrightDataStatus();
+  return { ...status, transport: status.transport || undefined };
 }
 
 async function connectHostedClient(apiToken: string, generation: number) {

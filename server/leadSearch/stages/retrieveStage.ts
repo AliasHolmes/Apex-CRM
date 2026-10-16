@@ -9,7 +9,7 @@ import { toLinkedInSearchQuery, toDatasetFilter } from "../strategist.js";
 import {
   classifyBrightDataError,
   executeBrightDataSearchWithRetry,
-  getBrightDataStatus,
+  getTraceBrightDataStatus,
   isBrightDataPro,
   brightDataSearchDataset,
   type BrightDataSearchResult,
@@ -89,11 +89,6 @@ export async function executeRetrieveStage(
   const { freeTierBudget } = state;
   const { creditReservationEnabled } = config;
   const isTavilyConfigured = Boolean(ports?.tavilySearch) || Boolean(tavilyCapabilities?.configured) || hasTavilyKey();
-
-  const getTraceBrightDataStatus = () => {
-    const status = getBrightDataStatus();
-    return { ...status, transport: status.transport || undefined };
-  };
 
   const tavilyResultsByIndex = new Map<
     number,

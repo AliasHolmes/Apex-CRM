@@ -11,7 +11,7 @@ import {
   chunkBrightDataBatchItems,
   scrapeBatchAsMarkdown,
   classifyBrightDataError,
-  getBrightDataStatus,
+  getTraceBrightDataStatus,
   isAuthwalledUrl,
 } from "../../services/brightdata.js";
 import {
@@ -37,7 +37,7 @@ import {
   fitOutputTokenBudget,
 } from "../llmBudget.js";
 import { summarizeLLM } from "../telemetry.js";
-import { incrementRejection, type RejectionReason } from "../rejections.js";
+import { recordRejection, type RejectionReason } from "../rejections.js";
 import {
   unwrapRedirectUrl,
   canonicalLinkedInIdentity,
@@ -302,14 +302,8 @@ export async function executeExtractStage(
   const { creditReservationEnabled } = config;
   const evidenceByUrl = input.evidenceByUrl || new Map<string, EvidenceMeta>();
 
-  const getTraceBrightDataStatus = () => {
-    const status = getBrightDataStatus();
-    return { ...status, transport: status.transport || undefined };
-  };
-
   const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
-    incrementRejection(stats.rejectionReasons, reason);
-    if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
+    recordRejection(stats, reason, queryRun);
   };
 
   // 0. Stage 2.5: FAST DETERMINISTIC PRE-FILTER GATE (0ms - No LLM)

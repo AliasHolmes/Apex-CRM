@@ -1,3 +1,5 @@
+import { boundedNumber } from "./sessionHelpers.js";
+
 export type DiscoveryMode =
   | "person_first"
   | "account_first"
@@ -88,17 +90,6 @@ export type RetrievalTask = {
     maxResults: number;
     minimumScore: number;
   };
-};
-
-const boundedNumber = (
-  value: unknown,
-  fallback: number,
-  min: number,
-  max: number,
-) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(Math.floor(parsed), min), max);
 };
 
 const asArray = (value: unknown, max = 20) =>

@@ -1,4 +1,5 @@
 import type { ProspectContract, ProspectRequirement } from './prospectContract.js';
+import { escapeRegex } from './aliasMap.js';
 
 export type AblationTier = 1 | 2 | 3 | 4;
 
@@ -78,9 +79,6 @@ export function classifyAblationTier(requirement: ProspectRequirement): Ablation
   return ABLATION_TIERS.TIER_4_VOLATILE_CONTEXT;
 }
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 function cleanQueryQuotes(q: string): string {
   let cleaned = q.replace(/""|''/g, ' ').replace(/\s+/g, ' ').trim();

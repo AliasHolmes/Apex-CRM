@@ -1,5 +1,6 @@
 import { extractLinkedInUsername, normalizeLinkedInUrl } from '../services/linkedinEvidence.js';
 import { GENERIC_GEO_NAMES } from './aliasMap.js';
+import { ALL_OBSERVATION_BLOCKED_DOMAINS, isDomainOrSubdomainBlocked } from './domainBlocklists.js';
 
 export type ScoutObservation = {
   title: string;
@@ -243,20 +244,7 @@ const companyFromHostedJobUrl = (url: URL) => {
 
 const companyFromDomain = (url: URL) => {
   const host = url.hostname.toLowerCase().replace(/^www\./, '');
-  const blockedDomains = [
-    // Social & Professional Networks
-    'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'threads.net',
-    // Job boards & ATS & Search Engines
-    'indeed.com', 'glassdoor.com', 'seek.com.au', 'seek.co.nz', 'bing.com', 'google.com', 'yahoo.com', 'duckduckgo.com',
-    'angellist.com', 'wellfound.com', 'lever.co', 'greenhouse.io', 'ashbyhq.com', 'workable.com', 'ziprecruiter.com', 'monster.com', 'simplyhired.com',
-    // Video, Media, News, Newsletters & Community Platforms
-    'youtube.com', 'youtu.be', 'vimeo.com', 'medium.com', 'substack.com', 'reddit.com', 'quora.com', 'wikipedia.org',
-    'techcrunch.com', 'forbes.com', 'bloomberg.com', 'businessinsider.com', 'wsj.com', 'nytimes.com', 'reuters.com',
-    'itbrew.com', 'morningbrew.com', 'seekout.com',
-    // Developer, Review & Directory Sites
-    'github.com', 'gitlab.com', 'stackoverflow.com', 'g2.com', 'capterra.com', 'trustpilot.com', 'clutch.co', 'crunchbase.com'
-  ];
-  if (blockedDomains.some(domain => host === domain || host.endsWith(`.${domain}`))) return '';
+  if (isDomainOrSubdomainBlocked(host, ALL_OBSERVATION_BLOCKED_DOMAINS)) return '';
 
   const labels = host.split('.').filter(Boolean);
   if (labels.length < 2) return '';

@@ -5,35 +5,9 @@ import {
 import { normalizeCompanyName, distinctiveTokens } from "./signalStore.js";
 import { isPrivateOrInternalHost } from "../services/privateHosts.js";
 import type { SessionContext } from "./pipelineTypes.js";
+import { CORE_BLOCKED_DOMAINS } from "./domainBlocklists.js";
 
-const BLOCKED_DOMAINS = new Set([
-  "linkedin.com",
-  "www.linkedin.com",
-  "google.com",
-  "www.google.com",
-  "facebook.com",
-  "www.facebook.com",
-  "instagram.com",
-  "www.instagram.com",
-  "twitter.com",
-  "www.twitter.com",
-  "x.com",
-  "www.x.com",
-  "crunchbase.com",
-  "www.crunchbase.com",
-  "glassdoor.com",
-  "www.glassdoor.com",
-  "youtube.com",
-  "www.youtube.com",
-  "github.com",
-  "www.github.com",
-  "tiktok.com",
-  "www.tiktok.com",
-  "reddit.com",
-  "www.reddit.com",
-  "t.co",
-  "bit.ly",
-]);
+const BLOCKED_DOMAINS = CORE_BLOCKED_DOMAINS;
 
 export const EXCLUDED_LOOKUP_HOSTS = new Set([
   ...BLOCKED_DOMAINS,

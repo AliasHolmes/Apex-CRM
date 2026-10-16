@@ -7,6 +7,7 @@ import {
 } from "./keyRotator.js";
 import { sendDirectLangfuseTrace } from "./langfuse.js";
 import { getLlmCacheEntry, upsertLlmCacheEntry } from "../db.js";
+import { abortableSleep } from "./sleepUtils.js";
 
 export const Type = {
   STRING: "STRING",
@@ -370,29 +371,7 @@ export function getPrimaryLLMProvider(): string {
  * same overloaded endpoint is not repeatedly charged before failover.
  */
 export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Promise<void> {
-  if (signal?.aborted) {
-    const abortErr = new Error("LLM request was aborted by caller.");
-    abortErr.name = "AbortError";
-    return Promise.reject(abortErr);
-  }
-  return new Promise<void>((resolve, reject) => {
-    let onAbort: (() => void) | undefined;
-    const timer = setTimeout(() => {
-      if (signal && onAbort) {
-        signal.removeEventListener("abort", onAbort);
-      }
-      resolve();
-    }, waitMs);
-    if (signal) {
-      onAbort = () => {
-        clearTimeout(timer);
-        const abortErr = new Error("LLM request was aborted by caller.");
-        abortErr.name = "AbortError";
-        reject(abortErr);
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  });
+  return abortableSleep(waitMs, signal, "LLM request was aborted by caller.");
 }
 
 export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;

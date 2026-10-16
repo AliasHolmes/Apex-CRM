@@ -7,7 +7,7 @@ import {
 import {
   classifyBrightDataError,
   isBrightDataRetryableError,
-  getBrightDataStatus,
+  getTraceBrightDataStatus,
   BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
   isAuthwalledUrl,
   isBrightDataFreeTier,
@@ -37,7 +37,7 @@ import { evaluateDecisionMakerGate, classifyTitle } from "../titleTriage.js";
 import type { FinalistCandidate } from "../finalistJudge.js";
 import { createLeadEvidence } from "../evidence.js";
 import { computeScoreBreakdown } from "../scoring.js";
-import { incrementRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
+import { incrementRejection, recordRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
 import { runProviderQueue, type ProviderQueueTask } from "../providerQueue.js";
 import { buildProfileDedupeKeys } from "../../../src/utils/leadDedupe.js";
 import {
@@ -137,14 +137,8 @@ export async function executeEnrichStage(
   const urlRetryQueue = state.urlRetryQueue || new Set<string>();
   const { promptQuery, minScore } = config;
 
-  const getTraceBrightDataStatus = () => {
-    const status = getBrightDataStatus();
-    return { ...status, transport: status.transport || undefined };
-  };
-
   const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
-    incrementRejection(stats.rejectionReasons, reason);
-    if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
+    recordRejection(stats, reason, queryRun);
   };
 
   const effectiveScore = sharedEffectiveScore;

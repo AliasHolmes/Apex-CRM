@@ -3,7 +3,7 @@ import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
 import type { IntentSignalSpec } from './intentSignals.js';
 import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
-import { aliasIncludes } from './aliasMap.js';
+import { aliasIncludes, escapeRegex } from './aliasMap.js';
 import { DEFAULT_DECISION_MAKER_ROLES, singularizeRole } from './defaultRoles.js';
 import { COUNTRY_CANONICAL_MAP } from './geo.js';
 export { COUNTRY_CANONICAL_MAP };
@@ -1704,8 +1704,6 @@ const queryHasPositiveExclusion = (query: string, exclusionTerms: string[]): boo
     return positiveText.includes(` ${cleanTerm} `) || positiveWords.some(w => w === cleanTerm);
   });
 };
-
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function deconcatenateContractQuery(query: string, contract: ProspectContract): string {
   let cleaned = query;

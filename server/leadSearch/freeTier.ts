@@ -1,3 +1,5 @@
+import { boundedNumber } from './sessionHelpers.js';
+
 export type ScoutProvider = 'tavily' | 'brightdata';
 
 export type FreeTierCapabilities = {
@@ -7,12 +9,6 @@ export type FreeTierCapabilities = {
   unavailable: string[];
   /** Local credit reservation is disabled; multi-key rotation handles exhaustion. */
   creditReservation: 'disabled' | 'enabled';
-};
-
-const boundedNumber = (value: string | undefined, fallback: number, min: number, max: number) => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(Math.floor(parsed), min), max);
 };
 
 /**

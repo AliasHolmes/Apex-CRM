@@ -19,26 +19,13 @@ import { formatLatencySeconds } from './terminalLog.js';
 import type { ProspectContract } from './prospectContract.js';
 import type { BrightDataSearchResult, BrightDataSearchOptions } from '../services/brightdata.js';
 
-export type PostIntentCategory =
-  | 'hiring'
-  | 'evaluating_tools'
-  | 'pain_signal'
-  | 'growth_signal'
-  | 'general'
-  | 'none';
+import type {
+  PostIntentCategory,
+  PostIntentQuality,
+  PostIntentEvidence,
+} from '../../src/types.js';
 
-export type PostIntentQuality = 'strong' | 'moderate' | 'weak' | 'none';
-
-export type PostIntentEvidence = {
-  queriedAt: string;
-  postSnippets: string[];
-  intentKeywords: string[];
-  intentCategory: PostIntentCategory;
-  confidenceScore: number;
-  quality: PostIntentQuality;
-  llmReason: string;
-  sourceUrl?: string;
-};
+export type { PostIntentCategory, PostIntentQuality, PostIntentEvidence };
 
 export type LinkedInPostIntentStats = {
   attempted: number;

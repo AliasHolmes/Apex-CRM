@@ -11,7 +11,8 @@ import {
   hasStrictStructuredMatch,
   selectEvidenceForFinalist,
 } from "./evidenceSelection.js";
-import { rankLeadForFinalSelection } from "./scoring.js";
+import { rankLeadForFinalSelection, normalizeToTenScale } from "./scoring.js";
+import { clampEnvInt } from "./sessionHelpers.js";
 import { aliasIncludes, normalizeAliasTerm } from "./aliasMap.js";
 import {
   classifyTitle,
@@ -89,14 +90,8 @@ const clean = (value: unknown, max = 900) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
-const normalizeScoreTo10 = (value: unknown, defaultVal = 5): number => {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return defaultVal;
-  // If the score was returned on a 0.0 - 1.0 probability/unit scale, scale it to 0 - 10
-  if (num < 1.0 && num > 0)
-    return Math.min(10, Math.max(0, Number((num * 10).toFixed(2))));
-  return Math.min(10, Math.max(0, Number(num.toFixed(2))));
-};
+const normalizeScoreTo10 = (value: unknown, defaultVal = 5): number =>
+  Number(normalizeToTenScale(value, defaultVal).toFixed(2));
 export const finalistJudgeSchema = {
   type: Type.OBJECT,
   properties: {
@@ -190,17 +185,6 @@ CORE RULES:
    - When soft/intent requirements are present in the contract, a candidate who satisfies identity but has ZERO evidence for them MUST be rated moderate (semanticFit 4-6), NOT high (8-10). Reserve 8-10 for candidates who demonstrate both identity AND intent alignment.
 9. PROPORTIONAL REASONING & STRUCTURED OUTPUT: Keep internal reasoning focused on verifying each candidate's evidence against the contract requirements, then emit the JSON judgment block.`;
 
-const clampEnvInt = (
-  name: string,
-  fallback: number,
-  min: number,
-  max: number,
-) => {
-  const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw > 0
-    ? Math.min(Math.max(Math.floor(raw), min), max)
-    : fallback;
-};
 
 export type BuildFinalistJudgePromptInput = {
   contract: ProspectContract;

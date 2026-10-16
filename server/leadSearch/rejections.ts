@@ -21,6 +21,17 @@ export const incrementRejection = (counts: RejectionCounts, reason: RejectionRea
   counts[reason] = (counts[reason] || 0) + 1;
 };
 
+export const recordRejection = (
+  stats: { rejectionReasons: RejectionCounts },
+  reason: RejectionReason,
+  queryRun?: { rejectionReasons?: RejectionCounts },
+) => {
+  incrementRejection(stats.rejectionReasons, reason);
+  if (queryRun?.rejectionReasons) {
+    incrementRejection(queryRun.rejectionReasons, reason);
+  }
+};
+
 export const mapBrightDataRejection = (reason?: string): RejectionReason => {
   if (reason === 'provider_rate_limit_notice' || reason === 'provider_rate_limit') return 'brightdata_rate_limit';
   if (reason === 'blocked_or_login_wall') return 'brightdata_login_wall';

@@ -2257,6 +2257,22 @@ const readLeadFromRow = (
 
 let leadsInitializedCached = false;
 
+export function hasGroundedQualification(lead: Record<string, any>): boolean {
+  if (!lead || typeof lead !== "object") return false;
+  const q = lead.qualification;
+  if (!q || typeof q !== "object") return false;
+  if (q.sourceVerdict === "candidate_verdicts") return true;
+  const v = String(q.verdict || "").toLowerCase();
+  const isQualified = v === "qualified" || v === "qualified_partial";
+  if (!isQualified) return false;
+  const reqs = Array.isArray(q.requirements) ? q.requirements : [];
+  return reqs.some(
+    (r: any) =>
+      typeof (r?.quote || r?.evidenceQuote) === "string" &&
+      (r.quote || r.evidenceQuote).trim().length > 0,
+  );
+}
+
 export function upsertLeadInExistingTransaction(
   db: DatabaseSync,
   lead: Record<string, any>,
@@ -2368,6 +2384,49 @@ export function upsertLeadInExistingTransaction(
       storedLead.notes = existingLead.notes;
     }
   }
+
+  // ADR-0015: Grounded engine-write invariant.
+  // Engine writes without verified qualification quotes or cached verdict demote to UNREVIEWED.
+  if (options.isEngineWrite && !hasGroundedQualification(lead)) {
+    const originalStatus = lead.reviewStatus || "UNREVIEWED";
+    const wasHeuristicPositive =
+      originalStatus === "KEEP" ||
+      originalStatus === "CONNECT" ||
+      lead.nextAction === "CONNECT" ||
+      lead.tier === "TIER 1: PRIORITY";
+
+    storedLead.reviewStatus = "UNREVIEWED";
+    storedLead.nextAction = "NONE";
+    if (storedLead.tier === "TIER 1: PRIORITY") {
+      storedLead.tier = "TIER 3: WATCH";
+    }
+
+    const ungroundedNote = "[ungrounded-write]";
+    if (!storedLead.notes) {
+      storedLead.notes = ungroundedNote;
+    } else if (!storedLead.notes.includes(ungroundedNote)) {
+      storedLead.notes = `${storedLead.notes} ${ungroundedNote}`;
+    }
+
+    if (wasHeuristicPositive) {
+      try {
+        getCachedStatement(
+          db,
+          `INSERT OR IGNORE INTO lead_activities (id, lead_id, type, from_value, to_value, actor, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          crypto.randomUUID(),
+          storedLead.id,
+          "ungrounded_write_demotion",
+          String(originalStatus),
+          "UNREVIEWED",
+          "engine",
+          now,
+        );
+      } catch {}
+    }
+  }
+
   const cols = extractPromotedLeadColumns(storedLead);
 
   getCachedStatement(
@@ -5274,7 +5333,8 @@ export type LeadActivityType =
   | "note"
   | "enrichment"
   | "import"
-  | "merge";
+  | "merge"
+  | "ungrounded_write_demotion";
 
 export type LeadActivityRecord = {
   id: string;

@@ -1,0 +1,226 @@
+{
+  "sessionId": "replay-golden-target-met",
+  "round": 1,
+  "stage": "judge",
+  "promptQuery": "Founders and CEOs of AI software companies in San Francisco",
+  "targetLimit": 3,
+  "contract": {
+    "version": 1,
+    "policyVersion": "2026-10-golden",
+    "brief": "Founders and CEOs of AI software companies in San Francisco",
+    "authorityRequired": true,
+    "exclusions": [],
+    "initialQueries": ["AI software founder CEO San Francisco"],
+    "requirements": [
+      {
+        "id": "req-role",
+        "description": "Founder or CEO",
+        "sourcePhrase": "CEO",
+        "acceptableTerms": ["ceo", "chief executive officer", "founder", "co-founder"],
+        "scope": "person_role",
+        "importance": "hard",
+        "evidenceModality": "structured_profile",
+        "queryable": true
+      },
+      {
+        "id": "req-domain",
+        "description": "Artificial Intelligence software company",
+        "sourcePhrase": "AI",
+        "acceptableTerms": ["ai", "artificial intelligence", "machine learning"],
+        "scope": "company_type",
+        "importance": "hard",
+        "evidenceModality": "structured_profile",
+        "queryable": true
+      }
+    ]
+  },
+  "queryRuns": [
+    {
+      "round": 1,
+      "query": "AI software founder CEO San Francisco",
+      "family": "person",
+      "lane": "person",
+      "providerPreference": "tavily",
+      "rawCandidates": 15,
+      "uniqueCandidates": 12,
+      "extractedLeads": 8,
+      "acceptedLeads": 5,
+      "qualifiedFinalists": 3,
+      "rescuedFinalists": 0,
+      "returnedFinalists": 3,
+      "searchLatencyMs": 110,
+      "providerUnits": 1,
+      "rejectionReasons": {
+        "not_decision_maker": 2,
+        "duplicate_existing_lead": 1
+      }
+    }
+  ],
+  "acceptedLeads": [
+    {
+      "id": "lead-ai-1",
+      "fullName": "Elena Rostova",
+      "currentTitle": "Founder & CEO",
+      "currentCompany": "NextGen AI Labs",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/elena-rostova-ai"
+      },
+      "fitScore": 10,
+      "compositeScore": 96,
+      "reviewStatus": "KEEP",
+      "nextAction": "CONNECT",
+      "tier": "TIER 1: PRIORITY",
+      "qualification": {
+        "verdict": "qualified",
+        "reason": "Founder & CEO at NextGen AI Labs, an enterprise generative AI platform.",
+        "finalScore": 96,
+        "requirements": [
+          {
+            "id": "req-role",
+            "status": "passed",
+            "quote": "Founder & CEO at NextGen AI Labs"
+          },
+          {
+            "id": "req-domain",
+            "status": "passed",
+            "quote": "Enterprise generative AI workflows platform"
+          }
+        ]
+      }
+    },
+    {
+      "id": "lead-ai-2",
+      "fullName": "Marcus Thorne",
+      "currentTitle": "Co-Founder",
+      "currentCompany": "Cogflow ML",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/marcus-thorne-ml"
+      },
+      "fitScore": 9,
+      "compositeScore": 92,
+      "reviewStatus": "KEEP",
+      "nextAction": "CONNECT",
+      "tier": "TIER 1: PRIORITY",
+      "qualification": {
+        "verdict": "qualified",
+        "reason": "Co-Founder at Cogflow ML, developing machine learning infra.",
+        "finalScore": 92,
+        "requirements": [
+          {
+            "id": "req-role",
+            "status": "passed",
+            "quote": "Co-Founder at Cogflow ML"
+          },
+          {
+            "id": "req-domain",
+            "status": "passed",
+            "quote": "Machine learning orchestration infrastructure"
+          }
+        ]
+      }
+    },
+    {
+      "id": "lead-ai-3",
+      "fullName": "Siddharth Mehta",
+      "currentTitle": "Chief Executive Officer",
+      "currentCompany": "NeuralSync Inc",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/siddharth-mehta-ai"
+      },
+      "fitScore": 9,
+      "compositeScore": 90,
+      "reviewStatus": "KEEP",
+      "nextAction": "CONNECT",
+      "tier": "TIER 1: PRIORITY",
+      "qualification": {
+        "verdict": "qualified",
+        "reason": "CEO at NeuralSync Inc, specialized AI inference models.",
+        "finalScore": 90,
+        "requirements": [
+          {
+            "id": "req-role",
+            "status": "passed",
+            "quote": "Chief Executive Officer at NeuralSync Inc"
+          },
+          {
+            "id": "req-domain",
+            "status": "passed",
+            "quote": "AI inference accelerator software"
+          }
+        ]
+      }
+    },
+    {
+      "id": "lead-ai-4",
+      "fullName": "Alex Mercer",
+      "currentTitle": "Junior Software Engineer",
+      "currentCompany": "BigCorp Logistics",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/alex-mercer-dev"
+      },
+      "fitScore": 2,
+      "compositeScore": 30,
+      "reviewStatus": "DISCARD",
+      "nextAction": "NONE",
+      "tier": "TIER 3: WATCH"
+    },
+    {
+      "id": "lead-ai-5",
+      "fullName": "Sarah Jenkins",
+      "currentTitle": "Account Executive",
+      "currentCompany": "SalesCo Media",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/sarah-jenkins-sales"
+      },
+      "fitScore": 3,
+      "compositeScore": 35,
+      "reviewStatus": "DISCARD",
+      "nextAction": "NONE",
+      "tier": "TIER 3: WATCH"
+    }
+  ],
+  "evidenceByUrl": {
+    "https://www.linkedin.com/in/elena-rostova-ai": {
+      "url": "https://www.linkedin.com/in/elena-rostova-ai",
+      "title": "Elena Rostova - Founder & CEO - NextGen AI Labs | LinkedIn",
+      "snippet": "Founder & CEO at NextGen AI Labs. Building enterprise generative AI workflows.",
+      "markdown": "# Elena Rostova\nFounder & CEO at NextGen AI Labs, San Francisco CA.\nNextGen AI Labs provides generative AI solutions for automated workflow reasoning."
+    },
+    "https://www.linkedin.com/in/marcus-thorne-ml": {
+      "url": "https://www.linkedin.com/in/marcus-thorne-ml",
+      "title": "Marcus Thorne - Co-Founder - Cogflow ML | LinkedIn",
+      "snippet": "Co-Founder at Cogflow ML. Scalable machine learning infrastructure.",
+      "markdown": "# Marcus Thorne\nCo-Founder at Cogflow ML in San Francisco.\nBuilding distributed training and inference pipelines for modern machine learning teams."
+    },
+    "https://www.linkedin.com/in/siddharth-mehta-ai": {
+      "url": "https://www.linkedin.com/in/siddharth-mehta-ai",
+      "title": "Siddharth Mehta - Chief Executive Officer - NeuralSync Inc | LinkedIn",
+      "snippet": "Chief Executive Officer at NeuralSync Inc. Low-latency AI models.",
+      "markdown": "# Siddharth Mehta\nCEO at NeuralSync Inc, San Francisco.\nNext-generation neural architecture search and edge AI model deployment."
+    },
+    "https://www.linkedin.com/in/alex-mercer-dev": {
+      "url": "https://www.linkedin.com/in/alex-mercer-dev",
+      "title": "Alex Mercer - Junior Software Engineer - BigCorp Logistics | LinkedIn",
+      "snippet": "Junior Software Engineer at BigCorp Logistics.",
+      "markdown": "# Alex Mercer\nJunior Engineer at BigCorp Logistics."
+    },
+    "https://www.linkedin.com/in/sarah-jenkins-sales": {
+      "url": "https://www.linkedin.com/in/sarah-jenkins-sales",
+      "title": "Sarah Jenkins - Account Executive - SalesCo Media | LinkedIn",
+      "snippet": "Account Executive at SalesCo Media.",
+      "markdown": "# Sarah Jenkins\nSales Account Executive at SalesCo Media."
+    }
+  },
+  "expectedFunnel": {
+    "rawCandidates": 15,
+    "uniqueCandidates": 12,
+    "extractedLeads": 8,
+    "acceptedLeads": 5,
+    "qualifiedLeads": 3,
+    "selectedLeads": 3
+  },
+  "expectedCostEnvelope": {
+    "maxTokens": 10000,
+    "maxEstimatedCostUsd": 0.05
+  }
+}

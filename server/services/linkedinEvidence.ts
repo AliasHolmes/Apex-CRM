@@ -1,4 +1,44 @@
-import { getLinkedInHandle, normalizeWhitespace } from '../../src/utils/leadDedupe.js';
+import {
+  getLinkedInHandle,
+  isValidLinkedInHandle,
+  normalizeWhitespace,
+  canonicalLinkedInIdentity as clientCanonicalLinkedInIdentity,
+} from '../../src/utils/leadDedupe.js';
+
+export function canonicalLinkedInIdentity(input?: string): string {
+  if (!input || typeof input !== 'string') return '';
+  let str = input.trim();
+  if (!str) return '';
+
+  if (str.startsWith('linkedin:')) {
+    str = str.slice('linkedin:'.length).trim();
+    if (!str) return '';
+  }
+
+  if (/linkedin\.com/i.test(str) || str.startsWith('http') || str.includes('/')) {
+    const localeMatch = str.match(/(?:https?:\/\/)?(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[a-z]{2}(?:-[a-z]{2,4})?\/([^/?#]+)/i);
+    if (localeMatch?.[1]) {
+      try {
+        const decoded = decodeURIComponent(localeMatch[1]).replace(/[.,;:)\]]+$/, '').trim().toLowerCase();
+        if (isValidLinkedInHandle(decoded)) return `linkedin:${decoded}`;
+      } catch {}
+    }
+
+    const fromClient = clientCanonicalLinkedInIdentity(str);
+    if (fromClient) return fromClient;
+
+    const handle = getLinkedInHandle(str);
+    if (handle && isValidLinkedInHandle(handle)) return `linkedin:${handle.toLowerCase()}`;
+  }
+
+  const slug = str.replace(/[.,;:)\]]+$/, '').replace(/^[./]+|[./]+$/g, '').trim().toLowerCase();
+  if (isValidLinkedInHandle(slug)) {
+    return `linkedin:${slug}`;
+  }
+
+  return '';
+}
+
 
 export type ScrapeQuality = 'good' | 'partial' | 'bad';
 

@@ -408,7 +408,7 @@ export interface MiningSession {
   updatedAt: string;
 }
 
-export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge';
+export type LeadActivityType = 'stage_change' | 'note' | 'enrichment' | 'import' | 'merge' | 'review_status_change' | 'ungrounded_write_demotion';
 
 export interface LeadActivityRecord {
   id: string;

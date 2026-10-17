@@ -1,7 +1,7 @@
 /**
  * Direct Langfuse ingestion client for Apex CRM.
  * Traces LLM calls in Langfuse directly across all configured providers
- * (Atria, Byesu, OpenRouter, Groq).
+ * (Byesu, OpenRouter, Groq).
  */
 
 export interface LangfuseLogPayload {

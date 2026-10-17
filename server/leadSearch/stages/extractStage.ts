@@ -21,7 +21,6 @@ import {
   bulkLeadsArraySchema,
   EXTRACTION_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
-  isAtriaPrimary,
   CLOUDFLARE_MAX_TIMEOUT_MS,
   type LLMProviderAttempt,
   type LLMUsage,
@@ -30,6 +29,7 @@ import { inferTavilyEvidenceQuality } from "../evidence.js";
 import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
+  canonicalLinkedInIdentity,
 } from "../../services/linkedinEvidence.js";
 import {
   chunkEvidenceBlocksByTokenBudget,
@@ -40,7 +40,6 @@ import { summarizeLLM } from "../telemetry.js";
 import { recordRejection, type RejectionReason } from "../rejections.js";
 import {
   unwrapRedirectUrl,
-  canonicalLinkedInIdentity,
   getLinkedInHandle,
   isValidLinkedInHandle,
   checkHandleNameMismatch,
@@ -55,6 +54,8 @@ import { formatLatencySeconds } from "../terminalLog.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { EvidenceQuality, LeadSourceProvider } from "../scoring.js";
 import type { QueryRunStats } from "../strategist.js";
+
+export const EXTRACT_PROMPT_VERSION = "v1.0.0";
 
 export type EvidenceMeta = {
   evidenceBlock: string;
@@ -328,7 +329,7 @@ export async function executeExtractStage(
       canonicalLinkedInIdentity(effectiveUrl) ||
       canonicalLinkedInIdentity(rawUrl);
     const handle = getLinkedInHandle(effectiveUrl);
-    const handleKey = handle ? `linkedin:${handle}` : "";
+    const handleKey = identityKey || canonicalLinkedInIdentity(handle);
 
     const isDuplicate =
       (identityKey && existingCrmKeys.has(identityKey)) ||
@@ -388,7 +389,7 @@ export async function executeExtractStage(
         const rescuedUrl = snippetLinkedIn[0];
         const rescuedIdentity = canonicalLinkedInIdentity(rescuedUrl);
         const rescuedHandle = getLinkedInHandle(rescuedUrl);
-        const rescuedHandleKey = rescuedHandle ? `linkedin:${rescuedHandle}` : "";
+        const rescuedHandleKey = rescuedIdentity || canonicalLinkedInIdentity(rescuedHandle);
         const rescuedNorm = normalizeDedupeValue(rescuedUrl);
 
         const isRescuedDuplicate = Boolean(
@@ -525,9 +526,10 @@ export async function executeExtractStage(
     if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);
     if (canonicalUrl && canonicalUrl !== primaryKey)
       evidenceByUrl.set(canonicalUrl, evidenceMeta);
-    if (username) {
-      evidenceByUrl.set(`linkedin:${username}`, evidenceMeta);
-      evidenceByUrl.set(`linkedin.com/in/${username}`, evidenceMeta);
+    const linkedinKey = canonicalLinkedInIdentity(username || canonicalUrl);
+    if (linkedinKey) {
+      evidenceByUrl.set(linkedinKey, evidenceMeta);
+      evidenceByUrl.set(`linkedin.com/in/${linkedinKey.slice("linkedin:".length)}`, evidenceMeta);
     }
     if (queryRun) queryRun.evidenceBlocks++;
 
@@ -604,9 +606,10 @@ export async function executeExtractStage(
       if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);
       if (canonicalUrl && canonicalUrl !== primaryKey)
         evidenceByUrl.set(canonicalUrl, evidenceMeta);
-      if (username) {
-        evidenceByUrl.set(`linkedin:${username}`, evidenceMeta);
-        evidenceByUrl.set(`linkedin.com/in/${username}`, evidenceMeta);
+      const linkedinKey = canonicalLinkedInIdentity(username || canonicalUrl);
+      if (linkedinKey) {
+        evidenceByUrl.set(linkedinKey, evidenceMeta);
+        evidenceByUrl.set(`linkedin.com/in/${linkedinKey.slice("linkedin:".length)}`, evidenceMeta);
       }
       if (queryRun) queryRun.evidenceBlocks++;
 
@@ -963,9 +966,10 @@ export async function executeExtractStage(
     const primaryKey = normalizedUrl || normalizeDedupeValue(url);
     if (primaryKey) evidenceByUrl.set(primaryKey, evidenceMeta);
     if (url && url !== primaryKey) evidenceByUrl.set(url, evidenceMeta);
-    if (username) {
-      evidenceByUrl.set(`linkedin:${username}`, evidenceMeta);
-      evidenceByUrl.set(`linkedin.com/in/${username}`, evidenceMeta);
+    const linkedinKey = canonicalLinkedInIdentity(username || url);
+    if (linkedinKey) {
+      evidenceByUrl.set(linkedinKey, evidenceMeta);
+      evidenceByUrl.set(`linkedin.com/in/${linkedinKey.slice("linkedin:".length)}`, evidenceMeta);
     }
     if (queryRun) queryRun.evidenceBlocks++;
     evidenceBlocks.push(
@@ -999,15 +1003,14 @@ export async function executeExtractStage(
     for (const item of trimmedItems) {
       const url = item.url || "";
       const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
-      const username = item._linkedinUsername || extractLinkedInUsername(url);
+      const linkedinKey = canonicalLinkedInIdentity(url || normalizedUrl);
       if (normalizedUrl) {
         seenCandidateKeys.delete(normalizedUrl);
         seenCandidateKeys.delete(`url:${normalizedUrl}`);
-        seenCandidateKeys.delete(`linkedin:${normalizedUrl}`);
       }
-      if (username) {
-        seenCandidateKeys.delete(username);
-        seenCandidateKeys.delete(`linkedin:${username}`);
+      if (linkedinKey) {
+        seenCandidateKeys.delete(linkedinKey);
+        seenCandidateKeys.delete(linkedinKey.slice("linkedin:".length));
       }
       if (url) seenCandidateKeys.delete(url);
     }
@@ -1015,28 +1018,21 @@ export async function executeExtractStage(
   }
 
   // 4. Token budget calculation and chunking
-  const atriaDynamicMode = isAtriaPrimary();
   const rawChunkChars = Math.max(
     Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000),
     1800,
   );
-  const extractionChunkChars = atriaDynamicMode
-    ? rawChunkChars
-    : Math.min(rawChunkChars, 32000);
+  const extractionChunkChars = Math.min(rawChunkChars, 32000);
   const rawMaxTokens = Math.max(
     Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3800),
     800,
   );
-  const configuredExtractionMaxTokens = atriaDynamicMode
-    ? Math.max(rawMaxTokens, Math.ceil(extractionChunkChars / 2))
-    : Math.min(rawMaxTokens, 6000);
+  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 6000);
   const rawProviderBudget = Math.max(
     Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 24000),
     4000,
   );
-  const providerTokenBudget = atriaDynamicMode
-    ? Math.max(rawProviderBudget, configuredExtractionMaxTokens * 3 + Math.ceil(extractionChunkChars / 2))
-    : Math.min(rawProviderBudget, 120_000);
+  const providerTokenBudget = Math.min(rawProviderBudget, 120_000);
   const tokenSafetyMargin = Math.min(
     Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
     2000,
@@ -1135,8 +1131,8 @@ Evidence:
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
               reasoningEffort: "low",
-              // No routingTier here: extraction is engine work and must stay on Atria
-              // (ADR-0011). A "fast" tier without a provider order is inert anyway.
+              // No routingTier here: extraction is engine work and stays on the primary provider (Byesu).
+              // A "fast" tier without a provider order is inert anyway.
               timeoutMs: extractionTimeoutMs,
               metadata: {
                 stage: "extraction",
@@ -1181,10 +1177,12 @@ Evidence:
       const extractedLeads = Array.isArray(extracted) ? extracted : [];
       for (const lead of extractedLeads) {
         const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || "";
-        const username = extractLinkedInUsername(url);
+        const linkedinKey = canonicalLinkedInIdentity(url);
         const normalized = normalizeLinkedInUrl(url);
-        if (username) seenCandidateKeys.add(`linkedin:${username}`);
-        if (username) seenCandidateKeys.add(username);
+        if (linkedinKey) {
+          seenCandidateKeys.add(linkedinKey);
+          seenCandidateKeys.add(linkedinKey.slice("linkedin:".length));
+        }
         if (normalized) seenCandidateKeys.add(normalized);
       }
       const successfulAttempt = extractionProviderAttempts.find(
@@ -1249,6 +1247,7 @@ Evidence:
         },
         latencyMs: latency,
         counts: { extractedProfiles: extractedLeads.length },
+        promptVersion: EXTRACT_PROMPT_VERSION,
         llm: summarizeLLM(
           "extraction",
           prompt,
@@ -1257,8 +1256,10 @@ Evidence:
           0,
           extractionProviderAttempts,
           extractionUsage,
+          EXTRACT_PROMPT_VERSION,
         ),
         metadata: {
+          promptVersion: EXTRACT_PROMPT_VERSION,
           estimatedStructuredInputTokens,
           outputTokenBudget,
           providerTokenBudget,
@@ -1287,6 +1288,7 @@ Evidence:
         },
         latencyMs: Date.now() - extractionStarted,
         error: { message: e.message || String(e) },
+        promptVersion: EXTRACT_PROMPT_VERSION,
         llm: summarizeLLM(
           "extraction",
           prompt,
@@ -1295,8 +1297,10 @@ Evidence:
           0,
           extractionProviderAttempts,
           extractionUsage,
+          EXTRACT_PROMPT_VERSION,
         ),
         metadata: {
+          promptVersion: EXTRACT_PROMPT_VERSION,
           estimatedStructuredInputTokens,
           outputTokenBudget,
           providerTokenBudget,
@@ -1316,7 +1320,7 @@ Evidence:
     }
   });
 
-  // Ceiling of 8 matches the Atria slot count (ADR-0011): provider slots bound real
+  // Ceiling of 8 matches the primary provider slot count: provider slots bound real
   // concurrency, so a lower code ceiling would idle slots during extraction waves.
   // Defaults to 4 for parallel micro-chunk execution.
   const extractionConcurrency = Math.max(

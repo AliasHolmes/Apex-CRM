@@ -10,7 +10,7 @@ import path from 'node:path';
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), 'utf8');
 
-test('extraction concurrency can fill the full Atria slot count', () => {
+test('extraction concurrency can fill the full primary slot count (8)', () => {
   const engine = read('server/leadSearch/discoveryEngine.ts');
   assert.match(
     engine,
@@ -29,7 +29,7 @@ test('extraction concurrency can fill the full Atria slot count', () => {
   );
   assert.ok(
     !/routingTier: "fast"/.test(extract),
-    'the dead fast-tier param must not be passed by extraction (routing stays on Atria per ADR-0011)',
+    'the dead fast-tier param must not be passed by extraction (routing stays on primary)',
   );
 });
 
@@ -68,8 +68,8 @@ test('retrieval streams settled queries into early extraction waves', () => {
   assert.match(retrieve, /onQuerySettled\?: \(batch: \{/);
   assert.match(retrieve, /await onQuerySettled\?\.\(\{/, 'the hook must fire per settled query');
   const engine = read('server/leadSearch/discoveryEngine.ts');
-  assert.match(engine, /const streamingExtractionEnabled =[\s\S]{0,80}LEAD_STREAMING_EXTRACTION !== "false"/);
-  assert.match(engine, /earlyExtractPool = createLiveRollingPool<any\[\], void>/);
+  assert.match(engine, /const earlyExtractPool = createLiveRollingPool<any\[\], void>/);
+  assert.match(engine, /onQuerySettled,/, 'retrieveStage must receive onQuerySettled directly');
   assert.match(
     engine,
     /const itemsForFinalExtraction = candidateItems\.filter\(/,

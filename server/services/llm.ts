@@ -136,23 +136,11 @@ export function isExhaustedQuotaError(
 }
 
 const DEFAULT_PRIMARY_BASE = "https://byesu.com/v1";
-export const DEFAULT_PRIMARY_MODEL = "gpt-5.5";
+export const DEFAULT_PRIMARY_MODEL = "gpt-6.1-sol";
 const DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 const DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
-
-// Atria is a self-hosted vLLM deployment (see docs/adr/0007-industry-agnostic-pipeline-and-dual-provider-concurrency.md).
-// It is a REASONING model: reasoning_content is emitted and billed before any visible
-// content, so a small max_tokens yields content:null with finish_reason:"length".
-// Registered only when ATRIA_API_KEY is set. When registered it is the engine's primary
-// provider and runs up to its full slot count on every default-tier stage; Byesu is the
-// second-priority chain member - it takes any call Atria cannot serve (failed attempt or
-// saturated slots) and leads the fast tier for query planning. Groq and OpenRouter/Mistral
-// form the failsafe tier, invoked only when both primaries are out.
-// See docs/adr/0011-atria-primary-with-byesu-second-priority.md.
-const DEFAULT_ATRIA_BASE = "https://api.atria-asi.ai/v1";
-const DEFAULT_ATRIA_MODEL = "Atria-Dawn-Preview";
 
 const tavilyKeyPool = new ApiKeyPool("Tavily", () =>
   parseApiKeys(process.env.TAVILY_API_KEYS, [process.env.TAVILY_API_KEY]),
@@ -176,35 +164,20 @@ function getOpenRouterHeaders(baseUrl?: string): Record<string, string> {
   return headers;
 }
 
+/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
 export function isAtriaConfigured(): boolean {
-  return Boolean(process.env.ATRIA_API_KEY);
+  return false;
 }
 
+/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
 export function isAtriaPrimary(): boolean {
-  const providers = getConfiguredLLMProviders();
-  return providers[0]?.id === "atria";
-}
-
-/** Returns the Atria provider when ATRIA_API_KEY is set, otherwise null (disabled). */
-function getAtriaProvider(): LLMProvider | null {
-  const apiKey = process.env.ATRIA_API_KEY || "";
-  if (!apiKey) return null;
-  return {
-    id: "atria",
-    name: process.env.ATRIA_PROVIDER_NAME || "Atria",
-    baseUrl: cleanBaseUrl(process.env.ATRIA_BASE || DEFAULT_ATRIA_BASE),
-    model: process.env.ATRIA_MODEL || DEFAULT_ATRIA_MODEL,
-    apiKey,
-  };
+  return false;
 }
 
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
-  // Tier 1: Primary Pair (Atria Primary, Byesu Secondary)
-  const atria = getAtriaProvider();
-  if (atria) direct.push(atria);
-
+  // Tier 1: Primary Default Provider (Byesu - exclusively GPT-6.1)
   direct.push({
     id: "primary",
     name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
@@ -263,14 +236,11 @@ const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
   enrich: "low",
 };
 
-let atriaRejectsReasoningEffort = false;
-
-export function resetAtriaReasoningEffortRefusal(): void {
-  atriaRejectsReasoningEffort = false;
-}
+/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
+export function resetAtriaReasoningEffortRefusal(): void {}
 
 export function isReasoningProvider(provider: { id: string; model: string }): boolean {
-  return provider.id === "atria" || REASONING_MODEL_REGEX.test(provider.model);
+  return REASONING_MODEL_REGEX.test(provider.model);
 }
 
 export function parseFastProviderIds(raw?: string): string[] {
@@ -281,7 +251,7 @@ export function parseFastProviderIds(raw?: string): string[] {
 }
 
 /**
- * Reorders within tiers only: Primary tier (Atria, Byesu) remains primary,
+ * Reorders within tiers only: Primary tier (Byesu) remains primary,
  * Failsafe tier (Groq, OpenRouter) remains failsafe.
  */
 export function orderProvidersForTier<T extends { id: string }>(
@@ -291,8 +261,8 @@ export function orderProvidersForTier<T extends { id: string }>(
 ): T[] {
   if (tier !== "fast" || fastProviderIds.length === 0) return providers;
   // LLM_FAST_PROVIDER_IDS may reorder providers inside a tier, never promote a failsafe
-  // provider ahead of the primary pair.
-  const tierRank = (provider: T) => (provider.id === "atria" || provider.id === "primary" ? 0 : 1);
+  // provider ahead of the primary provider.
+  const tierRank = (provider: T) => (provider.id === "primary" ? 0 : 1);
   const rank = (provider: T) => {
     const index = fastProviderIds.indexOf(provider.id);
     return index === -1 ? Number.MAX_SAFE_INTEGER : index;
@@ -325,7 +295,7 @@ export function describeLLMRoute(
     tierProviderOrder?.length ? "fast" : tier,
     fastIds,
   );
-  // Health-aware: when Atria and Byesu are both out the failsafe serves the call, so callers
+  // Health-aware: when Byesu is out the failsafe serves the call, so callers
   // that size batches from this (e.g. Groq's 950-token cap) must see the failsafe provider.
   const first = ordered.find((p) => !isProviderOut(p.id)) ?? ordered[0];
   if (!first) return { providerId: null, reasoning: false, outputTokenCap: Number.POSITIVE_INFINITY };
@@ -376,12 +346,7 @@ export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Pr
 
 export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
 
-/**
- * Atria (api.atria-asi.ai) is a self-hosted vLLM deployment behind an Aliyun ALB
- * (Singapore ap-southeast-1), NOT behind Cloudflare (endpoint probe of 2026-09-16; see ADR-0007).
- * The 115s CLOUDFLARE_MAX_TIMEOUT_MS therefore does not apply to Atria traffic.
- * Timeout scales dynamically with prompt weight and reasoning budget up to this safety ceiling.
- */
+/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
 export const ATRIA_MAX_TIMEOUT_MS = 600_000;
 
 function resolveDynamicQueueTimeoutMs(): number {
@@ -389,11 +354,7 @@ function resolveDynamicQueueTimeoutMs(): number {
   if (Number.isFinite(configured) && configured > 0 && configured < 5_000) {
     return configured;
   }
-  const providerCeiling = isAtriaConfigured()
-    ? (Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
-        ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
-        : ATRIA_MAX_TIMEOUT_MS)
-  : CLOUDFLARE_MAX_TIMEOUT_MS;
+  const providerCeiling = CLOUDFLARE_MAX_TIMEOUT_MS;
   return Math.max(
     Number.isFinite(configured) && configured > 0 ? configured : 60_000,
     providerCeiling + 15_000,
@@ -409,16 +370,9 @@ async function fetchWithRetry(
   options: RequestInit,
   timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
   maxRetries?: number,
-  isAtria = false,
+  _isAtria = false,
   _providerId?: string,
 ): Promise<Response> {
-  const atriaConfiguredBase = process.env.ATRIA_BASE
-    ? cleanBaseUrl(process.env.ATRIA_BASE)
-    : "";
-  const isAtriaUrl =
-    isAtria ||
-    /(^|[/.])atria-asi\.ai(?=[/:]|$)/i.test(url) ||
-    (atriaConfiguredBase ? url.startsWith(atriaConfiguredBase) : false);
 
   // Precedence: explicit per-call value, then LLM_MAX_RETRIES, then 1. An empty env var is
   // "unset" (Number("") would otherwise silently become 0 and disable retries).
@@ -435,19 +389,10 @@ async function fetchWithRetry(
     Number.isFinite(rawRetries) && rawRetries >= 0 ? Math.floor(rawRetries) : 1;
 
   const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS);
-  const maxAtriaCeiling =
-    Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
-      ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
-      : ATRIA_MAX_TIMEOUT_MS;
-  const effectiveTimeoutMs = isAtriaUrl
-    ? Math.min(
-        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : maxAtriaCeiling,
-        maxAtriaCeiling,
-      )
-    : Math.min(
-        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
-        CLOUDFLARE_MAX_TIMEOUT_MS,
-      );
+  const effectiveTimeoutMs = Math.min(
+    Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
+    CLOUDFLARE_MAX_TIMEOUT_MS,
+  );
   const retry429 =
     process.env.LLM_RETRY_429 !== "false" && effectiveMaxRetries > 0;
 
@@ -572,7 +517,7 @@ async function fetchWithRetry(
       }
       if (isFetchTimeout) {
         lastError = new Error(
-          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s${isAtriaUrl ? " (adaptive reasoning timeout)" : " (bounded within Cloudflare 120s limit)"}`,
+          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s (bounded within Cloudflare 120s limit)`,
         );
         break;
       }
@@ -729,22 +674,17 @@ export function isCircuitBreakingProviderFailure(error: Error): boolean {
 
 export const providerCooldowns = new Map<string, number>();
 
-// --- Provider-Affinity Concurrency & Parallel Execution ---
-// The primary tier is an ordered chain: Atria first (up to ATRIA_CONCURRENT_SLOTS parallel
-// requests), Byesu second priority (BYESU_CONCURRENT_SLOTS parallel slots of its own).
-// acquireSlot hands a call to the first free, non-cooling chain member - so Byesu absorbs
-// both the overflow when Atria's slots are saturated and the retry after a failed Atria
-// attempt. Only when BOTH primaries are out does the call reach the failsafe tier
-// (Groq, then OpenRouter/Mistral).
+// --- Provider Concurrency & Slot Management ---
+// Byesu (id: "primary") is the primary default provider (BYESU_CONCURRENT_SLOTS parallel slots).
+// Groq and OpenRouter/Mistral form the failsafe tier, invoked only when Byesu is out.
 
 export function getProviderConcurrencyLimit(providerId: string): number {
-  if (providerId === "atria") {
-    const configured = Number(process.env.ATRIA_CONCURRENT_SLOTS);
-    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 1;
-  }
   if (providerId === "primary") {
-    const configured = Number(process.env.BYESU_CONCURRENT_SLOTS);
-    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 1;
+    const configured = Number(process.env.BYESU_CONCURRENT_SLOTS || process.env.OPENAI_CONCURRENT_SLOTS);
+    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 4;
+  }
+  if (providerId === "atria") {
+    return 0;
   }
   return 1;
 }
@@ -1135,7 +1075,7 @@ class ProviderOutageError extends Error {
   }
 }
 
-/** How long background work waits for Atria/Byesu to recover when no failsafe is available. */
+/** How long background work waits for Byesu to recover when no failsafe is available. */
 function resolvePrimaryRecoveryMaxWaitMs(): number {
   const configured = Number(process.env.LLM_PRIMARY_RECOVERY_MAX_WAIT_MS);
   return Number.isFinite(configured) && configured >= 0 ? configured : 10 * 60_000;
@@ -1160,7 +1100,7 @@ async function withProviderFallback<T>(
   const allConfigured = getConfiguredLLMProviders();
   if (allConfigured.length === 0) {
     throw new Error(
-      "No LLM provider available. Configure ATRIA_API_KEY, OPENAI_API_KEY/BYESU_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in .env.",
+      "No LLM provider available. Configure BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY in .env.",
     );
   }
 
@@ -1170,16 +1110,11 @@ async function withProviderFallback<T>(
       ? executionOptions.tierProviderOrder
       : parseFastProviderIds(process.env.LLM_FAST_PROVIDER_IDS);
   const primaryCandidates = allConfigured.filter(
-    (p) => p.id === "atria" || p.id === "primary",
+    (p) => p.id === "primary",
   );
-  // Provider policy (docs/adr/0011-atria-primary-with-byesu-second-priority.md):
-  // The primary tier is an ORDERED CHAIN. Default-tier calls run Atria first, up to its
-  // full slot count, and Byesu is second priority: it takes the call the moment Atria
-  // cannot serve it - a failed Atria attempt, or saturated Atria slots (acquireSlot
-  // spills to the next free chain member). Byesu is therefore in the chain on every
-  // call, not only during an outage; Groq/OpenRouter remain the failsafe tier, invoked
-  // only when both primaries are out. The fast tier (query strategist) reorders the
-  // same pair via its explicit tier order so planning runs on the low-latency router.
+  // Provider policy:
+  // Byesu (id: "primary") is the sole primary default provider across all stages.
+  // Groq and OpenRouter/Mistral form the failsafe tier, invoked only when Byesu is out.
   const primaryTier = orderProvidersForTier(
     primaryCandidates,
     executionOptions.tierProviderOrder?.length ? "fast" : executionOptions.routingTier,
@@ -1199,13 +1134,7 @@ async function withProviderFallback<T>(
   // Health probes report status; they must not move provider health or reach the failsafe.
   const isHealthProbe = Boolean(executionOptions.metadata?.healthProbe);
 
-  // The budget must fit one full Atria attempt plus one full Byesu attempt, so it never
-  // blocks the partner fallback. It only bounds the extra in-pair retry and the failsafe.
-  const atriaCeilingMs =
-    Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
-      ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
-      : ATRIA_MAX_TIMEOUT_MS;
-  const overallCallBudgetMs = atriaCeilingMs + CLOUDFLARE_MAX_TIMEOUT_MS + 30_000;
+  const overallCallBudgetMs = CLOUDFLARE_MAX_TIMEOUT_MS + 30_000;
   // Queue time is not execution time, so slot waits are excluded from the budget.
   const budgetClockStartedAt = Date.now();
   let queueWaitTotalMs = 0;
@@ -1297,7 +1226,7 @@ async function withProviderFallback<T>(
       // Circuit breaker health isolation:
       // When a hardTimeoutMs was applied AND this was a timeout failure, do NOT record failure
       // against global provider health or the session circuit breaker. This prevents planner-induced
-      // tight timeouts from cooling down or marking Byesu/Atria OUT for extract and judge.
+      // tight timeouts from cooling down or marking Byesu OUT for extract and judge.
       const isPlannerHardTimeout = Boolean(resolvedHardTimeoutMs && isTimeout);
       if (!isHealthProbe && !isPlannerHardTimeout) {
         recordProviderFailure(provider.id, normalized, breaker);
@@ -1372,10 +1301,9 @@ async function withProviderFallback<T>(
 
   let lastPrimaryError: Error | undefined;
 
-  // 1. PRIMARY CHAIN (Atria first, Byesu second priority): the first attempt goes to the
-  //    first free chain member, and a failed or timed-out attempt cascades to the next
-  //    member. Busy chain heads are waited for in the slot queue only when every member
-  //    is saturated. Groq/Mistral stay reserved for when both primaries are out.
+  // 1. PRIMARY TIER (Byesu): the first attempt goes to Byesu.
+  //    Busy slots are waited for in the slot queue.
+  //    Groq/OpenRouter stay reserved as failsafes when Byesu is out.
   const eligiblePrimaries = primaryTier.filter((p) => !isProviderOut(p.id, breaker));
   if (eligiblePrimaries.length > 0) {
     const first = await runOn(eligiblePrimaries);
@@ -1438,18 +1366,18 @@ async function withProviderFallback<T>(
     primaryTier.length > 0 && primaryTier.every((p) => isProviderOut(p.id, breaker));
 
   if (primaryTier.length > 0 && !allPrimariesOut) {
-    throw lastPrimaryError ?? new Error("Primary LLM providers are busy or unavailable for this call.");
+    throw lastPrimaryError ?? new Error("Primary LLM provider is busy or unavailable for this call.");
   }
 
   if (allPrimariesOut && isHealthProbe) {
-    throw new Error("Primary providers (Atria, Byesu) are both out.");
+    throw new Error("Primary provider (Byesu) is out.");
   }
 
   const failsafeEligible = failsafeTier.filter((p) => !isProviderOut(p.id, breaker));
 
   if (allPrimariesOut && failsafeEligible.length === 0) {
     const outMessage =
-      "Primary providers (Atria, Byesu) are out and no failsafe provider is available.";
+      "Primary provider (Byesu) is out and no failsafe provider is available.";
     // Background session work waits (bounded) for a primary to come back for re-testing.
     if (isBackgroundSession && !isInteractive) {
       const waitStartedAt = outagePauseStartedAt ?? Date.now();
@@ -1468,7 +1396,7 @@ async function withProviderFallback<T>(
         Math.min(60_000, Math.max(1_000, earliestRetest - Date.now()), maxWaitMs - waitedMs),
       );
       console.warn(
-        `[llm] ${outMessage} Waiting ${Math.round(waitMs / 1000)}s before re-testing the primaries.`,
+        `[llm] ${outMessage} Waiting ${Math.round(waitMs / 1000)}s before re-testing Byesu.`,
       );
       await sleepWithSignal(waitMs, executionOptions.signal);
       return withProviderFallback(operation, executionOptions, waitStartedAt);
@@ -1477,13 +1405,13 @@ async function withProviderFallback<T>(
   }
 
   // 3. FAILSAFE TIER (Groq, then OpenRouter/Mistral): used by every caller, but only when the
-  // primary pair is out, or when no primary provider is configured at all.
+  // primary provider is out, or when no primary provider is configured at all.
   if (failsafeEligible.length === 0) {
     throw lastPrimaryError ?? new Error("All configured LLM providers failed or are unavailable.");
   }
 
   if (allPrimariesOut) {
-    console.warn(`[llm] Atria and Byesu are both out. Failsafe activated.`);
+    console.warn(`[llm] Byesu is out. Failsafe activated.`);
     void sendDirectLangfuseTrace({
       stage: "failsafe_activation",
       status: "error",
@@ -1522,136 +1450,25 @@ async function withProviderFallback<T>(
   throw failureErr;
 }
 
+/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
 export function computeAtriaDynamicMaxTokens(
-  requestedMaxTokens: number | undefined,
-  messages: ChatMessage[],
-  metadata?: Record<string, any>,
+  requestedMaxTokens?: number,
+  _messages?: ChatMessage[],
+  _metadata?: Record<string, any>,
 ): number {
-  // If caller explicitly requested a tiny budget (<= 50 tokens, e.g. for testing truncation errors),
-  // honor it directly without inflating.
-  if (
-    requestedMaxTokens !== undefined &&
-    requestedMaxTokens > 0 &&
-    requestedMaxTokens <= 50
-  ) {
-    return requestedMaxTokens;
-  }
-
-  const baseRequested =
-    requestedMaxTokens !== undefined && requestedMaxTokens > 0
-      ? requestedMaxTokens
-      : 4000;
-
-  // Calculate total prompt characters and user payload density dynamically without locking to a stage type
-  const safeMessages = Array.isArray(messages) ? messages : [];
-  const messageChars = safeMessages.reduce(
-    (acc, m) =>
-      acc + (typeof m?.content === "string" ? m.content.length : 0),
-    0,
-  );
-  const userText = safeMessages
-    .filter((m) => m?.role !== "system")
-    .map((m) => (typeof m?.content === "string" ? m.content : ""))
-    .join("\n");
-
-  const chunkChars = Number(metadata?.chunkSize || 0);
-  const promptSize = Number(metadata?.promptSize || 0);
-  const effectiveInputChars = Math.max(messageChars, chunkChars, promptSize);
-  const estimatedInputTokens = Math.ceil(effectiveInputChars / 3.5);
-
-  // Dynamically measure entity/block density in the payload
-  const explicitItems = Math.max(
-    0,
-    Number(
-      metadata?.candidateCount ||
-        metadata?.itemCount ||
-        metadata?.blockCount ||
-        0,
-    ),
-  );
-  const detectedItems = (
-    userText.match(
-      /(?:^|\n)(?:---\s*PROFILE CANDIDATE\s*---|SOURCE_BLOCK|CANDIDATE\b|###\s*Candidate|\[\d+\])/gi,
-    ) || []
-  ).length;
-  const itemCount = explicitItems > 0 ? explicitItems : detectedItems;
-
-  // Scale visible output budget dynamically to handle whatever volume the engine sends
-  const dynamicOutputBudget = Math.max(
-    baseRequested,
-    itemCount * 250,
-    Math.round(estimatedInputTokens * 0.6),
-  );
-
-  const isJudgeLike =
-    /judge|finalist|verdict|disqualif/i.test(String(metadata?.stage || "")) ||
-    /\b(verdict|disqualif|evaluate these candidates)\b/i.test(userText);
-
-  // Scale reasoning headroom continuously with input volume and item density without static ceilings
-  const reasoningHeadroom = Math.max(
-    isJudgeLike ? 3500 : 3000,
-    Math.round(effectiveInputChars * 0.8) + itemCount * 250,
-  );
-
-  // Combined token budget for Atria (reasoning_content + visible content)
-  const flexibleBudget = dynamicOutputBudget + reasoningHeadroom;
-
-  // Allow explicit env override if provided, otherwise allow flexible budget without static ceiling
-  const envOverride = Number(process.env.ATRIA_MAX_TOKENS || 0);
-  if (envOverride > 0) {
-    return Math.max(flexibleBudget, envOverride);
-  }
-
-  return Math.max(4000, flexibleBudget);
+  return requestedMaxTokens || 4000;
 }
 
+/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
 export function computeAtriaDynamicTimeoutMs(
-  effectiveMaxTokens: number,
-  messages: ChatMessage[],
+  _effectiveMaxTokens: number,
+  _messages: ChatMessage[],
   requestedTimeoutMs?: number,
-  metadata?: Record<string, any>,
+  _metadata?: Record<string, any>,
   hardTimeoutMs?: number,
 ): number {
-  if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) {
-    return hardTimeoutMs;
-  }
-  if (
-    requestedTimeoutMs !== undefined &&
-    requestedTimeoutMs > 0 &&
-    requestedTimeoutMs < 1000
-  ) {
-    return requestedTimeoutMs;
-  }
-
-  const safeMessages = Array.isArray(messages) ? messages : [];
-  const promptChars = safeMessages.reduce(
-    (acc, m) =>
-      acc + (typeof m?.content === "string" ? m.content.length : 0),
-    0,
-  );
-  const chunkChars = Number(metadata?.chunkSize || 0);
-  const promptSize = Number(metadata?.promptSize || 0);
-  const effectiveChars = Math.max(promptChars, chunkChars, promptSize);
-  const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
-
-  // Scale timeout dynamically with prefill tokens + reasoning/output token budget
-  // Calibrated to Atria vLLM throughput (~35-45 tok/s + queue/prefill overhead + reasoning pauses)
-  const workloadTimeoutMs =
-    60_000 +
-    Math.round(estimatedInputTokens * 12) +
-    Math.round(Math.max(0, effectiveMaxTokens) * 15);
-
-  const minAtriaTimeout = Math.max(
-    120_000,
-    Number(process.env.ATRIA_MIN_TIMEOUT_MS || 0),
-    requestedTimeoutMs || 0,
-  );
-  const maxAtriaTimeout =
-    Number(process.env.ATRIA_MAX_TIMEOUT_MS) > 0
-      ? Number(process.env.ATRIA_MAX_TIMEOUT_MS)
-      : ATRIA_MAX_TIMEOUT_MS;
-
-  return Math.min(maxAtriaTimeout, Math.max(minAtriaTimeout, workloadTimeoutMs));
+  if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) return hardTimeoutMs;
+  return requestedTimeoutMs || 60_000;
 }
 
 export function computeByesuDynamicTimeoutMs(
@@ -1683,8 +1500,8 @@ export function computeByesuDynamicTimeoutMs(
   const effectiveChars = Math.max(promptChars, chunkChars, promptSize);
   const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
 
-  // Scale timeout dynamically for Byesu GPT-5/GPT-6 models so multi-candidate
-  // batches do not prematurely abort at 30s/35s when falling back from Atria.
+  // Scale timeout dynamically for Byesu GPT-6 models so multi-candidate
+  // batches do not prematurely abort at 30s/35s.
   const workloadTimeoutMs =
     45_000 +
     Math.round(estimatedInputTokens * 6) +
@@ -1717,20 +1534,13 @@ async function sendChatCompletion(
     throw cancelError;
   }
   let res: Response;
-  const isAtriaTarget = provider.id === "atria";
   const isByesuTarget = provider.id === "primary";
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
-      : isAtriaTarget
-        ? computeAtriaDynamicMaxTokens(
-            options?.maxTokens,
-            messages,
-            options?.metadata,
-          )
-        : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+      : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
 
-  // Health probes are status checks: they honor the caller timeout exactly (no Atria/Byesu
+  // Health probes are status checks: they honor the caller timeout exactly (no Byesu
   // workload floor) and never retry, so a probe cannot hold a provider slot for minutes.
   const isHealthProbe = Boolean(options?.metadata?.healthProbe);
   const probeTimeoutMs =
@@ -1741,14 +1551,6 @@ async function sendChatCompletion(
     timeoutForCall = probeTimeoutMs;
   } else if (Number(options?.hardTimeoutMs) > 0) {
     timeoutForCall = Number(options?.hardTimeoutMs);
-  } else if (isAtriaTarget) {
-    timeoutForCall = computeAtriaDynamicTimeoutMs(
-      effectiveMaxTokens,
-      messages,
-      options?.timeoutMs,
-      options?.metadata,
-      options?.hardTimeoutMs,
-    );
   } else if (isByesuTarget) {
     timeoutForCall = computeByesuDynamicTimeoutMs(
       effectiveMaxTokens,
@@ -1773,7 +1575,7 @@ async function sendChatCompletion(
   const shouldSendReasoningEffort =
     !isFailsafe &&
     Boolean(effectiveReasoningEffort) &&
-    (isAtriaTarget ? !atriaRejectsReasoningEffort : isReasoningCapable);
+    isReasoningCapable;
 
   const callStartedAt = Date.now();
   try {
@@ -1807,7 +1609,7 @@ async function sendChatCompletion(
       },
       timeoutForCall,
       maxRetriesForCall,
-      isAtriaTarget,
+      false,
       provider.id,
     );
   } catch (error: any) {
@@ -1842,101 +1644,27 @@ async function sendChatCompletion(
       const parsed = JSON.parse(rawText);
       errorCode = parsed?.error?.code ?? parsed?.code;
     } catch {}
-
-    // Lazy detection: if Atria rejects reasoning_effort with HTTP 400, cache the refusal and retry once without it
-    if (
-      isAtriaTarget &&
-      res.status === 400 &&
-      shouldSendReasoningEffort &&
-      /reasoning_effort|reasoning effort/i.test(rawText)
-    ) {
-      console.warn(
-        `[llm] Atria rejected reasoning_effort. Caching refusal and retrying without reasoning_effort...`,
-      );
-      atriaRejectsReasoningEffort = true;
-      try {
-        res = await fetchWithRetry(
-          `${provider.baseUrl}/chat/completions`,
-          {
-            method: "POST",
-            headers: {
-              ...(provider.headers || {}),
-              ...sessionHeaders,
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${provider.apiKey}`,
-            },
-            body: JSON.stringify({
-              model: provider.model,
-              messages,
-              stream: false,
-              temperature:
-                options?.temperature !== undefined ? options.temperature : 0.1,
-              max_tokens: effectiveMaxTokens,
-              ...(options?.responseFormat
-                ? { response_format: options.responseFormat }
-                : {}),
-            }),
-            signal: options?.signal,
-          },
-          timeoutForCall,
-          maxRetriesForCall,
-          isAtriaTarget,
-          provider.id,
-        );
-      } catch (retryError: any) {
-        if (retryError?.name === "AbortError" || options?.signal?.aborted) {
-          throw retryError;
-        }
-        void sendDirectLangfuseTrace({
-          sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
-          stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
-          round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-          model: provider.model,
-          provider: provider.name,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          latencyMs: Date.now() - callStartedAt,
-          status: "error",
-          errorMessage: retryError instanceof Error ? retryError.message : String(retryError),
-          messages,
-        });
-        throw new LLMProviderError(
-          provider,
-          undefined,
-          retryError instanceof Error ? retryError.message : String(retryError),
-        );
-      }
-    }
-
-    if (!res.ok) {
-      const errText = res.bodyUsed ? rawText : await res.text();
-      try {
-        const parsed = JSON.parse(errText);
-        errorCode = parsed?.error?.code ?? parsed?.code;
-      } catch {}
-      const err = truncateProviderError(errText);
-      void sendDirectLangfuseTrace({
-        sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
-        stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
-        round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-        model: provider.model,
-        provider: provider.name,
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-        latencyMs: Date.now() - callStartedAt,
-        status: "error",
-        errorMessage: err,
-        messages,
-      });
-      throw new LLMProviderError(
-        provider,
-        res.status,
-        `chat completion error ${res.status}: ${err}`,
-        errorCode,
-      );
-    }
+    const err = truncateProviderError(rawText);
+    void sendDirectLangfuseTrace({
+      sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+      stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+      round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+      model: provider.model,
+      provider: provider.name,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      latencyMs: Date.now() - callStartedAt,
+      status: "error",
+      errorMessage: err,
+      messages,
+    });
+    throw new LLMProviderError(
+      provider,
+      res.status,
+      `chat completion error ${res.status}: ${err}`,
+      errorCode,
+    );
   }
 
     const data = await res.json();
@@ -1948,7 +1676,7 @@ async function sendChatCompletion(
     const content =
       typeof choice?.message?.content === "string" ? choice.message.content : "";
 
-    // A reasoning model (e.g. Atria-Dawn-Preview) emits and bills `reasoning_content`
+    // A reasoning model emits and bills `reasoning_content`
     // BEFORE any visible content. When max_tokens runs out during reasoning the gateway
     // still answers HTTP 200, but with content:null and finish_reason:"length". Collapsing
     // that to "" lets downstream stages record a zero-yield round with no error anywhere.
@@ -2700,7 +2428,7 @@ export async function openAIStructured<T>(
 
   const cacheEnabled = process.env.LLM_COMPLETION_CACHE !== "false";
   // Base content is provider-agnostic; the per-provider hash is derived inside
-  // the fallback operation so a Byesu response is never reused for Groq/Atria.
+  // the fallback operation so a Byesu response is never reused for Groq/OpenRouter.
   const cacheBaseContent = cacheEnabled
     ? [
         sysPrompt,
@@ -2810,15 +2538,10 @@ export async function openAIStructured<T>(
       const retryMaxTokens =
         provider.id === "groq"
           ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
-          : provider.id === "atria"
-            ? Math.max(
-                Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
-                (options?.maxTokens || 4000) * 2,
-              )
-            : Math.max(
-                Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
-                Math.min((options?.maxTokens || 4000) * 2, 8000),
-              );
+          : Math.max(
+              Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
+              Math.min((options?.maxTokens || 4000) * 2, 8000),
+            );
       const retryMessages: ChatMessage[] = [
         {
           role: "system",

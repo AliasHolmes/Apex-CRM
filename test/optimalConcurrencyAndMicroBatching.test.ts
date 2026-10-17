@@ -3,11 +3,6 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import { validateEngineConfig } from '../server/configValidation.ts';
 
 const MANAGED_KEYS = [
-  'ATRIA_API_KEY',
-  'ATRIA_BASE',
-  'ATRIA_MODEL',
-  'ATRIA_PRIORITY',
-  'ATRIA_CONCURRENT_SLOTS',
   'BYESU_API_KEY',
   'BYESU_CONCURRENT_SLOTS',
   'OPENAI_API_KEY',
@@ -47,10 +42,9 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     }
   });
 
-  it('validates engine configuration bounds for Atria slots and micro-batch sizes', () => {
-    // 1. Clean recommended configuration: no warnings for the shipped 8-slot Atria config
-    process.env.ATRIA_CONCURRENT_SLOTS = '8';
-    process.env.BYESU_CONCURRENT_SLOTS = '10';
+  it('validates engine configuration bounds for Byesu slots and micro-batch sizes', () => {
+    // 1. Clean recommended configuration: no warnings for the shipped config
+    process.env.BYESU_CONCURRENT_SLOTS = '8';
     process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK = '3';
     process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE = '2';
     process.env.LEAD_EXTRACTION_CONCURRENCY = '8';
@@ -59,26 +53,20 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     const cleanWarnings = validateEngineConfig();
     assert.deepEqual(
       cleanWarnings.filter(w =>
-        w.includes('ATRIA_CONCURRENT_SLOTS') ||
         w.includes('BYESU_CONCURRENT_SLOTS') ||
         w.includes('LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK') ||
         w.includes('FINALIST_JUDGE_MICRO_BATCH_SIZE')
       ),
       [],
-      'The stress-tested 8-slot Atria / 10-slot Byesu config must not emit warnings',
+      'The shipped 8-slot Byesu config must not emit warnings',
     );
 
-    // 2. Over-budget configuration: warning emitted past the stress-tested envelopes
-    process.env.ATRIA_CONCURRENT_SLOTS = '12';
+    // 2. Over-budget configuration: warning emitted past the recommended envelopes
     process.env.BYESU_CONCURRENT_SLOTS = '24';
     process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK = '8';
     process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE = '10';
 
     const badWarnings = validateEngineConfig();
-    assert.ok(
-      badWarnings.some(w => w.includes('ATRIA_CONCURRENT_SLOTS')),
-      'Should warn when ATRIA_CONCURRENT_SLOTS > 10',
-    );
     assert.ok(
       badWarnings.some(w => w.includes('BYESU_CONCURRENT_SLOTS')),
       'Should warn when BYESU_CONCURRENT_SLOTS > 16',
@@ -93,26 +81,23 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
     );
   });
 
-  it('allows Atria to handle up to 8 concurrent requests simultaneously when ATRIA_CONCURRENT_SLOTS=8', async () => {
-    process.env.ATRIA_API_KEY = 'test-atria-key';
-    process.env.ATRIA_PRIORITY = 'primary';
-    process.env.ATRIA_CONCURRENT_SLOTS = '8';
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.BYESU_API_KEY;
+  it('allows Byesu to handle up to 8 concurrent requests simultaneously when BYESU_CONCURRENT_SLOTS=8', async () => {
+    process.env.OPENAI_API_KEY = 'test-byesu-key';
+    process.env.BYESU_CONCURRENT_SLOTS = '8';
 
     const originalFetch = globalThis.fetch;
-    const llm = await importLLM('atria-eight-slots');
+    const llm = await importLLM('byesu-eight-slots');
     llm.clearProviderCooldowns();
 
-    let activeAtriaInFlight = 0;
-    let maxAtriaInFlight = 0;
+    let activeInFlight = 0;
+    let maxInFlight = 0;
 
     globalThis.fetch = async () => {
-      activeAtriaInFlight++;
-      maxAtriaInFlight = Math.max(maxAtriaInFlight, activeAtriaInFlight);
+      activeInFlight++;
+      maxInFlight = Math.max(maxInFlight, activeInFlight);
       // Hold each call briefly so all 8 overlap concurrently
       await new Promise((r) => setTimeout(r, 60));
-      activeAtriaInFlight--;
+      activeInFlight--;
       return jsonResponse({
         choices: [{ finish_reason: 'stop', message: { content: '{"status":"ok"}' } }],
       });
@@ -128,37 +113,34 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
 
       assert.equal(results.length, 8);
       assert.ok(results.every(r => r.status === 'ok'));
-      // All 8 requests must have been running in parallel on Atria simultaneously!
+      // All 8 requests must have been running in parallel on Byesu simultaneously!
       assert.equal(
-        maxAtriaInFlight,
+        maxInFlight,
         8,
-        `Expected max in-flight on Atria to reach 8, got ${maxAtriaInFlight}`,
+        `Expected max in-flight on Byesu to reach 8, got ${maxInFlight}`,
       );
-      assert.equal(llm.getProviderActiveSlots('atria'), 0, 'All slots must be released cleanly');
+      assert.equal(llm.getProviderActiveSlots('primary'), 0, 'All slots must be released cleanly');
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 
-  it('queues a 9th request when Atria 8-slot capacity is fully saturated', async () => {
-    process.env.ATRIA_API_KEY = 'test-atria-key';
-    process.env.ATRIA_PRIORITY = 'primary';
-    process.env.ATRIA_CONCURRENT_SLOTS = '8';
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.BYESU_API_KEY;
+  it('queues a 9th request when Byesu 8-slot capacity is fully saturated', async () => {
+    process.env.OPENAI_API_KEY = 'test-byesu-key';
+    process.env.BYESU_CONCURRENT_SLOTS = '8';
 
     const originalFetch = globalThis.fetch;
-    const llm = await importLLM('atria-eight-saturation');
+    const llm = await importLLM('byesu-eight-saturation');
     llm.clearProviderCooldowns();
 
-    let activeAtriaInFlight = 0;
-    let maxAtriaInFlight = 0;
+    let activeInFlight = 0;
+    let maxInFlight = 0;
 
     globalThis.fetch = async () => {
-      activeAtriaInFlight++;
-      maxAtriaInFlight = Math.max(maxAtriaInFlight, activeAtriaInFlight);
+      activeInFlight++;
+      maxInFlight = Math.max(maxInFlight, activeInFlight);
       await new Promise((r) => setTimeout(r, 60));
-      activeAtriaInFlight--;
+      activeInFlight--;
       return jsonResponse({
         choices: [{ finish_reason: 'stop', message: { content: '{"status":"ok"}' } }],
       });
@@ -175,11 +157,11 @@ describe('Optimal Concurrency & Micro-Batching Architecture', () => {
       assert.equal(results.length, 9);
       // Max in-flight must never exceed 8 (the slot limit)
       assert.equal(
-        maxAtriaInFlight,
+        maxInFlight,
         8,
-        `In-flight must strictly cap at 8, got ${maxAtriaInFlight}`,
+        `In-flight must strictly cap at 8, got ${maxInFlight}`,
       );
-      assert.equal(llm.getProviderActiveSlots('atria'), 0);
+      assert.equal(llm.getProviderActiveSlots('primary'), 0);
     } finally {
       globalThis.fetch = originalFetch;
     }

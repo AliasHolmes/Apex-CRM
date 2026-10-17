@@ -1,6 +1,7 @@
 import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
+  canonicalLinkedInIdentity,
 } from "../../services/linkedinEvidence.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
 import { evaluateDecisionMakerGate } from "../titleTriage.js";
@@ -111,22 +112,17 @@ export async function executeVerifyStage(
     const normalized = normalizeDedupeValue(exclusion);
     if (!normalized) continue;
     excludedValues.add(normalized);
-    if (normalized.startsWith("linkedin:")) {
-      const handle = normalized.slice("linkedin:".length);
-      if (handle) excludedValues.add(handle);
-    } else if (normalized.includes("linkedin.com/in/")) {
-      const handle = extractLinkedInUsername(normalized);
-      if (handle) {
-        excludedValues.add(`linkedin:${handle}`);
-        excludedValues.add(handle);
-      }
+    const idKey = canonicalLinkedInIdentity(exclusion);
+    if (idKey) {
+      excludedValues.add(idKey);
+      excludedValues.add(idKey.slice("linkedin:".length));
     }
   }
 
   const matchesExcludeList = (lead: any) => {
     const rawUrl = lead.contactDetails?.linkedinUrl || lead.sourceUrl;
-    const username = rawUrl ? extractLinkedInUsername(rawUrl) : "";
-    const canonicalKey = username ? `linkedin:${username}` : "";
+    const canonicalKey = rawUrl ? canonicalLinkedInIdentity(rawUrl) : "";
+    const username = canonicalKey ? canonicalKey.slice("linkedin:".length) : (rawUrl ? extractLinkedInUsername(rawUrl) : "");
     const keys = [
       lead.fullName,
       lead.currentCompany,

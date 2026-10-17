@@ -1,0 +1,162 @@
+{
+  "sessionId": "replay-golden-multi-round-stall",
+  "round": 2,
+  "stage": "enrich",
+  "promptQuery": "Chief Technology Officers at Series B SaaS companies in Austin",
+  "targetLimit": 4,
+  "contract": {
+    "version": 1,
+    "policyVersion": "2026-10-golden",
+    "brief": "Chief Technology Officers at Series B SaaS companies in Austin",
+    "authorityRequired": true,
+    "exclusions": [],
+    "initialQueries": ["CTO SaaS Series B Austin"],
+    "requirements": [
+      {
+        "id": "req-role",
+        "description": "Chief Technology Officer or VP Engineering",
+        "sourcePhrase": "CTO",
+        "acceptableTerms": ["cto", "chief technology officer", "vp engineering"],
+        "scope": "person_role",
+        "importance": "hard",
+        "evidenceModality": "structured_profile",
+        "queryable": true
+      },
+      {
+        "id": "req-funding",
+        "description": "Series B funded company",
+        "sourcePhrase": "Series B",
+        "acceptableTerms": ["series b", "series-b"],
+        "scope": "company_funding",
+        "importance": "hard",
+        "evidenceModality": "structured_profile",
+        "queryable": true
+      }
+    ]
+  },
+  "queryRuns": [
+    {
+      "round": 1,
+      "query": "CTO SaaS Series B Austin",
+      "family": "person",
+      "lane": "person",
+      "providerPreference": "tavily",
+      "rawCandidates": 10,
+      "uniqueCandidates": 8,
+      "extractedLeads": 4,
+      "acceptedLeads": 3,
+      "qualifiedFinalists": 0,
+      "rescuedFinalists": 0,
+      "returnedFinalists": 0,
+      "searchLatencyMs": 95,
+      "providerUnits": 1,
+      "rejectionReasons": {
+        "not_decision_maker": 1
+      },
+      "requirementFailCounts": {
+        "req-funding": 3
+      }
+    },
+    {
+      "round": 2,
+      "query": "Chief Technology Officer Austin SaaS",
+      "family": "person",
+      "lane": "person",
+      "providerPreference": "tavily",
+      "rawCandidates": 12,
+      "uniqueCandidates": 9,
+      "extractedLeads": 5,
+      "acceptedLeads": 4,
+      "qualifiedFinalists": 0,
+      "rescuedFinalists": 0,
+      "returnedFinalists": 0,
+      "searchLatencyMs": 105,
+      "providerUnits": 1,
+      "rejectionReasons": {
+        "not_decision_maker": 1
+      },
+      "requirementFailCounts": {
+        "req-funding": 4
+      }
+    }
+  ],
+  "acceptedLeads": [
+    {
+      "id": "lead-austin-1",
+      "fullName": "David Wright",
+      "currentTitle": "Chief Technology Officer",
+      "currentCompany": "Austin Cloudworks",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/david-wright-austin-cto"
+      },
+      "fitScore": 8,
+      "compositeScore": 75,
+      "reviewStatus": "UNREVIEWED",
+      "nextAction": "NONE",
+      "tier": "TIER 3: WATCH"
+    },
+    {
+      "id": "lead-austin-2",
+      "fullName": "Rachel Kim",
+      "currentTitle": "Chief Technology Officer",
+      "currentCompany": "Riverwalk Analytics",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/rachel-kim-cto"
+      },
+      "fitScore": 8,
+      "compositeScore": 76,
+      "reviewStatus": "UNREVIEWED",
+      "nextAction": "NONE",
+      "tier": "TIER 3: WATCH"
+    },
+    {
+      "id": "lead-austin-3",
+      "fullName": "Brian Hayes",
+      "currentTitle": "VP Engineering",
+      "currentCompany": "LoneStar Data",
+      "contactDetails": {
+        "linkedinUrl": "https://www.linkedin.com/in/brian-hayes-eng"
+      },
+      "fitScore": 7,
+      "compositeScore": 72,
+      "reviewStatus": "UNREVIEWED",
+      "nextAction": "NONE",
+      "tier": "TIER 3: WATCH"
+    }
+  ],
+  "evidenceByUrl": {
+    "https://www.linkedin.com/in/david-wright-austin-cto": {
+      "url": "https://www.linkedin.com/in/david-wright-austin-cto",
+      "title": "David Wright - Chief Technology Officer - Austin Cloudworks | LinkedIn",
+      "snippet": "CTO at Austin Cloudworks. Cloud migration services in Austin TX.",
+      "markdown": "# David Wright\nChief Technology Officer at Austin Cloudworks, Austin TX. Bootstrapped cloud engineering consultancy."
+    },
+    "https://www.linkedin.com/in/rachel-kim-cto": {
+      "url": "https://www.linkedin.com/in/rachel-kim-cto",
+      "title": "Rachel Kim - Chief Technology Officer - Riverwalk Analytics | LinkedIn",
+      "snippet": "CTO at Riverwalk Analytics. Austin-based business intelligence software.",
+      "markdown": "# Rachel Kim\nChief Technology Officer at Riverwalk Analytics. Seed-funded analytics startup in Austin."
+    },
+    "https://www.linkedin.com/in/brian-hayes-eng": {
+      "url": "https://www.linkedin.com/in/brian-hayes-eng",
+      "title": "Brian Hayes - VP Engineering - LoneStar Data | LinkedIn",
+      "snippet": "VP of Engineering at LoneStar Data. Data infrastructure.",
+      "markdown": "# Brian Hayes\nVP Engineering at LoneStar Data. Series A venture-backed startup in Austin."
+    }
+  },
+  "previousRoundSummary": {
+    "viableCandidates": 0,
+    "shouldRecover": true,
+    "missingHardRequirementIds": ["req-funding"],
+    "judgePassRateEstimate": 0.05
+  },
+  "stallDiagnostics": {
+    "stalledRounds": 2,
+    "universalFailureRequirementId": "req-funding",
+    "expectedAblation": {
+      "ablated": true,
+      "targetRequirementId": "req-funding",
+      "relaxedImportance": "soft"
+    }
+  }
+}

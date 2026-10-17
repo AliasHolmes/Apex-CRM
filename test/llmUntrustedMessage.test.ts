@@ -15,7 +15,6 @@ const MANAGED_KEYS = [
   'GROQ_API_KEY',
   'GROQ_BASE_URL',
   'GROQ_MODEL',
-  'ATRIA_API_KEY',
   'LLM_GATEWAY_MODE',
   'LLM_MAX_RETRIES',
   'LLM_TIMEOUT_MS',
@@ -64,11 +63,8 @@ describe('LLM failure classification ignores untrusted model text', () => {
     }
   });
 
-  it('still cascades to the second-priority provider when malformed output contains "aborted"', async () => {
-    // Atria + Byesu: the second chain member is the "next provider" (the failsafe is
-    // reserved for when both primaries are out).
-    process.env.ATRIA_API_KEY = 'test-atria-key';
-    process.env.OPENAI_API_KEY = 'test-primary-key';
+  it('still cascades to the next failsafe provider when malformed output contains "aborted"', async () => {
+    process.env.GROQ_API_KEY = 'test-groq-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
 
     const llm = await importLLM('untrusted-aborted');
@@ -93,10 +89,10 @@ describe('LLM failure classification ignores untrusted model text', () => {
 
     // Previously the echoed "aborted" matched `message.includes("aborted")` and rethrew past
     // every remaining provider, so only one call was made and the request failed outright.
-    assert.equal(calls.length, 2, 'should have fallen through to the second provider');
+    assert.equal(calls.length, 2, 'should have fallen through to OpenRouter');
     assert.deepEqual(result, { leads: [] });
-    assert.ok(calls[0].includes('atria'), 'the primary chain must try Atria first');
-    assert.ok(calls[1].includes('byesu'), 'then cascade to Byesu');
+    assert.ok(calls[0].includes('groq'), 'the first failsafe attempt must try Groq');
+    assert.ok(calls[1].includes('mistral') || calls[1].includes('openrouter'), 'then cascade to OpenRouter');
   });
 
   it('does not cooldown a healthy provider when malformed output contains "timeout"', async () => {

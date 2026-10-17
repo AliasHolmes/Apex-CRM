@@ -4,7 +4,7 @@ Date: 2026-10-09
 
 ## Status
 
-Accepted (supersedes the secondary-go-to variant of this ADR, which was rejected in review)
+Superseded by [ADR-0014](0014-byesu-primary-gpt-6-1.md) (Byesu Primary with GPT-6.1)
 
 ## Scope
 

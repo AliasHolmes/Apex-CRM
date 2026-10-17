@@ -48,6 +48,7 @@ import {
 } from "../sessionHelpers.js";
 import { normalizeCompanyName } from "../signalStore.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
+import type { EngineLead } from "../leadDomain.js";
 import type { PostFilterLead } from "./verifyStage.js";
 import type { EvidenceMeta } from "./extractStage.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -100,7 +101,7 @@ export type EnrichStageInput = {
    * arrive with their final profile evidence; site-probe signals are applied later and
    * gate admission at drain time, so judge verdicts are unaffected by the earlier start.
    */
-  onTargetsReady?: (leads: any[]) => void;
+  onTargetsReady?: (leads: EngineLead[]) => void;
 };
 
 export type EnrichStageOutput = {

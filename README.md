@@ -29,7 +29,7 @@ Its primary workflow is intentionally practical:
 3. **Stage-Pipelined High-Efficiency Engine**:
    - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`), cross-round **Retrieval Cache** (`retrievalCache.ts`), and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
-   - Enforces **Provider-Affinity Dual Concurrency** (`withProviderFallback`): prioritizes Atria (primary model) when idle with 10-minute dynamic reasoning headroom, and seamlessly overflows to Byesu (secondary model) in parallel under load (1 in-flight slot each) to achieve safe dual-model concurrency without triggering 429 rate limits or timeouts.
+   - Enforces **Provider Slot Concurrency** (`withProviderFallback`): establishes Byesu (GPT-6.1) as the primary engine provider with resilient fallback to OpenRouter/Mistral and Groq, achieving safe high-throughput execution without 429 rate limits or timeouts.
    - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v27.
    - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
@@ -148,7 +148,7 @@ flowchart TD
 - **Upstream CRM Feedback, JSON Metro Saturation & Cross-Session Company Seeding**: Reads existing company domains, metro saturation counts (including SQLite JSON `$.profile.location` and `$.profile.city`), and cross-session `discovered_companies` (`readDiscoveredCompanyNames(25)`). Passes known domains directly into Tavily's `exclude_domains` parameter and directs the query strategist to pivot away from saturated hubs ($\ge 15$ leads) with negative search operators.
 - **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles. Acronyms (`MD`, `VP`, `CTO`, `CRO`) are expanded before matching.
 - **Pre-Judge Context Grounding**: Executes a lightweight, non-LLM site probe (~250ms) to fetch the root `<meta name="description">` or `<title>` for ambiguous accounts, appending verified business context before semantic evaluation.
-- **Provider-Affinity Dual Concurrency**: Atria and Byesu form the primary pair and each serves exactly one request at a time, in parallel (Atria preferred whenever its slot is free; `ATRIA_CONCURRENT_SLOTS` / `BYESU_CONCURRENT_SLOTS`). Groq and OpenRouter/Mistral are a failsafe tier used only when both primaries are out. The older global single-mutex queue and stage-lane sharding (`FEATURE_LLM_STAGE_QUEUES`) no longer exist; see ADR-0007.
+- **Primary Provider Concurrency**: Byesu (GPT-6.1) serves as the primary engine provider with up to 8 concurrent slots (`BYESU_CONCURRENT_SLOTS=8`). Groq and OpenRouter/Mistral form the resilient failsafe tier used only when Byesu is unavailable. The older global single-mutex queue and stage-lane sharding (`FEATURE_LLM_STAGE_QUEUES`) no longer exist; see ADR-0007.
 - **Contract-Aware Calibrated Judging**: `rankLeadForFinalSelection` weights hard-requirement coverage (`1.2x` spread) with active soft-signal boost (`0.4x`); evidence quote checks are symmetrically alias-aware (`MD` <-> `managing director`, `US` <-> `United States`).
 - **Quantized Adaptive Controller & Constraint Retention**: MAB priors pool by 24 deterministic brief centroids (`centroid_<cluster>_<00-23>`) with `historicalYield` keyed by `domain_cluster|family|lane|provider` and ` seedAdaptiveRandom` deterministic test support; `contract_guard` tasks are preserved above the `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **CRM Workflow Preservation & Persistence Status Fidelity**: Same-identity engine upserts refresh objective profile and score attributes while preserving human-managed `stage`, `reviewStatus`, `nextAction`, and `notes` unless `forceOverwrite: true` is passed. Session and search-log statuses (`success | partial_success | error`) are derived from actual persistence counts rather than hardcoded.
@@ -160,11 +160,10 @@ flowchart TD
 - **Universal ISO Geographic Resolution** (`geo.ts`): Replaced manual country code maps with native `Intl` standard resolution, recognizing all 249 ISO 3166-1 alpha-2 countries and regions while guarding against English pronoun collisions.
 - **Brief-Gated Decision-Maker Scoring**: Authority and executive hierarchy weights are applied conditionally only when the user's brief explicitly requests authority or leadership, preventing technical or specialized searches from being improperly downweighted.
 
-#### 12. Provider-Affinity Dual Concurrency & Elevated Atria Timeouts
+#### 12. Primary Provider Concurrency & Bounded Timeouts
 
-- **Clever Dual-Provider Concurrency**: Configures independent provider concurrency slots (`ATRIA_CONCURRENT_SLOTS=1` and `BYESU_CONCURRENT_SLOTS=1`).
-- **Priority Routing with Safe Overflow**: In `withProviderFallback`, Atria (primary model) is prioritized whenever idle. If Atria is active processing a request, incoming concurrent tasks overflow in parallel to Byesu (secondary model) without tripping provider 429 rate limits or 524 gateway timeouts.
-- **10-Minute Dynamic Reasoning Headroom**: Elevated `ATRIA_MAX_TIMEOUT_MS` to `600_000ms` (10 minutes) with a `120_000ms` floor and dynamic token scaling (`computeAtriaDynamicTimeoutMs`), giving deep reasoning models sufficient runway to complete complex multi-step evaluations without aborting.
+- **Byesu Primary Architecture**: Configures primary concurrency slots (`BYESU_CONCURRENT_SLOTS=8`) with GPT-6.1 (`gpt-6.1-sol`).
+- **Dynamic Timeout Scaling**: Uses `computeByesuDynamicTimeoutMs` bounded strictly within Cloudflare proxy limits (`CLOUDFLARE_MAX_TIMEOUT_MS = 115_000ms`), preventing premature aborts on large multi-candidate batches.
 
 #### 13. Persistent Candidate Verdicts & Company Attribution (Schema v26)
 
@@ -188,9 +187,9 @@ flowchart TD
 - **Uninterrupted Outreach Studio Lifecycle**: `App.tsx` retains Outreach Studio within the mounted DOM across tab switches (`mountedJobTabs`), ensuring in-flight LLM generations, custom prompts, and drafted messages are never lost during navigation.
 - **Pipeline Stage Preservation on CSV Re-Import**: The CSV importer maps pipeline stage columns (`CSV_FIELD_ALIASES.stage`), preventing existing prospect stage progressions from resetting to `SCRAPED` upon re-import.
 
-#### 16. Atria Quad Concurrency & Micro-Batching (ADR-0009)
+#### 16. Provider Concurrency & Micro-Batching (ADR-0009)
 
-- **Quad Provider Concurrency**: Enables Atria to execute up to 4 concurrent in-flight requests simultaneously (`ATRIA_CONCURRENT_SLOTS=4`, `LEAD_EXTRACTION_CONCURRENCY=4`, `FINALIST_JUDGE_CONCURRENCY=4`), fully saturating vLLM capacity without crashing.
+- **High Provider Concurrency**: Enables execution of concurrent in-flight requests simultaneously (`BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=6`), fully utilizing primary capacity.
 - **Micro-Batch Sizing**: Clamps extraction to 3 candidate profiles per chunk (`LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging to 2 candidates per batch (`FINALIST_JUDGE_MICRO_BATCH_SIZE=2`). Small payloads keep individual call latencies under ~25s-35s and prevent borderline prospects from stalling sibling candidates.
 - **Rolling-Pool Early Stopping**: Micro-batching unlocks fine-grained quota fulfillment in `runRollingPool`, halting evaluation as soon as the target cushion is reached and skipping remaining batches to save 50%+ in token costs and execution time.
 
@@ -206,7 +205,7 @@ graph TD
     API --> DB[("SQLite Database (node:sqlite, Schema v27, WAL mode)")]
 
     API --> Direct["Direct OpenAI-Compatible Provider Chain"]
-    Direct --> Primary["Atria / Byesu Provider"]
+    Direct --> Primary["Byesu Primary Provider (GPT-6.1)"]
     Direct --> OpenRouter["OpenRouter"]
     Direct --> Groq["Groq"]
 
@@ -222,7 +221,7 @@ graph TD
 - **Frontend**: React 19, Vite 8, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
 - **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v27**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
-- **LLM Routing**: Direct OpenAI-compatible provider chain with provider-affinity dual concurrency (Atria primary + Byesu secondary), automatic fallback (OpenRouter -> Groq), session circuit breaker, and retry logic.
+- **LLM Routing**: Direct OpenAI-compatible provider chain with Byesu primary (GPT-6.1), automatic fallback (OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
 ---
@@ -252,18 +251,12 @@ cp .env.example .env
 A minimal `.env` setup:
 
 ```env
-# Primary LLM Provider: Atria with quad concurrency & reasoning headroom
-ATRIA_API_KEY="your_atria_api_key"
-ATRIA_CONCURRENT_SLOTS="4"
-ATRIA_MAX_TIMEOUT_MS="600000"
-ATRIA_MIN_TIMEOUT_MS="120000"
-
-# Secondary/Parallel LLM Provider (overflows concurrently when Atria is busy):
+# Primary LLM Provider: Byesu (GPT-6.1)
 OPENAI_API_KEY="your_byesu_or_openai_key"
 OPENAI_BASE="https://byesu.com/v1"
-OPENAI_MODEL="gpt-5.5"
+OPENAI_MODEL="gpt-6.1-sol"
 OPENAI_PROVIDER_NAME="Byesu"
-BYESU_CONCURRENT_SLOTS="4"
+BYESU_CONCURRENT_SLOTS="8"
 
 # Optimal Micro-Batching & Quad Concurrency (ADR-0009)
 LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"
@@ -381,7 +374,7 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 160+ test files (unit/integration suites + 1 evaluation harness, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider-affinity concurrency tests (`test/atriaConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 160+ test files (unit/integration suites + 1 evaluation harness, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
@@ -432,7 +425,7 @@ server/
   routes/
     api.ts                   REST API endpoints, dual-mode HTTP 202, outcome feedback, and resume routes
   services/
-    llm.ts                   LLM gateway, provider-affinity dual concurrency, Atria reasoning headroom, cache, fallbacks
+    llm.ts                   LLM gateway, Byesu primary provider, dynamic timeouts, cache, fallbacks
     brightdata.ts            Bright Data MCP client, search, and scraper
     keyRotator.ts            Provider key pool and rate-limit manager
     linkedinEvidence.ts      LinkedIn profile evidence extraction

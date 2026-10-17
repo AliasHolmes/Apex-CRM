@@ -74,12 +74,10 @@ describe("Queue Invariants & Abort Mechanics", () => {
     const originalFetch = globalThis.fetch;
     const oldKey = process.env.OPENAI_API_KEY;
     const oldOpenRouter = process.env.OPENROUTER_API_KEY;
-    const oldAtriaKey = process.env.ATRIA_API_KEY;
     const oldRetries = process.env.LLM_MAX_RETRIES;
     const oldRetry429 = process.env.LLM_RETRY_429;
     process.env.OPENAI_API_KEY = "test-key";
     process.env.OPENROUTER_API_KEY = "test-openrouter";
-    delete process.env.ATRIA_API_KEY;
     process.env.LLM_MAX_RETRIES = "1";
     process.env.LLM_RETRY_429 = "true";
 
@@ -112,8 +110,6 @@ describe("Queue Invariants & Abort Mechanics", () => {
       else process.env.OPENAI_API_KEY = oldKey;
       if (oldOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
       else process.env.OPENROUTER_API_KEY = oldOpenRouter;
-      if (oldAtriaKey === undefined) delete process.env.ATRIA_API_KEY;
-      else process.env.ATRIA_API_KEY = oldAtriaKey;
       if (oldRetries === undefined) delete process.env.LLM_MAX_RETRIES;
       else process.env.LLM_MAX_RETRIES = oldRetries;
       if (oldRetry429 === undefined) delete process.env.LLM_RETRY_429;

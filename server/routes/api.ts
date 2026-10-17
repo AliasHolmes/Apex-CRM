@@ -210,7 +210,7 @@ export function classifyLeadTransition(
 
 /**
  * Single source for the concurrent-session cap used by both start and resume. Defaults to 1
- * (one session at a time keeps the Atria/Byesu provider slots from being shared), matching
+ * (one session at a time keeps the primary provider slots from being shared), matching
  * .env.example; clamped to 1-8.
  */
 export function resolveMaxConcurrentSessions(): number {
@@ -923,8 +923,8 @@ router.get("/key-rotation-status", (_req, res) => {
 
 router.get("/llm-health", async (req, res) => {
   const configuredProviders = getLLMProviderSummaries();
-  // Slot utilization makes provider saturation observable (ADR-0011): a session whose
-  // queue sums grow is starved of Atria slots, not throttled by the provider.
+  // Slot utilization makes provider saturation observable: a session whose
+  // queue sums grow is starved of Byesu slots, not throttled by the provider.
   const healthSummaries = Object.fromEntries(
     Object.entries(getProviderHealthSummaries()).map(([id, health]) => [
       id,
@@ -947,9 +947,9 @@ router.get("/llm-health", async (req, res) => {
   }
 
   // Never spend a live probe on a provider slot a mining session may need: when ANY configured
-  // primary (Atria / Byesu) is busy, report from tracked provider health instead.
+  // primary (Byesu) is busy, report from tracked provider health instead.
   const configuredPrimaries = configuredProviders.filter(
-    (p) => (p.id === "atria" || p.id === "primary") && p.configured,
+    (p) => p.id === "primary" && p.configured,
   );
   const busyPrimary = configuredPrimaries.find((p) => !isProviderSlotFree(p.id));
   const primaryConfigured = busyPrimary || configuredPrimaries[0];
@@ -1029,7 +1029,7 @@ router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promi
         .status(503)
         .json({
           error:
-            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable real scraping.",
+            "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable real scraping.",
         });
     }
 
@@ -1116,7 +1116,7 @@ router.post("/scrape-pasted", paidRouteLimit("scrape-pasted"), async (req, res):
         .status(503)
         .json({
           error:
-            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable AI extraction.",
+            "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable AI extraction.",
         });
     }
 
@@ -2291,7 +2291,7 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
         .status(503)
         .json({
           error:
-            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable AI outreach generation.",
+            "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable AI outreach generation.",
         });
     }
 
@@ -2400,7 +2400,7 @@ router.post("/chat", paidRouteLimit("chat"), async (req, res): Promise<any> => {
         .status(503)
         .json({
           error:
-            "No LLM API key configured. Add ATRIA_API_KEY, BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable the AI Copilot.",
+            "No LLM API key configured. Add BYESU_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or OPENROUTER_API_KEY to your .env file to enable the AI Copilot.",
         });
     }
 

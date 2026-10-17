@@ -1,5 +1,6 @@
 import type { QueryFamily, QueryIntent, SearchQueryPlanItem } from './searchSpec.js';
 export type { QueryFamily, QueryIntent, SearchQueryPlanItem };
+export { STRATEGIST_PROMPT_VERSION } from './stages/planStage.js';
 
 export type QueryRunStats = {
   round: number;

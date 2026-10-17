@@ -9,6 +9,7 @@ import { normalizeCompanyName } from "../signalStore.js";
 import {
   extractLinkedInUsername,
   normalizeLinkedInUrl,
+  canonicalLinkedInIdentity,
 } from "../../services/linkedinEvidence.js";
 import { unwrapRedirectUrl, normalizeDedupeValue } from "../../../src/utils/leadDedupe.js";
 import { extractLinkedInProfileUrlFromResult } from "../../services/brightdata.js";
@@ -240,11 +241,11 @@ export async function executeFuseStage(
     const obsName = normalizeDedupeValue(observation.raw?.fullName || observation.raw?.name);
     const obsComp = normalizeCompanyName(observation.raw?.currentCompany || observation.raw?.company);
 
+    const linkedinKey = canonicalLinkedInIdentity(username || normalizedUrl);
     const candidateKeys = [
       observation.identityKey,
-      `linkedin:${username}`,
+      linkedinKey,
       username,
-      `linkedin:${normalizedUrl}`,
       `url:${normalizedUrl}`,
       normalizedUrl,
       obsEmail ? `email:${obsEmail}` : undefined,

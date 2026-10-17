@@ -20,9 +20,9 @@ const llmEvent = (
   latencyMs: Math.max(...attempts.map((a) => a.latencyMs)),
   llm: {
     providerAttempts: attempts.map((a) => ({
-      providerId: 'atria',
-      provider: 'Atria',
-      model: 'm',
+      providerId: 'primary',
+      provider: 'Byesu',
+      model: 'gpt-6.1-sol',
       status: 'success' as const,
       ...a,
     })),

@@ -20,6 +20,7 @@ const MANAGED_KEYS = [
   'LLM_PRIMARY_RECOVERY_MAX_WAIT_MS',
   'LLM_AUTH_OUT_MS',
   'LLM_QUOTA_OUT_MS',
+  'BYESU_CONCURRENT_SLOTS',
 ] as const;
 
 const envSnapshot: Record<string, string | undefined> = {};
@@ -135,12 +136,10 @@ describe('LLM audit fixes', () => {
   });
 
   describe('failsafe routing policy', () => {
-    it('background sessions use the failsafe tier once both primaries are out', async () => {
-      process.env.ATRIA_API_KEY = 'a';
+    it('background sessions use the failsafe tier once primary is out', async () => {
       process.env.BYESU_API_KEY = 'b';
       process.env.GROQ_API_KEY = 'g';
       const llm = await importLLM('bg-both-out-failsafe');
-      markOut(llm, 'atria');
       markOut(llm, 'primary');
       const urls: string[] = [];
       globalThis.fetch = async (url: any) => {
@@ -150,18 +149,16 @@ describe('LLM audit fixes', () => {
       const res = await settlesWithin(
         llm.openAIText('p', undefined, { metadata: { sessionId: 'session-bg-1' } }),
         3_000,
-        'background call with both primaries out',
+        'background call with primary out',
       );
       assert.equal(res.text, 'failsafe ok');
       assert.ok(urls[0].includes('api.groq.com'), `expected Groq, got ${urls[0]}`);
     });
 
-    it('background sessions give up after a bounded wait when both primaries are out and no failsafe exists', async () => {
-      process.env.ATRIA_API_KEY = 'a';
+    it('background sessions give up after a bounded wait when primary is out and no failsafe exists', async () => {
       process.env.BYESU_API_KEY = 'b';
       process.env.LLM_PRIMARY_RECOVERY_MAX_WAIT_MS = '50';
       const llm = await importLLM('bg-both-out-bounded');
-      markOut(llm, 'atria');
       markOut(llm, 'primary');
       globalThis.fetch = async () => okChat('should never be called');
       await assert.rejects(
@@ -173,7 +170,7 @@ describe('LLM audit fixes', () => {
           ),
         (err: Error) => {
           assert.ok(!/did not settle/.test(err.message), 'the call hung instead of giving up');
-          assert.match(err.message, /primary providers .*out/i);
+          assert.match(err.message, /primary provider.*out/i);
           return true;
         },
       );
@@ -199,6 +196,7 @@ describe('LLM audit fixes', () => {
 
     it('fails a queued call over to the failsafe promptly when its primary goes out while it waits', async () => {
       process.env.BYESU_API_KEY = 'b';
+      process.env.BYESU_CONCURRENT_SLOTS = '1';
       process.env.GROQ_API_KEY = 'g';
       const llm = await importLLM('waiter-primary-dies');
       let byesuCalls = 0;
@@ -265,12 +263,11 @@ describe('LLM audit fixes', () => {
 
   describe('route description', () => {
     it('LLM_FAST_PROVIDER_IDS cannot make the failsafe tier look first', async () => {
-      process.env.ATRIA_API_KEY = 'a';
       process.env.BYESU_API_KEY = 'b';
       process.env.GROQ_API_KEY = 'g';
       process.env.LLM_FAST_PROVIDER_IDS = 'groq';
       const llm = await importLLM('route-description');
-      assert.equal(llm.describeLLMRoute('fast').providerId, 'atria');
+      assert.equal(llm.describeLLMRoute('fast').providerId, 'primary');
     });
   });
 });

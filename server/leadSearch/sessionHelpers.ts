@@ -1,5 +1,8 @@
-import { extractLinkedInUsername, normalizeLinkedInUrl } from "../services/linkedinEvidence.js";
-import { canonicalLinkedInIdentity } from "../../src/utils/leadDedupe.js";
+import {
+  extractLinkedInUsername,
+  normalizeLinkedInUrl,
+  canonicalLinkedInIdentity,
+} from "../services/linkedinEvidence.js";
 import { getLeadScore, type EvidenceQuality, type LeadSourceProvider } from "./scoring.js";
 import { isFlagEnabled } from "./featureFlags.js";
 import { abortableSleep } from "../services/sleepUtils.js";
@@ -109,11 +112,13 @@ export function findEvidenceForLead<E extends SessionEvidenceMeta>(
     lead?.profile?.contactDetails?.linkedinUrl ||
     "";
   const fallbackUrl = lead?.sourceUrl || lead?.profile?.sourceUrl || "";
-  const linkedinHandle =
-    extractLinkedInUsername(linkedinUrl) || extractLinkedInUsername(fallbackUrl);
+  const linkedinKey = canonicalLinkedInIdentity(linkedinUrl || fallbackUrl);
+  const linkedinHandle = linkedinKey
+    ? linkedinKey.slice("linkedin:".length)
+    : (extractLinkedInUsername(linkedinUrl) || extractLinkedInUsername(fallbackUrl));
 
   const candidateKeys = [
-    linkedinHandle ? `linkedin:${linkedinHandle}` : "",
+    linkedinKey,
     linkedinHandle ? `linkedin.com/in/${linkedinHandle}` : "",
     normalizeLinkedInUrl(linkedinUrl),
     normalizeDedupeValue(linkedinUrl),
@@ -236,9 +241,9 @@ export function buildCheckpointEvidence<E extends SessionEvidenceMeta>(
 
     // Prefer canonical prefixed form, then normalized URL, then raw string -
     // mirroring the lookup order of findEvidenceForLead.
-    const handle = extractLinkedInUsername(linkedinUrl);
+    const linkedinKey = canonicalLinkedInIdentity(linkedinUrl);
     const candidateKeys = [
-      handle ? `linkedin:${handle}` : "",
+      linkedinKey,
       normalizeLinkedInUrl(linkedinUrl),
       linkedinUrl,
     ].filter(Boolean);

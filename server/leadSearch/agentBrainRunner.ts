@@ -9,7 +9,10 @@ import {
   type LeadWriteResult
 } from "../db.js";
 import { tavilySearch } from "../services/llm.js";
-import { extractLinkedInUsername, normalizeLinkedInUrl } from "../services/linkedinEvidence.js";
+import {
+  normalizeLinkedInUrl,
+  canonicalLinkedInIdentity,
+} from "../services/linkedinEvidence.js";
 
 export interface AgentBrainExecutionOptions {
   sessionId?: string;
@@ -138,13 +141,11 @@ export async function executeAgentBrainDiscovery(
     for (const items of results) {
       for (const item of items) {
         const rawUrl = item.url || "";
-        const username = extractLinkedInUsername(rawUrl);
-        if (!username) continue;
+        const identityKey = canonicalLinkedInIdentity(rawUrl);
+        if (!identityKey) continue;
+        const canonicalSlug = identityKey.slice("linkedin:".length);
 
-        const canonicalSlug = username.toLowerCase().replace(/[^a-z0-9_-]/g, "");
-        const identityKey = `linkedin:${canonicalSlug}`;
-
-        if (existingIdentities.has(identityKey) || existingIdentities.has(`linkedin:${username}`)) {
+        if (existingIdentities.has(identityKey) || existingIdentities.has(canonicalSlug)) {
           duplicatesSkipped++;
           continue;
         }

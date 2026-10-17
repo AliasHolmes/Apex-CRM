@@ -23,6 +23,7 @@ export function summarizeLLM(
   parseRetries = 0,
   providerAttempts: LLMProviderAttempt[] = [],
   usage?: LLMUsage,
+  promptVersion?: string,
 ) {
   const route = getLLMRouteLabel();
   const successfulAttempt = providerAttempts.find(
@@ -54,6 +55,7 @@ export function summarizeLLM(
     totalTokens: usage?.totalTokens ?? (inputTokens + outputTokens),
     estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
     parseRetries,
+    promptVersion,
   };
 }
 
@@ -89,6 +91,7 @@ export type MiningTraceEvent = {
   status: MiningEventStatus;
   provider?: MiningProvider;
   model?: string;
+  promptVersion?: string;
   round?: number;
   query?: string;
   chunk?: {
@@ -102,6 +105,7 @@ export type MiningTraceEvent = {
     purpose?: string;
     model?: string;
     route?: string;
+    promptVersion?: string;
     fallbackUsed?: boolean;
     inputTokens?: number;
     outputTokens?: number;
@@ -516,8 +520,13 @@ export class MiningTelemetryRecorder {
   record(
     event: Omit<MiningTraceEvent, "id" | "timestamp"> & { timestamp?: string },
   ) {
+    const promptVer =
+      event.promptVersion ||
+      event.llm?.promptVersion ||
+      (event.metadata?.promptVersion as string | undefined);
     const traceEvent: MiningTraceEvent = {
       ...event,
+      promptVersion: promptVer,
       id: `${this.sessionId}-${++this.sequence}`,
       timestamp: event.timestamp || nowIso(),
       error: event.error
@@ -562,6 +571,7 @@ export class MiningTelemetryRecorder {
           queueWaitMs,
           modelName: traceEvent.model || traceEvent.llm?.model || undefined,
           provider: traceEvent.llm?.route || "llm",
+          promptVersion: traceEvent.promptVersion || traceEvent.llm?.promptVersion,
           createdAt: traceEvent.timestamp,
         });
       } catch (err) {
@@ -703,6 +713,10 @@ export class MiningTelemetryRecorder {
 function sanitizeMetadata(metadata: Record<string, any>) {
   const sanitized: Record<string, any> = {};
   for (const [key, value] of Object.entries(metadata)) {
+    if (key === "promptVersion") {
+      sanitized[key] = sanitizeTelemetryString(value, 50);
+      continue;
+    }
     if (/prompt|raw|evidence|api[_-]?key|token|secret/i.test(key)) {
       if (typeof value === "string") {
         sanitized[`${key}Length`] = value.length;
@@ -730,6 +744,7 @@ export type LlmStageLogEntry = {
   queueWaitMs?: number;
   modelName?: string;
   provider?: string;
+  promptVersion?: string;
   createdAt?: string;
 };
 

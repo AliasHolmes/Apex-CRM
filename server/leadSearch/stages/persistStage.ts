@@ -7,7 +7,7 @@ import {
   upsertDiscoveredCompanies,
   computeRequirementsFingerprint,
 } from "../../db.js";
-import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
+import { canonicalLinkedInIdentity } from "../../services/linkedinEvidence.js";
 import { mapCandidateToPersistedLead, stampDiscoveryContext } from "../leadMapping.js";
 import { deriveContractDomainCluster } from "../adaptiveScheduler.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -216,8 +216,8 @@ export async function executePersistStage(
     const returnedIdentities = mappedLeads.flatMap((lead) => {
       const url =
         lead?.profile?.contactDetails?.linkedinUrl || lead?.sourceUrl || "";
-      const username = extractLinkedInUsername(url);
-      return username ? [`linkedin:${username}`] : [];
+      const identityKey = canonicalLinkedInIdentity(url);
+      return identityKey ? [identityKey] : [];
     });
     if (returnedIdentities.length > 0) {
       updateSavedSearchExcludeList(savedSearchId, returnedIdentities);

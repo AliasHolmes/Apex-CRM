@@ -1,14 +1,12 @@
 import crypto from "crypto";
-import { canonicalLinkedInIdentity, getLinkedInHandle, getLeadLinkedInUrl } from "../../src/utils/leadDedupe.js";
+import { getLeadLinkedInUrl } from "../../src/utils/leadDedupe.js";
+import { canonicalLinkedInIdentity } from "../services/linkedinEvidence.js";
 
 /** Stable cross-session key for a LinkedIn profile URL ("linkedin:<handle>"), or "". */
 export function candidateVerdictKeyForUrl(url?: string | null): string {
   const raw = String(url || "").trim();
   if (!raw) return "";
-  const identity = canonicalLinkedInIdentity(raw);
-  if (identity) return identity;
-  const handle = getLinkedInHandle(raw);
-  return handle ? `linkedin:${handle}` : "";
+  return canonicalLinkedInIdentity(raw);
 }
 
 /** Reads the LinkedIn URL from every field the pipeline actually populates. */

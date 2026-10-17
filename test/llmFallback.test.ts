@@ -82,7 +82,7 @@ describe('LLM gateway and provider fallback', () => {
     assert.equal(capturedOptions.headers['Authorization'], 'Bearer test-primary-key');
 
     const body = JSON.parse(capturedOptions.body);
-    assert.equal(body.model, 'gpt-5.5');
+    assert.equal(body.model, 'gpt-6.1-sol');
     assert.equal(body.stream, false);
   });
 
@@ -651,11 +651,11 @@ describe('LLM gateway and provider fallback', () => {
   it('guarantees Byesu is primary provider when configured', async () => {
     process.env.OPENAI_API_KEY = 'test-byesu-key';
     process.env.OPENAI_PROVIDER_NAME = 'Byesu';
-    process.env.OPENAI_MODEL = 'gpt-5.5';
+    process.env.OPENAI_MODEL = 'gpt-6.1-sol';
 
     const llm = await importLLM('byesu-primary');
     assert.equal(llm.getPrimaryLLMProvider(), 'Byesu');
-    assert.equal(llm.getPrimaryLLMModel(), 'gpt-5.5');
+    assert.equal(llm.getPrimaryLLMModel(), 'gpt-6.1-sol');
 
     let capturedUrl = '';
     globalThis.fetch = async (url) => {
@@ -667,7 +667,7 @@ describe('LLM gateway and provider fallback', () => {
 
     const res = await llm.openAIText('test byesu primary');
     assert.equal(res.provider, 'Byesu');
-    assert.equal(res.model, 'gpt-5.5');
+    assert.equal(res.model, 'gpt-6.1-sol');
     assert.equal(capturedUrl, 'https://byesu.com/v1/chat/completions');
 
     delete process.env.OPENAI_API_KEY;

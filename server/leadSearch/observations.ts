@@ -1,4 +1,8 @@
-import { extractLinkedInUsername, normalizeLinkedInUrl } from '../services/linkedinEvidence.js';
+import {
+  extractLinkedInUsername,
+  normalizeLinkedInUrl,
+  canonicalLinkedInIdentity,
+} from '../services/linkedinEvidence.js';
 import { GENERIC_GEO_NAMES } from './aliasMap.js';
 import { ALL_OBSERVATION_BLOCKED_DOMAINS, isDomainOrSubdomainBlocked } from './domainBlocklists.js';
 
@@ -28,8 +32,8 @@ export type FusedObservation = ScoutObservation & {
 const normalize = (value: unknown) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 export function observationIdentity(observation: Pick<ScoutObservation, 'url' | 'title' | 'content'>) {
-  const username = extractLinkedInUsername(observation.url);
-  if (username) return `linkedin:${username}`;
+  const linkedinKey = canonicalLinkedInIdentity(observation.url);
+  if (linkedinKey) return linkedinKey;
   const normalizedUrl = normalizeLinkedInUrl(observation.url) || normalize(observation.url).replace(/^https?:\/\//, '').replace(/\/$/, '');
   if (normalizedUrl) return `url:${normalizedUrl}`;
   return `text:${normalize(`${observation.title} ${observation.content}`).slice(0, 220)}`;

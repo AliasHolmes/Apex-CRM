@@ -3,18 +3,17 @@ import assert from 'node:assert/strict';
 import {
   orderProvidersForTier,
   computeByesuDynamicTimeoutMs,
-  computeAtriaDynamicTimeoutMs,
 } from '../server/services/llm.js';
 import { resolvePlannerProviderOrder } from '../server/leadSearch/stages/planStage.js';
 
-test('resolvePlannerProviderOrder defaults to the fast tier order (primary, atria, openrouter)', () => {
+test('resolvePlannerProviderOrder defaults to the fast tier order (primary, openrouter, groq)', () => {
   const originalEnv = process.env.LEAD_PLANNER_PROVIDER_ORDER;
   try {
     delete process.env.LEAD_PLANNER_PROVIDER_ORDER;
-    assert.deepEqual(resolvePlannerProviderOrder(), ['primary', 'atria', 'openrouter']);
+    assert.deepEqual(resolvePlannerProviderOrder(), ['primary', 'openrouter', 'groq']);
 
-    process.env.LEAD_PLANNER_PROVIDER_ORDER = 'atria, primary';
-    assert.deepEqual(resolvePlannerProviderOrder(), ['atria', 'primary']);
+    process.env.LEAD_PLANNER_PROVIDER_ORDER = 'openrouter, primary';
+    assert.deepEqual(resolvePlannerProviderOrder(), ['openrouter', 'primary']);
   } finally {
     if (originalEnv !== undefined) {
       process.env.LEAD_PLANNER_PROVIDER_ORDER = originalEnv;
@@ -24,11 +23,11 @@ test('resolvePlannerProviderOrder defaults to the fast tier order (primary, atri
   }
 });
 
-test('orderProvidersForTier prioritizes Byesu (primary) ahead of Atria when requested', () => {
-  const providers = [{ id: 'atria' }, { id: 'primary' }, { id: 'groq' }];
-  const ordered = orderProvidersForTier(providers, 'fast', ['primary', 'atria']);
+test('orderProvidersForTier prioritizes Byesu (primary) ahead of failsafes when requested', () => {
+  const providers = [{ id: 'openrouter' }, { id: 'primary' }, { id: 'groq' }];
+  const ordered = orderProvidersForTier(providers, 'fast', ['primary', 'openrouter']);
   assert.equal(ordered[0].id, 'primary');
-  assert.equal(ordered[1].id, 'atria');
+  assert.equal(ordered[1].id, 'openrouter');
   assert.equal(ordered[2].id, 'groq');
 });
 
@@ -41,15 +40,4 @@ test('computeByesuDynamicTimeoutMs honors hardTimeoutMs bypassing the 75s floor'
   // With hardTimeoutMs, returns requested 35,000ms
   const hardTimeout = computeByesuDynamicTimeoutMs(4000, sampleMessages as any, undefined, undefined, 35_000);
   assert.equal(hardTimeout, 35_000);
-});
-
-test('computeAtriaDynamicTimeoutMs honors hardTimeoutMs bypassing the 120s floor', () => {
-  const sampleMessages = [{ role: 'user', content: 'Generate search queries for NZ' }];
-  // Without hardTimeoutMs, floor is at least 120,000ms
-  const defaultTimeout = computeAtriaDynamicTimeoutMs(4000, sampleMessages as any, 90_000);
-  assert.ok(defaultTimeout >= 120_000, `Expected default >= 120000, got ${defaultTimeout}`);
-
-  // With hardTimeoutMs, returns requested 90,000ms
-  const hardTimeout = computeAtriaDynamicTimeoutMs(4000, sampleMessages as any, undefined, undefined, 90_000);
-  assert.equal(hardTimeout, 90_000);
 });

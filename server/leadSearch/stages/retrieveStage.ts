@@ -29,7 +29,7 @@ import {
   readCachedSearch,
   writeCachedSearch,
 } from "../retrievalCache.js";
-import { extractLinkedInUsername } from "../../services/linkedinEvidence.js";
+import { canonicalLinkedInIdentity } from "../../services/linkedinEvidence.js";
 
 export type RetrieveStageInput = {
   round: number;
@@ -182,9 +182,10 @@ export async function executeRetrieveStage(
               // P13: Filter out URLs/slugs matching existing CRM leads when replaying cached search results
               const filteredItems = (cachedResult.items || []).filter((it: any) => {
                 const url = it.url || "";
-                const username = extractLinkedInUsername(url);
-                if (username) {
-                  if (state.existingKeys.has(`linkedin:${username}`) || state.existingKeys.has(username)) {
+                const linkedinKey = canonicalLinkedInIdentity(url);
+                if (linkedinKey) {
+                  const username = linkedinKey.slice("linkedin:".length);
+                  if (state.existingKeys.has(linkedinKey) || state.existingKeys.has(username)) {
                     return false;
                   }
                 }

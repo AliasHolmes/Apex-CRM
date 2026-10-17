@@ -15,8 +15,8 @@ test('streaming judge seam wires enrichment completion into the live judge pool'
   assert.match(engine, /createLiveRollingPool/, 'the live pool must be constructed');
   assert.match(
     engine,
-    /\.\.\.\(streamingJudgeEnabled \? \{ onTargetsReady \} : \{\}\)/,
-    'enrichStage must receive the readiness callback when streaming is enabled',
+    /onTargetsReady,/,
+    'enrichStage must receive the readiness callback',
   );
   assert.match(engine, /await judgePool\.drain\(\)/, 'the pool must be drained after enrichment');
   assert.match(
@@ -24,14 +24,9 @@ test('streaming judge seam wires enrichment completion into the live judge pool'
     /survivedEnrichment\(qCand\)/,
     'drain-time admission must re-check enrichment acceptance',
   );
-  assert.match(
-    engine,
-    /LEAD_PIPELINE_STREAMING_JUDGE !== "false"/,
-    'the streaming seam must be feature-flag gated',
-  );
 
   const enrich = read('server/leadSearch/stages/enrichStage.ts');
-  assert.match(enrich, /onTargetsReady\?: \(leads: any\[\]\) => void/, 'the hook must exist on the input type');
+  assert.match(enrich, /onTargetsReady\?: \(leads: EngineLead\[\]\) => void/, 'the hook must exist on the input type');
   const hookFires = (enrich.match(/onTargetsReady\(/g) ?? []).length;
   assert.ok(hookFires >= 6, `expected the hook to fire at each enrichment completion point, found ${hookFires}`);
   assert.match(
@@ -41,13 +36,13 @@ test('streaming judge seam wires enrichment completion into the live judge pool'
   );
 });
 
-test('judge concurrency adapts to free Atria slots within the hard ceiling', () => {
+test('judge concurrency adapts to free primary slots within the hard ceiling', () => {
   const judge = read('server/leadSearch/stages/judgeStage.ts');
-  assert.match(judge, /getProviderConcurrencyLimit\("atria"\)/);
-  assert.match(judge, /getProviderActiveSlots\("atria"\)/);
+  assert.match(judge, /getProviderConcurrencyLimit\("primary"\)/);
+  assert.match(judge, /getProviderActiveSlots\("primary"\)/);
   assert.match(
     judge,
-    /Math\.min\(8, Math\.max\(configuredJudgeConcurrency, freeAtriaSlots\)\)/,
+    /Math\.min\(8, Math\.max\(configuredJudgeConcurrency, freePrimarySlots\)\)/,
     'adaptive concurrency must stay bounded by 8',
   );
   assert.match(

@@ -58,6 +58,8 @@ import {
 import { clampEnvInt } from "../sessionHelpers.js";
 import { resolveGeo } from "../queryUnderstanding.js";
 import { summarizeLLM } from "../telemetry.js";
+
+export const STRATEGIST_PROMPT_VERSION = "v1.0.0";
 import { mineQueryRefinements } from "../collectionCapacity.js";
 import type { SessionContext } from "../pipelineTypes.js";
 
@@ -552,6 +554,7 @@ export async function executePlanStage(
         round,
         latencyMs: latency,
         counts: { generatedQueries: planItems.length },
+        promptVersion: STRATEGIST_PROMPT_VERSION,
         llm: summarizeLLM(
           "strategy",
           strategistPrompt,
@@ -560,7 +563,11 @@ export async function executePlanStage(
           0,
           strategyProviderAttempts,
           strategyUsage,
+          STRATEGIST_PROMPT_VERSION,
         ),
+        metadata: {
+          promptVersion: STRATEGIST_PROMPT_VERSION,
+        },
       });
     } catch (e: any) {
       if (effectiveSignal?.aborted) {
@@ -578,6 +585,7 @@ export async function executePlanStage(
         round,
         latencyMs: Date.now() - strategyStarted,
         error: { message: e.message || String(e) },
+        promptVersion: STRATEGIST_PROMPT_VERSION,
         llm: summarizeLLM(
           "strategy",
           strategistPrompt,
@@ -586,7 +594,11 @@ export async function executePlanStage(
           0,
           strategyProviderAttempts,
           strategyUsage,
+          STRATEGIST_PROMPT_VERSION,
         ),
+        metadata: {
+          promptVersion: STRATEGIST_PROMPT_VERSION,
+        },
       });
       logEvent(
         `[LLM ERROR] Strategist failed in round ${round}: ${e.message}. Using fallback queries.`,

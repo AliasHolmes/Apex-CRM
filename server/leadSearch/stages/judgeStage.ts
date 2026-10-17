@@ -40,9 +40,11 @@ import {
   hasStudentSignal,
 } from "../titleTriage.js";
 import { runGatedCompanyAttribution } from "../companyAttribution.js";
-import { runRollingPool } from "../rollingPool.js";
+import { runRollingPool } from "../liveRollingPool.js";
 import { resolveTitleFromQualification } from "../titleResolution.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
+
+export const JUDGE_PROMPT_VERSION = "v1.0.0";
 
 export function computeJudgeDynamicMaxTokens(
   batchLength: number,
@@ -577,17 +579,16 @@ export async function evaluateIncrementalJudgeBatches(
   const configuredJudgeConcurrency = Number(
     process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 4,
   );
-  // Adaptive headroom: when extraction/intent work is not occupying the Atria slot pool,
-  // the judge can use the free slots (still bounded by the hard ceiling of 8, which keeps
-  // the heaviest reasoning stage clear of the observed KV-cache contention zone). An
+  // Adaptive headroom: when extraction/intent work is not occupying the primary slot pool,
+  // the judge can use the free slots (still bounded by the hard ceiling of 8). An
   // explicitly configured value stays authoritative as the floor.
-  const freeAtriaSlots = Math.max(
+  const freePrimarySlots = Math.max(
     0,
-    getProviderConcurrencyLimit("atria") - getProviderActiveSlots("atria"),
+    getProviderConcurrencyLimit("primary") - getProviderActiveSlots("primary"),
   );
   const judgeConcurrency = Math.max(
     1,
-    Math.min(8, Math.max(configuredJudgeConcurrency, freeAtriaSlots)),
+    Math.min(8, Math.max(configuredJudgeConcurrency, freePrimarySlots)),
   );
   // First wave runs batches of up to 3 candidates (provider capacity permitting) so the
   // pool's first `judgeConcurrency` calls amortize prefill over 50% more candidates.
@@ -948,6 +949,7 @@ export async function evaluateIncrementalJudgeBatches(
           validJudgments: validation.validJudgmentCount,
           qualified: batchQualified.length,
         },
+        promptVersion: JUDGE_PROMPT_VERSION,
         llm: summarizeLLM(
           "incremental_finalist_judge",
           judgePrompt,
@@ -956,8 +958,10 @@ export async function evaluateIncrementalJudgeBatches(
           0,
           judgeAttempts,
           judgeUsage,
+          JUDGE_PROMPT_VERSION,
         ),
         metadata: {
+          promptVersion: JUDGE_PROMPT_VERSION,
           batch: `${batchIndex + 1}_d${depth}`,
           policyVersion: contract.policyVersion,
           estimatedInputTokens,
@@ -997,6 +1001,7 @@ export async function evaluateIncrementalJudgeBatches(
         round,
         latencyMs: Date.now() - judgeStarted,
         error: { message: error.message || String(error) },
+        promptVersion: JUDGE_PROMPT_VERSION,
         llm: summarizeLLM(
           "incremental_finalist_judge",
           judgePrompt,
@@ -1005,8 +1010,10 @@ export async function evaluateIncrementalJudgeBatches(
           0,
           judgeAttempts,
           judgeUsage,
+          JUDGE_PROMPT_VERSION,
         ),
         metadata: {
+          promptVersion: JUDGE_PROMPT_VERSION,
           batch: `${batchIndex + 1}_d${depth}`,
           policyVersion: contract.policyVersion,
           estimatedInputTokens,

@@ -11,6 +11,8 @@ import type {
   BrightDataSearchResult,
 } from "../services/brightdata.js";
 import type { FinalistCandidate } from "./finalistJudge.js";
+import type { EngineLead } from "./leadDomain.js";
+import { canonicalLinkedInIdentity } from "../services/linkedinEvidence.js";
 
 export type StageName =
   | "plan"
@@ -88,17 +90,17 @@ export type PipelineSessionState = {
   seenCandidateKeys: Set<string>;
   existingKeys: Set<string>;
   queryRuns: QueryRunStats[];
-  acceptedLeads: any[];
-  qualifiedLeads: any[];
-  finalLeads: any[];
+  acceptedLeads: EngineLead[];
+  qualifiedLeads: EngineLead[];
+  finalLeads: EngineLead[];
   rejectionCounts: Record<RejectionReason | string, number>;
-  brightDataStats: any;
+  brightDataStats: Record<string, any>;
   existingCrmLeadsSkipped?: number;
   freeTierBudget: ScoutFreeTierBudget;
   llmCircuitBreaker: LLMSessionCircuitBreaker;
   abortController: AbortController;
   telemetry: MiningTelemetryRecorder;
-  debugLogs: any[];
+  debugLogs: Array<Record<string, any>>;
   urlRetryQueue?: Set<string>;
   previousRoundSummary?: any;
   roundHistory?: any[];
@@ -128,13 +130,13 @@ export type MiningSessionCheckpoint = {
   contract: ProspectContract;
   searchSpec?: any;
   queryRuns: QueryRunStats[];
-  acceptedLeads: any[];
-  qualifiedLeads: any[];
-  disqualifiedCandidates?: any[];
-  finalLeads: any[];
+  acceptedLeads: EngineLead[];
+  qualifiedLeads: EngineLead[];
+  disqualifiedCandidates?: EngineLead[];
+  finalLeads: EngineLead[];
   rejectionCounts: Record<string, number>;
   failureCounts?: Record<string, number>;
-  brightDataStats: any;
+  brightDataStats: Record<string, any>;
   existingCrmLeadsSkipped?: number;
   previousRoundSummary?: any;
   roundHistory?: any[];
@@ -143,7 +145,7 @@ export type MiningSessionCheckpoint = {
   /** Runs added since the previous checkpoint (delta serialization). */
   queryRunsDelta?: QueryRunStats[];
   /** Last N debug-log entries, persisted so crash context survives resume. */
-  debugLogsTail?: any[];
+  debugLogsTail?: Array<Record<string, any>>;
   signalStoreState?: SignalStoreData;
   recoveryAttempts?: number;
   datasetSearchAfter?: any[];
@@ -171,8 +173,8 @@ export class LeadQueryRunTracker {
       lead.profile?.contactDetails?.linkedinUrl ||
       lead.sourceUrl ||
       "";
-    const usernameMatch = String(url).match(/linkedin\.com\/in\/([^/?#]+)/i);
-    if (usernameMatch?.[1]) return `linkedin:${usernameMatch[1].toLowerCase()}`;
+    const linkedinKey = canonicalLinkedInIdentity(url);
+    if (linkedinKey) return linkedinKey;
     if (lead.id) return `id:${lead.id}`;
     if (lead.candidateId) return `id:${lead.candidateId}`;
     if (lead.stableId) return `id:${lead.stableId}`;

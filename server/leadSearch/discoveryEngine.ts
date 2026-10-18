@@ -98,7 +98,6 @@ import { executeVerifyStage } from "./stages/verifyStage.js";
 import { executeEnrichStage } from "./stages/enrichStage.js";
 import {
   evaluateIncrementalJudgeBatches,
-  promoteSafetyNetCandidates,
 } from "./stages/judgeStage.js";
 import { createLiveRollingPool } from "./liveRollingPool.js";
 import { executeSelectStage } from "./stages/selectStage.js";
@@ -123,6 +122,7 @@ import {
   prospectContractSchema,
   PROSPECT_CONTRACT_POLICY_VERSION,
   searchSpecFromProspectContract,
+  validateAndHealContractCoherence,
   type ProspectContract,
 } from "./prospectContract.js";
 import { ablateSearchSpec } from "./constraintAblation.js";
@@ -676,10 +676,23 @@ export async function executeDiscoverySession(
     // Compile contract using LLM if OpenAI/Byesu key is configured and not resuming from existing or parent contract.
     let contract = options.initialCheckpoint?.contract || parentContract || fallbackContract;
     if (!options.initialCheckpoint?.contract && !parentContract) {
-      const cacheKey = query.trim().toLowerCase();
+      const specHash = searchSpec
+        ? crypto.createHash("sha1").update(JSON.stringify(searchSpec)).digest("hex").slice(0, 8)
+        : "default";
+      const cacheKey = `${query.trim().toLowerCase()}::${specHash}`;
       const cached = getProspectContractCache(cacheKey, PROSPECT_CONTRACT_POLICY_VERSION);
       if (cached) {
-        contract = normalizeProspectContract(cached, query, fallbackContract);
+        const hydrated = normalizeProspectContract(cached, query, fallbackContract);
+        const coherence = validateAndHealContractCoherence(hydrated, query);
+        contract = coherence.contract;
+        if (coherence.warnings.length) {
+          for (const warning of coherence.warnings) {
+            console.warn(`[prospectContract][coherence] ${warning}`);
+          }
+          logEvent(
+            `Contract coherence gate healed the hydrated contract (${coherence.warnings.length} issue(s)).`,
+          );
+        }
         logEvent(
           `Hydrated prospect quality contract v${contract.policyVersion} from contract cache.`,
         );
@@ -719,6 +732,16 @@ export async function executeDiscoverySession(
             },
           );
           contract = normalizeProspectContract(compiled, query, fallbackContract);
+          const coherence = validateAndHealContractCoherence(contract, query);
+          contract = coherence.contract;
+          if (coherence.warnings.length) {
+            for (const warning of coherence.warnings) {
+              console.warn(`[prospectContract][coherence] ${warning}`);
+            }
+            logEvent(
+              `Contract coherence gate healed the compiled contract (${coherence.warnings.length} issue(s)).`,
+            );
+          }
           const hardCount = contract.requirements.filter(
             (req) => req.importance === "hard",
           ).length;
@@ -732,16 +755,45 @@ export async function executeDiscoverySession(
           const latency = Date.now() - contractStarted;
           const tokens = contractUsage?.totalTokens;
           const droppedCount = contract.droppedUngroundedRequirements?.length || 0;
-          const droppedInfo = droppedCount > 0 ? `, ${droppedCount} dropped ungrounded` : "";
-          logEvent(
-            `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Contract Compilation: v${contract.policyVersion} (${hardCount} hard reqs${droppedInfo})]`,
-          );
+          recordTrace({
+            phase: "strategy",
+            operation: "compile_contract",
+            status: "success",
+            provider: "llm",
+            model: resolvedModel,
+            latencyMs: latency,
+            llm: {
+              totalTokens: tokens,
+              inputTokens: contractUsage?.inputTokens,
+              outputTokens: contractUsage?.outputTokens,
+            },
+            counts: { hardRequirements: hardCount, droppedUngrounded: droppedCount },
+            metadata: { policyVersion: contract.policyVersion },
+          });
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
         } catch (err: any) {
+          recordTrace({
+            phase: "strategy",
+            operation: "compile_contract",
+            status: "error",
+            provider: "llm",
+            latencyMs: Date.now() - contractStarted,
+            error: err?.message || String(err),
+          });
           logEvent(
-            `[LLM ERROR] Prospect contract compiler failed (${formatLatencySeconds(Date.now() - contractStarted)}): ${err.message || String(err)}. Using deterministic contract.`,
+            `[LLM ERROR] Prospect contract compiler failed (${formatLatencySeconds(Date.now() - contractStarted)}): ${err.message || String(err)}. Using un-cached deterministic contract for this session.`,
           );
-          upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, fallbackContract);
+          const coherence = validateAndHealContractCoherence(fallbackContract, query);
+          contract = coherence.contract;
+          if (coherence.warnings.length) {
+            for (const warning of coherence.warnings) {
+              console.warn(`[prospectContract][coherence] ${warning}`);
+            }
+          }
+          // Deliberately NOT cached: persisting the fallback under the standard TTL
+          // turned one transient compile failure into a 7-day poison for every
+          // future session of the same brief (7 of 33 historical cache rows).
+          // Transient failures must stay session-local.
         }
       }
     }
@@ -1022,6 +1074,9 @@ export async function executeDiscoverySession(
     let accumulatedViableCount = Number(
       options.initialCheckpoint?.previousRoundSummary?.viableCandidates || 0,
     );
+    // Runtime requirement-ablation watchdog state: consecutive zero-pass rounds
+    // per hard context requirement id (see the round epilogue below).
+    const requirementStallStreaks = new Map<string, number>();
     const defaultJudgePassRate = clampEnvFloat(
       "LEAD_JUDGE_PASS_RATE_ASSUMPTION",
       0.7,
@@ -2311,6 +2366,68 @@ export async function executeDiscoverySession(
 
         accumulatedViableCount += roundDiagnosticsObj.viableCandidates;
 
+        // Runtime requirement-ablation watchdog: a hard context requirement
+        // (person_location / company_type / company_industry) that passed ZERO
+        // of >= 5 round candidates, for 2 consecutive rounds, while the
+        // identity lane still passes, is provably unyielding - most often a
+        // compile seam that slipped impossible values through the grounding
+        // gate ("outbound pipeline" as a location). Demote it to soft so the
+        // session cannot burn every remaining round gating on an impossible
+        // requirement. Session-local: the cached contract is untouched.
+        const identityHealthy =
+          (roundDiagnosticsObj.classSummary?.identityPassRate ?? 1) >= 0.4;
+        for (const diag of roundDiagnosticsObj.requirements) {
+          const watchdogReq = contract.requirements.find(
+            (item) => item.id === diag.requirementId,
+          );
+          if (!watchdogReq || watchdogReq.importance !== "hard") continue;
+          if (
+            watchdogReq.scope === "person_role" ||
+            watchdogReq.scope === "signal" ||
+            watchdogReq.scope === "company_size"
+          ) {
+            continue;
+          }
+          const leadCount = diag.pass + diag.fail;
+          const unyielding =
+            leadCount >= 5 &&
+            diag.pass === 0 &&
+            diag.fail >= 5 &&
+            identityHealthy;
+          if (!unyielding) {
+            requirementStallStreaks.delete(diag.requirementId);
+            continue;
+          }
+          const streak = (requirementStallStreaks.get(diag.requirementId) || 0) + 1;
+          requirementStallStreaks.set(diag.requirementId, streak);
+          if (streak < 2) {
+            logEvent(
+              `[WATCHDOG] Requirement ${diag.requirementId} passed 0 of ${leadCount} candidates while identity passed; armed (${streak}/2) for session-local ablation.`,
+            );
+            continue;
+          }
+          requirementStallStreaks.delete(diag.requirementId);
+          const watchdogAblation = ablateSearchSpec(searchSpec, contract, diag.requirementId, {
+            allowTier1Context: true,
+          });
+          if (!watchdogAblation.ablated) continue;
+          searchSpec = watchdogAblation.spec;
+          contract = watchdogAblation.contract;
+          sessionConfig.contract = contract;
+          stats.scout.contract = contract;
+          stats.scout.spec = searchSpec;
+          previousRoundSummary.shouldRecover = true;
+          previousRoundSummary.missingHardRequirementIds = Array.from(
+            new Set([
+              ...(previousRoundSummary.missingHardRequirementIds || []),
+              diag.requirementId,
+            ]),
+          );
+          logEvent(
+            `[WATCHDOG] Demoted unyielding context requirement ${watchdogAblation.ablatedRequirementId} to soft ranking signal to prevent stall.`,
+          );
+        }
+
         const combinedMissingHardIds = Array.from(
           new Set([
             ...(roundDiagnosticsObj.missingHardRequirementIds || []),
@@ -2756,23 +2873,6 @@ export async function executeDiscoverySession(
       logEvent(
         `Progressive Qualification complete: ${qualifiedLeads.length}/${targetLimit} leads verified. Honest shortfall: ${shortfall} lead(s) below target due to strict qualification standards.`,
       );
-
-      // Deprecate unverified safety net promotions.
-      // Quota fulfillment must never promote candidates that fail hard requirements or lack positive evidence.
-      if (process.env.ENABLE_UNVERIFIED_SAFETY_NET_PROMOTION === "true") {
-        const { promoted } = promoteSafetyNetCandidates({
-          acceptedLeads,
-          qualifiedLeads,
-          contract,
-          shortfall,
-        });
-
-        if (promoted > 0) {
-          logEvent(
-            `Safety Net (Legacy Override): Promoted ${promoted} candidate(s) to fulfill shortfall. Cumulative qualified: ${qualifiedLeads.length}.`,
-          );
-        }
-      }
     }
     checkpointAcceptedLeads(qualifiedLeads, "post_finalist_judge");
 

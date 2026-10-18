@@ -238,14 +238,29 @@ export type SpecAblationResult = {
  * Relaxes a non-identity hard requirement in the ProspectContract and SearchSpec
  * when 100% of judged candidates fail that requirement during a round.
  * Tier 1 (identity_hard / person_role / immutable core) is never ablated.
+ *
+ * `options.allowTier1Context` is the runtime requirement-ablation watchdog
+ * escape hatch: Tier-1 CONTEXT requirements (company_type / company_industry)
+ * may be demoted when they provably cannot pass (zero passes across
+ * consecutive rounds while identity passes - see discoveryEngine's watchdog).
+ * A poisoned/impossible context requirement that can never qualify a candidate
+ * is worse than a missing one; Tier-1 identity is still never touched here.
  */
 export function ablateSearchSpec(
   spec: any,
   contract: ProspectContract,
   targetRequirementId?: string,
+  options?: { allowTier1Context?: boolean },
 ): SpecAblationResult {
   const ablatableReqs = (contract.requirements || [])
-    .filter((req) => req.importance === 'hard' && classifyAblationTier(req) > ABLATION_TIERS.TIER_1_IMMUTABLE_CORE)
+    .filter((req) => {
+      if (req.importance !== 'hard') return false;
+      const tier = classifyAblationTier(req);
+      if (tier > ABLATION_TIERS.TIER_1_IMMUTABLE_CORE) return true;
+      return Boolean(options?.allowTier1Context) &&
+        tier === ABLATION_TIERS.TIER_1_IMMUTABLE_CORE &&
+        (req.scope === 'company_type' || req.scope === 'company_industry');
+    })
     .sort((a, b) => classifyAblationTier(b) - classifyAblationTier(a));
 
   if (ablatableReqs.length === 0) {

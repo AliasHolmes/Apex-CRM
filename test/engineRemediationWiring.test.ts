@@ -78,7 +78,7 @@ test('round plan cache gates on round/spec/recovery state', () => {
 
 test('planning-family calls opt into the fast tier and the .env knobs match the plan', () => {
   for (const rel of [
-    'server/leadSearch/intentSignals.ts',
+    'server/leadSearch/stages/planStage.ts',
     'server/leadSearch/linkedinPostIntent.ts',
   ]) {
     assert.match(read(rel), /tierProviderOrder: resolvePlannerProviderOrder\(\)/, `${rel} must route on the fast tier`);

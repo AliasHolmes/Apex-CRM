@@ -42,6 +42,7 @@ export function summarizeLLM(
     successfulAttempt?.actualModel ||
     successfulAttempt?.model ||
     route.model;
+  const resolvedProvider = usage?.provider || successfulAttempt?.provider || route.provider;
   return {
     purpose,
     model: resolvedModel,
@@ -53,7 +54,7 @@ export function summarizeLLM(
     inputTokens,
     outputTokens,
     totalTokens: usage?.totalTokens ?? (inputTokens + outputTokens),
-    estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens),
+    estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens, resolvedProvider),
     parseRetries,
     promptVersion,
   };
@@ -271,13 +272,31 @@ export function sanitizeTelemetryString(
     : text;
 }
 
-export function estimateLLMCostUsd(inputTokens = 0, outputTokens = 0): number {
-  const inputPerMillion = Number(
-    process.env.LLM_OBSERVABILITY_INPUT_COST_PER_1M || 0,
-  );
-  const outputPerMillion = Number(
-    process.env.LLM_OBSERVABILITY_OUTPUT_COST_PER_1M || 0,
-  );
+export const DEFAULT_PROVIDER_COST_PER_1M: Record<string, { input: number; output: number }> = {
+  byesu: { input: 1.5, output: 6.0 }, // gpt-6.1-sol
+  openai: { input: 2.5, output: 10.0 }, // gpt-4o
+  gemini: { input: 0.15, output: 0.6 }, // gemini-2.5-flash
+  groq: { input: 0.59, output: 0.79 },
+  default: { input: 1.5, output: 6.0 },
+};
+
+export function estimateLLMCostUsd(
+  inputTokens = 0,
+  outputTokens = 0,
+  provider?: string,
+): number {
+  const providerKey = (provider || "").trim().toLowerCase();
+  const defaultRate =
+    DEFAULT_PROVIDER_COST_PER_1M[providerKey] || DEFAULT_PROVIDER_COST_PER_1M.default;
+
+  const envInput = process.env.LLM_OBSERVABILITY_INPUT_COST_PER_1M;
+  const envOutput = process.env.LLM_OBSERVABILITY_OUTPUT_COST_PER_1M;
+
+  const inputPerMillion =
+    envInput !== undefined && envInput !== "" ? Number(envInput) : defaultRate.input;
+  const outputPerMillion =
+    envOutput !== undefined && envOutput !== "" ? Number(envOutput) : defaultRate.output;
+
   if (!Number.isFinite(inputPerMillion) || !Number.isFinite(outputPerMillion))
     return 0;
   return Number(

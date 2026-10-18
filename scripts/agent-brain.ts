@@ -2,10 +2,12 @@
 import { executeAgentBrainDiscovery } from "../server/leadSearch/agentBrainRunner.js";
 import { getLeadsDb } from "../server/db.js";
 
-function parseArgs(): { query: string; limit: number; verifyOnly: boolean } {
+function parseArgs(): { query: string; limit: number; stage: "SCRAPED" | "ENRICHED"; brightData?: boolean; verifyOnly: boolean } {
   const args = process.argv.slice(2);
-  let query = "AI agency owners with active hiring intent for talents for their services from USA";
-  let limit = 20;
+  let query = "Founders and agency owners of B2B outbound lead generation agencies with 3 to 15 employees in the US or UK who use Clay, Instantly, or Smartlead";
+  let limit = 50;
+  let stage: "SCRAPED" | "ENRICHED" = "SCRAPED";
+  let brightData: boolean | undefined = undefined;
   let verifyOnly = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -14,6 +16,15 @@ function parseArgs(): { query: string; limit: number; verifyOnly: boolean } {
       query = args[++i] || query;
     } else if (arg === "--limit" || arg === "-l") {
       limit = Number(args[++i]) || limit;
+    } else if (arg === "--stage" || arg === "-s") {
+      const val = (args[++i] || "").toUpperCase();
+      if (val === "ENRICHED" || val === "SCRAPED") {
+        stage = val;
+      }
+    } else if (arg === "--brightdata") {
+      brightData = true;
+    } else if (arg === "--no-brightdata") {
+      brightData = false;
     } else if (arg === "--verify" || arg === "-v") {
       verifyOnly = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -21,19 +32,22 @@ function parseArgs(): { query: string; limit: number; verifyOnly: boolean } {
 Apex CRM - Agent Brain Discovery Runner
 ========================================
 Usage:
-  npx tsx scripts/agent-brain.ts [options]
+  node dist/agent-brain.cjs [options]
 
 Options:
-  --query, -q <string>  Discovery prompt (default: AI agency owners...)
-  --limit, -l <number>  Target leads count (default: 20)
-  --verify, -v          Run manual SQLite and index verification suite only
-  --help, -h            Show this help message
+  --query, -q <string>       Discovery prompt (default: B2B outbound...)
+  --limit, -l <number>       Target leads count (default: 50)
+  --stage, -s <string>       Target pipeline stage: SCRAPED | ENRICHED (default: SCRAPED)
+  --brightdata               Explicitly enable BrightData Pro LinkedIn Profile enrichment
+  --no-brightdata            Disable BrightData Pro enrichment (fast SERP-only mode)
+  --verify, -v               Run manual SQLite and index verification suite only
+  --help, -h                 Show this help message
 `);
       process.exit(0);
     }
   }
 
-  return { query, limit, verifyOnly };
+  return { query, limit, stage, brightData, verifyOnly };
 }
 
 async function runManualVerification() {
@@ -94,7 +108,7 @@ async function runManualVerification() {
 }
 
 async function main() {
-  const { query, limit, verifyOnly } = parseArgs();
+  const { query, limit, stage, brightData, verifyOnly } = parseArgs();
 
   if (verifyOnly) {
     await runManualVerification();
@@ -104,12 +118,16 @@ async function main() {
   console.log("\n=======================================================");
   console.log("   APEX CRM - AGENT-AS-THE-BRAIN DISCOVERY RUNNER     ");
   console.log("=======================================================");
-  console.log(`Target: ${limit} leads`);
-  console.log(`Prompt: "${query}"\n`);
+  console.log(`Target:      ${limit} leads`);
+  console.log(`Stage:       ${stage}`);
+  console.log(`BrightData:  ${brightData === false ? 'DISABLED (SERP-only)' : (brightData === true ? 'ENABLED (Pro LinkedIn Profiles)' : 'AUTO (Pro if configured)')}`);
+  console.log(`Prompt:      "${query}"\n`);
 
   const result = await executeAgentBrainDiscovery({
     promptQuery: query,
     requestedLimit: limit,
+    stage,
+    enableBrightDataPro: brightData,
     onProgress: (evt) => {
       console.log(`[${evt.phase.toUpperCase()}] ${evt.message}`);
     }

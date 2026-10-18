@@ -3052,11 +3052,20 @@ export function pruneExpiredEnrichmentCache(now = new Date()) {
   return Number(result.changes || 0);
 }
 
+export function pruneExpiredProspectContractCache(now = new Date()): number {
+  const db = getLeadsDb();
+  const cutoff = now.toISOString();
+  const result = db
+    .prepare("DELETE FROM prospect_contract_cache WHERE expires_at <= ?")
+    .run(cutoff);
+  return Number(result.changes || 0);
+}
+
 /**
  * Prunes the schema v26 knowledge-graph tables by their expires_at columns. These tables
  * had no pruner of their own (only enrichment_cache did), so candidate verdicts, company
  * profiles, and attribution verdicts grew monotonically across sessions (ADR-0013).
- * Returns the total rows removed across the three tables.
+ * Returns the total rows removed across the tables.
  */
 export function pruneExpiredKnowledgeGraph(now = new Date()) {
   const db = getLeadsDb();
@@ -3070,10 +3079,12 @@ export function pruneExpiredKnowledgeGraph(now = new Date()) {
   const attribution = db
     .prepare("DELETE FROM company_attribution_verdicts WHERE expires_at <= ?")
     .run(cutoff);
+  const contracts = pruneExpiredProspectContractCache(now);
   return (
     Number(verdicts.changes || 0) +
     Number(companyProfiles.changes || 0) +
-    Number(attribution.changes || 0)
+    Number(attribution.changes || 0) +
+    contracts
   );
 }
 
@@ -3107,9 +3118,9 @@ export function getEnrichmentCacheEntry(
   const companyName = normalizeCacheValue(lookup.companyName);
 
   if (normalizedUrl || linkedinUsername) {
-    const row = db
-      .prepare(
-        `
+    const row = getCachedStatement(
+      db,
+      `
       SELECT * FROM enrichment_cache
       WHERE expires_at > ?
         AND scrape_quality IN ('good', 'partial')
@@ -3120,22 +3131,21 @@ export function getEnrichmentCacheEntry(
       ORDER BY created_at DESC
       LIMIT 1
     `,
-      )
-      .get(
-        cutoff,
-        normalizedUrl,
-        normalizedUrl,
-        linkedinUsername,
-        linkedinUsername,
-      );
+    ).get(
+      cutoff,
+      normalizedUrl,
+      normalizedUrl,
+      linkedinUsername,
+      linkedinUsername,
+    );
     const match = toCacheRow(row);
     if (match) return match;
   }
 
   if (personName && companyName) {
-    const row = db
-      .prepare(
-        `
+    const row = getCachedStatement(
+      db,
+      `
       SELECT * FROM enrichment_cache
       WHERE expires_at > ?
         AND scrape_quality IN ('good', 'partial')
@@ -3144,8 +3154,7 @@ export function getEnrichmentCacheEntry(
       ORDER BY created_at DESC
       LIMIT 1
     `,
-      )
-      .get(cutoff, personName, companyName);
+    ).get(cutoff, personName, companyName);
     return toCacheRow(row);
   }
 
@@ -4929,30 +4938,40 @@ export function enforceCheckpointByteBudgetWithPayload(
   // Step 3: Progressively clamp candidate lists (800 -> 400 -> 200 -> 100 -> 50 -> 25 -> 10)
   const candidateLimits = [800, 400, 200, 100, 50, 25, 10];
   for (const limit of candidateLimits) {
+    let modified = false;
     if (Array.isArray(cp.acceptedLeads) && cp.acceptedLeads.length > limit) {
       cp.acceptedLeads = cp.acceptedLeads.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray(cp.qualifiedLeads) && cp.qualifiedLeads.length > limit) {
       cp.qualifiedLeads = cp.qualifiedLeads.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray(cp.finalLeads) && cp.finalLeads.length > limit) {
       cp.finalLeads = cp.finalLeads.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray(cp.disqualifiedCandidates) && cp.disqualifiedCandidates.length > limit) {
       cp.disqualifiedCandidates = cp.disqualifiedCandidates.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray((cp as any).provisionalLeads) && (cp as any).provisionalLeads.length > limit) {
       (cp as any).provisionalLeads = (cp as any).provisionalLeads.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray((cp as any).finalistPool) && (cp as any).finalistPool.length > limit) {
       (cp as any).finalistPool = (cp as any).finalistPool.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray((cp as any).rescuedLeads) && (cp as any).rescuedLeads.length > limit) {
       (cp as any).rescuedLeads = (cp as any).rescuedLeads.slice(0, limit);
+      modified = true;
     }
     if (Array.isArray((cp as any).candidatePool) && (cp as any).candidatePool.length > limit) {
       (cp as any).candidatePool = (cp as any).candidatePool.slice(0, limit);
+      modified = true;
     }
+    if (!modified) continue;
     payload = JSON.stringify(cp);
     if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
       return { checkpoint: cp, payload };

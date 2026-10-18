@@ -1,4 +1,5 @@
 import type { QueryFamily, QueryIntent, SearchQueryPlanItem } from './searchSpec.js';
+import { isGeoTermCandidate } from './prospectContract.js';
 export type { QueryFamily, QueryIntent, SearchQueryPlanItem };
 export { STRATEGIST_PROMPT_VERSION } from './stages/planStage.js';
 
@@ -293,11 +294,17 @@ export function toDatasetFilter(
   const candidateDomainWords = domainQuery
     .split(/[^a-z0-9+#.-]+/i)
     .map((w) => w.trim().toLowerCase())
-    .filter((w) => w.length >= 2 && !genericStopwords.has(w));
+    .filter(
+      (w) =>
+        w.length >= 2 &&
+        !genericStopwords.has(w) &&
+        !isGeoTermCandidate(w),
+    );
 
   if (candidateDomainWords.length > 0) {
-    const domainKeyword = candidateDomainWords.slice(0, 2).join(" ");
-    if (domainKeyword) {
+    const validWords = candidateDomainWords.filter((w) => !isGeoTermCandidate(w));
+    const domainKeyword = validWords.slice(0, 2).join(" ");
+    if (domainKeyword && !isGeoTermCandidate(domainKeyword)) {
       filters.push({ name: "about", operator: "includes", value: domainKeyword });
     }
   }

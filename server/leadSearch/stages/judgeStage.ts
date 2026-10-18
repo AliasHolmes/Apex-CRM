@@ -299,7 +299,9 @@ export function promoteSafetyNetCandidates(args: {
     }
     if (
       (lead.qualification as any)?.status === "hard_fail" ||
-      lead.qualification?.verdict === "disqualified"
+      lead.qualification?.verdict === "disqualified" ||
+      lead.qualification?.verdict === "unverified" ||
+      lead._qualificationFallback === "fallback_unverified"
     ) {
       return false;
     }
@@ -711,48 +713,36 @@ export async function evaluateIncrementalJudgeBatches(
     reasonMsg: string,
   ): any[] => {
     return candidatesToFallback.map((candidate) => {
-      const existingScore = sharedEffectiveScore(candidate.lead);
-      const finalScore = Math.min(
-        10,
-        Math.max(
-          1,
-          Math.round(
-            candidate.lead.finalSelectionScore ??
-              candidate.lead.score ??
-              (existingScore > 0 ? existingScore : 5),
-          ),
-        ),
-      );
       const fallbackQualification: Qualification = {
         policyVersion: contract.policyVersion,
         verdict: "unverified",
         qualificationSource: "deterministic",
-        finalScore,
+        finalScore: 0,
         requirements: contract.requirements.map((r) => ({
           requirementId: r.id,
           status: "unknown",
         })),
         reason: `Not LLM-judged (model unavailable): ${reasonMsg}. Treated as unverified.`,
-        semanticFit: finalScore,
-        evidenceConfidence: 5,
-        authorityFit: finalScore,
+        semanticFit: 0,
+        evidenceConfidence: 0,
+        authorityFit: 0,
       };
       candidate.lead.qualification = fallbackQualification;
       candidate.lead.whyThisLead = fallbackQualification.reason;
-      candidate.lead.finalSelectionScore = finalScore;
+      candidate.lead.finalSelectionScore = 0;
       if (candidate.lead.scoreBreakdown) {
-        candidate.lead.scoreBreakdown.finalScore = finalScore;
+        candidate.lead.scoreBreakdown.finalScore = 0;
       }
-      candidate.lead.scoreOverride = finalScore;
+      candidate.lead.scoreOverride = 0;
       candidate.lead._qualificationFallback = "fallback_unverified";
       candidate.lead.judgmentInsight = {
         status: "unverified",
-        score: finalScore,
+        score: 0,
         reason: fallbackQualification.reason,
       };
       judgmentInsights.set(candidate.candidateId, {
         status: "unverified",
-        score: finalScore,
+        score: 0,
         reason: fallbackQualification.reason,
       });
       return candidate.lead;
@@ -894,28 +884,16 @@ export async function evaluateIncrementalJudgeBatches(
       });
 
       // Track requirement failures per query run:
-      const rawJudgments = Array.isArray((judgmentResult as any)?.judgments)
-        ? (judgmentResult as any).judgments
-        : [];
-      const judgmentsByCandidateId = new Map<string, any>();
-      for (const j of rawJudgments) {
-        const cid = String(j?.candidateId || "").trim();
-        if (cid) judgmentsByCandidateId.set(cid, j);
-      }
       for (const candidate of batch) {
         const ins = judgmentInsights.get(candidate.candidateId);
         if (ins) {
           candidate.lead.judgmentInsight = ins;
         }
-        const jm = judgmentsByCandidateId.get(candidate.candidateId);
+        const outcome = validation.outcomes.get(candidate.candidateId);
         const failedReqIds: string[] = [];
-        if (Array.isArray(jm?.requirements)) {
-          for (const req of jm.requirements) {
-            if (
-              req &&
-              req.requirementId &&
-              /^(fail|failed|disqualified)$/i.test(String(req.status || "").trim())
-            ) {
+        if (Array.isArray(outcome?.requirements)) {
+          for (const req of outcome.requirements) {
+            if (req && req.requirementId && req.status === "fail") {
               failedReqIds.push(String(req.requirementId));
             }
           }
@@ -1046,9 +1024,14 @@ export async function evaluateIncrementalJudgeBatches(
         ]);
         return [...left, ...right];
       }
-      if (retries < 1) {
+      const isRetryable =
+        error?.status === 429 ||
+        (typeof error?.status === "number" && error.status >= 500) ||
+        error?.name === "AbortError" ||
+        /timeout|network|econnreset|fetch failed/i.test(error?.message || "");
+      if (retries < 1 && isRetryable) {
         logEvent(
-          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); retrying once...`,
+          `Incremental judge batch ${batchIndex + 1} failed with transient error (${error.message || String(error)}); retrying once...`,
         );
         return evaluateSingleBatch(batch, batchIndex, depth, retries + 1);
       }

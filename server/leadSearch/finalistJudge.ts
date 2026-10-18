@@ -542,7 +542,7 @@ const normalizeAssessment = (
     candidate.lead?.companyAttribution?.verdict !== "disqualifying_contradiction"
   ) {
     const isMissingEvidenceFail =
-      /\b(not\s+(?:explicitly\s+)?(?:mention|state|specif|provid|clear|confirm|detail|describ|indicat|verify|verified)|no\s+(?:explicit\s+)?(?:evidence|mention|information|detail|indication|proof|description)|cannot\s+(?:verify|confirm|determine|establish)|insufficient|unclear|unverified|unknown|ambiguous|lacks?\s+(?:detail|information|evidence|description)|does\s+not\s+(?:mention|state|specify|describe|clarify))\b/i.test(
+      /\b(not\s+(?:explicitly\s+)?(?:mention\w*|state\w*|specif\w*|provid\w*|clear|confirm\w*|detail\w*|describ\w*|indicat\w*|verif\w*)|no\s+(?:explicit\s+)?(?:evidence|mention\w*|information|detail\w*|indication\w*|proof|description)|cannot\s+(?:verify|confirm|determine|establish)|insufficient|unclear|unverified|unknown|ambiguous|lacks?\s+(?:detail\w*|information|evidence|description)|does\s+not\s+(?:mention\w*|state\w*|specify|describe|clarify))\b/i.test(
         reasonText,
       ) &&
       !/\b(saas|software\s+product|consumer\s+app|mobile\s+app|university|government|non-?profit|hospital|retail\s+store|e-?commerce\s+brand|contradict)\b/i.test(
@@ -645,6 +645,8 @@ export function validateFinalistJudgments(
     hardFail: number;
     unknown: number;
     unjudged: number;
+    hallucinated?: number;
+    duplicate?: number;
   };
 } {
   const byCandidate = new Map(
@@ -656,7 +658,7 @@ export function validateFinalistJudgments(
   const qualifications = new Map<string, Qualification>();
   const outcomes = new Map<string, CandidateOutcome>();
   let validJudgmentCount = 0;
-  const counts = { qualified: 0, hardFail: 0, unknown: 0, unjudged: 0 };
+  const counts = { qualified: 0, hardFail: 0, unknown: 0, unjudged: 0, hallucinated: 0, duplicate: 0 };
 
   const hardRequirements = contract.requirements.filter(
     (req) => req.importance === "hard",
@@ -681,15 +683,30 @@ export function validateFinalistJudgments(
     });
   }
 
+  const seenCandidateIds = new Set<string>();
   for (const judgment of rawJudgments) {
     const candidateId = clean(judgment?.candidateId, 180);
     const candidate = byCandidate.get(candidateId);
+    if (!candidate) {
+      if (candidateId) {
+        counts.hallucinated++;
+      }
+      continue;
+    }
+    if (seenCandidateIds.has(candidateId)) {
+      counts.duplicate++;
+      console.warn(
+        `[finalistJudge] Duplicate judgment received for candidate ${candidateId}; ignoring duplicate.`,
+      );
+      continue;
+    }
     if (
-      !candidate ||
       !Array.isArray(judgment?.requirements) ||
       judgment.requirements.length === 0
     )
       continue;
+
+    seenCandidateIds.add(candidateId);
 
     const assessmentById = new Map(
       judgment.requirements
@@ -927,7 +944,7 @@ export function validateFinalistJudgments(
     }
   }
 
-  counts.unjudged = candidates.length - validJudgmentCount;
+  counts.unjudged = Math.max(0, candidates.length - validJudgmentCount);
 
   return {
     qualifications,

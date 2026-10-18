@@ -2305,6 +2305,12 @@ function cleanJSONString(str: string): string {
   return cleaned;
 }
 
+const unsupportedJsonModeProviders = new Set<string>();
+
+export function clearUnsupportedJsonModeProvidersForTest(): void {
+  unsupportedJsonModeProviders.clear();
+}
+
 /**
  * Calls OpenAI compatible API with a request for a strict JSON response.
  * Used as step 2 to convert raw searched text into clean structured data.
@@ -2475,10 +2481,12 @@ export async function openAIStructured<T>(
         // Non-fatal cache lookup failure
       }
     }
+    const effectiveUseJsonMode =
+      useJsonMode && !unsupportedJsonModeProviders.has(provider.name);
     try {
       text = await sendChatCompletion(provider, messages, {
         ...cacheWrappedOptions,
-        ...(useJsonMode
+        ...(effectiveUseJsonMode
           ? { responseFormat: { type: "json_object" as const } }
           : {}),
       });
@@ -2494,8 +2502,9 @@ export async function openAIStructured<T>(
           error.message.includes("unsupported parameter"));
 
       if (isJsonValidationError) {
+        unsupportedJsonModeProviders.add(provider.name);
         console.warn(
-          `[llm] Structured output call failed for ${provider.name} with schema validation error. Retrying without response_format...`,
+          `[llm] Structured output call failed for ${provider.name} with schema validation error. Disabling response_format for provider and retrying...`,
         );
         text = await sendChatCompletion(provider, messages, cacheWrappedOptions);
       } else {
@@ -2554,17 +2563,35 @@ export async function openAIStructured<T>(
             : prompt,
         },
       ];
+      const initialUsage = liveUsage;
       let retryUsage: LLMUsage | undefined;
+      console.warn(
+        `[llm] Structured output parse failed for ${provider.name} (${sanitizeParseError(firstParseError?.message || "unknown")}). Retrying with repair prompt...`,
+      );
+      effectiveOptions.onRetry?.({
+        attempt: 2,
+        phase: "structured_retry",
+        provider: provider.name,
+        model: provider.model,
+        firstParseError: sanitizeParseError(firstParseError?.message || "unknown"),
+      });
       const retryText = await sendChatCompletion(provider, retryMessages, {
         ...cacheWrappedOptions,
         maxTokens: retryMaxTokens,
         temperature: 0,
         onUsage: (usage: LLMUsage) => {
           retryUsage = usage;
-          liveUsage = usage;
-          (effectiveOptions as any).onUsage?.(usage);
+          const combinedUsage: LLMUsage = {
+            inputTokens: (initialUsage?.inputTokens || 0) + usage.inputTokens,
+            outputTokens: (initialUsage?.outputTokens || 0) + usage.outputTokens,
+            totalTokens: (initialUsage?.totalTokens || 0) + usage.totalTokens,
+            provider: usage.provider || initialUsage?.provider || provider.name,
+            model: usage.model || initialUsage?.model || provider.model,
+          };
+          liveUsage = combinedUsage;
+          (effectiveOptions as any).onUsage?.(combinedUsage);
         },
-        ...(useJsonMode
+        ...(effectiveUseJsonMode
           ? { responseFormat: { type: "json_object" as const } }
           : {}),
       });
@@ -2573,7 +2600,7 @@ export async function openAIStructured<T>(
         const parsedRetry = parseStructuredText(retryText);
         if (cacheEnabled && promptHash) {
           const ttlHours = options?.metadata?.stage === "strategist" ? 6 : 24;
-          const usageToStore = retryUsage ?? liveUsage;
+          const usageToStore = liveUsage ?? retryUsage;
           upsertLlmCacheEntry(
             promptHash,
             provider.name,

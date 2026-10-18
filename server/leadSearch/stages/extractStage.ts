@@ -1092,8 +1092,19 @@ Evidence:
   });
 
   let extractionFailuresThisRound = 0;
+  let roundExtractedOutputTokens = 0;
+  const roundExtractionMaxOutputTokens = Math.max(
+    8000,
+    Number(process.env.LEAD_EXTRACTION_ROUND_MAX_TOKENS || 120_000),
+  );
   const extractionTasks = chunks.map((chunk, idx) => async () => {
     const chunkIndex = idx + 1;
+    if (roundExtractedOutputTokens >= roundExtractionMaxOutputTokens) {
+      logEvent(
+        `Round ${round}: extraction chunk ${chunkIndex}/${chunks.length} skipped; reached round output token ceiling (${roundExtractedOutputTokens.toLocaleString()} >= ${roundExtractionMaxOutputTokens.toLocaleString()}).`,
+      );
+      return [];
+    }
     const extractionStarted = Date.now();
     const prompt = `${extractionPromptPrefix}${chunk}`;
     const extractionProviderAttempts: LLMProviderAttempt[] = [];
@@ -1196,6 +1207,9 @@ Evidence:
         DEFAULT_PRIMARY_MODEL;
       const latency = Date.now() - extractionStarted;
       const tokens = extractionUsage?.totalTokens;
+      if (extractionUsage?.outputTokens) {
+        roundExtractedOutputTokens += extractionUsage.outputTokens;
+      }
       logEvent(
         `[LLM 200 OK] ${successfulAttempt?.provider || "LLM"} \u00b7 model: ${resolvedModel} \u00b7 ${formatLatencySeconds(latency)}${tokens ? ` \u00b7 ${tokens.toLocaleString()} tok` : ""} [Extraction Chunk ${chunkIndex}/${chunks.length}: ${extractedLeads.length} leads]`,
       );

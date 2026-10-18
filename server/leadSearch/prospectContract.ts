@@ -5,11 +5,14 @@ import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
 import { aliasIncludes, escapeRegex } from './aliasMap.js';
 import { DEFAULT_DECISION_MAKER_ROLES, singularizeRole } from './defaultRoles.js';
-import { COUNTRY_CANONICAL_MAP } from './geo.js';
+import { COUNTRY_CANONICAL_MAP, resolveCountryCode } from './geo.js';
 export { COUNTRY_CANONICAL_MAP };
 
-// Bumped to v10 to invalidate pre-upgrade cached contracts and enforce fresh intelligence compilation without bare brand names
-export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v10';
+// Bumped to v11 to atomically purge the poisoned v8-v10 cache entries (7 of 33
+// cached contracts carried inverted requirement scopes - see
+// test/fixtures/prospectContractCorpus.ts) and enforce the metro-aware funnels
+// and coherence validation below. All contract cache lookups key on this value.
+export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v11';
 
 export type RequirementScope =
   | 'person_role'
@@ -42,6 +45,14 @@ export type EvidenceSource =
 
 export type MatchRule = 'all_of' | 'any_of';
 
+/**
+ * Where a requirement's values came from. The compiler has two extraction
+ * universes (LLM compile vs deterministic funnels) joined by
+ * normalizeProspectContract; this stamp makes the winning source visible in
+ * telemetry and in the cache instead of only in console logs.
+ */
+export type RequirementProvenance = 'llm_compiled' | 'fallback_backfill' | 'deterministic';
+
 export type ProspectRequirement = {
   id: string;
   scope: RequirementScope;
@@ -57,6 +68,8 @@ export type ProspectRequirement = {
   acceptableEvidenceSources?: EvidenceSource[];
   groupId?: string;
   matchRule?: MatchRule;
+  /** Which extraction universe produced this requirement (telemetry only). */
+  provenance?: RequirementProvenance;
 };
 
 export type DecompositionMode = 'single_stream_identity' | 'dual_stream_intent';
@@ -373,6 +386,96 @@ const KNOWN_METRO_RE = new RegExp(
 export const namesKnownMetro = (query: string): boolean => KNOWN_METRO_RE.test(query || "");
 
 export const AMBIGUOUS_METRO_NAMES = new Set<string>(["hamilton", "nelson"]);
+
+// ============================================================================
+// Metro-aware geo / tooling vocabulary (contract coherence remediATE v11)
+// ============================================================================
+// The requirement funnels below must share this geo vocabulary with the rest of
+// the engine (querySignature, spec geo resolution) so a brief like
+// "agencies in Austin, Denver, Toronto, and Salt Lake City specializing in
+// outbound pipeline" can never again invert person_location to the tooling tail.
+
+const US_STATE_NAMES_SRC =
+  'alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming';
+
+// Supranational / continental regions that appear as location predicates but are
+// not countries (historical contracts carried them as person_location terms).
+const REGION_NAMES_SRC =
+  'north america|south america|europe|asia|emea|apac|latam|mena|middle east|southeast asia|benelux|scandinavia|latin america|european union';
+
+const US_STATE_RE = new RegExp(`\\b(?:${US_STATE_NAMES_SRC})\\b`, 'i');
+
+// Vendor tools and tooling-signal phrases. Tool words are SIGNAL material; they
+// must never become person_location terms or company_type terms (unless the term
+// is an org phrase like "B2B cold email agencies").
+const TOOLING_SIGNAL_RE = new RegExp(
+  `\\b(?:${[
+    'clay', 'instantly', 'smartlead', 'apollo', 'zoominfo', 'gong', 'outreach', 'phantombuster',
+    'n8n', 'zapier', 'make\\.com', 'hubspot', 'salesforce', 'supabase', 'airtable', 'notion', 'slack',
+    'outbound pipeline', 'cold email', 'data enrichment', 'deliverability',
+    'self-hosting', 'self-hosted', 'email infrastructure', 'generative ai',
+  ].join('|')})\\b`,
+  'i',
+);
+
+/** An org-noun phrase (""... agencies", "... firms") is a vertical, not a tool. */
+const ORG_NOUN_RE = new RegExp(
+  '\\b(?:agenc(?:y|ies)|firms?|company|companies|consultan(?:t|cy|cies|ts)?|consulting|studios?|integrat(?:or|ors)?|businesses?|teams?|practices?)\\b',
+  'i',
+);
+
+// Exported for the corpus regression test (test/prospectContractCorpus.test.ts)
+// so its classifications share this vocabulary instead of drifting.
+export const TOOLING_SIGNAL_PHRASE_RE = TOOLING_SIGNAL_RE;
+export const ORG_NOUN_PHRASE_RE = ORG_NOUN_RE;
+
+// Slightly wider vocabulary used ONLY to score prepositional location captures
+// ("in outbound pipeline, Clay data enrichment, or cold email infrastructure"
+// must never win over "in Austin, Denver, Toronto, and Salt Lake City").
+// The plan's scoring negatives include "SaaS"/"software"; those are kept out of
+// the value guards above so org verticals like "restaurant software" remain
+// legal company-type terms.
+const TOOLING_SCORING_RE = new RegExp(`${TOOLING_SIGNAL_RE.source}|\\b(?:saas|software)\\b`, 'i');
+
+/** True when the term denotes a place (curated metro, country alias, US state, or region). */
+export function isGeoTermCandidate(term: string): boolean {
+  const value = String(term || '').trim();
+  if (!value) return false;
+  if (KNOWN_METRO_RE.test(value)) return true;
+  if (resolveCountryCode(value)) return true;
+  if (US_STATE_RE.test(value)) return true;
+  if (new RegExp(`\\b(?:${REGION_NAMES_SRC})\\b`, 'i').test(value)) return true;
+  return false;
+}
+
+// Participial/buying-clause tails ("... specializing in outbound pipeline",
+// "Australia interested in ...") describe intent, not a place or a vertical.
+// Applied to location tokens and company-type candidates alike.
+const CLAUSAL_TAIL_RE =
+  /\s+(?:specializing|specialises?|specializ(?:ed|ing)|specialis(?:ed|ing)|focusing|focused|concentrating|aiming|targeting|interested|working|looking)\b[\s\S]*$/i;
+
+/**
+ * Geo entities named anywhere in a brief (metros, countries, states, regions).
+ * Used by the location funnel as a registry-based rescue so named places are
+ * always available as location candidates regardless of prepositional position.
+ */
+export function scanBriefGeoEntities(brief: string): string[] {
+  const text = clean(brief);
+  if (!text) return [];
+  const matches: string[] = [];
+  for (const m of text.matchAll(new RegExp(`\\b(${ALL_KNOWN_METROS.map((name) => name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")).join("|")})\\b`, "gi"))) {
+    matches.push(m[1]);
+  }
+  for (const m of text.matchAll(new RegExp(`\\b(${US_STATE_NAMES_SRC})\\b`, 'g'))) matches.push(m[1]);
+  for (const m of text.matchAll(new RegExp(`\\b(${REGION_NAMES_SRC})\\b`, 'gi'))) matches.push(m[1]);
+  // Countries: single tokens plus two-word names like "united states".
+  const words = lower(text).split(/[^a-z0-9.']+/).filter(Boolean);
+  const pairs = words.map((w, i) => (words[i + 1] ? `${w} ${words[i + 1]}` : '')).filter(Boolean);
+  for (const token of [...words, ...pairs]) {
+    if (resolveCountryCode(token)) matches.push(token);
+  }
+  return unique(matches);
+}
 
 export function metroWithCountry(metro: string, countryCanonical?: string | null): string {
   if (!countryCanonical) return metro;
@@ -693,7 +796,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
 
   // G22: plural-tolerant role guard so a bare role ("CEOs") can never be
   // emitted as company_type by the comma/conjunction loop below.
-  const ROLE_WORDS_PATTERN = /\b(owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|vice\s+presidents?|chief\s+executives?(?:\s+officers?)?|heads?)\b/i;
+  const ROLE_WORDS_PATTERN = /\b(owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|vice\s+presidents?|chief\s+executives?(?:\s+officers?)?|heads?|ctos?|cmos?|cros?|cfos?|\bcoo\b|\bcoos\b)\b/i;
   const CONJUNCTION_STOP_PATTERN = /^(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)\b|\b(?:or|and|with|of|at|in|for|from|to|a|an|the|by|who|which)$/i;
   const COMPANY_TITLE_PREFIX_PATTERN = /^(?:managing|senior|junior|lead|principal|chief|executive|vp|vice|deputy|head|director|directors|founder|owner|ceo|president)\b/i;
 
@@ -703,10 +806,17 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const isCleanCompanyTypeTerm = (value: unknown): boolean => {
     const v = clean(value);
     if (!v || v.length < 2 || v.length > 48) return false;
+    // A company type is a noun phrase: a leading count ("40 US AI agency") is a
+    // number that leaked from the brief, not a vertical.
+    if (/^\d/.test(v)) return false;
     if (ROLE_WORDS_PATTERN.test(v)) return false;
     if (CONJUNCTION_STOP_PATTERN.test(v)) return false;
     if (COMPANY_TITLE_PREFIX_PATTERN.test(v)) return false;
     if (JUNK_TERM_PATTERN.test(v)) return false;
+    // Buying-clause fragments ("UK who use Clay", "talk about ... deliverability",
+    // "looking to adopt generative AI") are context, not company types.
+    if (/\bwho\s+(?:use|talk|need|want|require|adopt|care)\b/i.test(v)) return false;
+    if (/\b(?:talk(?:ing)?\s+about|looking\s+(?:to|for)|interested\s+in)\b/i.test(v)) return false;
     if (ACTION_VERB_ALONE_PATTERN.test(v)) return false;
     return true;
   };
@@ -714,15 +824,64 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   const rawLocMatch = clean(brief).match(
     /\b(?:in|near|from)\s+([A-Za-z0-9 ,.'&/-]{1,120}?)(?=\s+\b(?:in|near|from|located|with|seeking|having|who|where|that|using|for)\b|[;]|$)/gi
   );
-  // Take the LAST match (closest to end of brief) to avoid capturing "in B2B SaaS"
-  const lastLocCapture = rawLocMatch ? rawLocMatch[rawLocMatch.length - 1] : '';
-  const locCaptureGroup = lastLocCapture.replace(/^\b(?:in|near|from)\s+/i, '').replace(/[.,;]+$/, '');
-  const extractedLocations = locCaptureGroup
+  // Fix (v11): score every prepositional capture instead of blindly taking the
+  // LAST one. The historic last-match rule (added 8ef4be9 for multi-geo briefs)
+  // inverted compound briefs of the shape "agencies in <cities> specializing in
+  // <tooling>" to their tooling tail: captured captured "in Austin ... Salt
+  // Lake City" was correct but the LAST capture was the tooling list, so
+  // person_location became ["outbound pipeline","Clay data enrichment",...].
+  // Existing tests pin that "Founders in B2B SaaS in Austin, TX" yields Austin
+  // (never "B2B SaaS") - scoring keeps both: +10 per geo token, -10 per tooling
+  // token (plan vocabulary includes SaaS/software). A capture scoring > 0 wins;
+  // a neutral capture (0) falls back to the historic last-match rule so
+  // non-registry places like "Dubai" still resolve; a capture scoring < 0
+  // (tooling-poisoned) can never be captured.
+  const scoreLocCapture = (capture: string): number => {
+    const group = capture.replace(/^\b(?:in|near|from)\s+/i, '').replace(/[.,;]+$/, '');
+    let score = 0;
+    for (const token of group.split(/,|\band\b|\bor\b|\//)) {
+      const term = token.trim().replace(CONJUNCTION_STOP_PATTERN, '').trim();
+      if (!term) continue;
+      if (isGeoTermCandidate(term)) score += 10;
+      if (TOOLING_SCORING_RE.test(term)) score -= 10;
+    }
+    return score;
+  };
+  let locCaptureGroup = '';
+  if (rawLocMatch && rawLocMatch.length > 0) {
+    let bestScore = -Infinity;
+    let bestIndex = -1;
+    for (let i = 0; i < rawLocMatch.length; i++) {
+      const score = scoreLocCapture(rawLocMatch[i]);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    if (bestScore > 0) {
+      locCaptureGroup = rawLocMatch[bestIndex].replace(/^\b(?:in|near|from)\s+/i, '').replace(/[.,;]+$/, '');
+    } else if (bestScore === 0) {
+      // Neutral capture (no geo and no tooling signal): keep the historic
+      // last-match behavior for non-registry places ("Dubai", local cities).
+      // bestScore < 0 means every capture is tooling-poisoned; never capture.
+      locCaptureGroup = rawLocMatch[rawLocMatch.length - 1].replace(/^\b(?:in|near|from)\s+/i, '').replace(/[.,;]+$/, '');
+    }
+  }
+  // Registry rescue: cities/states/countries named anywhere in the brief are
+  // always valid location candidates, regardless of prepositional position.
+  const briefGeoEntities = scanBriefGeoEntities(brief);
+  const briefGeoCaseFolded = new Set(briefGeoEntities.map(lower));
+  const capturedLocTokens = locCaptureGroup
     ? locCaptureGroup
         .split(/,|\band\b|\bor\b|\//)
-        .map(s => s.trim().replace(CONJUNCTION_STOP_PATTERN, '').trim())
+        .map(s => s.trim().replace(CONJUNCTION_STOP_PATTERN, '').replace(CLAUSAL_TAIL_RE, '').trim())
         .filter(isCleanRequirementTerm)
+        .filter(token => !briefGeoCaseFolded.has(lower(token)))
     : [];
+  const extractedLocations = unique([
+    ...briefGeoEntities,
+    ...capturedLocTokens,
+  ]).filter(term => !TOOLING_SIGNAL_RE.test(term));
 
   // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
   // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
@@ -815,18 +974,48 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   add('person_location', [...(spec?.person?.locations || []), ...(spec?.company?.locations || []), ...extractedLocations].filter(isCleanRequirementTerm));
 
   const extractedCompanyTypes: string[] = [];
+  const GEO_PREFIX_RE = new RegExp(
+    `^(?:${[
+      ...ALL_KNOWN_METROS.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      US_STATE_NAMES_SRC,
+      REGION_NAMES_SRC,
+    ].join('|')})\\b`,
+    'i',
+  );
   const addCompanyType = (t: string) => {
-    const cleaned = clean(t).replace(/\s+(?:in|near|from|located\s+in)\s+.*$/i, '').trim();
-    if (cleaned && isCleanCompanyTypeTerm(cleaned) && !extractedCompanyTypes.includes(cleaned)) {
-      extractedCompanyTypes.push(cleaned);
-    }
+    const cleaned = clean(t)
+      .replace(CLAUSAL_TAIL_RE, '')
+      .replace(/\s+(?:in|near|from|located\s+in)\s+.*$/i, '')
+      .trim();
+    if (!cleaned || !isCleanCompanyTypeTerm(cleaned) || extractedCompanyTypes.includes(cleaned)) return;
+    // Functional-area nouns ("Data", "Engineering") describe the role, not a
+    // company vertical ("Head of Data at companies" -> not "Data at companies").
+    if (FUNCTIONAL_AREA_PATTERN.test(cleaned)) return;
+    // A company type must never begin with a place name ("Salt Lake City
+    // specializing" / "Australia interested"): the place belongs to
+    // person_location. The cleanup above already reduces bare place names to
+    // exactly the place; both shapes are rejected here.
+    if (GEO_PREFIX_RE.test(cleaned) || isGeoTermCandidate(cleaned)) return;
+    // Raw tool/tooling phrases are signal material ("Clay data enrichment",
+    // "outbound pipeline"), not verticals - unless the term is an org phrase
+    // ("B2B cold email agencies") where the tooling word qualifies the niche.
+    if (TOOLING_SIGNAL_RE.test(cleaned) && !ORG_NOUN_RE.test(cleaned)) return;
+    extractedCompanyTypes.push(cleaned);
   };
 
   if (prepCompanyMatch && isCleanCompanyTypeTerm(prepCompanyMatch)) {
-    for (const sub of prepCompanyMatch.split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
+    // "[Role] of X at Y" composites: the vertical is the final prepositional
+    // piece ("Head of Data at companies" -> "companies"), not the role's
+    // functional area ("Data"). The "VP of Engineering" capture self-defeats on
+    // the comma lookahead and never enters this branch.
+    const prepParts = prepCompanyMatch
+      .split(/\s+(?:at|for|from)\s+/i)
+      .map((s) => s.trim())
+      .filter((s) => s && s.length >= 3);
+    const companyParts = prepParts.length ? prepParts : [prepCompanyMatch];
+    for (const sub of companyParts.flatMap((part) => part.split(/,|\band\b|\bor\b/i)).map((s) => s.trim())) {
       addCompanyType(sub);
     }
-    addCompanyType(prepCompanyMatch);
   }
   if (prefixCompanyMatch && isCleanCompanyTypeTerm(prefixCompanyMatch)) {
     for (const sub of prefixCompanyMatch.split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
@@ -854,6 +1043,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     ) {
       // Guard: skip segments that look like bare location names (already captured by rawLocMatch)
       const isLikelyLocation =
+        namesKnownMetro(cleanSegment) ||
         extractedLocations.some(
           loc => loc.toLowerCase() === cleanSegment.toLowerCase()
         ) ||
@@ -973,6 +1163,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     }
     if (!req.acceptableEvidenceSources) {
       req.acceptableEvidenceSources = [];
+    }
+    if (!req.provenance) {
+      req.provenance = 'deterministic';
     }
   }
   
@@ -1310,7 +1503,7 @@ export const prospectContractSchema = {
         type: Type.OBJECT,
         properties: {
           id: { type: Type.STRING },
-          scope: { type: Type.STRING },
+          scope: { type: Type.STRING, enum: ['person_role', 'person_location', 'company_type', 'company_industry', 'company_size', 'signal'] },
           importance: { type: Type.STRING },
           evidenceModality: { type: Type.STRING },
           description: { type: Type.STRING },
@@ -1461,7 +1654,12 @@ export function normalizeProspectContract(
       queryable: reqClass === 'system_invariant' ? false : (item?.queryable !== false),
       acceptableEvidenceSources: Array.isArray(item?.acceptableEvidenceSources) ? item.acceptableEvidenceSources : [],
       groupId: rawGroupId || undefined,
-      matchRule: rawMatchRule
+      matchRule: rawMatchRule,
+      // Preserve a cached provenance stamp on re-hydration; fresh model output
+      // is stamped llm_compiled. Values are allow-listed defensively.
+      provenance: (['llm_compiled', 'fallback_backfill', 'deterministic'] as const).includes(clean(item?.provenance) as RequirementProvenance)
+        ? clean(item?.provenance) as RequirementProvenance
+        : 'llm_compiled'
     });
   }
 
@@ -1497,7 +1695,8 @@ export function normalizeProspectContract(
       description: combinedTerms.slice(0, 4).join(' or '),
       acceptableTerms: combinedTerms,
       matchRule: 'any_of',
-      groupId: 'person_role_group'
+      groupId: 'person_role_group',
+      provenance: 'fallback_backfill'
     });
   }
 
@@ -1515,14 +1714,14 @@ export function normalizeProspectContract(
 
   // Step 3: If LLM produced no hard requirements at all, supplement from fallback
   if (hard.length === 0) {
-    hard.push(...fallbackHard.slice(0, 4));
+    hard.push(...fallbackHard.slice(0, 4).map(r => ({ ...r, provenance: 'fallback_backfill' as const })));
   } else {
     // If LLM produced some requirements but missed a location or company type present in fallback,
     // supplement only non-colliding scopes if under the 4-cap
     for (const fbReq of fallbackHard) {
       if (hard.length >= 4) break;
       if (!hard.some(h => h.scope === fbReq.scope)) {
-        hard.push(fbReq);
+        hard.push({ ...fbReq, provenance: 'fallback_backfill' as const });
       }
     }
     // Note: Do NOT merge fbLocReq.acceptableTerms into an existing LLM locReq,
@@ -1552,7 +1751,7 @@ export function normalizeProspectContract(
       continue;
     }
     if (!soft.some(s => s.scope === fbSoft.scope)) {
-      soft.push(fbSoft);
+      soft.push({ ...fbSoft, provenance: 'fallback_backfill' as const });
     }
   }
 
@@ -1636,7 +1835,9 @@ export function normalizeProspectContract(
     }
   }
   
-  const finalRequirements = normalizedRequirements.length ? normalizedRequirements : fallback.requirements;
+  const finalRequirements: ProspectRequirement[] = normalizedRequirements.length
+    ? normalizedRequirements
+    : fallback.requirements.map(r => ({ ...r, provenance: 'fallback_backfill' as const }));
 
   // Backstop: a brief with buying-intent language but zero signal requirements
   // would otherwise judge on identity alone and fill the target with
@@ -1671,6 +1872,7 @@ export function normalizeProspectContract(
       acceptableTerms: expandAcceptableTerms("signal", intentTerms, { agencyBrief }),
       queryable: signalClass !== "system_invariant",
       acceptableEvidenceSources: [],
+      provenance: "fallback_backfill",
     });
   }
 
@@ -1690,6 +1892,186 @@ export function normalizeProspectContract(
 }
 
 export const validateCompiledProspectContract = normalizeProspectContract;
+
+// ============================================================================
+// Contract coherence validation (v11)
+// ============================================================================
+
+/**
+ * The two extraction universes (LLM compile, deterministic funnels) are joined
+ * without cross-checking each other. Historic outcome: an LLM contract whose
+ * identitySpec held the correct cities while its requirement funnels inverted
+ * person_location to tooling ("outbound pipeline") and company_type to a
+ * metro+gerund fragment ("Salt Lake City specializing") was cached as canonical.
+ * The grounding gate can never catch this - inverted values are literal
+ * substrings of the brief, so they are perfectly "grounded" while remaining
+ * impossible.
+ *
+ * This validator reconciles requirements against identitySpec and the curated
+ * geo registry before a contract is cached or used. It heals with spec-derived
+ * data when available and drops otherwise-impossible hard requirements (an
+ * impossible hard gate zero-qualifies every candidate for the whole session).
+ */
+export function validateAndHealContractCoherence(
+  contract: ProspectContract,
+  brief: string,
+): { valid: boolean; contract: ProspectContract; warnings: string[] } {
+  const warnings: string[] = [];
+  const cleanTerm = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+  const lowerTerm = (value: unknown) => cleanTerm(value).toLowerCase();
+
+  // Locations the user actually named in the brief (registry-grounded).
+  const briefGeo = new Set(scanBriefGeoEntities(brief).map(lowerTerm));
+  // identitySpec locations that belong to the brief and denote real places.
+  const specLocations = (contract.identitySpec?.locations || [])
+    .map(cleanTerm)
+    .filter(Boolean)
+    .filter((loc) => isGeoTermCandidate(loc))
+    .filter((loc) => briefGeo.has(lowerTerm(loc)) || aliasIncludes(brief, loc));
+  // Company-type fallback candidates from identitySpec, grounded in the brief.
+  const specCompanyTypes = (contract.identitySpec?.companyTypes || [])
+    .map(cleanTerm)
+    .filter(Boolean)
+    .filter((t) => sourceAppearsInBrief(t, brief));
+
+  const corruptClassifier = (term: string): 'digit' | 'tooling' | 'geo' | 'junk-clause' | null => {
+    const value = cleanTerm(term);
+    if (!value) return 'junk-clause';
+    if (/^\d/.test(value)) return 'digit';
+    if (/\bwho\s+(?:use|talk|need|want|require|adopt|care)\b/i.test(value)) return 'junk-clause';
+    if (/\b(?:talk(?:ing)?\s+about|looking\s+(?:to|for)|interested\s+in)\b/i.test(value)) return 'junk-clause';
+    if (isGeoTermCandidate(value) && ORG_NOUN_RE.test(value)) {
+      // "New York law firm" - a place is a legitimate qualifier of an org phrase.
+      return null;
+    }
+    if (TOOLING_SIGNAL_RE.test(value) && !ORG_NOUN_RE.test(value)) return 'tooling';
+    // A pure place name (or place+gerund residue) is location material, never a
+    // company type: "Salt Lake City", "Salt Lake City specializing".
+    if (isGeoTermCandidate(value) && !ORG_NOUN_RE.test(value)) return 'geo';
+    return null;
+  };
+
+  const stripGerundTail = (term: string): string =>
+    cleanTerm(term).replace(CLAUSAL_TAIL_RE, '').trim();
+
+  const healed = contract.requirements.map((req): ProspectRequirement => {
+    if (req.importance !== 'hard') return req;
+    if (req.scope === 'person_role' || req.scope === 'signal' || req.scope === 'company_size') return req;
+
+    if (req.scope === 'person_location') {
+      const terms = req.acceptableTerms.map(cleanTerm).filter(Boolean);
+      const geoTerms = terms.filter((t) => isGeoTermCandidate(t));
+      if (geoTerms.length === 0) {
+        if (specLocations.length > 0) {
+          warnings.push(
+            `${req.id}: no location term names a known place (${terms.slice(0, 3).join(', ')}); healed from brief-grounded identitySpec.locations (${specLocations.slice(0, 4).join(', ')}).`,
+          );
+          return {
+            ...req,
+            sourcePhrase: specLocations[0],
+            description: specLocations.slice(0, 3).join(' or '),
+            acceptableTerms: unique(specLocations),
+          };
+        }
+        warnings.push(
+          `${req.id}: dropped - no location term names a known place and identitySpec has no brief-grounded locations (person_location=${terms.slice(0, 3).join(', ')}).`,
+        );
+        return null as unknown as ProspectRequirement;
+      }
+      if (geoTerms.length < terms.length) {
+        const dropped = terms.filter((t) => !isGeoTermCandidate(t));
+        if (dropped.length) {
+          warnings.push(`${req.id}: removed non-geo terms (${dropped.join(', ')}).`);
+        }
+        const keepSource = isGeoTermCandidate(req.sourcePhrase);
+        return {
+          ...req,
+          sourcePhrase: keepSource ? req.sourcePhrase : geoTerms[0],
+          description: keepSource ? req.description : geoTerms.slice(0, 3).join(' or '),
+          acceptableTerms: unique(geoTerms),
+        };
+      }
+      return req;
+    }
+
+    if (req.scope === 'company_type' || req.scope === 'company_industry') {
+      const rawTerms = [req.sourcePhrase, ...req.acceptableTerms].map(cleanTerm).filter(Boolean);
+      const goodTerms: string[] = [];
+      const dropped: string[] = [];
+      for (const term of rawTerms) {
+        const stripped = stripGerundTail(term) || term;
+        if (stripped && corruptClassifier(stripped)) {
+          if (!dropped.includes(stripped)) dropped.push(stripped);
+          continue;
+        }
+        if (!goodTerms.includes(stripped)) goodTerms.push(stripped);
+      }
+      if (dropped.length) {
+        const fromSpec = specCompanyTypes.filter((t) => !goodTerms.includes(t));
+        const nextTerms = unique([...goodTerms, ...fromSpec]);
+        warnings.push(
+          `${req.id}: removed invalid company-type terms (${dropped.join(', ')})${fromSpec.length ? `, healed from identitySpec (${fromSpec.slice(0, 3).join(', ')})` : ''}.`,
+        );
+        if (!nextTerms.length) {
+          warnings.push(`${req.id}: dropped - no company_type term survives coherence checks.`);
+          return null as unknown as ProspectRequirement;
+        }
+        return {
+          ...req,
+          sourcePhrase: nextTerms[0],
+          description: nextTerms.slice(0, 3).join(' or '),
+          acceptableTerms: nextTerms,
+        };
+      }
+      return req;
+    }
+
+    return req;
+  }).filter(Boolean) as ProspectRequirement[];
+
+  // Plan requirement: heal person_location when it is EMPTY. An LLM compile can
+  // emit a correct identitySpec.locations and no person_location requirement at
+  // all; only brief-grounded, registry-recognized locations qualify, so this
+  // can never resurrect ungrounded hard gates.
+  if (!healed.some((r) => r.scope === 'person_location') && specLocations.length > 0) {
+    const healedSource = specLocations[0];
+    const healedClass = classifyRequirement('person_location', 'hard', healedSource);
+    warnings.push(
+      `contract: added person_location from brief-grounded identitySpec.locations (LLM compile emitted none): ${specLocations.slice(0, 4).join(', ')}.`,
+    );
+    healed.push({
+      id: requirementId('person_location', 0),
+      scope: 'person_location',
+      importance: 'hard',
+      evidenceModality: 'structured_profile',
+      description: specLocations.slice(0, 3).join(' or '),
+      sourcePhrase: healedSource,
+      acceptableTerms: unique(specLocations),
+      queryable: healedClass !== 'system_invariant',
+      requirementClass: healedClass,
+      queryHardness: assignQueryHardness(healedClass),
+      acceptableEvidenceSources: [],
+      provenance: 'llm_compiled',
+    });
+  }
+
+  if (!healed.length && contract.requirements.length) {
+    warnings.push('contract: all hard requirements were dropped by coherence checks.');
+  }
+  if (contract.requirements.some((r) => r.provenance === 'fallback_backfill')) {
+    warnings.push(
+      'contract: one or more requirements came from deterministic fallback backfill (LLM compile under-delivered hard requirements).',
+    );
+  }
+
+  const valid = warnings.length === 0;
+  const requirements = warnings.length ? healed : contract.requirements;
+  return {
+    valid,
+    contract: warnings.length ? { ...contract, requirements } : contract,
+    warnings,
+  };
+}
 
 const queryHasPositiveExclusion = (query: string, exclusionTerms: string[]): boolean => {
   const queryWords = lower(query).split(/\s+/).filter(Boolean);

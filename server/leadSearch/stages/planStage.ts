@@ -388,7 +388,10 @@ export async function executePlanStage(
         .sort(),
       signalCompanies: (signalCompanies || []).slice(0, 20),
       knownCompanyEntities: Array.from(knownCompanyEntities || []).slice(0, 20).sort(),
-      previousQueryCount: (generatedQueries || []).length,
+      previousQueriesHash: createHash("sha1")
+        .update((generatedQueries || []).join("|"))
+        .digest("hex")
+        .slice(0, 8),
       missingRequirementIds:
         (state.previousRoundSummary as any)?.missingHardRequirementIds || [],
     });

@@ -107,6 +107,8 @@ export type PipelineSessionState = {
   signalStore?: SignalStore;
   recoveryAttempts?: number;
   datasetSearchAfter?: any[];
+  datasetSearchAfterByFilter?: Record<string, any[]>;
+  datasetLaneZeroStreak?: number;
   parkedCandidates?: ParkedCandidate[];
   reInjectedCandidates?: FinalistCandidate[];
 };

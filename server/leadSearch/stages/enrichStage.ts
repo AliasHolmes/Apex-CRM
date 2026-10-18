@@ -11,6 +11,7 @@ import {
   BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
   isAuthwalledUrl,
   isBrightDataFreeTier,
+  isBrightDataPro,
   brightDataSearchDataset,
   brightDataGetPersonProfile,
 } from "../../services/brightdata.js";
@@ -35,6 +36,7 @@ import { lookupCompanyDomain } from "../companyDomainLookup.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
 import { evaluateDecisionMakerGate, classifyTitle } from "../titleTriage.js";
 import type { FinalistCandidate } from "../finalistJudge.js";
+import { isParkWithheldEnabled } from "./judgeStage.js";
 import { createLeadEvidence } from "../evidence.js";
 import { computeScoreBreakdown } from "../scoring.js";
 import { incrementRejection, recordRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
@@ -47,7 +49,7 @@ import {
   evidenceQualityRank,
 } from "../sessionHelpers.js";
 import { normalizeCompanyName } from "../signalStore.js";
-import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
+import type { SessionContext, LeadQueryRunTracker, PipelinePorts } from "../pipelineTypes.js";
 import type { EngineLead } from "../leadDomain.js";
 import type { PostFilterLead } from "./verifyStage.js";
 import type { EvidenceMeta } from "./extractStage.js";
@@ -108,6 +110,41 @@ export type EnrichStageOutput = {
   brightDataProviderDisabled: boolean;
   brightDataTransportRetryAfter: number;
 };
+
+export async function lookupPersonDatasetDossier(
+  url: string,
+  ports?: PipelinePorts,
+  timeoutMs: number = 10_000,
+): Promise<any | null> {
+  const normalized = normalizeLinkedInUrl(url);
+  const canonicalUrl = normalized ? `https://${normalized}` : url;
+  const datasetSearchFn =
+    ports?.brightDataSearchDataset ||
+    (!ports ? brightDataSearchDataset : undefined) ||
+    brightDataSearchDataset;
+  if (!datasetSearchFn) return null;
+  try {
+    const filter = {
+      name: "url",
+      operator: "=",
+      value: canonicalUrl,
+    };
+    const datasetResult = await datasetSearchFn(
+      "gd_l1viktl72bvl7bjuj0",
+      filter,
+      1,
+      undefined,
+      undefined,
+      timeoutMs,
+    );
+    if (datasetResult?.hits && datasetResult.hits.length > 0) {
+      return datasetResult.hits[0];
+    }
+  } catch (err) {
+    console.warn(`[brightdata] Tier 2 dataset lookup failed for ${url}:`, err);
+  }
+  return null;
+}
 
 export async function executeEnrichStage(
   ctx: SessionContext,
@@ -606,22 +643,17 @@ export async function executeEnrichStage(
           : target.url;
         let enriched = false;
         try {
-          const filter = {
-            name: "url",
-            operator: "=",
-            value: canonicalUrl,
-          };
-          const datasetResult = await brightDataSearchDataset(
-            "gd_l1viktl72bvl7bjuj0",
-            filter,
-            1,
+          const hit = await lookupPersonDatasetDossier(
+            canonicalUrl,
+            ctx.ports,
+            10_000,
           );
-          if (datasetResult?.hits && datasetResult.hits.length > 0) {
-            applyDatasetDossierToTarget(target, datasetResult.hits[0]);
+          if (hit) {
+            applyDatasetDossierToTarget(target, hit);
             enriched = true;
             recordProviderUsage("brightdata", 1);
             logEvent(
-              `Round ${round}: Bright Data Pro Tier 2 dataset lookup enriched ${target.username || target.url} in ${datasetResult.took || 0}ms.`,
+              `Round ${round}: Bright Data Pro Tier 2 dataset lookup enriched ${target.username || target.url}.`,
             );
           }
         } catch (err) {
@@ -1364,18 +1396,24 @@ export async function processParkedCandidates(
   siteProbeMaxRemaining: number,
   round: number,
 ): Promise<FinalistCandidate[]> {
-  const isEnabled =
-    process.env.LEAD_PARK_WITHHELD === "true" ||
-    process.env.LEAD_PARK_WITHHELD === "1";
-  if (!isEnabled) return [];
+  if (!isParkWithheldEnabled()) return [];
   const state = sessionCtx.state;
   if (!state.parkedCandidates || state.parkedCandidates.length === 0) return [];
 
+  const maxReinjectedPerRound = Math.max(
+    1,
+    Math.min(12, Number(process.env.LEAD_MAX_REINJECTED_PER_ROUND) || 6),
+  );
   let probeBudgetRemaining = Math.max(0, siteProbeMaxRemaining);
   const reInjected: FinalistCandidate[] = [];
   const survivingParked: typeof state.parkedCandidates = [];
 
   for (const parked of state.parkedCandidates) {
+    if (reInjected.length >= maxReinjectedPerRound) {
+      survivingParked.push(parked);
+      continue;
+    }
+
     parked.recheckAttempts = (parked.recheckAttempts || 0) + 1;
     let newEvidenceBlock: string | null = null;
     let domain = deriveCompanyDomain(parked.candidate.lead);
@@ -1401,6 +1439,7 @@ export async function processParkedCandidates(
       }
     }
 
+    // 1. Site Probe Attempt (preserved with negative cache guard)
     if (domain) {
       const host = toHostKey(domain);
       const posCache =
@@ -1441,14 +1480,73 @@ export async function processParkedCandidates(
       }
     }
 
+    // 2. Profile Dossier Lookup (if domain probe failed or blocked/unprobeable)
+    if (!newEvidenceBlock && (Boolean(sessionCtx.ports?.brightDataSearchDataset) || isBrightDataPro())) {
+      const candidateProfileUrl =
+        parked.candidate.lead.contactDetails?.linkedinUrl ||
+        parked.candidate.lead.sourceUrl ||
+        parked.candidate.lead.url;
+      if (candidateProfileUrl) {
+        try {
+          const hit = await lookupPersonDatasetDossier(
+            candidateProfileUrl,
+            sessionCtx.ports,
+            10_000,
+          );
+          if (hit) {
+            sessionCtx.logEvent(
+              `Round ${round}: Dossier payload keys for ${candidateProfileUrl}: ${Object.keys(hit).join(", ")}`,
+            );
+            const currentTitle =
+              hit.position || parked.candidate.lead.currentTitle || "";
+            const currentCompany =
+              hit.current_company_name ||
+              (typeof hit.current_company === "object"
+                ? hit.current_company?.name
+                : "") ||
+              parked.candidate.lead.currentCompany ||
+              "";
+            const experienceArray = Array.isArray(hit.experience)
+              ? hit.experience
+              : [];
+            const aboutText = typeof hit.about === "string" ? hit.about : "";
+
+            newEvidenceBlock = [
+              `LINK: ${candidateProfileUrl}`,
+              `TITLE: ${currentTitle} at ${currentCompany}`,
+              `[BRIGHTDATA DOSSIER RE-ENTRY]`,
+              aboutText ? `ABOUT: ${aboutText}` : "",
+              experienceArray.length > 0
+                ? formatExperienceBlock(experienceArray)
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            if (currentCompany) {
+              parked.candidate.lead.currentCompany = currentCompany;
+              parked.candidate.lead.company = currentCompany;
+            }
+            if (currentTitle && !parked.candidate.lead.currentTitle) {
+              parked.candidate.lead.currentTitle = currentTitle;
+            }
+          }
+        } catch (err: any) {
+          sessionCtx.logEvent(
+            `Round ${round}: Parked candidate dossier lookup failed for ${candidateProfileUrl}: ${err.message || String(err)}`,
+          );
+        }
+      }
+    }
+
     if (newEvidenceBlock) {
       parked.candidate.evidence.push({
-        id: `site_probe_reentry_${round}_${Date.now()}`,
+        id: `profile_dossier_reentry_${round}_${Date.now()}`,
         text: newEvidenceBlock,
       });
       reInjected.push(parked.candidate);
       sessionCtx.logEvent(
-        `Round ${round}: Parked candidate ${parked.candidateKey} acquired company evidence and re-enters judging.`,
+        `Round ${round}: Parked candidate ${parked.candidateKey} acquired company/dossier evidence and re-enters judging.`,
       );
     } else if (parked.recheckAttempts < 3) {
       survivingParked.push(parked);

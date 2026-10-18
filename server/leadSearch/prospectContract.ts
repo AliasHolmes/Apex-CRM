@@ -2170,7 +2170,7 @@ export function deconcatenateContractQuery(query: string, contract: ProspectCont
 /** Reject or repair model queries so the retrieval surface cannot drift. */
 export function enforceContractQueries(input: unknown, contract: ProspectContract): SearchQueryPlanItem[] {
   const rawItems = Array.isArray(input) ? input : [];
-  const exclusions = contract.exclusions.map(lower).filter(Boolean);
+  const exclusions = (contract.exclusions || []).map(lower).filter(Boolean);
   const seen = new Set<string>();
   const hardRequirements = contract.requirements.filter(item => item.importance === 'hard' && item.queryable && item.scope !== 'signal' && item.evidenceModality !== 'open_web_signal');
   const isAgency = isAgencyContract(contract);

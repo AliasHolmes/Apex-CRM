@@ -202,10 +202,9 @@ export function shouldParkWithheldCandidate(
 }
 
 export function isParkWithheldEnabled(): boolean {
-  return (
-    process.env.LEAD_PARK_WITHHELD === "true" ||
-    process.env.LEAD_PARK_WITHHELD === "1"
-  );
+  const raw = process.env.LEAD_PARK_WITHHELD;
+  if (raw === undefined || raw.trim() === "") return true;
+  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
 }
 
 export function parkCandidate(
@@ -561,13 +560,13 @@ export async function evaluateIncrementalJudgeBatches(
   const companyAttributionEnabled =
     process.env.LEAD_COMPANY_ATTRIBUTION_ENABLED !== "false";
 
-  // Dynamic token-weight micro-batching: pack up to ~4,500 evidence tokens per batch (1-12 candidates),
+  // Dynamic token-weight micro-batching: pack up to ~7,000 evidence tokens per batch (1-12 candidates),
   // or honor FINALIST_JUDGE_MICRO_BATCH_SIZE when explicitly configured.
   const explicitBatchSize = Number(process.env.FINALIST_JUDGE_MICRO_BATCH_SIZE || 0);
   const configuredMaxBatchCandidates =
     Number.isFinite(explicitBatchSize) && explicitBatchSize > 0
       ? Math.max(1, Math.min(12, Math.floor(explicitBatchSize)))
-      : 2;
+      : 4;
   const firstPassRoute = describeLLMRoute("fast");
   const maxBatchCandidates = Math.min(
     configuredMaxBatchCandidates,
@@ -577,7 +576,7 @@ export async function evaluateIncrementalJudgeBatches(
       firstPassRoute.reasoning,
     ),
   );
-  const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 4500);
+  const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 7000);
   const configuredJudgeConcurrency = Number(
     process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 4,
   );
@@ -592,8 +591,8 @@ export async function evaluateIncrementalJudgeBatches(
     1,
     Math.min(8, Math.max(configuredJudgeConcurrency, freePrimarySlots)),
   );
-  // First wave runs batches of up to 3 candidates (provider capacity permitting) so the
-  // pool's first `judgeConcurrency` calls amortize prefill over 50% more candidates.
+  // First wave runs batches of up to configuredMaxBatchCandidates (provider capacity permitting) so the
+  // pool's first `judgeConcurrency` calls amortize prefill over more candidates.
   // Later waves keep the configured micro-batch size, preserving the rolling pool's
   // early-stop granularity. An explicitly configured FINALIST_JUDGE_MICRO_BATCH_SIZE
   // stays authoritative for every wave.
@@ -603,7 +602,7 @@ export async function evaluateIncrementalJudgeBatches(
     firstPassRoute.reasoning,
   );
   const firstWaveBatchSize =
-    explicitBatchSize > 0 ? maxBatchCandidates : Math.min(3, batchCapacityCap);
+    explicitBatchSize > 0 ? maxBatchCandidates : Math.min(configuredMaxBatchCandidates, batchCapacityCap);
   const firstWaveCandidates = firstWaveBatchSize * judgeConcurrency;
 
   const reusedQualified: any[] = [];

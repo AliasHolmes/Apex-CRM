@@ -1,5 +1,10 @@
 import { normalizeAliasTerm } from "./aliasMap.js";
-import { enforceContractQueries } from "./prospectContract.js";
+import {
+  enforceContractQueries,
+  COUNTRY_CANONICAL_MAP,
+  COUNTRY_TO_METROS,
+  metroWithCountry,
+} from "./prospectContract.js";
 import type { ProspectContract } from "./prospectContract.js";
 import type { SearchQueryPlanItem } from "./searchSpec.js";
 
@@ -160,45 +165,125 @@ Generate discovery queries targeting directories, industry association member li
   return { directiveText, effectiveLevel: 3, summary };
 }
 
+export type OrthogonalMatrixOptions = {
+  unvisitedMetros?: string[];
+  round?: number;
+  count?: number;
+  targetCountryCanonical?: string | null;
+  exhaustedSignatures?: Set<string>;
+  historySignatures?: any[];
+};
+
+export function buildOrthogonalQueryMatrix(
+  contract: ProspectContract,
+  opts: OrthogonalMatrixOptions = {},
+): SearchQueryPlanItem[] {
+  const round = opts.round || 1;
+  const count = opts.count || 4;
+  const unvisitedMetros = opts.unvisitedMetros || [];
+  const targetCountryCanonical = opts.targetCountryCanonical;
+
+  // 1. Roles: Rotate Acceptable Terms -> Default Hierarchy
+  const roleReqs = (contract.requirements || []).filter((r) => r.scope === "person_role");
+  const roleTerms = Array.from(
+    new Set(roleReqs.flatMap((r) => r.acceptableTerms || [])),
+  );
+  if (roleTerms.length === 0) {
+    roleTerms.push("founder", "owner", "director", "CEO", "managing partner");
+  }
+
+  // 2. Verticals: Strictly company types and industries
+  const companyTypes = contract.identitySpec?.companyTypes || [];
+  const industries = contract.identitySpec?.industries || [];
+  const verticalPool = Array.from(new Set([...companyTypes, ...industries]));
+  if (verticalPool.length === 0) {
+    verticalPool.push("agency", "consultancy", "firm");
+  }
+
+  // 3. Tooling Keywords: Modifier slot following the vertical noun
+  const toolingKeywords = contract.intentSpec?.toolingKeywords || [];
+
+  // 4. Geographic Metros: Ladder through unvisited -> eligible COUNTRY_TO_METROS -> fallback
+  const countryMetros: string[] = [];
+  if (targetCountryCanonical) {
+    const rawMetros =
+      COUNTRY_TO_METROS[targetCountryCanonical.toLowerCase()] ||
+      COUNTRY_TO_METROS[
+        (COUNTRY_CANONICAL_MAP[targetCountryCanonical.toLowerCase()] || "").toLowerCase()
+      ] || [];
+    for (const m of rawMetros) {
+      countryMetros.push(metroWithCountry(m, targetCountryCanonical));
+    }
+  } else {
+    const targetCountries = (contract.requirements || [])
+      .filter((r) => r.scope === "person_location")
+      .flatMap((r) => r.acceptableTerms || [])
+      .map((c) => c.toLowerCase().trim());
+    for (const c of targetCountries) {
+      const canonical = COUNTRY_CANONICAL_MAP[c] || c;
+      const rawMetros = COUNTRY_TO_METROS[canonical.toLowerCase()] || COUNTRY_TO_METROS[c] || [];
+      for (const m of rawMetros) {
+        countryMetros.push(metroWithCountry(m, canonical));
+      }
+    }
+  }
+
+  const geoPool = Array.from(new Set([...unvisitedMetros, ...countryMetros]));
+
+  const items: SearchQueryPlanItem[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const roleIdx = (round + i) % roleTerms.length;
+    const role = roleTerms[roleIdx];
+
+    const verticalIdx = (round + i) % verticalPool.length;
+    const vertical = verticalPool[verticalIdx];
+
+    const tooling = toolingKeywords.length > 0
+      ? toolingKeywords[(round + i) % toolingKeywords.length]
+      : "";
+
+    const metro = geoPool.length > 0
+      ? geoPool[(round * 2 + i) % geoPool.length]
+      : "";
+
+    // Natural grammar: role + vertical noun + [tooling modifier] + metro
+    const parts = [
+      role,
+      vertical,
+      tooling ? `using ${tooling}` : "",
+      metro,
+    ].filter(Boolean);
+
+    const query = parts.join(" ").trim();
+
+    items.push({
+      query,
+      family: "orthogonal_matrix",
+      intent: "recover_from_low_yield",
+      lane: "person",
+      priority: i + 1,
+      expectedSignal: "Deterministic multi-vector query matrix",
+    });
+  }
+
+  // Enforce contract query validity and strip Big Tech negatives (§Pin 2)
+  return enforceContractQueries(items, contract);
+}
+
+/**
+ * Backward-compatible delegating wrapper for buildOrthogonalQueryMatrix (§Pin 1).
+ */
 export function buildStallGridQueries(
   contract: ProspectContract,
   unvisitedMetros: string[],
   round: number,
 ): SearchQueryPlanItem[] {
-  const roleReqs = contract.requirements.filter((r) => r.scope === "person_role");
-  const roleTerms = Array.from(
-    new Set(roleReqs.flatMap((r) => r.acceptableTerms)),
-  );
-  if (roleTerms.length === 0) roleTerms.push("founder", "director", "owner");
-
-  const companyTypes = contract.identitySpec?.companyTypes || [];
-  const industries = contract.identitySpec?.industries || [];
-  const verticals = Array.from(new Set([...companyTypes, ...industries]));
-  const primaryVertical = verticals[0] || "";
-
-  const items: SearchQueryPlanItem[] = [];
-  const numToBuild = 4;
-
-  for (let i = 0; i < numToBuild; i++) {
-    const roleIdx = (round + i) % roleTerms.length;
-    const role = roleTerms[roleIdx];
-    const metro = unvisitedMetros.length > 0 ? unvisitedMetros[i % unvisitedMetros.length] : "";
-
-    const parts = [role, primaryVertical, metro].filter(Boolean);
-    const query = parts.join(" ").trim();
-
-    items.push({
-      query,
-      family: "local_market",
-      intent: "recover_from_low_yield",
-      lane: "person",
-      priority: i + 1,
-      expectedSignal: "Regional candidate discovery via deterministic stall grid",
-    });
-  }
-
-  // Enforce contract query validity and strip Big Tech negatives
-  return enforceContractQueries(items, contract);
+  return buildOrthogonalQueryMatrix(contract, {
+    unvisitedMetros,
+    round,
+    count: 4,
+  });
 }
 
 export function buildDirectoryDiscoveryQueries(

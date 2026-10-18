@@ -44,7 +44,7 @@ import {
 import {
   computeStallLevel,
   buildStallDirectives,
-  buildStallGridQueries,
+  buildOrthogonalQueryMatrix,
   buildDirectoryDiscoveryQueries,
 } from "../stallLadder.js";
 import { formatLatencySeconds } from "../terminalLog.js";
@@ -433,7 +433,15 @@ export async function executePlanStage(
     );
   }
 
-  if (planItems.length === 0) {
+  const isDeterministicMode =
+    process.env.LEAD_PLANNER_DETERMINISTIC === "1" ||
+    process.env.LEAD_PLANNER_DETERMINISTIC === "true";
+
+  if (planItems.length === 0 && isDeterministicMode) {
+    logEvent(
+      `Round ${round}: deterministic query planning active (skipping Strategist LLM).`,
+    );
+  } else if (planItems.length === 0) {
     const failedQueries = ((state as any).queryRuns || [])
       .filter((r: any) => ((r.acceptedLeads ?? r.acceptedCandidates ?? 0) === 0) && r.query)
       .map((r: any) => r.query as string);
@@ -630,6 +638,16 @@ export async function executePlanStage(
       logEvent(
         `Round 1: using ${planItems.length} initial contract fallback queries.`,
       );
+    } else if (config.contract) {
+      planItems = buildOrthogonalQueryMatrix(config.contract, {
+        unvisitedMetros,
+        round,
+        count: maxTasks,
+        targetCountryCanonical,
+      });
+      logEvent(
+        `Round ${round}: generated ${planItems.length} deterministic orthogonal matrix queries.`,
+      );
     } else {
       planItems = buildScoutFallbackQueryPlan(config.promptQuery, searchSpec);
       logEvent(
@@ -758,7 +776,12 @@ export async function executePlanStage(
     logEvent(
       `Round ${round}: Level ${stallLevel} Stall - backfilling ${needed} query slot(s) with deterministic stall grid.`,
     );
-    const gridItems = buildStallGridQueries(config.contract, unvisitedMetros, round);
+    const gridItems = buildOrthogonalQueryMatrix(config.contract, {
+      unvisitedMetros,
+      round,
+      count: 4,
+      targetCountryCanonical,
+    });
     const gridTasks = buildRetrievalTasks(gridItems, searchSpec);
     for (const task of gridTasks) {
       if (roundPlans.length >= Math.min(4, maxTasks)) break;

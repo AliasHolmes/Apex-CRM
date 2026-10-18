@@ -43,7 +43,8 @@ export type QueryFamily =
   | "tooling_signal"
   | "local_market"
   | "company_type"
-  | "archetype_exploration";
+  | "archetype_exploration"
+  | "orthogonal_matrix";
 
 export type QueryIntent =
   | "find_decision_makers"

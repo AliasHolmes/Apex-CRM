@@ -467,7 +467,9 @@ export async function executeRetrieveStage(
               items: [],
             });
           } finally {
-            queryRuns[index].searchLatencyMs += Date.now() - searchStarted;
+            if (queryRuns[index]) {
+              queryRuns[index].searchLatencyMs += Date.now() - searchStarted;
+            }
             // Streaming seam: hand this query's results to the caller before the
             // remaining searches settle. A hook failure degrades to the normal path.
             try {
@@ -759,7 +761,9 @@ export async function executeRetrieveStage(
 
             return { index, results: [] as any[], fallbackProvider: undefined };
           } finally {
-            queryRuns[index].searchLatencyMs += Date.now() - bdSearchStarted;
+            if (queryRuns[index]) {
+              queryRuns[index].searchLatencyMs += Date.now() - bdSearchStarted;
+            }
           }
         },
       })),
@@ -795,116 +799,161 @@ export async function executeRetrieveStage(
   const executeBrightDataDatasetLane = async (
     plans: { plan: (typeof roundPlans)[0]; index: number }[],
   ) => {
-    if (plans.length === 0 || !isBrightDataPro()) return;
+    if (plans.length === 0 || (!isBrightDataPro() && !ports?.brightDataSearchDataset)) return;
 
-    for (const { plan, index } of plans) {
-      const locationRequirement = config.contract?.requirements?.find(
-        (r) => r.scope === "person_location",
-      );
-      const fallbackCountry = locationRequirement?.acceptableTerms?.[0];
-      const filter = toDatasetFilter(plan.item, fallbackCountry);
-      if (!filter) continue;
-
-      const startedAt = Date.now();
+    const zeroHitSkipThreshold = Math.floor(
+      Number(process.env.BRIGHTDATA_DATASET_ZERO_HIT_SKIP ?? 1),
+    );
+    if (
+      zeroHitSkipThreshold > 0 &&
+      (state.datasetLaneZeroStreak || 0) >= zeroHitSkipThreshold
+    ) {
+      state.datasetLaneZeroStreak = 0; // Cooldown consumed
       logEvent(
-        `Round ${round}: executing Bright Data Pro dataset search (gd_l1viktl72bvl7bjuj0)...`,
+        `Round ${round}: dataset lane skipped (cooldown from ${zeroHitSkipThreshold} zero-hit round(s)).`,
       );
-      recordTrace({
-        phase: "search",
-        operation: "brightdata_dataset_search",
-        status: "started",
-        provider: "brightdata",
-        round,
-        query: plan.executableQuery,
-        metadata: { filter: JSON.stringify(filter) },
-      });
+      return;
+    }
 
-      const datasetSearchFn = ports?.brightDataSearchDataset || (!ports ? brightDataSearchDataset : undefined);
-      if (!datasetSearchFn) return;
+    const datasetTimeoutMs = Math.max(
+      3000,
+      Math.min(
+        30000,
+        Number(process.env.BRIGHTDATA_DATASET_TIMEOUT_MS) || 10000,
+      ),
+    );
 
-      try {
-        const datasetResult = await datasetSearchFn(
-          "gd_l1viktl72bvl7bjuj0",
-          filter,
-          10,
-          undefined,
-          state.datasetSearchAfter,
+    const datasetSearchFn =
+      ports?.brightDataSearchDataset ||
+      (!ports ? brightDataSearchDataset : undefined);
+    if (!datasetSearchFn) return;
+
+    state.datasetSearchAfterByFilter = state.datasetSearchAfterByFilter || {};
+    let totalHitsThisRound = 0;
+
+    await Promise.allSettled(
+      plans.map(async ({ plan, index }) => {
+        const locationRequirement = config.contract?.requirements?.find(
+          (r) => r.scope === "person_location",
         );
+        const fallbackCountry = locationRequirement?.acceptableTerms?.[0];
+        const filter = toDatasetFilter(plan.item, fallbackCountry);
+        if (!filter) return;
 
-        if (datasetResult?.search_after) {
-          state.datasetSearchAfter = datasetResult.search_after;
-        }
-
-        const hits = datasetResult?.hits || [];
-        if (hits.length > 0) {
-          recordProviderUsage("brightdata", hits.length);
-          state.brightDataStats.succeeded += hits.length;
-          usingBrightDataSearch = true;
-
-          for (const hit of hits) {
-            if (!hit?.url) continue;
-            roundItems.push({
-              item: {
-                title: `${hit.position || "Professional"} at ${hit.current_company_name || (typeof hit.current_company === "object" ? hit.current_company?.name : "") || "Company"}`,
-                url: hit.url,
-                content: JSON.stringify(hit),
-                sourceProvider: "brightdata_dataset",
-                raw: {
-                  ...hit,
-                  sourceProvider: "brightdata_dataset",
-                },
-              },
-              resultIndex: index,
-            });
-          }
-
-          logEvent(
-            `Round ${round}: Bright Data dataset discovery found ${hits.length} structured dossiers in ${Date.now() - startedAt}ms.`,
-          );
-          recordTrace({
-            phase: "search",
-            operation: "brightdata_dataset_search",
-            status: "success",
-            provider: "brightdata",
-            round,
-            query: plan.executableQuery,
-            counts: { candidates: hits.length },
-            metadata: {
-              latencyMs: Date.now() - startedAt,
-              took: datasetResult?.took,
-              totalHits: datasetResult?.total_hits,
-            },
-          });
-        } else {
-          logEvent(
-            `Round ${round}: Bright Data dataset search returned 0 hits in ${Date.now() - startedAt}ms.`,
-          );
-          recordTrace({
-            phase: "search",
-            operation: "brightdata_dataset_search",
-            status: "success",
-            provider: "brightdata",
-            round,
-            query: plan.executableQuery,
-            counts: { candidates: 0 },
-            metadata: { latencyMs: Date.now() - startedAt },
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const startedAt = Date.now();
         logEvent(
-          `Round ${round}: Bright Data dataset search failed: ${msg}`,
+          `Round ${round}: executing Bright Data Pro dataset search (gd_l1viktl72bvl7bjuj0)...`,
         );
         recordTrace({
           phase: "search",
           operation: "brightdata_dataset_search",
-          status: "error",
+          status: "started",
           provider: "brightdata",
           round,
           query: plan.executableQuery,
-          metadata: { error: msg },
+          metadata: { filter: JSON.stringify(filter) },
         });
-      }
+
+        const filterKey = JSON.stringify(filter);
+        const searchAfterCursor =
+          state.datasetSearchAfterByFilter![filterKey] ||
+          (plans.length === 1 ? state.datasetSearchAfter : undefined);
+
+        try {
+          const datasetResult = await datasetSearchFn(
+            "gd_l1viktl72bvl7bjuj0",
+            filter,
+            10,
+            undefined,
+            searchAfterCursor,
+            datasetTimeoutMs,
+          );
+
+          const hits = datasetResult?.hits || [];
+          if (hits.length > 0) {
+            totalHitsThisRound += hits.length;
+            if (datasetResult?.search_after) {
+              state.datasetSearchAfterByFilter![filterKey] =
+                datasetResult.search_after;
+              if (plans.length === 1) {
+                state.datasetSearchAfter = datasetResult.search_after;
+              }
+            }
+            recordProviderUsage("brightdata", hits.length);
+            state.brightDataStats.succeeded += hits.length;
+            usingBrightDataSearch = true;
+
+            for (const hit of hits) {
+              if (!hit?.url) continue;
+              roundItems.push({
+                item: {
+                  title: `${hit.position || "Professional"} at ${hit.current_company_name || (typeof hit.current_company === "object" ? hit.current_company?.name : "") || "Company"}`,
+                  url: hit.url,
+                  content: JSON.stringify(hit),
+                  sourceProvider: "brightdata_dataset",
+                  raw: {
+                    ...hit,
+                    sourceProvider: "brightdata_dataset",
+                  },
+                },
+                resultIndex: index,
+              });
+            }
+
+            logEvent(
+              `Round ${round}: Bright Data dataset discovery found ${hits.length} structured dossiers in ${Date.now() - startedAt}ms.`,
+            );
+            recordTrace({
+              phase: "search",
+              operation: "brightdata_dataset_search",
+              status: "success",
+              provider: "brightdata",
+              round,
+              query: plan.executableQuery,
+              counts: { candidates: hits.length },
+              metadata: {
+                latencyMs: Date.now() - startedAt,
+                took: datasetResult?.took,
+                totalHits: datasetResult?.total_hits,
+              },
+            });
+          } else {
+            logEvent(
+              `Round ${round}: Bright Data dataset search returned 0 hits in ${Date.now() - startedAt}ms.`,
+            );
+            recordTrace({
+              phase: "search",
+              operation: "brightdata_dataset_search",
+              status: "success",
+              provider: "brightdata",
+              round,
+              query: plan.executableQuery,
+              counts: { candidates: 0 },
+              metadata: { latencyMs: Date.now() - startedAt },
+            });
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logEvent(
+            `Round ${round}: Bright Data dataset search failed: ${msg}`,
+          );
+          recordTrace({
+            phase: "search",
+            operation: "brightdata_dataset_search",
+            status: "error",
+            provider: "brightdata",
+            round,
+            query: plan.executableQuery,
+            metadata: { error: msg },
+          });
+        }
+      }),
+    );
+
+    if (totalHitsThisRound > 0) {
+      state.datasetLaneZeroStreak = 0;
+    } else {
+      state.datasetLaneZeroStreak = (state.datasetLaneZeroStreak || 0) + 1;
     }
   };
 
@@ -944,8 +993,10 @@ export async function executeRetrieveStage(
       Math.floor(Number(process.env.BRIGHTDATA_DATASET_PLANS_PER_ROUND) || 2),
     ),
   );
+  const hasDatasetCapability =
+    isBrightDataPro() || Boolean(ports?.brightDataSearchDataset);
   const datasetPlans =
-    isBrightDataPro() && canAttemptBD
+    hasDatasetCapability && canAttemptBD
       ? roundPlans
           .map((plan, index) => ({ plan, index }))
           .filter(({ plan }) => !plan.item.lane || plan.item.lane === "person")

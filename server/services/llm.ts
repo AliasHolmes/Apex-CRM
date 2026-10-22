@@ -28,7 +28,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: "primary" | "openrouter" | "groq" | "atria";
+  id: "primary" | "byesu" | "openrouter" | "groq" | "atria";
   name: string;
   baseUrl: string;
   model: string;
@@ -177,14 +177,32 @@ export function isAtriaPrimary(): boolean {
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
-  // Tier 1: Primary Default Provider (Byesu - exclusively GPT-6.1)
+  // Tier 1: Primary Default Provider (OmniRoute or Byesu if OPENAI_BASE is unset)
+  const primaryName = process.env.OPENAI_PROVIDER_NAME || "Byesu";
+  const primaryBase = cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE);
+  const primaryModel = process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL;
+  const primaryKey = process.env.OPENAI_API_KEY || (process.env.OPENAI_BASE ? "" : process.env.BYESU_API_KEY || "");
+
   direct.push({
     id: "primary",
-    name: process.env.OPENAI_PROVIDER_NAME || "Byesu",
-    baseUrl: cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE),
-    model: process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL,
-    apiKey: process.env.OPENAI_API_KEY || process.env.BYESU_API_KEY || "",
+    name: primaryName,
+    baseUrl: primaryBase,
+    model: primaryModel,
+    apiKey: primaryKey,
   });
+
+  // Tier 2: Secondary Provider (Byesu - when primary is not Byesu itself and BYESU_API_KEY is configured)
+  const isPrimaryByesu = /byesu/i.test(primaryName) || /byesu/i.test(primaryBase);
+  const byesuKey = process.env.BYESU_API_KEY;
+  if (!isPrimaryByesu && byesuKey) {
+    direct.push({
+      id: "byesu",
+      name: "Byesu",
+      baseUrl: cleanBaseUrl(process.env.BYESU_BASE || "https://byesu.com/v1"),
+      model: process.env.BYESU_MODEL || DEFAULT_PRIMARY_MODEL,
+      apiKey: byesuKey,
+    });
+  }
 
   // Tier 2: Failsafe Pair (Groq Failsafe 1, OpenRouter/Mistral Failsafe 2)
   direct.push({
@@ -680,8 +698,17 @@ export const providerCooldowns = new Map<string, number>();
 
 export function getProviderConcurrencyLimit(providerId: string): number {
   if (providerId === "primary") {
-    const configured = Number(process.env.BYESU_CONCURRENT_SLOTS || process.env.OPENAI_CONCURRENT_SLOTS);
-    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 4;
+    const configured = Number(
+      process.env.OPENAI_CONCURRENT_SLOTS ||
+        (process.env.OPENAI_BASE && !process.env.OPENAI_BASE.includes("byesu.com")
+          ? 2
+          : process.env.BYESU_CONCURRENT_SLOTS),
+    );
+    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 2;
+  }
+  if (providerId === "byesu") {
+    const configured = Number(process.env.BYESU_CONCURRENT_SLOTS || 8);
+    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 8;
   }
   if (providerId === "atria") {
     return 0;
@@ -1121,7 +1148,7 @@ async function withProviderFallback<T>(
     fastIds,
   );
   const failsafeTier = orderProvidersForTier(
-    allConfigured.filter((p) => p.id === "groq" || p.id === "openrouter"),
+    allConfigured.filter((p) => p.id === "byesu" || p.id === "groq" || p.id === "openrouter"),
     executionOptions.routingTier,
     fastIds,
   );
@@ -1534,7 +1561,9 @@ async function sendChatCompletion(
     throw cancelError;
   }
   let res: Response;
-  const isByesuTarget = provider.id === "primary";
+  const isByesuTarget =
+    provider.id === "byesu" ||
+    (provider.id === "primary" && /byesu/i.test(provider.name + provider.baseUrl));
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)

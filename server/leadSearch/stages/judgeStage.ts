@@ -207,6 +207,15 @@ export function isParkWithheldEnabled(): boolean {
   return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
 }
 
+export const MAX_PARKED_REINJECTIONS = Math.max(
+  1,
+  Number(process.env.LEAD_MAX_PARKED_REINJECTIONS || 1),
+);
+export const MAX_PARKED_RECHECK_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.LEAD_MAX_PARKED_RECHECK_ATTEMPTS || 3),
+);
+
 export function parkCandidate(
   state: any,
   candidate: FinalistCandidate,
@@ -214,6 +223,7 @@ export function parkCandidate(
 ): boolean {
   if (!state) return false;
   state.parkedCandidates = state.parkedCandidates || [];
+  state.parkedRecheckHistory = state.parkedRecheckHistory || {};
   const candidateKey =
     candidate.lead.contactDetails?.linkedinUrl ||
     candidate.lead.sourceUrl ||
@@ -225,6 +235,21 @@ export function parkCandidate(
   )
     .toLowerCase()
     .trim();
+
+  const history = state.parkedRecheckHistory[candidateKey] || {
+    recheckAttempts: 0,
+    reInjections: 0,
+  };
+
+  // If candidate already reached max allowed re-injections, do not re-park
+  if (history.reInjections >= MAX_PARKED_REINJECTIONS) {
+    return false;
+  }
+
+  // If candidate already reached max allowed recheck attempts, do not re-park
+  if (history.recheckAttempts >= MAX_PARKED_RECHECK_ATTEMPTS) {
+    return false;
+  }
 
   // If already parked, don't duplicate
   if (state.parkedCandidates.some((p: any) => p.candidateKey === candidateKey)) {
@@ -241,7 +266,7 @@ export function parkCandidate(
     companyKey,
     parkedRound: round,
     cause: candidate.lead.evidence?.companyProbeOutcome || "no_domain",
-    recheckAttempts: 0,
+    recheckAttempts: history.recheckAttempts,
     candidate: {
       candidateId: candidate.candidateId,
       lead: candidate.lead,

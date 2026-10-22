@@ -1166,6 +1166,9 @@ export async function executeDiscoverySession(
       parkedCandidates: Array.isArray(options.initialCheckpoint?.parkedCandidates)
         ? [...options.initialCheckpoint.parkedCandidates]
         : [],
+      parkedRecheckHistory: options.initialCheckpoint?.parkedRecheckHistory
+        ? { ...options.initialCheckpoint.parkedRecheckHistory }
+        : {},
     };
 
     const pipelinePorts: PipelinePorts = {
@@ -2505,6 +2508,7 @@ export async function executeDiscoverySession(
           datasetSearchAfter: sessionState.datasetSearchAfter,
           seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
           parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+          parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
           updatedAt: new Date().toISOString(),
         });
         checkpointedQueryRunCount = stats.queryRuns.length;
@@ -2840,6 +2844,7 @@ export async function executeDiscoverySession(
       datasetSearchAfter: sessionState.datasetSearchAfter,
       seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
       parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+      parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
       updatedAt: new Date().toISOString(),
     });
     checkpointedQueryRunCount = stats.queryRuns.length;
@@ -2941,6 +2946,7 @@ export async function executeDiscoverySession(
       datasetSearchAfter: sessionState.datasetSearchAfter,
       seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
       parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+      parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
       updatedAt: new Date().toISOString(),
     });
     checkpointedQueryRunCount = stats.queryRuns.length;

@@ -36,7 +36,11 @@ import { lookupCompanyDomain } from "../companyDomainLookup.js";
 import { verifyDecisionMakerFromEvidence } from "../verification.js";
 import { evaluateDecisionMakerGate, classifyTitle } from "../titleTriage.js";
 import type { FinalistCandidate } from "../finalistJudge.js";
-import { isParkWithheldEnabled } from "./judgeStage.js";
+import {
+  isParkWithheldEnabled,
+  MAX_PARKED_REINJECTIONS,
+  MAX_PARKED_RECHECK_ATTEMPTS,
+} from "./judgeStage.js";
 import { createLeadEvidence } from "../evidence.js";
 import { computeScoreBreakdown } from "../scoring.js";
 import { incrementRejection, recordRejection, mapBrightDataRejection, type RejectionReason } from "../rejections.js";
@@ -1414,7 +1418,23 @@ export async function processParkedCandidates(
       continue;
     }
 
-    parked.recheckAttempts = (parked.recheckAttempts || 0) + 1;
+    state.parkedRecheckHistory = state.parkedRecheckHistory || {};
+    const history = state.parkedRecheckHistory[parked.candidateKey] || {
+      recheckAttempts: parked.recheckAttempts || 0,
+      reInjections: 0,
+    };
+
+    if (history.reInjections >= MAX_PARKED_REINJECTIONS) {
+      sessionCtx.logEvent(
+        `Round ${round}: Dropping parked candidate ${parked.candidateKey}; reached re-injection limit (${history.reInjections}/${MAX_PARKED_REINJECTIONS}).`,
+      );
+      continue;
+    }
+
+    history.recheckAttempts = (history.recheckAttempts || 0) + 1;
+    parked.recheckAttempts = history.recheckAttempts;
+    state.parkedRecheckHistory[parked.candidateKey] = history;
+
     let newEvidenceBlock: string | null = null;
     let domain = deriveCompanyDomain(parked.candidate.lead);
 
@@ -1481,7 +1501,10 @@ export async function processParkedCandidates(
     }
 
     // 2. Profile Dossier Lookup (if domain probe failed or blocked/unprobeable)
-    if (!newEvidenceBlock && (Boolean(sessionCtx.ports?.brightDataSearchDataset) || isBrightDataPro())) {
+    const hasDossier = (parked.candidate.evidence || []).some((e: any) =>
+      String(e.id || "").startsWith("profile_dossier_reentry_"),
+    );
+    if (!newEvidenceBlock && !hasDossier && (Boolean(sessionCtx.ports?.brightDataSearchDataset) || isBrightDataPro())) {
       const candidateProfileUrl =
         parked.candidate.lead.contactDetails?.linkedinUrl ||
         parked.candidate.lead.sourceUrl ||
@@ -1540,19 +1563,22 @@ export async function processParkedCandidates(
     }
 
     if (newEvidenceBlock) {
+      history.reInjections = (history.reInjections || 0) + 1;
+      state.parkedRecheckHistory[parked.candidateKey] = history;
+
       parked.candidate.evidence.push({
         id: `profile_dossier_reentry_${round}_${Date.now()}`,
         text: newEvidenceBlock,
       });
       reInjected.push(parked.candidate);
       sessionCtx.logEvent(
-        `Round ${round}: Parked candidate ${parked.candidateKey} acquired company/dossier evidence and re-enters judging.`,
+        `Round ${round}: Parked candidate ${parked.candidateKey} acquired company/dossier evidence and re-enters judging (re-injection #${history.reInjections}).`,
       );
-    } else if (parked.recheckAttempts < 3) {
+    } else if (parked.recheckAttempts < MAX_PARKED_RECHECK_ATTEMPTS) {
       survivingParked.push(parked);
     } else {
       sessionCtx.logEvent(
-        `Round ${round}: Dropping parked candidate ${parked.candidateKey} after 3 failed re-check attempts.`,
+        `Round ${round}: Dropping parked candidate ${parked.candidateKey} after ${parked.recheckAttempts} failed re-check attempts.`,
       );
     }
   }

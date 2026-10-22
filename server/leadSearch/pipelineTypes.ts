@@ -75,6 +75,11 @@ export type PipelinePorts = {
 
 import type { SignalStore, SignalStoreData } from "./signalStore.js";
 
+export type ParkedRecheckRecord = {
+  recheckAttempts: number;
+  reInjections: number;
+};
+
 export type ParkedCandidate = {
   candidateKey: string;
   companyKey: string;
@@ -111,6 +116,7 @@ export type PipelineSessionState = {
   datasetLaneZeroStreak?: number;
   parkedCandidates?: ParkedCandidate[];
   reInjectedCandidates?: FinalistCandidate[];
+  parkedRecheckHistory?: Record<string, ParkedRecheckRecord>;
 };
 
 export type SessionContext = {
@@ -156,6 +162,7 @@ export type MiningSessionCheckpoint = {
   /** Request-scoped inputs (saved search, exclusions, mode) replayed when the session resumes. */
   requestContext?: SessionRequestContext;
   parkedCandidates?: ParkedCandidate[];
+  parkedRecheckHistory?: Record<string, ParkedRecheckRecord>;
   updatedAt: string;
 };
 

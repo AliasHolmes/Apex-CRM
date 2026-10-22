@@ -8,6 +8,8 @@ import {
 import {
   shouldParkWithheldCandidate,
   parkCandidate,
+  MAX_PARKED_REINJECTIONS,
+  MAX_PARKED_RECHECK_ATTEMPTS,
 } from "../server/leadSearch/stages/judgeStage.js";
 import {
   matchLookupResultToCompany,
@@ -346,4 +348,152 @@ test("Checkpoint persistence: round-trips parkedCandidates cleanly", () => {
   delete checkpoint.parkedCandidates;
   const legacyBudgeted = enforceCheckpointByteBudget(checkpoint);
   assert.equal(legacyBudgeted.parkedCandidates, undefined);
+});
+
+test("parkCandidate: blocks re-parking when candidate reaches MAX_PARKED_REINJECTIONS limit", () => {
+  const state: any = {
+    parkedCandidates: [],
+    parkedRecheckHistory: {
+      "https://linkedin.com/in/recycled": {
+        recheckAttempts: 1,
+        reInjections: MAX_PARKED_REINJECTIONS, // already reached max
+      },
+    },
+  };
+
+  const cand: FinalistCandidate = {
+    candidateId: "cand_recycled",
+    lead: {
+      contactDetails: { linkedinUrl: "https://linkedin.com/in/recycled" },
+      currentCompany: "Recycled Agency",
+    },
+    evidence: [],
+  };
+
+  const parked = parkCandidate(state, cand, 2);
+  assert.equal(parked, false, "Must not re-park candidate that reached max re-injections");
+  assert.equal(state.parkedCandidates.length, 0, "parkedCandidates pool must remain empty");
+
+  // Also verify recheckAttempts cap blocks re-parking
+  state.parkedRecheckHistory["https://linkedin.com/in/recheck_max"] = {
+    recheckAttempts: MAX_PARKED_RECHECK_ATTEMPTS,
+    reInjections: 0,
+  };
+  const cand2: FinalistCandidate = {
+    candidateId: "cand_recheck_max",
+    lead: {
+      contactDetails: { linkedinUrl: "https://linkedin.com/in/recheck_max" },
+      currentCompany: "Recheck Max Agency",
+    },
+    evidence: [],
+  };
+  const parked2 = parkCandidate(state, cand2, 2);
+  assert.equal(parked2, false, "Must not re-park candidate that reached max recheck attempts");
+});
+
+test("processParkedCandidates: skips duplicate dossier lookup if candidate already has dossier evidence", async () => {
+  let datasetCalled = false;
+  const state: any = {
+    parkedCandidates: [
+      {
+        candidateKey: "https://linkedin.com/in/already-has-dossier",
+        companyKey: "dossierco",
+        parkedRound: 1,
+        cause: "no_domain",
+        recheckAttempts: 0,
+        candidate: {
+          candidateId: "c_dossier",
+          lead: {
+            contactDetails: { linkedinUrl: "https://linkedin.com/in/already-has-dossier" },
+            currentCompany: "Dossier Co",
+          },
+          evidence: [
+            {
+              id: "profile_dossier_reentry_1_12345",
+              text: "Already fetched dossier",
+            },
+          ],
+        },
+      },
+    ],
+    abortController: new AbortController(),
+  };
+
+  const ctx: any = {
+    state,
+    logEvent: () => {},
+    ports: {
+      brightDataSearchDataset: async () => {
+        datasetCalled = true;
+        return { hits: [] };
+      },
+      tavilySearch: async () => ({ items: [], sources: [] }),
+    },
+  };
+
+  const prevEnv = process.env.LEAD_PARK_WITHHELD;
+  process.env.LEAD_PARK_WITHHELD = "true";
+  try {
+    const reinjected = await processParkedCandidates(ctx, 0, 2);
+    assert.equal(datasetCalled, false, "Must not re-call Bright Data dataset when dossier already exists");
+    assert.equal(reinjected.length, 0, "No new evidence block acquired; not reinjected");
+  } finally {
+    process.env.LEAD_PARK_WITHHELD = prevEnv;
+  }
+});
+
+test("processParkedCandidates: increments reInjections and enforces re-injection cap", async () => {
+  const state: any = {
+    parkedCandidates: [
+      {
+        candidateKey: "https://linkedin.com/in/first-revival",
+        companyKey: "revivalco",
+        parkedRound: 1,
+        cause: "no_domain",
+        recheckAttempts: 0,
+        candidate: {
+          candidateId: "c_revival",
+          lead: {
+            contactDetails: { linkedinUrl: "https://linkedin.com/in/first-revival" },
+            currentCompany: "Revival Co",
+          },
+          evidence: [],
+        },
+      },
+    ],
+    abortController: new AbortController(),
+  };
+
+  const events: string[] = [];
+  const ctx: any = {
+    state,
+    logEvent: (msg: string) => events.push(msg),
+    ports: {
+      brightDataSearchDataset: async () => ({
+        hits: [
+          {
+            url: "https://linkedin.com/in/first-revival",
+            position: "CEO",
+            current_company_name: "Revival Co",
+            about: "AI Agency in Austin",
+          },
+        ],
+      }),
+    },
+  };
+
+  const prevEnv = process.env.LEAD_PARK_WITHHELD;
+  process.env.LEAD_PARK_WITHHELD = "true";
+  try {
+    // 1st revival: acquires dossier evidence and gets re-injected (#1)
+    const reinjected1 = await processParkedCandidates(ctx, 0, 2);
+    assert.equal(reinjected1.length, 1);
+    assert.equal(state.parkedRecheckHistory["https://linkedin.com/in/first-revival"].reInjections, 1);
+
+    // If candidate gets withheld again, parkCandidate should block re-parking
+    const reparkResult = parkCandidate(state, reinjected1[0], 2);
+    assert.equal(reparkResult, false, "Must block re-parking after 1st re-injection when cap is 1");
+  } finally {
+    process.env.LEAD_PARK_WITHHELD = prevEnv;
+  }
 });

@@ -4781,6 +4781,7 @@ export type MiningSessionCheckpoint = {
     deltaBrief?: string;
   };
   parkedCandidates?: any[];
+  parkedRecheckHistory?: Record<string, any>;
   updatedAt: string;
 };
 

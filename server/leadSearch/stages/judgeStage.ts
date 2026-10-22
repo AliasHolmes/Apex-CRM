@@ -55,8 +55,8 @@ export function computeJudgeDynamicMaxTokens(
   const safeReqs = Math.max(1, requirementCount);
   const perCandidateTokens = safeReqs * 65 + 60;
   const jsonOutputBudget = safeBatch * perCandidateTokens + 300;
-  const reasoningBuffer = hasReasoningModel ? 1500 : 400;
-  return Math.min(8000, Math.max(1500, jsonOutputBudget + reasoningBuffer));
+  const reasoningBuffer = hasReasoningModel ? 10000 : 400;
+  return Math.min(16000, Math.max(1500, jsonOutputBudget + reasoningBuffer));
 }
 
 /** How many candidates fit one judge call on a provider with a hard output cap. */
@@ -67,7 +67,7 @@ export function computeJudgeBatchCapacity(
 ): number {
   if (!Number.isFinite(outputTokenCap)) return Number.MAX_SAFE_INTEGER;
   const perCandidate = Math.max(1, requirementCount) * 65 + 60;
-  const overhead = 300 + (hasReasoningModel ? 1500 : 400);
+  const overhead = 300 + (hasReasoningModel ? 4000 : 400);
   return Math.max(1, Math.floor((outputTokenCap - overhead) / perCandidate));
 }
 
@@ -773,7 +773,7 @@ export async function evaluateIncrementalJudgeBatches(
         {
           maxTokens: dynamicMaxTokens,
           temperature: 0,
-          retryOnParseFailure: false,
+          retryOnParseFailure: batch.length === 1,
           timeoutMs: Math.min(
             120_000,
             Number(

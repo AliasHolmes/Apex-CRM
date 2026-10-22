@@ -13,7 +13,7 @@ import {
   upsertSearchCacheEntry,
 } from '../db.js';
 import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
-import { resolvePlannerProviderOrder } from './plannerRouting.js';
+import { resolvePlannerProviderOrder, PLANNER_PROVIDER_HARD_TIMEOUT_MS } from './plannerRouting.js';
 import { applyPostIntentDelta } from './scoring.js';
 import { formatLatencySeconds } from './terminalLog.js';
 import type { ProspectContract } from './prospectContract.js';
@@ -282,6 +282,7 @@ Analyze the snippets and classify the prospect's intent:`;
       signal: llmContext?.signal,
       // Low-latency planning family: fast router first, engine provider second.
       tierProviderOrder: resolvePlannerProviderOrder(),
+      providerHardTimeoutMs: PLANNER_PROVIDER_HARD_TIMEOUT_MS,
       metadata: {
         stage: 'post_intent',
         sessionId: llmContext?.sessionId,
@@ -412,6 +413,7 @@ ${promptSections}`;
       signal: llmContext?.signal,
       // Low-latency planning family: fast router first, engine provider second.
       tierProviderOrder: resolvePlannerProviderOrder(),
+      providerHardTimeoutMs: PLANNER_PROVIDER_HARD_TIMEOUT_MS,
       metadata: {
         stage: 'post_intent',
         sessionId: llmContext?.sessionId,

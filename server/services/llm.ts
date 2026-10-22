@@ -1587,7 +1587,7 @@ async function sendChatCompletion(
     timeoutForCall = probeTimeoutMs;
   } else if (Number(options?.hardTimeoutMs) > 0) {
     timeoutForCall = Number(options?.hardTimeoutMs);
-  } else if (isByesuTarget) {
+  } else if (isByesuTarget || isReasoningCapable) {
     timeoutForCall = computeByesuDynamicTimeoutMs(
       effectiveMaxTokens,
       messages,
@@ -2185,10 +2185,18 @@ function stripMarkdownFence(str: string): string {
 }
 
 function stripReasoningBlocks(str: string): string {
-  let cleaned = str.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-  const finalClose = cleaned.toLowerCase().lastIndexOf("</think>");
-  if (finalClose !== -1) {
-    cleaned = cleaned.slice(finalClose + "</think>".length).trim();
+  let cleaned = str
+    .replace(/<(think|thought|reasoning)>[\s\S]*?<\/\1>/gi, "")
+    .replace(/```(?:thought|thinking|reasoning)[\s\S]*?```/gi, "")
+    .trim();
+  const tagRegex = /<\/(?:think|thought|reasoning)>/gi;
+  let match: RegExpExecArray | null;
+  let lastClose = -1;
+  while ((match = tagRegex.exec(cleaned)) !== null) {
+    lastClose = match.index + match[0].length;
+  }
+  if (lastClose !== -1) {
+    cleaned = cleaned.slice(lastClose).trim();
   }
   return cleaned;
 }
@@ -2337,11 +2345,17 @@ function cleanJSONString(str: string): string {
   else if (firstBracket !== -1) startIdx = firstBracket;
 
   if (startIdx !== -1) {
-    const lastBrace = cleaned.lastIndexOf("}");
-    const lastBracket = cleaned.lastIndexOf("]");
-    const endIdx = Math.max(lastBrace, lastBracket);
-    if (endIdx !== -1 && endIdx > startIdx)
-      cleaned = cleaned.slice(startIdx, endIdx + 1);
+    const startChar = cleaned[startIdx];
+    const matchingEnd = startChar === "[" ? cleaned.lastIndexOf("]") : cleaned.lastIndexOf("}");
+    if (matchingEnd !== -1 && matchingEnd > startIdx) {
+      cleaned = cleaned.slice(startIdx, matchingEnd + 1);
+    } else {
+      const lastBrace = cleaned.lastIndexOf("}");
+      const lastBracket = cleaned.lastIndexOf("]");
+      const endIdx = Math.max(lastBrace, lastBracket);
+      if (endIdx !== -1 && endIdx > startIdx)
+        cleaned = cleaned.slice(startIdx, endIdx + 1);
+    }
   }
   return cleaned;
 }

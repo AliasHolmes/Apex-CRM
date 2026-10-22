@@ -241,7 +241,7 @@ function getConfiguredLLMProviders(): LLMProvider[] {
 const GROQ_MAX_OUTPUT_TOKENS = Number(
   process.env.GROQ_MAX_OUTPUT_TOKENS || 950,
 );
-const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning)\b/i;
+const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning|gemini.*high|gemini.*thinking)\b/i;
 
 const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
   strategist: "low",
@@ -1564,10 +1564,17 @@ async function sendChatCompletion(
   const isByesuTarget =
     provider.id === "byesu" ||
     (provider.id === "primary" && /byesu/i.test(provider.name + provider.baseUrl));
+  const isReasoningCapable = REASONING_MODEL_REGEX.test(provider.model);
+  const baseMaxTokens = options?.maxTokens !== undefined ? options.maxTokens : 4000;
+  // Reasoning models (Gemini Flash High, GPT-6, o-series) bill internal reasoning tokens
+  // against max_tokens. When reasoning on high, the model may generate 4,000-8,000 thinking
+  // tokens before emitting visible output. Provide an automatic reasoning headroom allowance
+  // so internal reasoning never truncates or starves the requested completion payload.
+  const reasoningAllowance = isReasoningCapable ? 12_000 : 0;
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
-      : (options?.maxTokens !== undefined ? options.maxTokens : 4000);
+      : Math.min(baseMaxTokens + reasoningAllowance, 16_384);
 
   // Health probes are status checks: they honor the caller timeout exactly (no Byesu
   // workload floor) and never retry, so a probe cannot hold a provider slot for minutes.
@@ -1595,7 +1602,6 @@ async function sendChatCompletion(
     sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
     sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
   }
-  const isReasoningCapable = REASONING_MODEL_REGEX.test(provider.model);
   const isFailsafe = provider.id === "groq" || provider.id === "openrouter";
   const stage = String(options?.metadata?.stage || "").toLowerCase();
   const stageEffort = stage && TASK_REASONING_EFFORT[stage] ? TASK_REASONING_EFFORT[stage] : undefined;
@@ -1714,20 +1720,26 @@ async function sendChatCompletion(
     // Deliberately does NOT set isTokenLimit and does not match the token-limit regexes in
     // LLMProviderError: this is a budget-sizing fault, not a context-window rejection, and
     // must not disable an otherwise healthy provider for the rest of the session.
-    if (finishReason === "length" && content === "") {
+    if (finishReason === "length") {
       const reasoningChars =
         typeof choice?.message?.reasoning_content === "string"
           ? choice.message.reasoning_content.length
           : 0;
-      throw new LLMProviderError(
-        provider,
-        res.status,
-        `chat completion truncated: finish_reason "length" produced no visible content` +
-          (reasoningChars > 0
-            ? ` (reasoning_content consumed the entire budget: ${reasoningChars} chars)`
-            : "") +
-          `. Raise max_tokens.`,
-      );
+      const isJsonCutoff =
+        options?.responseFormat?.type === "json_object" &&
+        (!content.trim().endsWith("}") && !content.trim().endsWith("]"));
+      if (content === "" || isJsonCutoff) {
+        throw new LLMProviderError(
+          provider,
+          res.status,
+          `chat completion truncated: finish_reason "length"` +
+            (content === "" ? ` produced no visible content` : ` cut off incomplete JSON response`) +
+            (reasoningChars > 0
+              ? ` (reasoning_content consumed ${reasoningChars} chars)`
+              : "") +
+            `. Raise max_tokens or token headroom.`,
+        );
+      }
     }
 
     const latencyMs = Date.now() - callStartedAt;
@@ -2573,13 +2585,16 @@ export async function openAIStructured<T>(
         );
       }
 
+      const isReasoning = isReasoningProvider(provider);
       const retryMaxTokens =
         provider.id === "groq"
           ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
-          : Math.max(
-              Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
-              Math.min((options?.maxTokens || 4000) * 2, 8000),
-            );
+          : isReasoning
+            ? 16_384
+            : Math.max(
+                Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
+                Math.min((options?.maxTokens || 4000) * 2, 8000),
+              );
       const retryMessages: ChatMessage[] = [
         {
           role: "system",

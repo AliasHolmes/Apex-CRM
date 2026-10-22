@@ -1027,7 +1027,7 @@ export async function executeExtractStage(
     Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3800),
     800,
   );
-  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 6000);
+  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 16000);
   const rawProviderBudget = Math.max(
     Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 24000),
     4000,

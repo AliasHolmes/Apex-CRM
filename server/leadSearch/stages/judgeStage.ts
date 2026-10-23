@@ -495,7 +495,7 @@ export async function evaluateIncrementalJudgeBatches(
     candidate: FinalistCandidate,
     status: FinalistOutcomeStatus | undefined,
     failedReqIds: string[],
-    source: "llm" | "deterministic",
+    source: "llm" | "deterministic" | "cached",
   ) => {
     for (const reqId of failedReqIds) {
       if (reqId) {
@@ -631,6 +631,7 @@ export async function evaluateIncrementalJudgeBatches(
   const firstWaveCandidates = firstWaveBatchSize * judgeConcurrency;
 
   const reusedQualified: any[] = [];
+  const reusedHardFailed: any[] = [];
   let withheldByAdmissionGate = 0;
   const withheldCauseCounts: Record<string, number> = {
     no_domain: 0,
@@ -642,8 +643,37 @@ export async function evaluateIncrementalJudgeBatches(
   const candidatesToJudge: FinalistCandidate[] = [];
   for (const candidate of vettedCandidates) {
     const identityKey = isCacheableFingerprint(reqFingerprint) ? candidateVerdictKey(candidate.lead) : "";
+    const cached = identityKey ? getCandidateVerdict(identityKey, reqFingerprint) : null;
+
+    if (cached?.verdict === "hard_fail") {
+      const failInsight = {
+        status: "hard_fail" as FinalistOutcomeStatus,
+        score: 0,
+        reason: cached.reason || "Disqualified by prior judge verdict",
+      };
+      judgmentInsights.set(candidate.candidateId, failInsight);
+      candidate.lead.judgmentInsight = failInsight;
+      candidate.lead.qualification = {
+        policyVersion: contract?.policyVersion || 1,
+        verdict: "hard_fail",
+        qualificationSource: "cached",
+        finalScore: 0,
+        requirements: (contract?.requirements || []).map((r) => ({
+          requirementId: r.id,
+          status: r.id === cached.failedRequirementId ? "fail" : "unknown",
+        })),
+        reason: cached.reason || "Disqualified by prior judge verdict",
+      };
+      if (_stats) {
+        _stats.cachedDisqualifications = (_stats.cachedDisqualifications || 0) + 1;
+      }
+      const failedReqIds = cached.failedRequirementId ? [cached.failedRequirementId] : [];
+      recordCandidateJudgeOutcome(candidate, "hard_fail", failedReqIds, "cached");
+      reusedHardFailed.push(candidate.lead);
+      continue;
+    }
+
     const evidenceHash = identityKey ? computeEvidenceHash(candidate.evidence) : "";
-    const cached = identityKey && evidenceHash ? getCandidateVerdict(identityKey, reqFingerprint) : null;
     if (cached?.verdict === "pass" && cached.evidenceHash === evidenceHash && cached.qualification) {
       const qualification = cached.qualification as Qualification;
       const reuseAdmission = evaluatePrimaryAdmission(candidate.lead, qualification, contract);
@@ -682,6 +712,11 @@ export async function evaluateIncrementalJudgeBatches(
   if (withheldByAdmissionGate > 0) {
     logEvent(
       `Round ${round} Judge: admission gate withheld ${withheldByAdmissionGate} stored qualification(s) whose defining company-type requirement was never proven.`,
+    );
+  }
+  if (reusedHardFailed.length > 0) {
+    logEvent(
+      `Round ${round} Judge: skipped ${reusedHardFailed.length} disqualified candidate(s) via cached verdict; 0 LLM tokens spent.`,
     );
   }
   if (reusedQualified.length > 0) {

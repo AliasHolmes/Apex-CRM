@@ -305,6 +305,7 @@ export async function executeFuseStage(
     item._ablatedTerm = (observation.raw as any)?.ablatedTerm;
     const rawHint = extractCompanyHintDeterministic(observation) || "";
     item._companyHint = normalizeCompanyName(rawHint);
+    item._candidateKeys = candidateKeys;
 
     if (queryRun) {
       queryRun.uniqueCandidates++;
@@ -315,19 +316,14 @@ export async function executeFuseStage(
     uniqueRoundItems.push(item);
   }
 
-  for (const k of roundCandidateKeys) {
-    seenCandidateKeys.add(k);
-  }
-  const rawResultsCount = seenCandidateKeys.size;
-  stats.rawCandidates = rawResultsCount;
-
   if (uniqueRoundItems.length === 0) {
+    stats.rawCandidates = seenCandidateKeys.size;
     logEvent(
       `Round ${round}: no new unique candidates (stalled round, continuing collection budget).`,
     );
     return {
       candidateItems: [],
-      roundCandidateKeys,
+      roundCandidateKeys: new Set<string>(),
       uniqueRoundItemsCount: 0,
     };
   }
@@ -380,13 +376,26 @@ export async function executeFuseStage(
     Math.max(targetScale, 20),
   );
   const candidateItems = sortedRoundItems.slice(0, candidateBudget);
+
+  // Commit only candidates advancing to extraction into session-wide seenCandidateKeys.
+  // Items exceeding candidateBudget must NOT be poisoned in seenCandidateKeys so they remain
+  // eligible for retrieval in subsequent rounds or if re-discovered by refined queries.
+  const acceptedRoundKeys = new Set<string>();
+  for (const it of candidateItems) {
+    const keys = (it as any)._candidateKeys || [];
+    for (const k of keys) {
+      seenCandidateKeys.add(k);
+      acceptedRoundKeys.add(k);
+    }
+  }
+  stats.rawCandidates = seenCandidateKeys.size;
   logEvent(
     `Round ${round}: using top ${candidateItems.length}/${sortedRoundItems.length} candidates for extraction budget.`,
   );
 
   return {
     candidateItems,
-    roundCandidateKeys,
+    roundCandidateKeys: acceptedRoundKeys,
     uniqueRoundItemsCount: sortedRoundItems.length,
   };
 }

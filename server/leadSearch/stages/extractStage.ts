@@ -1001,6 +1001,11 @@ export async function executeExtractStage(
     );
     const trimmedItems = activeCandidateItems.slice(neededEvidenceBlocks);
     for (const item of trimmedItems) {
+      if (Array.isArray((item as any)._candidateKeys)) {
+        for (const k of (item as any)._candidateKeys) {
+          seenCandidateKeys.delete(k);
+        }
+      }
       const url = item.url || "";
       const normalizedUrl = item._normalizedUrl || normalizeLinkedInUrl(url);
       const linkedinKey = canonicalLinkedInIdentity(url || normalizedUrl);

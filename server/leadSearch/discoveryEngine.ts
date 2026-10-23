@@ -714,9 +714,9 @@ export async function executeDiscoverySession(
               maxTokens: contractMaxTokens,
               temperature: 0,
               signal: sessionAbortController.signal,
-              timeoutMs: Math.min(
-                Number(process.env.LLM_CONTRACT_TIMEOUT_MS || 90000),
-                115000,
+              timeoutMs: Math.max(
+                30_000,
+                Number(process.env.LLM_CONTRACT_TIMEOUT_MS || 120_000),
               ),
               maxRetries: 1,
               retryOnParseFailure: true,

@@ -21,7 +21,7 @@ import {
   bulkLeadsArraySchema,
   EXTRACTION_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
-  CLOUDFLARE_MAX_TIMEOUT_MS,
+
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -1131,9 +1131,10 @@ Evidence:
         Math.max(Number(process.env.LEAD_EXTRACTION_CHUNK_RETRIES ?? 1), 0),
         2,
       );
-      const extractionTimeoutMs = Math.min(
-        CLOUDFLARE_MAX_TIMEOUT_MS,
-        Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 90_000),
+      const extractionTimeoutMs = Math.max(
+        30_000,
+      
+        Number(process.env.LLM_EXTRACTION_TIMEOUT_MS || 120_000),
       );
       const extracted = await runWithTransientRetry(
         () =>

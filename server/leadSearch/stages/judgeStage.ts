@@ -602,20 +602,22 @@ export async function evaluateIncrementalJudgeBatches(
     ),
   );
   const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 7000);
+  const explicitJudgeConcurrency = process.env.FINALIST_JUDGE_CONCURRENCY
+    ? Number(process.env.FINALIST_JUDGE_CONCURRENCY)
+    : undefined;
   const configuredJudgeConcurrency = Number(
-    process.env.FINALIST_JUDGE_CONCURRENCY || config.judgeConcurrency || 4,
+    explicitJudgeConcurrency ?? config.judgeConcurrency ?? 2,
   );
-  // Adaptive headroom: when extraction/intent work is not occupying the primary slot pool,
-  // the judge can use the free slots (still bounded by the hard ceiling of 8). An
-  // explicitly configured value stays authoritative as the floor.
   const freePrimarySlots = Math.max(
     0,
     getProviderConcurrencyLimit("primary") - getProviderActiveSlots("primary"),
   );
-  const judgeConcurrency = Math.max(
-    1,
-    Math.min(8, Math.max(configuredJudgeConcurrency, freePrimarySlots)),
-  );
+  const judgeConcurrency = explicitJudgeConcurrency !== undefined && explicitJudgeConcurrency > 0
+    ? explicitJudgeConcurrency
+    : Math.max(
+        1,
+        Math.min(8, Math.max(configuredJudgeConcurrency, freePrimarySlots)),
+      );
   // First wave runs batches of up to configuredMaxBatchCandidates (provider capacity permitting) so the
   // pool's first `judgeConcurrency` calls amortize prefill over more candidates.
   // Later waves keep the configured micro-batch size, preserving the rolling pool's
@@ -834,12 +836,12 @@ export async function evaluateIncrementalJudgeBatches(
           maxTokens: dynamicMaxTokens,
           temperature: 0,
           retryOnParseFailure: batch.length === 1,
-          timeoutMs: Math.min(
-            120_000,
+          timeoutMs: Math.max(
+            30_000,
             Number(
               process.env.LLM_FINALIST_TIMEOUT_MS ||
                 process.env.LLM_TIMEOUT_MS ||
-                90_000,
+                150_000,
             ),
           ),
           circuitBreaker: llmCircuitBreaker,

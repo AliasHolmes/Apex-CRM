@@ -386,7 +386,7 @@ function resolveDynamicQueueTimeoutMs(): number {
 async function fetchWithRetry(
   url: string,
   options: RequestInit,
-  timeoutMs = Number(process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS),
+  timeoutMs?: number,
   maxRetries?: number,
   _isAtria = false,
   _providerId?: string,
@@ -406,11 +406,18 @@ async function fetchWithRetry(
   const effectiveMaxRetries =
     Number.isFinite(rawRetries) && rawRetries >= 0 ? Math.floor(rawRetries) : 1;
 
-  const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || CLOUDFLARE_MAX_TIMEOUT_MS);
-  const effectiveTimeoutMs = Math.min(
-    Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
-    CLOUDFLARE_MAX_TIMEOUT_MS,
-  );
+  const isCloudflareUrl = /byesu\.com/i.test(url);
+  const defaultTimeout = isCloudflareUrl ? CLOUDFLARE_MAX_TIMEOUT_MS : 300_000;
+  const rawTimeout = Number(timeoutMs || process.env.LLM_TIMEOUT_MS || defaultTimeout);
+  const effectiveTimeoutMs = isCloudflareUrl
+    ? Math.min(
+        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : CLOUDFLARE_MAX_TIMEOUT_MS,
+        CLOUDFLARE_MAX_TIMEOUT_MS,
+      )
+    : Math.max(
+        Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 300_000,
+        15_000,
+      );
   const retry429 =
     process.env.LLM_RETRY_429 !== "false" && effectiveMaxRetries > 0;
 
@@ -535,7 +542,8 @@ async function fetchWithRetry(
       }
       if (isFetchTimeout) {
         lastError = new Error(
-          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s (bounded within Cloudflare 120s limit)`,
+          `LLM request timed out after ${Math.round(effectiveTimeoutMs / 1000)}s` +
+            (isCloudflareUrl ? ` (bounded within Cloudflare 120s limit)` : ""),
         );
         break;
       }
@@ -1161,7 +1169,12 @@ async function withProviderFallback<T>(
   // Health probes report status; they must not move provider health or reach the failsafe.
   const isHealthProbe = Boolean(executionOptions.metadata?.healthProbe);
 
-  const overallCallBudgetMs = CLOUDFLARE_MAX_TIMEOUT_MS + 30_000;
+  const isCloudflarePrimary = /byesu\.com/i.test(primaryCandidates[0]?.baseUrl || "");
+  const defaultBudget = isCloudflarePrimary ? CLOUDFLARE_MAX_TIMEOUT_MS : 300_000;
+  const overallCallBudgetMs = Math.max(
+    defaultBudget + 30_000,
+    Number(process.env.LLM_TIMEOUT_MS || 0) + 30_000,
+  );
   // Queue time is not execution time, so slot waits are excluded from the budget.
   const budgetClockStartedAt = Date.now();
   let queueWaitTotalMs = 0;
@@ -1504,6 +1517,7 @@ export function computeByesuDynamicTimeoutMs(
   requestedTimeoutMs?: number,
   metadata?: Record<string, any>,
   hardTimeoutMs?: number,
+  isCloudflareBounded = true,
 ): number {
   if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) {
     return hardTimeoutMs;
@@ -1527,7 +1541,7 @@ export function computeByesuDynamicTimeoutMs(
   const effectiveChars = Math.max(promptChars, chunkChars, promptSize);
   const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
 
-  // Scale timeout dynamically for Byesu GPT-6 models so multi-candidate
+  // Scale timeout dynamically for Byesu GPT-6 models and reasoning models so multi-candidate
   // batches do not prematurely abort at 30s/35s.
   const workloadTimeoutMs =
     45_000 +
@@ -1540,10 +1554,15 @@ export function computeByesuDynamicTimeoutMs(
     requestedTimeoutMs || 0,
   );
 
-  return Math.min(
-    CLOUDFLARE_MAX_TIMEOUT_MS,
-    Math.max(minByesuTimeout, workloadTimeoutMs),
+  const candidateTimeout = Math.max(minByesuTimeout, workloadTimeoutMs);
+  if (isCloudflareBounded) {
+    return Math.min(CLOUDFLARE_MAX_TIMEOUT_MS, candidateTimeout);
+  }
+  const nonCloudflareCeiling = Math.max(
+    Number(process.env.LLM_TIMEOUT_MS || 0),
+    300_000,
   );
+  return Math.min(nonCloudflareCeiling, candidateTimeout);
 }
 
 async function sendChatCompletion(
@@ -1564,6 +1583,10 @@ async function sendChatCompletion(
   const isByesuTarget =
     provider.id === "byesu" ||
     (provider.id === "primary" && /byesu/i.test(provider.name + provider.baseUrl));
+  const isCloudflareTarget =
+    isByesuTarget ||
+    /byesu\.com/i.test(provider.baseUrl || "") ||
+    /byesu/i.test(provider.name || "");
   const isReasoningCapable = REASONING_MODEL_REGEX.test(provider.model);
   const baseMaxTokens = options?.maxTokens !== undefined ? options.maxTokens : 4000;
   // Reasoning models (Gemini Flash High, GPT-6, o-series) bill internal reasoning tokens
@@ -1594,6 +1617,7 @@ async function sendChatCompletion(
       options?.timeoutMs,
       options?.metadata,
       options?.hardTimeoutMs,
+      isCloudflareTarget,
     );
   }
 

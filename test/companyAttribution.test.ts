@@ -311,6 +311,7 @@ describe('Gated Company Attribution Module', () => {
       };
 
       const summary = await runGatedCompanyAttribution(candidates, contract, {
+        batchSize: 4,
         openAIStructured: mockOpenAIStructured,
       });
 

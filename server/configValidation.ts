@@ -43,8 +43,8 @@ export function validateEngineConfig(): string[] {
       16,
       "OPENAI_CONCURRENT_SLOTS exceeds the recommended maximum of 16; provider rate limits may trigger.",
     ],
-    ["LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK", 6, "LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK exceeds recommended modern size of 6; larger chunks increase latency and timeout risk."],
-    ["FINALIST_JUDGE_MICRO_BATCH_SIZE", 6, "FINALIST_JUDGE_MICRO_BATCH_SIZE exceeds recommended size of 4-6; large batches diminish rolling pool early-stopping gains."],
+    ["LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK", 5, "LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK exceeds recommended micro-chunk size of 2-3; large chunks increase latency and timeout risk."],
+    ["FINALIST_JUDGE_MICRO_BATCH_SIZE", 5, "FINALIST_JUDGE_MICRO_BATCH_SIZE exceeds recommended micro-batch size of 2-3; large batches diminish rolling pool early-stopping gains."],
   ] as const) {
     const value = num(name);
     if (value !== undefined && !Number.isNaN(value) && value > max) {

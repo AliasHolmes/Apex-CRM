@@ -1024,15 +1024,15 @@ export async function executeExtractStage(
 
   // 4. Token budget calculation and chunking
   const rawChunkChars = Math.max(
-    Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 16000),
+    Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000),
     1800,
   );
-  const extractionChunkChars = Math.min(rawChunkChars, 64000);
+  const extractionChunkChars = Math.min(rawChunkChars, 16000);
   const rawMaxTokens = Math.max(
-    Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 12000),
+    Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 8000),
     800,
   );
-  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 32000);
+  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 16000);
   const rawProviderBudget = Math.max(
     Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 64000),
     4000,
@@ -1072,7 +1072,7 @@ Evidence:
   );
   const maxBlocksPerChunk = Math.max(
     2,
-    Math.min(24, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 6)),
+    Math.min(6, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 3)),
   );
   const chunks = chunkEvidenceBlocksByTokenBudget(
     evidenceBlocks,
@@ -1147,7 +1147,7 @@ Evidence:
               temperature: 0.0,
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
-              // Inherits TASK_REASONING_EFFORT["extraction"] ("high") for deep parsing.
+              // Inherits TASK_REASONING_EFFORT["extraction"] ("low") for fast, deterministic parsing.
               // No routingTier here: extraction is engine work and stays on the primary provider (Byesu).
               // A "fast" tier without a provider order is inert anyway.
               timeoutMs: extractionTimeoutMs,

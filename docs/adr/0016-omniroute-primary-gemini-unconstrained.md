@@ -50,21 +50,21 @@ The direct provider candidate chain in [`server/services/llm.ts`](../../server/s
 ### 2. Prompt Thinking Unsuppression & Reasoning Effort Calibration
 
 - **`<think>` Ban Removal**: In `openAIStructured`, the JSON mode system prompt now permits `<think>...</think>` internal deliberation while requiring final output to be strictly valid JSON conforming to schema. Downstream regex parsers (`stripReasoningBlocks`, `cleanJSONString`) cleanly isolate and strip thought blocks.
-- **High Reasoning Effort**: `TASK_REASONING_EFFORT` is set to `"high"` across all core analytical stages (`strategist`, `extraction`, `intent_signals`, `company_attribution`, `judge`, `contract`, `post_intent`). Hardcoded `"low"` overrides in `planStage.ts` and `extractStage.ts` were removed.
+- **Calibrated Reasoning Effort**: `TASK_REASONING_EFFORT` is calibrated by task complexity: `high` on finalist judging, `medium` on contract and strategist, and `low` on extraction, company attribution, and intent classification. This prevents entity parsing calls from burning 5,000+ hidden reasoning tokens, cutting extraction latency to ~10-15s while preserving deep deliberation for candidate qualification.
 
 ### 3. Token Budget Modernization (65k Output / 1M Context)
 
 - **Global Output Ceiling**: For reasoning-capable models, `effectiveMaxTokens` is permitted up to **65,536 tokens** (was 16,384).
 - **Structured Retry**: Reasoning retry token ceiling expanded to **32,768 tokens**.
 - **Judge Token Ceiling**: `computeJudgeDynamicMaxTokens` ceiling raised from 16,000 to **32,000 tokens**. `computeJudgeBatchCapacity` reasoning overhead synchronized to **10,000 tokens** (matching dynamic token allocation).
-- **Extraction Chunking**: Chunk size default raised to **16,000 chars** (max 64,000), provider budget default raised to **64,000 tokens** (max 250,000), blocks per chunk default raised to **6** (max 24), and round output ceiling raised to **250,000 tokens**.
+- **Extraction Micro-Chunking**: Chunk size defaults to **8,000 chars** (max 16,000), provider budget defaults to **64,000 tokens**, blocks per chunk defaults to **3** (max 6), and round output ceiling to **250,000 tokens**. Multiplexing smaller chunks across 8 slots eliminates oversized payload timeouts.
 - **Evidence Budgets**: Base evidence budget expanded from 2,800 to **8,000 chars**, sentence crops expanded from 500 to **1,500 chars**, and fallback crops expanded from 300 to **1,000 chars**. Finalist judge evidence expanded to **3,000-8,000 chars** with **8-16 items**.
 
 ### 4. Concurrency & Throughput Scaling
 
 - `OPENAI_CONCURRENT_SLOTS`: Shipped default increased from 2 to **8 slots** (code fallback defaults to 8 matching Byesu parity).
 - `FINALIST_JUDGE_CONCURRENCY` & `LEAD_EXTRACTION_CONCURRENCY`: Shipped default and code fallbacks increased to **8 workers**, fully consuming the 8 primary provider slots without idle serialization.
-- `FINALIST_JUDGE_MICRO_BATCH_SIZE`: Increased from 2 to **4 candidates**.
+- `FINALIST_JUDGE_MICRO_BATCH_SIZE`: Configured to **2 candidates** per batch, enabling ~45-50s execution per batch and granular rolling-pool early stopping across the 8 slots.
 - `companyAttribution`: Concurrency clamp relaxed to **8 workers** (defaulting to 4).
 - `GROQ_MAX_OUTPUT_TOKENS`: Increased from 950 to **4,096 tokens** to prevent immediate JSON truncation upon failsafe failover.
 

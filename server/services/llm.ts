@@ -256,14 +256,14 @@ const getGroqMaxOutputTokens = () =>
 const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning|gemini.*high|gemini.*thinking)\b/i;
 
 const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
-  strategist: "high",
-  extraction: "high",
-  intent_signals: "high",
-  company_attribution: "high",
   judge: "high",
-  contract: "high",
-  post_intent: "high",
-  enrich: "medium",
+  contract: "medium",
+  strategist: "medium",
+  extraction: "low",
+  company_attribution: "low",
+  intent_signals: "low",
+  post_intent: "low",
+  enrich: "low",
 };
 
 /** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
@@ -1536,6 +1536,7 @@ export function computeByesuDynamicTimeoutMs(
   metadata?: Record<string, any>,
   hardTimeoutMs?: number,
   isCloudflareBounded = true,
+  isReasoning = false,
 ): number {
   if (hardTimeoutMs !== undefined && hardTimeoutMs > 0) {
     return hardTimeoutMs;
@@ -1559,12 +1560,13 @@ export function computeByesuDynamicTimeoutMs(
   const effectiveChars = Math.max(promptChars, chunkChars, promptSize);
   const estimatedInputTokens = Math.ceil(effectiveChars / 3.5);
 
-  // Scale timeout dynamically for Byesu GPT-6 models and reasoning models so multi-candidate
-  // batches do not prematurely abort at 30s/35s.
+  // Scale timeout dynamically: 15ms per token for reasoning models (~67 tok/s)
+  // vs 6ms per token for standard non-reasoning models (~166 tok/s).
+  const msPerToken = isReasoning ? 15 : 6;
   const workloadTimeoutMs =
     45_000 +
     Math.round(estimatedInputTokens * 6) +
-    Math.round(Math.max(0, effectiveMaxTokens) * 6);
+    Math.round(Math.max(0, effectiveMaxTokens) * msPerToken);
 
   const minByesuTimeout = Math.max(
     75_000,
@@ -1607,11 +1609,24 @@ async function sendChatCompletion(
     /byesu/i.test(provider.name || "");
   const isReasoningCapable = REASONING_MODEL_REGEX.test(provider.model);
   const baseMaxTokens = options?.maxTokens !== undefined ? options.maxTokens : 4000;
+  const stage = String(options?.metadata?.stage || "").toLowerCase();
+  const stageEffort = stage && TASK_REASONING_EFFORT[stage] ? TASK_REASONING_EFFORT[stage] : undefined;
+  const effectiveReasoningEffort =
+    options?.reasoningEffort ??
+    stageEffort ??
+    (isReasoningCapable ? "high" : (options?.responseFormat ? "low" : undefined));
+
   // Reasoning models (Gemini Flash High, GPT-6, o-series) bill internal reasoning tokens
-  // against max_tokens. When reasoning on high, the model may generate 4,000-8,000 thinking
-  // tokens before emitting visible output. Provide an automatic reasoning headroom allowance
-  // so internal reasoning never truncates or starves the requested completion payload.
-  const reasoningAllowance = isReasoningCapable ? 12_000 : 0;
+  // against max_tokens. Calibrate reasoning headroom by effort tier so low-reasoning
+  // parsing tasks never allocate excessive empty headroom, while high-reasoning judge
+  // tasks have ample headroom.
+  const reasoningAllowance = !isReasoningCapable
+    ? 0
+    : effectiveReasoningEffort === "high"
+      ? 10_000
+      : effectiveReasoningEffort === "medium"
+        ? 4_000
+        : 1_200;
   const maxAllowedOutputTokens = isReasoningCapable ? 65_536 : 16_384;
   const effectiveMaxTokens =
     provider.id === "groq"
@@ -1637,6 +1652,7 @@ async function sendChatCompletion(
       options?.metadata,
       options?.hardTimeoutMs,
       isCloudflareTarget,
+      isReasoningCapable,
     );
   }
 
@@ -1646,11 +1662,6 @@ async function sendChatCompletion(
     sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
   }
   const isFailsafe = provider.id === "groq" || provider.id === "openrouter";
-  const stage = String(options?.metadata?.stage || "").toLowerCase();
-  const stageEffort = stage && TASK_REASONING_EFFORT[stage] ? TASK_REASONING_EFFORT[stage] : undefined;
-  const effectiveReasoningEffort =
-    options?.reasoningEffort ??
-    stageEffort ??
     (isReasoningCapable ? "high" : (options?.responseFormat ? "low" : undefined));
   const shouldSendReasoningEffort =
     !isFailsafe &&

@@ -190,7 +190,7 @@ flowchart TD
 #### 16. Provider Concurrency & Modernized Batching (ADR-0009 & ADR-0016)
 
 - **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=8`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=8`, `attributionConcurrency` up to 8), fully utilizing local OmniRoute throughput without rate limit stalls.
-- **Modernized Token Envelopes**: Replaces legacy micro-chunking with 65k output / 1M context modern scaling. Extraction chunk chars expand to 16,000 (up to 64k) and 6 blocks per chunk (`LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=6`, max 24) with a 64,000 provider token budget. Finalist judge dynamic tokens scale up to 32,000 tokens with an integrated 10,000 reasoning buffer, and evidence budgets expand to 8,000 chars (1,500 char crops).
+- **High-Concurrency Distributed Micro-Batching**: Distributes extraction and judging across 8 parallel slots in rapid micro-batches (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`, `FINALIST_JUDGE_MICRO_BATCH_SIZE=2`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for 10-15s execution, `high` on judging for deep qualification), eliminating oversized payload timeouts while executing rounds in ~30-45s total.
 - **Rolling-Pool Early Stopping**: Fine-grained quota fulfillment in `runRollingPool` halts evaluation as soon as the target cushion is reached and skips remaining batches to save token overhead and latency.
 
 ---
@@ -265,11 +265,11 @@ BYESU_BASE="https://byesu.com/v1"
 BYESU_MODEL="gpt-6.1-sol"
 BYESU_CONCURRENT_SLOTS="8"
 
-# Modernized Batching & Stage Concurrency (ADR-0016)
-LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="6"
-LEAD_EXTRACTION_CHUNK_CHARS="16000"
+# High-Concurrency Distributed Micro-Batching (ADR-0016)
+LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"
+LEAD_EXTRACTION_CHUNK_CHARS="8000"
 LEAD_EXTRACTION_CONCURRENCY="8"
-FINALIST_JUDGE_MICRO_BATCH_SIZE="4"
+FINALIST_JUDGE_MICRO_BATCH_SIZE="2"
 FINALIST_JUDGE_CONCURRENCY="8"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'

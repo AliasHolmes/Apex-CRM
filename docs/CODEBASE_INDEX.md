@@ -755,18 +755,12 @@ Remediated all legacy Cloudflare-era bounds, token caps, thinking suppressions, 
   - Configured OmniRoute (`http://localhost:20128/v1`, `OPENAI_MODEL="gemini-3.8-flash-high"`) as the Tier 1 primary LLM provider with 8 concurrent slots (`OPENAI_CONCURRENT_SLOTS="8"`), matching Byesu parity.
   - Preserved Byesu (`https://byesu.com/v1`, `BYESU_MODEL="gpt-6.1-sol"`, `BYESU_CONCURRENT_SLOTS="8"`) as the Tier 2 secondary fallback provider.
   - Retained Groq (`GROQ_MAX_OUTPUT_TOKENS="4096"`) and OpenRouter/Mistral as resilient Tier 3 disaster recovery failsafes.
-- **Thinking Unsuppression & High Reasoning Effort**:
+- **Thinking Unsuppression & Calibrated Reasoning Effort**:
   - Removed `<think>` ban when JSON mode is enabled (`server/services/llm.ts`); Gemini Flash High is permitted to use internal chain-of-thought deliberation in JSON mode.
-  - Set `TASK_REASONING_EFFORT` to `"high"` across all core analytical stages (`strategist`, `extraction`, `intent_signals`, `company_attribution`, `judge`, `contract`, `post_intent`).
-  - Removed hardcoded `reasoningEffort: "low"` overrides from `planStage.ts` and `extractStage.ts`.
-- **Token Capacity Modernization (65k Output / 1M Context)**:
-  - Raised global output token ceiling (`effectiveMaxTokens`) for reasoning providers from 16,384 to 65,536 tokens.
-  - Raised structured output retry max tokens to 32,768 tokens.
-  - Raised dynamic judge token ceiling to 32,000 tokens and synchronized `computeJudgeBatchCapacity` reasoning overhead to 10,000 tokens.
-  - Expanded extraction chunking: chunk chars default to 16,000 (max 64,000), provider budget default to 64,000 (max 250,000), blocks per chunk default to 6 (max 24), and round output tokens ceiling to 250,000.
-  - Expanded evidence budgets in `evidenceSelection.ts` (8,000 chars total, 1,500 char sentence crops) and finalist judge evidence in `finalistJudge.ts` (3,000–8,000 chars, 8–16 items).
-- **Concurrency & Timeout Calibration**:
-  - Unclamped judge and extraction concurrency to 8 workers (`FINALIST_JUDGE_CONCURRENCY="8"`, `LEAD_EXTRACTION_CONCURRENCY="8"`), micro-batch size to 4 (`FINALIST_JUDGE_MICRO_BATCH_SIZE="4"`), and evidence collection to dynamic 8-10 items / 3,000-4,000 chars.
+  - Calibrated `TASK_REASONING_EFFORT` by stage complexity: `high` on judge, `medium` on contract/strategist, and `low` on extraction and attribution for fast ~10-15s execution.
+- **High-Concurrency Distributed Micro-Batching**:
+  - Unclamped judge and extraction concurrency to 8 parallel workers (`FINALIST_JUDGE_CONCURRENCY="8"`, `LEAD_EXTRACTION_CONCURRENCY="8"`), micro-batching into rapid parallel chunks (`LEAD_EXTRACTION_CHUNK_CHARS="8000"`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"`, `FINALIST_JUDGE_MICRO_BATCH_SIZE="2"`).
+  - Synchronized `computeJudgeBatchCapacity` reasoning overhead to 10,000 tokens and dynamic timeout rates to 15ms/tok for reasoning models.
   - Relaxed company attribution concurrency to 8 workers (defaulting to 4).
   - Decoupled Cloudflare 115s timeout ceiling for non-Byesu targets (scaling dynamically up to 300s).
   - Extended planner hard timeout (`PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary`) to 75s and `/api/llm-health` probe timeout to 20s.

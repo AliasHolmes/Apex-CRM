@@ -424,7 +424,7 @@ export async function runGatedCompanyAttribution(
     1,
     Math.min(
       8,
-      Number(options.batchSize || process.env.COMPANY_ATTRIBUTION_BATCH_SIZE || 4),
+      Number(options.batchSize || process.env.COMPANY_ATTRIBUTION_BATCH_SIZE || 2),
     ),
   );
   const structuredFn = options.openAIStructured || openAIStructured;

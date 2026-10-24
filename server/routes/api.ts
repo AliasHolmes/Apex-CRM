@@ -972,7 +972,7 @@ router.get("/llm-health", async (req, res) => {
     // OUT) or reach the failsafe tier. The timeout is a request to be quick; reasoning
     // providers apply their own minimum, so this stays a bounded, one-off call.
     const response = await openAIText("Reply with exactly ok", undefined, {
-      timeoutMs: 8000,
+      timeoutMs: 20000,
       metadata: { healthProbe: true },
     });
     const isOk = response.text.trim().toLowerCase().includes("ok");

@@ -41,16 +41,22 @@ async function ensureOmniRoute(): Promise<ChildProcess | null> {
   });
 
   const startTime = Date.now();
-  const maxWaitMs = 15000;
+  const maxWaitMs = Math.max(15000, Number(process.env.OMNIROUTE_READY_TIMEOUT_MS || 90000));
+  let lastReportedSec = 0;
   while (Date.now() - startTime < maxWaitMs) {
     await new Promise((r) => setTimeout(r, 500));
     if (await isOmniRouteRunning()) {
       console.log('[dev-entry] OmniRoute gateway is ready and listening on http://localhost:20128');
       return proc;
     }
+    const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
+    if (elapsedSec >= 15 && elapsedSec % 15 === 0 && elapsedSec !== lastReportedSec) {
+      lastReportedSec = elapsedSec;
+      console.log(`[dev-entry] Waiting for OmniRoute gateway to complete startup... (${elapsedSec}s/${Math.floor(maxWaitMs / 1000)}s)`);
+    }
   }
 
-  console.warn('[dev-entry] Warning: OmniRoute did not respond within 15s. Apex CRM will proceed (secondary Byesu provider will serve if OmniRoute is offline).');
+  console.warn(`[dev-entry] Warning: OmniRoute did not respond within ${Math.floor(maxWaitMs / 1000)}s. Apex CRM will proceed (secondary Byesu provider will serve if OmniRoute is offline).`);
   return proc;
 }
 

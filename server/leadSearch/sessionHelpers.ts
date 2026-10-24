@@ -224,7 +224,7 @@ export function sleepWithAbort(
 export function buildCheckpointEvidence<E extends SessionEvidenceMeta>(
   evidenceByUrl: Map<string, E>,
   acceptedLeads: any[],
-  cap = 240,
+  cap = 100,
 ): Record<string, E> {
   const result: Record<string, E> = {};
   let included = 0;

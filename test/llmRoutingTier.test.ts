@@ -21,7 +21,7 @@ test('moves named fast providers first within their tier, never ahead of the pri
 
 test('sizes judge batches to the route output cap', () => {
   assert.equal(computeJudgeBatchCapacity(950, 4, false), 1);
-  assert.equal(computeJudgeBatchCapacity(8000, 5, true), 16);
+  assert.equal(computeJudgeBatchCapacity(8000, 5, true), 9);
   assert.ok(computeJudgeBatchCapacity(Number.POSITIVE_INFINITY, 4, true) >= 1000);
 });
 

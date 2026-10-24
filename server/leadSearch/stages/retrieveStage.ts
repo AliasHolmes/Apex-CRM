@@ -101,14 +101,12 @@ export async function executeRetrieveStage(
   const duplicateCollisionRate =
     (stats.rawCandidates || 0) > 0
       ? ((stats.rejectionReasons?.duplicate_existing_lead || 0) +
-          (stats.rejectionReasons?.duplicate_person || 0) +
-          (stats.existingCrmLeadsSkipped || 0)) /
+          (stats.rejectionReasons?.duplicate_person || 0)) /
         stats.rawCandidates
       : 0;
   const isHighDuplication =
     duplicateCollisionRate >= 0.2 ||
-    (stats.rejectionReasons?.duplicate_existing_lead || 0) >= 3 ||
-    (stats.existingCrmLeadsSkipped || 0) >= 3;
+    (stats.rejectionReasons?.duplicate_existing_lead || 0) >= 3;
   // Complexity-aware recall policy: vague needs recall (20), rich needs precision (10).
   const briefTier = (() => {
     try {
@@ -124,7 +122,7 @@ export async function executeRetrieveStage(
   const dynamicTavilyMaxResults =
     briefTier === 'vague' ? 20
       : briefTier === 'rich' ? Math.min(baseMaxResults, 12)
-        : (round > 1 || isHighDuplication ? 20 : baseMaxResults);
+        : (isHighDuplication ? 20 : (round > 1 ? Math.min(baseMaxResults + 2, 14) : baseMaxResults));
 
   const executeTavilyLane = async (
     plans: { plan: (typeof roundPlans)[0]; index: number }[],

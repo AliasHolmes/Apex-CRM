@@ -15,7 +15,7 @@ export function resolvePlannerProviderOrder(): string[] {
 
 /** Hard per-provider timeouts for planning-family calls: bounded, latency-sensitive work. */
 export const PLANNER_PROVIDER_HARD_TIMEOUT_MS: Record<string, number> = {
-  primary: 35_000,
+  primary: 75_000,
   byesu: 25_000,
   openrouter: 25_000,
   groq: 15_000,

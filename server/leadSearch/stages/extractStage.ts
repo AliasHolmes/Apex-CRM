@@ -1024,20 +1024,20 @@ export async function executeExtractStage(
 
   // 4. Token budget calculation and chunking
   const rawChunkChars = Math.max(
-    Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000),
+    Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 16000),
     1800,
   );
-  const extractionChunkChars = Math.min(rawChunkChars, 32000);
+  const extractionChunkChars = Math.min(rawChunkChars, 64000);
   const rawMaxTokens = Math.max(
-    Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 3800),
+    Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 12000),
     800,
   );
-  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 16000);
+  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 32000);
   const rawProviderBudget = Math.max(
-    Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 24000),
+    Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 64000),
     4000,
   );
-  const providerTokenBudget = Math.min(rawProviderBudget, 120_000);
+  const providerTokenBudget = Math.min(rawProviderBudget, 250_000);
   const tokenSafetyMargin = Math.min(
     Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
     2000,
@@ -1072,7 +1072,7 @@ Evidence:
   );
   const maxBlocksPerChunk = Math.max(
     2,
-    Math.min(12, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 3)),
+    Math.min(24, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 6)),
   );
   const chunks = chunkEvidenceBlocksByTokenBudget(
     evidenceBlocks,
@@ -1100,7 +1100,7 @@ Evidence:
   let roundExtractedOutputTokens = 0;
   const roundExtractionMaxOutputTokens = Math.max(
     8000,
-    Number(process.env.LEAD_EXTRACTION_ROUND_MAX_TOKENS || 120_000),
+    Number(process.env.LEAD_EXTRACTION_ROUND_MAX_TOKENS || 250_000),
   );
   const extractionTasks = chunks.map((chunk, idx) => async () => {
     const chunkIndex = idx + 1;
@@ -1147,7 +1147,7 @@ Evidence:
               temperature: 0.0,
               circuitBreaker: llmCircuitBreaker,
               signal: state.abortController.signal,
-              reasoningEffort: "low",
+              // Inherits TASK_REASONING_EFFORT["extraction"] ("high") for deep parsing.
               // No routingTier here: extraction is engine work and stays on the primary provider (Byesu).
               // A "fast" tier without a provider order is inert anyway.
               timeoutMs: extractionTimeoutMs,

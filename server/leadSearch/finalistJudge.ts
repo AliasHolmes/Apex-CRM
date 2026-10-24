@@ -225,25 +225,25 @@ export function buildFinalistJudgePrompt(
   const batchLen = Math.max(1, candidates.length);
   const configuredMaxItems = clampEnvInt(
     "FINALIST_JUDGE_MAX_EVIDENCE_ITEMS",
-    4,
-    1,
     8,
+    1,
+    16,
   );
   const configuredEvidenceChars = clampEnvInt(
     "FINALIST_JUDGE_EVIDENCE_CHARS",
-    1200,
+    3000,
     200,
-    2400,
+    8000,
   );
   const dynamicMaxItems = process.env.FINALIST_JUDGE_MAX_EVIDENCE_ITEMS
     ? configuredMaxItems
     : batchLen <= 3
-      ? 5
+      ? 10
       : configuredMaxItems;
   const dynamicEvidenceChars = process.env.FINALIST_JUDGE_EVIDENCE_CHARS
     ? configuredEvidenceChars
     : batchLen <= 3
-      ? 1500
+      ? 4000
       : configuredEvidenceChars;
   const candidateText = candidates
     .map((candidate) => {

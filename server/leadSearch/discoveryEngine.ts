@@ -1127,7 +1127,7 @@ export async function executeDiscoverySession(
         1,
       ),
       judgeConcurrency: Math.min(
-        Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 1), 1),
+        Math.max(Number(process.env.FINALIST_JUDGE_CONCURRENCY || 4), 1),
         8,
       ),
     };
@@ -1326,7 +1326,7 @@ export async function executeDiscoverySession(
       // Restore crash-time debug context so post-resume diagnostics retain
       // what happened before the interruption.
       if (Array.isArray(cp.debugLogsTail) && cp.debugLogsTail.length > 0) {
-        debugLogs.push(...cp.debugLogsTail.slice(-100));
+        debugLogs.push(...cp.debugLogsTail.slice(-25));
       }
     }
 
@@ -2502,7 +2502,7 @@ export async function executeDiscoverySession(
             acceptedLeads.slice(0, 240),
           ),
           leadQueryRunMap: leadQueryRuns.toJSON(),
-          debugLogsTail: debugLogs.slice(-100),
+          debugLogsTail: debugLogs.slice(-25),
           signalStoreState: sessionState.signalStore?.toJSON(),
           recoveryAttempts: sessionState.recoveryAttempts,
           datasetSearchAfter: sessionState.datasetSearchAfter,
@@ -2838,7 +2838,7 @@ export async function executeDiscoverySession(
         acceptedLeads.slice(0, 240),
       ),
       leadQueryRunMap: leadQueryRuns.toJSON(),
-      debugLogsTail: debugLogs.slice(-100),
+      debugLogsTail: debugLogs.slice(-25),
       signalStoreState: sessionState.signalStore?.toJSON(),
       recoveryAttempts: sessionState.recoveryAttempts,
       datasetSearchAfter: sessionState.datasetSearchAfter,
@@ -2940,7 +2940,7 @@ export async function executeDiscoverySession(
         qualifiedLeads.slice(0, 240),
       ),
       leadQueryRunMap: leadQueryRuns.toJSON(),
-      debugLogsTail: debugLogs.slice(-100),
+      debugLogsTail: debugLogs.slice(-25),
       signalStoreState: sessionState.signalStore?.toJSON(),
       recoveryAttempts: sessionState.recoveryAttempts,
       datasetSearchAfter: sessionState.datasetSearchAfter,

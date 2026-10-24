@@ -56,7 +56,7 @@ export function computeJudgeDynamicMaxTokens(
   const perCandidateTokens = safeReqs * 65 + 60;
   const jsonOutputBudget = safeBatch * perCandidateTokens + 300;
   const reasoningBuffer = hasReasoningModel ? 10000 : 400;
-  return Math.min(16000, Math.max(1500, jsonOutputBudget + reasoningBuffer));
+  return Math.min(32000, Math.max(1500, jsonOutputBudget + reasoningBuffer));
 }
 
 /** How many candidates fit one judge call on a provider with a hard output cap. */
@@ -67,7 +67,7 @@ export function computeJudgeBatchCapacity(
 ): number {
   if (!Number.isFinite(outputTokenCap)) return Number.MAX_SAFE_INTEGER;
   const perCandidate = Math.max(1, requirementCount) * 65 + 60;
-  const overhead = 300 + (hasReasoningModel ? 4000 : 400);
+  const overhead = 300 + (hasReasoningModel ? 10000 : 400);
   return Math.max(1, Math.floor((outputTokenCap - overhead) / perCandidate));
 }
 
@@ -519,8 +519,35 @@ export async function evaluateIncrementalJudgeBatches(
       }
     }
 
-    const queryRun =
+    let queryRun: QueryRunStats | undefined =
       leadQueryRuns?.get?.(candidate.lead) || leadQueryRuns?.get?.(candidate);
+    if (!queryRun && state?.queryRuns) {
+      queryRun = state.queryRuns.find((qr: any) => qr.query === "[unattributed]");
+      if (!queryRun) {
+        const unattributedRun: QueryRunStats = {
+          round,
+          query: "[unattributed]",
+          family: "unattributed",
+          lane: "unattributed",
+          rawCandidates: 0,
+          uniqueCandidates: 0,
+          evidenceBlocks: 0,
+          extractedLeads: 0,
+          acceptedLeads: 0,
+          rejectionReasons: {},
+          searchLatencyMs: 0,
+          providerUnits: 0,
+          qualifiedFinalists: 0,
+          rescuedFinalists: 0,
+          returnedFinalists: 0,
+          judgedCandidates: 0,
+          hardFailedCandidates: 0,
+          unknownCandidates: 0,
+        };
+        state.queryRuns.push(unattributedRun);
+        queryRun = unattributedRun;
+      }
+    }
     if (!queryRun) return;
     queryRun.judgedCandidates = (queryRun.judgedCandidates || 0) + 1;
     if (status === "hard_fail") {
@@ -1126,7 +1153,7 @@ export async function evaluateIncrementalJudgeBatches(
           sessionId: config.sessionId,
           round,
           recordTrace,
-          concurrency: 2,
+          concurrency: Math.min(configuredJudgeConcurrency, 4),
         },
       );
       if (attrSummary.attributedCount > 0) {

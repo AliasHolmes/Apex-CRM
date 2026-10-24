@@ -90,7 +90,7 @@ test('stall directives and grid queries are strictly industry-agnostic (non-AI b
   for (const item of grid) {
     assert.equal(/\b(ai|artificial intelligence|machine learning|prompt|llm)\b/i.test(item.query), false);
     assert.equal(item.lane, 'person');
-    assert.equal(item.family, 'local_market');
+    assert.equal(item.family, 'orthogonal_matrix');
     assert.equal(item.intent, 'recover_from_low_yield');
   }
 });

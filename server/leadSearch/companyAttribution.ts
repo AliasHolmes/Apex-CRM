@@ -433,7 +433,7 @@ export async function runGatedCompanyAttribution(
     batches.push(uniqueCompanyEntries.slice(i, i + BATCH_SIZE));
   }
 
-  const attributionConcurrency = Math.max(1, Math.min(2, options.concurrency || 2));
+  const attributionConcurrency = Math.max(1, Math.min(6, options.concurrency || 4));
   let nextBatchIdx = 0;
   const workers = Array.from({ length: Math.min(attributionConcurrency, batches.length) }, async () => {
     while (nextBatchIdx < batches.length) {

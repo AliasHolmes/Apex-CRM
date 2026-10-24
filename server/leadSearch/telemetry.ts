@@ -47,9 +47,11 @@ export function summarizeLLM(
     purpose,
     model: resolvedModel,
     route: usage?.provider || successfulAttempt?.provider || route.route,
-    fallbackUsed: providerAttempts.some(
-      (attempt) => attempt.status === "error" || attempt.status === "skipped",
-    ),
+    fallbackUsed:
+      providerAttempts.length > 1 &&
+      providerAttempts.slice(1).some(
+        (attempt) => attempt.status === "success" || attempt.status === "error",
+      ),
     providerAttempts,
     inputTokens,
     outputTokens,

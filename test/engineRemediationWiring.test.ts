@@ -47,8 +47,8 @@ test('judge concurrency adapts to free primary slots within the hard ceiling', (
   );
   assert.match(
     judge,
-    /firstWaveBatchSize =\s*explicitBatchSize > 0 \? maxBatchCandidates : Math\.min\(3, batchCapacityCap\)/,
-    'the first judge wave must use batch-3 unless explicitly configured',
+    /firstWaveBatchSize =\s*explicitBatchSize > 0 \? maxBatchCandidates : Math\.min\(configuredMaxBatchCandidates, batchCapacityCap\)/,
+    'the first judge wave must use configuredMaxBatchCandidates unless explicitly configured',
   );
 });
 

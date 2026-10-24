@@ -355,10 +355,10 @@ test("Component 4: scheduleAdaptiveSearchTasks activates when tasks.length >= ma
 test("Component 2: judgeStage dynamicMaxTokens scales with batch size, requirements, and reasoning", async () => {
   const { computeJudgeDynamicMaxTokens } = await import("../server/leadSearch/stages/judgeStage.js");
 
-  // perCandidate = reqs * 65 + 60; budget = batch * perCandidate + 300 + (reasoning ? 1500 : 400)
+  // perCandidate = reqs * 65 + 60; budget = batch * perCandidate + 300 + (reasoning ? 10000 : 400)
   assert.equal(computeJudgeDynamicMaxTokens(1, 4, false), 1500); // 1020 raised to the 1500 floor
-  assert.equal(computeJudgeDynamicMaxTokens(10, 5, true), 5650); // 10 * 385 + 300 + 1500
-  assert.equal(computeJudgeDynamicMaxTokens(20, 8, true), 8000); // 13400 clamped to the 8000 ceiling
+  assert.equal(computeJudgeDynamicMaxTokens(10, 5, true), 14150); // 10 * 385 + 300 + 10000
+  assert.equal(computeJudgeDynamicMaxTokens(20, 8, true), 16000); // 21900 clamped to the 16000 ceiling
 });
 
 

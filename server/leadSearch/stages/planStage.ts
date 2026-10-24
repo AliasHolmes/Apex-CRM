@@ -481,8 +481,8 @@ export async function executePlanStage(
     let strategyUsage: LLMUsage | undefined;
     const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
     const strategistMaxTokens = Math.max(
-      1200,
-      maxTasks * 250 + (isRecoveryMode ? 600 : 0),
+      2500,
+      maxTasks * 400 + (isRecoveryMode ? 800 : 0),
     );
 
     try {
@@ -506,7 +506,6 @@ export async function executePlanStage(
           tierProviderOrder: resolvePlannerProviderOrder(),
           providerHardTimeoutMs: PLANNER_PROVIDER_HARD_TIMEOUT_MS,
           maxRetries: 0,
-          reasoningEffort: "low",
           metadata: {
             stage: "strategist",
             round,
@@ -682,7 +681,7 @@ export async function executePlanStage(
     historicalPerformance,
     {
       enabled: process.env.LEAD_ADAPTIVE_SCHEDULER_ENABLED !== "false",
-      maxTasks,
+      maxTasks: Math.min(maxTasks, rawTasks.length),
       minOutcomeRuns: Number(process.env.LEAD_ADAPTIVE_MIN_OUTCOME_RUNS || 8),
       explorationStrength: Number(
         process.env.LEAD_ADAPTIVE_EXPLORATION_STRENGTH || 1.25,
@@ -738,11 +737,36 @@ export async function executePlanStage(
     buildQuerySignature(q, { contract: config.contract }),
   );
 
+  const personCrmNegativeTerms =
+    crmSaturationDominates && Array.isArray(crmCompanies) && crmCompanies.length > 0
+      ? crmCompanies
+          .filter(
+            (c: string) =>
+              typeof c === "string" &&
+              c.trim().length >= 3 &&
+              !c.includes('"') &&
+              !c.includes("\n"),
+          )
+          .slice(0, 4)
+          .map((c: string) => `-"${c.trim()}"`)
+          .join(" ")
+      : "";
+
+  if (personCrmNegativeTerms) {
+    logEvent(
+      `Round ${round}: CRM saturation dominant (${(crmDuplicateShare * 100).toFixed(0)}%); injected negative company exclusions into person lane tasks: ${personCrmNegativeTerms}`,
+    );
+  }
+
   const candidatePlans = adaptiveSchedule.tasks.map((item) => {
     const isPerson = item.lane === "person" || !item.lane;
-    const executableQuery = isPerson ? toLinkedInSearchQuery(item) : item.query;
+    const taskItem =
+      isPerson && personCrmNegativeTerms
+        ? { ...item, query: `${item.query} ${personCrmNegativeTerms}`.trim() }
+        : item;
+    const executableQuery = isPerson ? toLinkedInSearchQuery(taskItem) : taskItem.query;
     return {
-      item: { ...item, domainCluster: item.domainCluster || domainCluster },
+      item: { ...taskItem, domainCluster: taskItem.domainCluster || domainCluster },
       executableQuery,
     };
   });
@@ -786,7 +810,11 @@ export async function executePlanStage(
     for (const task of gridTasks) {
       if (roundPlans.length >= Math.min(4, maxTasks)) break;
       const isPerson = task.lane === "person" || !task.lane;
-      const executableQuery = isPerson ? toLinkedInSearchQuery(task) : task.query;
+      const taskItem =
+        isPerson && personCrmNegativeTerms
+          ? { ...task, query: `${task.query} ${personCrmNegativeTerms}`.trim() }
+          : task;
+      const executableQuery = isPerson ? toLinkedInSearchQuery(taskItem) : taskItem.query;
       const key = executableQuery.toLowerCase().trim();
       if (seenQueryTexts.has(key)) continue;
       const sig = buildQuerySignature(executableQuery, { contract: config.contract });
@@ -797,7 +825,7 @@ export async function executePlanStage(
       seenQueryTexts.add(key);
       proposedQueries.push(executableQuery);
       roundPlans.push({
-        item: { ...task, domainCluster: task.domainCluster || domainCluster },
+        item: { ...taskItem, domainCluster: taskItem.domainCluster || domainCluster },
         executableQuery,
       });
     }
@@ -889,9 +917,12 @@ export async function executePlanStage(
       historySigs.push(sig);
       seenQueryTexts.add(lowerQ);
       proposedQueries.push(candidateQuery);
+      const taskQuery = personCrmNegativeTerms
+        ? `${candidateQuery} ${personCrmNegativeTerms}`.trim()
+        : candidateQuery;
       roundPlans.push({
         item: {
-          query: candidateQuery,
+          query: taskQuery,
           family: 'persona_title',
           intent: 'find_decision_makers',
           priority: roundPlans.length + 1,
@@ -900,7 +931,7 @@ export async function executePlanStage(
           domainCluster,
           tavily: { searchDepth: 'basic', topic: 'general' }
         } as any,
-        executableQuery: toLinkedInSearchQuery({ query: candidateQuery, lane: 'person' })
+        executableQuery: toLinkedInSearchQuery({ query: taskQuery, lane: 'person' })
       });
       if (roundPlans.length >= maxFallbackPlans) break;
     }
@@ -962,6 +993,20 @@ export async function executePlanStage(
  * companies already discovered with hiring/tooling signals, used when the CRM-duplicate
  * share of the previous round made broader persona queries unproductive.
  */
+const NON_COMPANY_FLYWHEEL_REGEX =
+  /\b(?:roles?|responsibilities|consulting\s+and|internal\s+roles?|services\s+and|job\s+descriptions?|opportunit(?:y|ies)|internships?|requirements?)\b/i;
+
+export function isValidFlywheelCompany(company: string): boolean {
+  const clean = String(company || "").trim();
+  if (clean.length < 3 || clean.length > 50) return false;
+  if (!/[a-zA-Z]/.test(clean)) return false;
+  if (NON_COMPANY_FLYWHEEL_REGEX.test(clean)) return false;
+  if (/^(?:founder|owner|ceo|director|consultant|manager|executive|engineer|lead|specialist)s?$/i.test(clean)) {
+    return false;
+  }
+  return true;
+}
+
 export function buildAccountFlywheelItems(
   companies: string[],
   searchSpec: SearchSpec,
@@ -973,9 +1018,10 @@ export function buildAccountFlywheelItems(
       : ["founder", "CEO", "owner"];
   const companyBudget = Math.max(1, Math.min(3, Math.floor(maxTasks / 4) || 1));
   const items: SearchQueryPlanItem[] = [];
-  for (const company of companies.slice(0, companyBudget)) {
+  for (const company of companies) {
+    if (items.length >= companyBudget) break;
     const cleanCompany = String(company || "").trim();
-    if (cleanCompany.length < 3) continue;
+    if (!isValidFlywheelCompany(cleanCompany)) continue;
     const roleClause = titles.map((title) => `"${title}"`).join(" OR ");
     items.push({
       query: `"${cleanCompany}" (${roleClause})`,

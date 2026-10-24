@@ -267,12 +267,12 @@ export function buildOrthogonalQueryMatrix(
     });
   }
 
-  // Enforce contract query validity and strip Big Tech negatives (§Pin 2)
+  // Enforce contract query validity and strip Big Tech negatives (Pin 2)
   return enforceContractQueries(items, contract);
 }
 
 /**
- * Backward-compatible delegating wrapper for buildOrthogonalQueryMatrix (§Pin 1).
+ * Backward-compatible delegating wrapper for buildOrthogonalQueryMatrix (Pin 1).
  */
 export function buildStallGridQueries(
   contract: ProspectContract,

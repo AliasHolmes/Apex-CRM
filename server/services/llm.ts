@@ -239,19 +239,19 @@ function getConfiguredLLMProviders(): LLMProvider[] {
 }
 
 const GROQ_MAX_OUTPUT_TOKENS = Number(
-  process.env.GROQ_MAX_OUTPUT_TOKENS || 950,
+  process.env.GROQ_MAX_OUTPUT_TOKENS || 4096,
 );
 const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning|gemini.*high|gemini.*thinking)\b/i;
 
 const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
-  strategist: "low",
-  extraction: "low",
-  intent_signals: "low",
-  company_attribution: "low",
-  judge: "medium",
-  contract: "medium",
-  post_intent: "low",
-  enrich: "low",
+  strategist: "high",
+  extraction: "high",
+  intent_signals: "high",
+  company_attribution: "high",
+  judge: "high",
+  contract: "high",
+  post_intent: "high",
+  enrich: "medium",
 };
 
 /** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
@@ -706,13 +706,16 @@ export const providerCooldowns = new Map<string, number>();
 
 export function getProviderConcurrencyLimit(providerId: string): number {
   if (providerId === "primary") {
+    const isNonByesuBase = Boolean(
+      process.env.OPENAI_BASE && !process.env.OPENAI_BASE.includes("byesu.com"),
+    );
     const configured = Number(
       process.env.OPENAI_CONCURRENT_SLOTS ||
-        (process.env.OPENAI_BASE && !process.env.OPENAI_BASE.includes("byesu.com")
-          ? 2
-          : process.env.BYESU_CONCURRENT_SLOTS),
+        (isNonByesuBase ? 6 : (process.env.BYESU_CONCURRENT_SLOTS || 8)),
     );
-    return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 2;
+    return Number.isFinite(configured) && configured >= 1
+      ? Math.floor(configured)
+      : (isNonByesuBase ? 6 : 8);
   }
   if (providerId === "byesu") {
     const configured = Number(process.env.BYESU_CONCURRENT_SLOTS || 8);
@@ -1157,7 +1160,7 @@ async function withProviderFallback<T>(
   );
   const failsafeTier = orderProvidersForTier(
     allConfigured.filter((p) => p.id === "byesu" || p.id === "groq" || p.id === "openrouter"),
-    executionOptions.routingTier,
+    executionOptions.tierProviderOrder?.length ? "fast" : executionOptions.routingTier,
     fastIds,
   );
 
@@ -1360,9 +1363,10 @@ async function withProviderFallback<T>(
       if (second && !second.result.ok) lastPrimaryError = second.result.err;
     }
 
+    const isFastTierCall = Boolean(executionOptions.tierProviderOrder?.length);
     const firstTimedOut = Boolean(first && !first.result.ok && first.result.isTimeout);
     const secondTimedOut = Boolean(second && !second.result.ok && second.result.isTimeout);
-    if (first && second && firstTimedOut && secondTimedOut) {
+    if (first && second && firstTimedOut && secondTimedOut && !isFastTierCall) {
       const bothTimeoutErr = new Error(
         `Both primary providers timed out (${(first.result as any).err.message} | ${(second.result as any).err.message}).`,
       );
@@ -1402,10 +1406,12 @@ async function withProviderFallback<T>(
 
   // 2. PRIMARY-OUT GATE: Groq/Mistral serve only when BOTH primaries are out (policy). A busy,
   // cooling-down, or once-failed primary never escalates; the failure returns to the stage.
+  // Exception: Fast-tier planner calls specify an explicit provider order and escalate across it.
+  const isFastTierCall = Boolean(executionOptions.tierProviderOrder?.length);
   const allPrimariesOut =
     primaryTier.length > 0 && primaryTier.every((p) => isProviderOut(p.id, breaker));
 
-  if (primaryTier.length > 0 && !allPrimariesOut) {
+  if (primaryTier.length > 0 && !allPrimariesOut && !isFastTierCall) {
     throw lastPrimaryError ?? new Error("Primary LLM provider is busy or unavailable for this call.");
   }
 
@@ -1594,10 +1600,11 @@ async function sendChatCompletion(
   // tokens before emitting visible output. Provide an automatic reasoning headroom allowance
   // so internal reasoning never truncates or starves the requested completion payload.
   const reasoningAllowance = isReasoningCapable ? 12_000 : 0;
+  const maxAllowedOutputTokens = isReasoningCapable ? 65_536 : 16_384;
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
-      : Math.min(baseMaxTokens + reasoningAllowance, 16_384);
+      : Math.min(baseMaxTokens + reasoningAllowance, maxAllowedOutputTokens);
 
   // Health probes are status checks: they honor the caller timeout exactly (no Byesu
   // workload floor) and never retry, so a probe cannot hold a provider slot for minutes.
@@ -1630,7 +1637,9 @@ async function sendChatCompletion(
   const stage = String(options?.metadata?.stage || "").toLowerCase();
   const stageEffort = stage && TASK_REASONING_EFFORT[stage] ? TASK_REASONING_EFFORT[stage] : undefined;
   const effectiveReasoningEffort =
-    options?.reasoningEffort ?? stageEffort ?? (options?.responseFormat ? "low" : undefined);
+    options?.reasoningEffort ??
+    stageEffort ??
+    (isReasoningCapable ? "high" : (options?.responseFormat ? "low" : undefined));
   const shouldSendReasoningEffort =
     !isFailsafe &&
     Boolean(effectiveReasoningEffort) &&
@@ -2421,7 +2430,7 @@ export async function openAIStructured<T>(
 
   let sysPrompt = systemInstruction || "";
   if (useJsonMode) {
-    sysPrompt += `\n\nYou MUST respond ONLY in valid JSON. Do not include markdown, comments, <think> tags, explanations, or text before/after the JSON. The JSON must exactly match this schema:\n${JSON.stringify(responseSchema)}`;
+    sysPrompt += `\n\nYou may reason internally or in <think>...</think>, but your final response must be strictly valid JSON matching this schema:\n${JSON.stringify(responseSchema)}`;
   } else {
     sysPrompt += `\n\nYou may reason internally or in <think>...</think>, but the final answer must include exactly one JSON value between FINAL_JSON_START and FINAL_JSON_END. Do not put schema examples or commentary between those markers. The final JSON must exactly match this schema:\n${JSON.stringify(responseSchema)}`;
   }
@@ -2628,7 +2637,7 @@ export async function openAIStructured<T>(
         provider.id === "groq"
           ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
           : isReasoning
-            ? 16_384
+            ? 32_768
             : Math.max(
                 Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
                 Math.min((options?.maxTokens || 4000) * 2, 8000),

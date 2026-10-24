@@ -79,6 +79,7 @@ export function mapCandidateToPersistedLead(
     id: leadId,
     profile: p,
     stage: "SCRAPED",
+    provenance: "engine",
     notes: hasAccountContext
       ? `LinkedIn-indexed lead with account context. ${p.companyAccount?.painSummary || "Review profile and advance to outreach."}`
       : "Discovered via Tavily LinkedIn-indexed search.",

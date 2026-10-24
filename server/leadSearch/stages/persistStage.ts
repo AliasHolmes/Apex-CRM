@@ -151,11 +151,13 @@ export async function executePersistStage(
   // B17: Add fulfillmentStatus field (separate from stopReason)
   stats.fulfillmentStatus = mappedLeads.length >= targetLimit ? "complete" : "partial";
 
-  // G16: derive log/session status from persistence reality instead of
-  // hardcoding success -- a failed persist must not read as a clean session.
+  // G16: derive log/session status from persistence and fulfillment reality:
+  // a failed persist is an error, and partial delivery (< targetLimit) is partial_success.
   const derivedStatus: "success" | "partial_success" | "error" =
-    persistenceStatus === "complete" ? "success"
-    : persistenceStatus === "partial" ? "partial_success" : "error";
+    persistenceStatus === "failed" ? "error"
+    : persistenceStatus === "partial" ? "partial_success"
+    : mappedLeads.length >= targetLimit ? "success"
+    : "partial_success";
   const telemetryStatus = derivedStatus === "partial_success" ? "success" : derivedStatus;
   telemetry.finish(telemetryStatus, stats);
   const traceSummary = telemetry.getSummary();

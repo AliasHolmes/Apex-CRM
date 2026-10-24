@@ -512,10 +512,11 @@ export async function executeAgentBrainDiscovery(
       lastActive: nowIso,
       lastEnrichedAt: nowIso,
       tags: isB2BOutbound
-        ? ["AGENT_BRAIN", "B2B_OUTBOUND", "LEAD_GEN", "US_UK", "VERIFIED_FOUNDER"]
-        : ["AGENT_BRAIN", "AI_AGENCY", "HIRING_INTENT", "USA", "VERIFIED_DECISION_MAKER"],
+        ? ["AGENT_BRAIN", "B2B_OUTBOUND", "LEAD_GEN", "US_UK", "AGENT_BRAIN_CANDIDATE"]
+        : ["AGENT_BRAIN", "AI_AGENCY", "HIRING_INTENT", "USA", "AGENT_BRAIN_CANDIDATE"],
       reviewStatus: targetReviewStatus,
       nextAction: targetNextAction,
+      provenance: "agent_brain",
       icpScoreReasoning: isB2BOutbound
         ? `Strictly verified decision maker (${item.title}) at B2B outbound lead generation agency (${item.company}) in ${item.location}. Identified tooling: ${item.techStack.join(", ")}.`
         : `Strictly verified decision maker (${item.title}) at genuine AI client services agency (${item.company}) in ${item.location} with active hiring intent for talents.`,

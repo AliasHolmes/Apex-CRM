@@ -4794,35 +4794,40 @@ export type MiningSessionRecord = {
   completedAt?: string;
   cancellationRequestedAt?: string;
   errorMessage?: string;
+  fulfillmentStatus?: string;
   stats?: Record<string, unknown>;
   traceSummary?: Record<string, unknown>;
   checkpoint?: MiningSessionCheckpoint;
   updatedAt: string;
 };
 
-const toMiningSessionRecord = (row: any): MiningSessionRecord => ({
-  id: row.id,
-  status: row.status,
-  prompt: row.prompt,
-  requestedLimit: Number(row.requested_limit || 0),
-  startedAt: row.started_at,
-  completedAt: row.completed_at || undefined,
-  cancellationRequestedAt: row.cancellation_requested_at || undefined,
-  errorMessage: row.error_message || undefined,
-  stats: parseJSONField<Record<string, unknown> | undefined>(
+const toMiningSessionRecord = (row: any): MiningSessionRecord => {
+  const parsedStats = parseJSONField<Record<string, unknown> | undefined>(
     row.stats_json,
     undefined,
-  ),
-  traceSummary: parseJSONField<Record<string, unknown> | undefined>(
-    row.trace_summary_json,
-    undefined,
-  ),
-  checkpoint: parseJSONField<MiningSessionCheckpoint | undefined>(
-    row.checkpoint_json,
-    undefined,
-  ),
-  updatedAt: row.updated_at,
-});
+  );
+  return {
+    id: row.id,
+    status: row.status,
+    prompt: row.prompt,
+    requestedLimit: Number(row.requested_limit || 0),
+    startedAt: row.started_at,
+    completedAt: row.completed_at || undefined,
+    cancellationRequestedAt: row.cancellation_requested_at || undefined,
+    errorMessage: row.error_message || undefined,
+    fulfillmentStatus: (parsedStats?.fulfillmentStatus as string) || undefined,
+    stats: parsedStats,
+    traceSummary: parseJSONField<Record<string, unknown> | undefined>(
+      row.trace_summary_json,
+      undefined,
+    ),
+    checkpoint: parseJSONField<MiningSessionCheckpoint | undefined>(
+      row.checkpoint_json,
+      undefined,
+    ),
+    updatedAt: row.updated_at,
+  };
+};
 
 export function readMiningSessionById(id: string) {
   const row = getLeadsDb()

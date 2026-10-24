@@ -175,23 +175,39 @@ export function verifyDecisionMakerFromEvidence(input: {
     reason = weakConflictOverridesPositive
       ? 'Weak context overrides authority keyword'
       : 'Weak or ignored title';
-  } else if (hasPositiveTitle && companyMatched && hasEvidenceLink) {
-    confidence = 9;
-    reason = 'Authority title with company support and good evidence';
   } else if (hasPositiveTitle) {
-    confidence = 7;
-    reason = 'Authority title identified';
+    reason = companyMatched && hasEvidenceLink
+      ? 'Authority title with company support and good evidence'
+      : 'Authority title identified';
+
+    // Base authority score starts at 7.0 for positive authority matches.
+    // Calibrated continuous breakdown (B11):
+    // 1. Role authority gradient (0.1 - 0.5 pts)
+    const isOwnerOrFounder =
+      /\b(founder|co-founder|owner|ceo|chief executive|managing director|managing partner|proprietor|president)\b/i.test(profileIdentityText);
+    const isLeadershipRole =
+      /\b(vp|vice president|head of|director|chief|cfo|coo|cto|cro|cmo|cpo|partner)\b/i.test(profileIdentityText);
+    const authorityBonus = isOwnerOrFounder ? 0.5 : isLeadershipRole ? 0.3 : 0.1;
+
+    // 2. Corroborated company entity match (1.0 pt)
+    const companyBonus = companyMatched ? 1.0 : 0.0;
+
+    // 3. Valid source evidence link (0.8 pts)
+    const evidenceBonus = hasEvidenceLink ? 0.8 : 0.0;
+
+    // 4. Continuous career trajectory bonus (0.0 - 0.7 pts)
+    const trajectoryBonus =
+      trajectory.roleCount >= 2 && trajectory.trajectoryScore >= 5.0
+        ? Math.min(0.7, Number(((trajectory.trajectoryScore / 10) * 0.7).toFixed(1)))
+        : 0.0;
+
+    confidence = Math.min(10, Number((7.0 + authorityBonus + companyBonus + evidenceBonus + trajectoryBonus).toFixed(1)));
   } else if (input.currentTitle || input.headline) {
     confidence = 5;
     reason = 'Role context exists but authority unclear';
   } else {
     confidence = 4;
     reason = 'Minimal role context';
-  }
-
-  // Boost confidence if career trajectory demonstrates proven executive authority (e.g. serial founder / ex-VP)
-  if (trajectory.roleCount >= 2 && trajectory.trajectoryScore >= 7.5 && !ignoredTitle) {
-    confidence = Math.min(10, Number((confidence + 0.5).toFixed(1)));
   }
 
   return {

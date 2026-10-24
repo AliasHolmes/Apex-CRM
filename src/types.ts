@@ -159,6 +159,7 @@ export interface QualifiedLeadProfile extends LinkedInProfile {
   intentEnrichmentState?: IntentEnrichmentState;
   buyingSignalsDetected?: string[];
   hiringSignalUrl?: string;
+  provenance?: 'engine' | 'agent_brain' | string;
   confidenceInterval?: {
     lower: number;
     upper: number;
@@ -216,6 +217,7 @@ export interface Lead {
   paretoSkyline?: boolean;
   postIntentEvidence?: PostIntentEvidence;
   intentEnrichmentState?: IntentEnrichmentState;
+  provenance?: 'engine' | 'agent_brain' | string;
   confidenceInterval?: {
     lower: number;
     upper: number;

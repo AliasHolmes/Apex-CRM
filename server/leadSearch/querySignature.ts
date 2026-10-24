@@ -11,18 +11,26 @@ export type QuerySignature = {
 
 export const QUERY_DEDUPE_TOPIC_JACCARD = 0.5;
 
-const ROLE_CLASS_OWNER_PRINCIPAL = new Set([
+const ROLE_CLASS_FOUNDER = new Set([
   "founder",
   "co-founder",
   "cofounder",
+  "founding partner",
+  "founder & ceo",
+  "founder and ceo",
+]);
+
+const ROLE_CLASS_OWNER = new Set([
   "owner",
+  "business owner",
   "proprietor",
+  "principal",
+]);
+
+const ROLE_CLASS_EXECUTIVE = new Set([
   "ceo",
   "chief executive",
   "chief executive officer",
-  "founder & ceo",
-  "founder and ceo",
-  "principal",
 ]);
 
 const ROLE_CLASS_PARTNER = new Set([
@@ -172,27 +180,29 @@ export function buildQuerySignature(
     return false;
   };
 
-  if (!checkRoleClass(ROLE_CLASS_OWNER_PRINCIPAL, "owner-principal")) {
-    if (!checkRoleClass(ROLE_CLASS_PARTNER, "partner")) {
-      if (!checkRoleClass(ROLE_CLASS_DIRECTOR, "director")) {
-        // Fallback to contract acceptable terms if provided
-        if (options?.contract?.requirements) {
-          for (const req of options.contract.requirements) {
-            if (req.scope === "person_role") {
-              for (const term of req.acceptableTerms) {
-                const regex = new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
-                if (regex.test(cleaned)) {
-                  roleClass = normalizeAliasTerm(term) || term.toLowerCase();
-                  for (const word of term.toLowerCase().split(/\s+/)) {
-                    matchedRoleWords.add(word);
-                  }
-                  break;
-                }
+  if (
+    !checkRoleClass(ROLE_CLASS_FOUNDER, "founder") &&
+    !checkRoleClass(ROLE_CLASS_OWNER, "owner") &&
+    !checkRoleClass(ROLE_CLASS_EXECUTIVE, "executive") &&
+    !checkRoleClass(ROLE_CLASS_PARTNER, "partner") &&
+    !checkRoleClass(ROLE_CLASS_DIRECTOR, "director")
+  ) {
+    // Fallback to contract acceptable terms if provided
+    if (options?.contract?.requirements) {
+      for (const req of options.contract.requirements) {
+        if (req.scope === "person_role") {
+          for (const term of req.acceptableTerms) {
+            const regex = new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\b`, "i");
+            if (regex.test(cleaned)) {
+              roleClass = normalizeAliasTerm(term) || term.toLowerCase();
+              for (const word of term.toLowerCase().split(/\s+/)) {
+                matchedRoleWords.add(word);
               }
+              break;
             }
-            if (roleClass) break;
           }
         }
+        if (roleClass) break;
       }
     }
   }

@@ -4,12 +4,11 @@ Generated: 2026-10-16 ? Scope: all first-party code under `src/`, `server/`, `sc
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> **commit `10c384b`** (`refactor: audit and eliminate duplication across client, server,
-> and pipeline services` - committed the Agent Brain runner, `9.22`) plus the uncommitted
-> hardening overlay described in `9.25` (seam typing, identity canonicalization,
-> grounded-write invariant, graduated streaming seams, prompt-version stamping, replay gate).
-> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. `npm test` completes
-> across 194 suites: **1,287 pass / 0 fail** with 100% strict ASCII and zero glyph regressions.
+> current HEAD (`39586cd`) plus the engine audit remediation overlay (Packages 1-3:
+> unbreak HEAD, routing & dedupe fixes, CRM saturation person-lane isolation,
+> calibrated continuous confidence scoring, symmetrical provenance, tightened checkpoint caps).
+> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. Full test suite completes
+> across 201 suites: **1,353 pass / 0 fail** with 100% strict ASCII and zero glyph regressions.
 > Line counts are physical lines (blank lines included).
 
 ---
@@ -47,14 +46,14 @@ carried forward in ?9 below. Recover them from git history if the detail is ever
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 15,505 lines across 63 TypeScript files (`components/` alone: 37 files / 10,989 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 28,017 lines: 53 modules + 9 `stages/` (stages: 7,411 lines)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,030 lines (db 5,770 ? llm 3,027 ? api 2,483 ? brightdata 2,164 ? rest 1,586)                                                             |
+| Frontend (`src/`)                                                | 15,550 lines across 63 TypeScript files (`components/` alone: 37 files / 10,989 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 28,140 lines: 53 modules + 9 `stages/` (stages: 7,450 lines)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,100 lines (db 5,800 / llm 3,140 / api 2,490 / brightdata 2,164 / rest 1,586)                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v27**, WAL                   |
-| Test suite                                                       | 194 TypeScript files: 192 `.test.ts` + `helpers/mockLlm.ts` + 1 `.eval.ts`; 29,655 lines |
-| Total first-party LOC                                            | 88,420 TypeScript lines (incl. tests)                                    |
-| Anchor                                                           | measured at `10c384b` + uncommitted hardening overlay (?9.25); HEAD dated 2026-10-16                  |
+| Test suite                                                       | 203 TypeScript files: 200 `.test.ts` + 2 test helpers + 1 `.eval.ts`; 32,063 lines |
+| Total first-party LOC                                            | 92,014 TypeScript lines (incl. tests)                                    |
+| Anchor                                                           | measured at `39586cd` + Engine Audit Remediation (Packages 1-3); dated 2026-10-24                  |
 
 ## 3. Tech stack
 
@@ -726,21 +725,39 @@ working tree:
   `byesuProvider` pin the new provider order. Result: typecheck 0 errors, 192 `.test.ts` +
   helpers, 194 suites, **1,287 pass / 0 fail** (~1m50s).
 
+### 9.26 Engine Audit Remediation (Packages 1-3) - (2026-10-24)
+
+Remediates all 17 verified engine drags and test assertion mismatches from discovery session `68002f20-a016-40a2-904f-82d438e7c93b`:
+
+- **Package 1 (Unbreak HEAD & Hygiene)**: Replaced non-ASCII Unicode section characters in `stallLadder.ts:270/275` with ASCII `(Pin 2)` / `(Pin 1)`; aligned `test/engineRemediationWiring.test.ts` with WS4 batch-4 default; aligned `test/stallLadder.test.ts` with `orthogonal_matrix` family.
+- **Package 2 (Routing, Cost, and Deduplication)**:
+  - B1: Enabled fast-tier failsafe escalation directly to `byesu -> openrouter -> groq` on primary timeout when `tierProviderOrder` is specified; corrected telemetry `fallbackUsed` to only flag when a fallback attempt actually ran.
+  - B4: Fixed double-counting of `duplicate_existing_lead` in `duplicateCollisionRate`; capped `round > 1` Tavily queries to `Math.min(baseMaxResults + 2, 14)` on low duplication rounds.
+  - B2: Disambiguated `owner-principal` into distinct role classes (`founder`, `owner`, `executive`), allowing both owner and founder queries to survive near-duplicate filtering.
+  - B5: Passed `maxTasks: Math.min(maxTasks, rawTasks.length)` in `planStage.ts` to activate MAB in production while preserving library test contracts.
+  - B6: Added `[unattributed]` fallback bucket in `state.queryRuns` so non-attributed candidate verdicts maintain volume and failure fidelity.
+  - B9: Sanitized `buildAccountFlywheelItems` against role phrases and non-company strings.
+  - B12: Exposed `fulfillmentStatus` on session records and marked `derivedStatus = "partial_success"` when delivery falls short.
+- **Package 3 (CRM Saturation, Provenance & Checkpoint Safety)**:
+  - B3: Scoped CRM negative company terms strictly to `person` lane tasks when CRM saturation dominates, preserving `account` flywheel tasks.
+  - B11: Replaced static step-jumps with calibrated continuous confidence scoring (0-10) in `verification.ts`.
+  - B13: Stamped symmetrical `provenance: "engine"` and `provenance: "agent_brain"`, replacing `VERIFIED_FOUNDER` with `AGENT_BRAIN_CANDIDATE`.
+  - B17: Tightened checkpoint evidence cap from 240 to 100, and debug log tail from 100 to 25.
+- **Total Test Suite Status**: 203 TypeScript files (200 `.test.ts`), **1,353 pass / 0 fail** (100% green).
+
 
 ## 10. Recommended next actions
 
-Updated 2026-10-16.
+Updated 2026-10-24.
 
-1. ~~**Industry-Agnostic Engine generalization.**~~ Done ? open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
-2. ~~**Candidate & Company Attribution Persistence.**~~ Done ? Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
-3. ~~**Provider-Affinity Dual Concurrency & Atria Reasoning Timeouts.**~~ Superseded by Byesu Primary (GPT-6.1) Architecture (?9.24).
-4. ~~**Merge to main and branch cleanup.**~~ Done ? fast-forward merged to `main`, pushed to `origin/main`, secondary branch deleted.
-5. **Run a live production discovery session** to monitor Byesu GPT-6.1 primary performance, slot utilization, and fallback readiness.
-6. ~~**Refresh the README test badge**~~ ? Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
-7. **Watch the primary admission gate's precision/recall trade** ? it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.
-8. **Make the `<= 1.0` source guard EOL-agnostic (?9.14)** ? one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
-9. ~~**Decide the fate of the uncommitted Agent Brain path (?9.22)**~~ ? Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
-10. ~~**Re-sync README schema claims to v27 (?9.23)**~~ ? Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done ? counts and architecture summary are now pinned to `10c384b` + the ?9.25 hardening overlay; rerun measurements after the next HEAD change.
-12. **Commit the hardening overlay (?9.25)** ? the implementation currently sits uncommitted; split into logical commits (identity, seam typing, grounded gate, seam graduation, telemetry, replay) or ship as one, then re-pin sections `9.25`/`2` with the new HEAD and drop the "UNCOMMITTED" labels.
-13. **Restore the `§`/`→` glyphs in `CODEBASE_INDEX.md` (cosmetic)** ? this index was written with `?9.22`-style section refs and arrow separators, but an uncommitted pass folded all `§` and `→` UTF-8 glyphs to ASCII `?` (160 occurrences). Semantics survive unambiguous, so it was kept; `git show HEAD:docs/CODEBASE_INDEX.md` still has the original glyphs if a restore pass is wanted.
+1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
+2. ~~**Candidate & Company Attribution Persistence.**~~ Done - Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
+3. ~~**Provider-Affinity Dual Concurrency & Atria Reasoning Timeouts.**~~ Superseded by Byesu Primary (GPT-6.1) Architecture (9.24).
+4. ~~**Merge to main and branch cleanup.**~~ Done - fast-forward merged to `main`, pushed to `origin/main`, secondary branch deleted.
+5. ~~**Engine Audit Remediation (Packages 1-3)**~~ Done - all 17 audit findings resolved, 1,353 tests passing across 201 suites with 0 failures.
+6. ~~**Refresh the README test badge**~~ - Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
+7. **Watch the primary admission gate's precision/recall trade** - it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.
+8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
+9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
+10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `39586cd` + Engine Audit Remediation overlay (2026-10-24).

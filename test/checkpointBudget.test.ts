@@ -12,6 +12,7 @@ process.env.APEX_DB_PATH = testDbPath;
 import {
   closeLeadsDb,
   enforceCheckpointByteBudget,
+  prepareCheckpointForPersistence,
   CheckpointBudgetExceededError,
   saveMiningSessionCheckpoint,
   upsertMiningSession,
@@ -83,7 +84,7 @@ test("Stream 4 - Checkpoint Byte Budget Enforcement", async (t) => {
     assert.deepEqual(trimmed.evidenceByUrl, {});
   });
 
-  await t.test("progressively clamps 1600 accepted leads to stay under 512KB", () => {
+  await t.test("retains 1600 accepted leads even when the payload exceeds the soft budget", () => {
     const acceptedLeads: any[] = [];
     for (let i = 0; i < 1600; i++) {
       acceptedLeads.push({
@@ -121,11 +122,16 @@ test("Stream 4 - Checkpoint Byte Budget Enforcement", async (t) => {
     const originalSize = Buffer.byteLength(JSON.stringify(cp), "utf8");
     assert.ok(originalSize > 512_000, `Original size ${originalSize} should exceed 512KB`);
 
-    const trimmed = enforceCheckpointByteBudget(cp);
-    const trimmedSize = Buffer.byteLength(JSON.stringify(trimmed), "utf8");
-    assert.ok(trimmedSize <= 512_000, `Trimmed size ${trimmedSize} must be <= 512KB`);
-    assert.ok(trimmed.acceptedLeads.length < 1600, "Should have trimmed candidate count");
-    assert.ok(trimmed.acceptedLeads.length >= 100, "Should retain at least 100 candidates if fits");
+    // The hard budget function may throw when diagnostics-only compaction is not enough;
+    // the persistence wrapper must then keep every accepted lead instead of slicing the
+    // list down to a handful (which silently discarded resumable work).
+    const prepared = prepareCheckpointForPersistence(cp);
+    assert.equal(
+      prepared.checkpoint.acceptedLeads.length,
+      1600,
+      "Every accepted lead must survive compaction",
+    );
+    assert.ok(Buffer.byteLength(prepared.payload, "utf8") > 0);
   });
 
   await t.test("saveMiningSessionCheckpoint and upsertMiningSession persist <= 512KB into database", () => {

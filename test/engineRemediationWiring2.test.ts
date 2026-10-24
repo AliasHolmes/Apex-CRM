@@ -135,8 +135,8 @@ test('lead hydration transfers deltas instead of the full table', () => {
   assert.match(ctx, /data\.delta === true && hydratedLeadsById/, 'delta responses must merge');
   assert.match(
     ctx,
-    /hydratedLeadsById\.size \+ sanitized\.length < serverTotal/,
-    'a row-count mismatch must fall back to a full refetch',
+    /mergedIds\.size !== serverTotal/,
+    'a post-merge row-count mismatch must fall back to a full refetch (deletions are invisible to the delta)',
   );
 });
 

@@ -90,6 +90,35 @@ describe('Byesu Primary Provider Registration & Configuration', () => {
     assert.equal(llm.getPrimaryLLMModel(), 'gpt-6.1-sol');
   });
 
+  it('sanitizes model names by stripping the failing antigravity/ prefix from OPENAI_MODEL and dispatches clean model name', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.OPENAI_MODEL = 'antigravity/gemini-3.8-flash-high';
+    process.env.OPENAI_BASE = 'http://localhost:20128/v1';
+
+    const llm = await importLLM('antigravity-sanitization');
+    assert.equal(llm.sanitizeModelName('antigravity/gemini-3.8-flash-high'), 'gemini-3.8-flash-high');
+    assert.equal(llm.getPrimaryLLMModel(), 'gemini-3.8-flash-high');
+
+    const primary = llm.getLLMProviderSummaries().find((p: any) => p.id === 'primary');
+    assert.ok(primary);
+    assert.equal(primary.model, 'gemini-3.8-flash-high');
+
+    let dispatchedModel = '';
+    globalThis.fetch = (async (_url: any, init?: any) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      dispatchedModel = body.model;
+      return jsonResponse({
+        model: 'gemini-3.8-flash-high',
+        choices: [{ finish_reason: 'stop', message: { content: 'hello' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      });
+    }) as any;
+
+    await llm.openAIText('test prompt', '', { maxRetries: 0 });
+    assert.equal(dispatchedModel, 'gemini-3.8-flash-high');
+    assert.ok(!dispatchedModel.includes('antigravity'));
+  });
+
   it('guarantees Tier 1 (Byesu) takes precedence over Tier 2 failsafes (Groq, OpenRouter)', async () => {
     process.env.OPENAI_API_KEY = 'test-byesu-key';
     process.env.GROQ_API_KEY = 'test-groq-key';

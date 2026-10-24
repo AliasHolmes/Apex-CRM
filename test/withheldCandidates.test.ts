@@ -8,6 +8,7 @@ import {
 import {
   shouldParkWithheldCandidate,
   parkCandidate,
+  MAX_PARKED_CANDIDATES,
   MAX_PARKED_REINJECTIONS,
   MAX_PARKED_RECHECK_ATTEMPTS,
 } from "../server/leadSearch/stages/judgeStage.js";
@@ -216,7 +217,7 @@ test("shouldParkWithheldCandidate: correctly identifies candidates to park", () 
   assert.equal(shouldParkWithheldCandidate(leadContradicted, qual1, sampleContract), false);
 });
 
-test("parkCandidate: deduplication and capacity (cap 20 FIFO eviction)", () => {
+test("parkCandidate: deduplication and capacity (full pool rejects the newcomer)", () => {
   const state: Partial<PipelineSessionState> = {
     parkedCandidates: [],
   };
@@ -236,8 +237,8 @@ test("parkCandidate: deduplication and capacity (cap 20 FIFO eviction)", () => {
   assert.equal(addedDuplicate, false);
   assert.equal(state.parkedCandidates!.length, 1);
 
-  // Fill up to cap (20)
-  for (let i = 2; i <= 20; i++) {
+  // Fill up to the cap
+  for (let i = 2; i <= MAX_PARKED_CANDIDATES; i++) {
     const cand: FinalistCandidate = {
       candidateId: `c${i}`,
       lead: { contactDetails: { linkedinUrl: `https://linkedin.com/in/user${i}` }, currentCompany: `Co${i}` },
@@ -245,19 +246,27 @@ test("parkCandidate: deduplication and capacity (cap 20 FIFO eviction)", () => {
     };
     parkCandidate(state, cand, 1);
   }
-  assert.equal(state.parkedCandidates!.length, 20);
+  assert.equal(state.parkedCandidates!.length, MAX_PARKED_CANDIDATES);
   assert.equal(state.parkedCandidates![0].candidateKey, "https://linkedin.com/in/alice");
 
-  // Add 21st candidate: evicts oldest (alice)
-  const cand21: FinalistCandidate = {
-    candidateId: "c21",
-    lead: { contactDetails: { linkedinUrl: "https://linkedin.com/in/user21" }, currentCompany: "Co21" },
+  // Once full, the incoming candidate is rejected: the oldest parked candidate and its
+  // recheck history are more valuable than a newcomer that was never held for recheck.
+  const overflow: FinalistCandidate = {
+    candidateId: "coverflow",
+    lead: { contactDetails: { linkedinUrl: "https://linkedin.com/in/overflow" }, currentCompany: "Overflow" },
     evidence: [],
   };
-  parkCandidate(state, cand21, 2);
-  assert.equal(state.parkedCandidates!.length, 20);
-  assert.equal(state.parkedCandidates![0].candidateKey, "https://linkedin.com/in/user2");
-  assert.equal(state.parkedCandidates![19].candidateKey, "https://linkedin.com/in/user21");
+  const addedOverflow = parkCandidate(state, overflow, 2);
+  assert.equal(addedOverflow, false);
+  assert.equal(state.parkedCandidates!.length, MAX_PARKED_CANDIDATES);
+  assert.equal(state.parkedCandidates![0].candidateKey, "https://linkedin.com/in/alice");
+  assert.equal(
+    state.parkedCandidates![MAX_PARKED_CANDIDATES - 1].candidateKey,
+    `https://linkedin.com/in/user${MAX_PARKED_CANDIDATES}`,
+  );
+  assert.ok(
+    !state.parkedCandidates!.some(p => p.candidateKey === "https://linkedin.com/in/overflow"),
+  );
 });
 
 test("processParkedCandidates: drops candidate after 3 failed re-checks", async () => {

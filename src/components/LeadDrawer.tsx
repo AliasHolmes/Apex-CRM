@@ -200,27 +200,46 @@ function LeadDrawerBody({
 
   // Contact profile editing states
   const [isEditingContact, setIsEditingContact] = useState(false);
-  const [contactDraft, setContactDraft] = useState({
-    fullName: lead.profile.fullName || '',
-    currentTitle: lead.profile.currentTitle || '',
-    currentCompany: lead.profile.currentCompany || '',
-    email: lead.profile.contactDetails?.email || '',
-    phone: lead.profile.contactDetails?.phone || '',
-    linkedinUrl: lead.profile.contactDetails?.linkedinUrl || '',
-  });
-  const [savingContact, setSavingContact] = useState(false);
-
-  useEffect(() => {
-    setContactDraft({
+  // Only the editable fields feed the draft. Hydration/sanitization rebuilds `lead.profile`
+  // on every refresh even when nothing the form shows has changed; keying the reset on this
+  // value signature keeps an in-progress draft from being wiped by an unrelated re-render.
+  const contactDraftSource = useMemo(
+    () => ({
       fullName: lead.profile.fullName || '',
       currentTitle: lead.profile.currentTitle || '',
       currentCompany: lead.profile.currentCompany || '',
       email: lead.profile.contactDetails?.email || '',
       phone: lead.profile.contactDetails?.phone || '',
       linkedinUrl: lead.profile.contactDetails?.linkedinUrl || '',
-    });
+    }),
+    [
+      lead.profile.fullName,
+      lead.profile.currentTitle,
+      lead.profile.currentCompany,
+      lead.profile.contactDetails?.email,
+      lead.profile.contactDetails?.phone,
+      lead.profile.contactDetails?.linkedinUrl,
+    ],
+  );
+  const [contactDraft, setContactDraft] = useState(contactDraftSource);
+  const [savingContact, setSavingContact] = useState(false);
+
+  const contactDraftSourceRef = useRef(contactDraftSource);
+  const contactDraftLeadIdRef = useRef(lead.id);
+  const isEditingContactRef = useRef(isEditingContact);
+  isEditingContactRef.current = isEditingContact;
+
+  useEffect(() => {
+    const leadChanged = contactDraftLeadIdRef.current !== lead.id;
+    const sourceChanged = contactDraftSourceRef.current !== contactDraftSource;
+    // Never clobber what the user is typing. A lead-id change unmounts/remounts anyway;
+    // the guard is here so a reused body can never carry a draft across leads.
+    if (!leadChanged && (!sourceChanged || isEditingContactRef.current)) return;
+    contactDraftLeadIdRef.current = lead.id;
+    contactDraftSourceRef.current = contactDraftSource;
+    setContactDraft({ ...contactDraftSource });
     setIsEditingContact(false);
-  }, [lead.id, lead.profile]);
+  }, [lead.id, contactDraftSource]);
 
   // Lead activity history states
   const [activities, setActivities] = useState<LeadActivityRecord[]>([]);

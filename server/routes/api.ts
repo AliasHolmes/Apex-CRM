@@ -219,6 +219,18 @@ export function resolveMaxConcurrentSessions(): number {
   return Math.min(value, 8);
 }
 
+/**
+ * Agent-brain runs are dispatched by this route instead of the discovery engine, so they
+ * need their own live registry: without it a second POST for the same sessionId can run
+ * concurrently and overwrite the first run's terminal row, and the concurrency cap only
+ * sees pipeline sessions.
+ */
+const activeAgentBrainSessions = new Set<string>();
+
+function countActiveDiscoverySessions(): number {
+  return discoveryEngine.getActiveCount() + activeAgentBrainSessions.size;
+}
+
 export function parseOptionalPositiveInt(val: unknown): number | undefined {
   if (val === undefined || val === null || val === "") return undefined;
   const n = Number(val);
@@ -1591,14 +1603,32 @@ router.post(
     if (!isSafeSessionId(sessionId))
       return res.status(400).json({ error: "Invalid sessionId." });
 
-    if (discoveryEngine.isActive(sessionId)) {
+    if (
+      discoveryEngine.isActive(sessionId) ||
+      activeAgentBrainSessions.has(sessionId)
+    ) {
       return res
         .status(409)
         .json({ error: `Session is already active: ${sessionId}`, sessionId });
     }
 
+    // Completed sessions have no resumable work. Resuming one replays a stale checkpoint
+    // (when present) or reports "no checkpoint" instead of telling the caller it is done.
+    const existingSession = readMiningSessionSummaryById(sessionId);
+    if (
+      existingSession &&
+      (existingSession.status === "success" ||
+        existingSession.status === "partial_success")
+    ) {
+      return res.status(409).json({
+        error: `Session ${sessionId} already completed with status "${existingSession.status}". Start a new session instead.`,
+        sessionId,
+        status: existingSession.status,
+      });
+    }
+
     const maxConcurrent = resolveMaxConcurrentSessions();
-    if (discoveryEngine.getActiveSessionIds().length >= maxConcurrent) {
+    if (countActiveDiscoverySessions() >= maxConcurrent) {
       return res
         .status(429)
         .json({ error: "Maximum concurrent mining sessions reached." });
@@ -1949,17 +1979,28 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
     req.query.mode === "job" || req.headers["prefer"] === "respond-async";
   const targetSessionId = suppliedSessionId || `session-${crypto.randomUUID()}`;
 
+  // Reject a second request for an id that is already live. Pipeline runs also claim
+  // atomically inside the engine; this pre-check additionally covers agent-brain runs,
+  // which the engine does not own, and prevents resetting a live run's session row.
+  if (
+    discoveryEngine.isActive(targetSessionId) ||
+    activeAgentBrainSessions.has(targetSessionId)
+  ) {
+    return res.status(409).json({
+      error: `A lead mining session with this sessionId is already active: ${targetSessionId}`,
+      sessionId: targetSessionId,
+    });
+  }
+
   // Bound concurrent discovery runs. Every session drives paid Tavily / Bright Data / LLM
   // work, and distinct sessionIds previously allowed an unbounded number of parallel
   // pipelines. Reject with 503 (retryable) rather than queueing, so callers fail fast.
   const maxConcurrentSessions = resolveMaxConcurrentSessions();
-  if (
-    !discoveryEngine.isActive(targetSessionId) &&
-    discoveryEngine.getActiveCount() >= maxConcurrentSessions
-  ) {
+  const activeSessionsBeforeStart = countActiveDiscoverySessions();
+  if (activeSessionsBeforeStart >= maxConcurrentSessions) {
     return res.status(503).json({
-      error: `Already running ${discoveryEngine.getActiveCount()} discovery session(s) (limit ${maxConcurrentSessions}). Wait for one to finish, or raise APEX_MAX_CONCURRENT_SESSIONS.`,
-      activeSessions: discoveryEngine.getActiveCount(),
+      error: `Already running ${activeSessionsBeforeStart} discovery session(s) (limit ${maxConcurrentSessions}). Wait for one to finish, or raise APEX_MAX_CONCURRENT_SESSIONS.`,
+      activeSessions: activeSessionsBeforeStart,
       limit: maxConcurrentSessions,
       retryAfter: 30,
     });
@@ -1971,6 +2012,67 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
     process.env.APEX_LLM_BRAIN === "agent";
 
   if (isAgentBrain) {
+    // Create (or reset) the running row before dispatch so the UI/SSE stream always has a
+    // session to attach to, even if the runner fails before its own terminal upsert.
+    try {
+      upsertMiningSession({
+        id: targetSessionId,
+        status: "running",
+        prompt: promptQuery,
+        requestedLimit,
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        errorMessage: null,
+        cancellationRequestedAt: null,
+        checkpoint: null,
+      });
+    } catch (dbError) {
+      console.error(
+        `[find-leads] Failed to create running session ${targetSessionId}:`,
+        dbError,
+      );
+      return res.status(500).json({ error: "Failed to create mining session." });
+    }
+
+    activeAgentBrainSessions.add(targetSessionId);
+    const markAgentBrainFailure = (agentErr: any) => {
+      console.error(`[Agent Brain Error] ${targetSessionId}:`, agentErr);
+      try {
+        upsertMiningSession({
+          id: targetSessionId,
+          status: "error",
+          completedAt: new Date().toISOString(),
+          errorMessage:
+            agentErr?.message || "Agent Brain discovery failed.",
+        });
+      } catch (dbError) {
+        console.error(
+          `[find-leads] Failed to record agent-brain error for ${targetSessionId}:`,
+          dbError,
+        );
+      }
+    };
+
+    if (isAsyncMode) {
+      void executeAgentBrainDiscovery({
+        sessionId: targetSessionId,
+        promptQuery,
+        requestedLimit,
+      })
+        .catch(markAgentBrainFailure)
+        .finally(() => {
+          activeAgentBrainSessions.delete(targetSessionId);
+        });
+
+      return res.status(202).json({
+        apiVersion: 1,
+        status: "running",
+        sessionId: targetSessionId,
+        streamUrl: `/api/mining-sessions/${targetSessionId}/stream`,
+        message: "Agent Brain discovery accepted and executing in background.",
+      });
+    }
+
     try {
       const agentResult = await executeAgentBrainDiscovery({
         sessionId: targetSessionId,
@@ -1979,8 +2081,12 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
       });
       return res.status(200).json(agentResult);
     } catch (agentErr: any) {
-      console.error(`[Agent Brain Error] ${targetSessionId}:`, agentErr);
-      return res.status(500).json({ error: agentErr?.message || "Agent Brain discovery failed." });
+      markAgentBrainFailure(agentErr);
+      return res
+        .status(500)
+        .json({ error: agentErr?.message || "Agent Brain discovery failed." });
+    } finally {
+      activeAgentBrainSessions.delete(targetSessionId);
     }
   }
 

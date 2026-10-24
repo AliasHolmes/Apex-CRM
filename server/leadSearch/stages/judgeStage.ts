@@ -215,6 +215,10 @@ export const MAX_PARKED_RECHECK_ATTEMPTS = Math.max(
   1,
   Number(process.env.LEAD_MAX_PARKED_RECHECK_ATTEMPTS || 3),
 );
+export const MAX_PARKED_CANDIDATES = Math.max(
+  1,
+  Number(process.env.LEAD_MAX_PARKED_CANDIDATES || 200),
+);
 
 export function parkCandidate(
   state: any,
@@ -256,9 +260,14 @@ export function parkCandidate(
     return false;
   }
 
-  // Cap: 20 entries, oldest first eviction
-  if (state.parkedCandidates.length >= 20) {
-    state.parkedCandidates.shift();
+  // Cap: reject the incoming candidate when the pool is full. Evicting the oldest entry
+  // silently discarded a still-relevant candidate (and its recheck history), which
+  // defeated the withheld-candidate safety net during long sessions.
+  if (state.parkedCandidates.length >= MAX_PARKED_CANDIDATES) {
+    console.warn(
+      `[parkCandidate] Parked candidate pool full (${MAX_PARKED_CANDIDATES}); rejecting ${candidateKey} instead of evicting an older candidate.`,
+    );
+    return false;
   }
 
   state.parkedCandidates.push({
@@ -633,7 +642,7 @@ export async function evaluateIncrementalJudgeBatches(
     ? Number(process.env.FINALIST_JUDGE_CONCURRENCY)
     : undefined;
   const configuredJudgeConcurrency = Number(
-    explicitJudgeConcurrency ?? config.judgeConcurrency ?? 2,
+    explicitJudgeConcurrency ?? config.judgeConcurrency ?? 8,
   );
   const freePrimarySlots = Math.max(
     0,

@@ -580,8 +580,10 @@ export async function executeAgentBrainDiscovery(
     requestedLimit,
     startedAt: startTimeIso,
     completedAt: new Date().toISOString(),
-    cancellationRequestedAt: undefined,
-    errorMessage: undefined,
+    // Terminal state: clear anything a previous run (or a cancel request) left behind.
+    cancellationRequestedAt: null,
+    errorMessage: null,
+    checkpoint: null,
     stats: statsPayload,
     traceSummary: traceSummaryPayload
   });

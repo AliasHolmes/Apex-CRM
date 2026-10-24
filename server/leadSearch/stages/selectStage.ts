@@ -132,7 +132,7 @@ export async function executeSelectStage(
     const qualifiedMap = new Map<string, any>(intentPool.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
     const postIntentConcurrency = Math.max(
       1,
-      Math.min(4, Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 3)),
+      Math.min(8, Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 4)),
     );
     const postIntentStats = await runLinkedInPostIntentEnrichment({
       qualifiedLeads: qualifiedMap,

@@ -19,6 +19,7 @@ export function buildRetrievalCacheKey(
     maxResults?: number;
     searchDepth?: string;
     includeDomains?: string[];
+    excludeDomains?: string[];
     timeRange?: string;
     topic?: string;
     country?: string;
@@ -28,11 +29,16 @@ export function buildRetrievalCacheKey(
     .map((d) => String(d).trim().toLowerCase())
     .sort()
     .join(",");
+  const excludedDomains = (options.excludeDomains || [])
+    .map((d) => String(d).trim().toLowerCase())
+    .sort()
+    .join(",");
   return [
     `retrieval:${provider}`,
     `max=${options.maxResults ?? ""}`,
     `depth=${options.searchDepth ?? ""}`,
     `dom=${domains}`,
+    `exclude=${excludedDomains}`,
     `time=${options.timeRange ?? ""}`,
     `topic=${options.topic ?? ""}`,
     `country=${String(options.country ?? "").toLowerCase()}`,
@@ -49,10 +55,30 @@ export function buildRetrievalCacheKey(
 export function buildRetrievalSignatureKey(
   provider: string,
   query: string,
-  options: { contract?: ProspectContract; maxResults?: number } = {},
+  options: {
+    contract?: ProspectContract;
+    maxResults?: number;
+    searchDepth?: string;
+    includeDomains?: string[];
+    excludeDomains?: string[];
+    timeRange?: string;
+    topic?: string;
+    country?: string;
+  } = {},
 ): string {
   const sig = buildQuerySignature(query, { contract: options.contract });
   const topics = [...new Set(sig.topicTokens)].sort().slice(0, 8).join(",");
+  // The signature deliberately drops literal query wording, but it must not drop the
+  // constraints that change the result set: two market-slice queries with different
+  // domains, recency, topic, or depth are not interchangeable SERPs.
+  const includeDomains = (options.includeDomains || [])
+    .map((d) => String(d).trim().toLowerCase())
+    .sort()
+    .join(",");
+  const excludeDomains = (options.excludeDomains || [])
+    .map((d) => String(d).trim().toLowerCase())
+    .sort()
+    .join(",");
   return [
     `retrieval-sig:${provider}`,
     `role=${sig.roleClass}`,
@@ -60,6 +86,12 @@ export function buildRetrievalSignatureKey(
     `geo=${sig.geoAnchor}`,
     `topics=${topics}`,
     `max=${options.maxResults ?? ""}`,
+    `depth=${options.searchDepth ?? ""}`,
+    `dom=${includeDomains}`,
+    `exclude=${excludeDomains}`,
+    `time=${options.timeRange ?? ""}`,
+    `topic=${options.topic ?? ""}`,
+    `country=${String(options.country ?? "").toLowerCase()}`,
   ].join("|");
 }
 

@@ -30,7 +30,7 @@ import {
   openAIStructured,
   createLLMSessionCircuitBreaker,
   normalizeTavilyCountry,
-  DEFAULT_PRIMARY_MODEL,
+  getPrimaryLLMModel,
   clearProviderCooldowns,
   type LLMProviderAttempt,
   type LLMUsage,
@@ -98,6 +98,7 @@ import { executeVerifyStage } from "./stages/verifyStage.js";
 import { executeEnrichStage } from "./stages/enrichStage.js";
 import {
   evaluateIncrementalJudgeBatches,
+  MAX_PARKED_CANDIDATES,
 } from "./stages/judgeStage.js";
 import { createLiveRollingPool } from "./liveRollingPool.js";
 import { executeSelectStage } from "./stages/selectStage.js";
@@ -297,6 +298,17 @@ export type ExecuteDiscoveryOptions = {
   /** Phase 5: multi-turn follow-ups. When set, deltaBrief is applied on top of the parent contract. */
   parentSessionId?: string;
   deltaBrief?: string;
+  /**
+   * Invoked once after the run releases its live buffers. The engine keeps them briefly so
+   * SSE subscribers can drain logs/traces emitted after the last poll (normally the terminal
+   * round logs) instead of losing them on the final cleanup.
+   */
+  retainSessionBuffers?: (buffers: {
+    sessionId: string;
+    logs: string[] | undefined;
+    logTotal: number;
+    events: MiningTelemetryRecorder | undefined;
+  }) => void;
 };
 
 export async function executeDiscoverySession(
@@ -380,11 +392,22 @@ export async function executeDiscoverySession(
     status: "running",
     prompt: promptQuery,
     requestedLimit,
-    // A resume keeps the original start time and drops the previous run's end state, so a
-    // running session never shows a stale completedAt / errorMessage.
+    // A resume keeps the original start time and drops the previous run's end state.
+    // A fresh run with a reused sessionId must also discard the old checkpoint; otherwise a
+    // crash before the first new checkpoint would resume the previous run's state.
     ...(isResumedRun
-      ? { completedAt: null, errorMessage: null }
-      : { startedAt: new Date(startedAt).toISOString() }),
+      ? {
+          completedAt: null,
+          errorMessage: null,
+          cancellationRequestedAt: null,
+        }
+      : {
+          startedAt: new Date(startedAt).toISOString(),
+          completedAt: null,
+          errorMessage: null,
+          cancellationRequestedAt: null,
+          checkpoint: null,
+        }),
   });
   const checkpointRequestContext = requestContextFromOptions(options);
   activeSessionControllers.set(sessionId, sessionAbortController);
@@ -750,8 +773,7 @@ export async function executeDiscoverySession(
             contractUsage?.model ||
             successfulAttempt?.actualModel ||
             successfulAttempt?.model ||
-            process.env.OPENAI_MODEL ||
-            DEFAULT_PRIMARY_MODEL;
+            getPrimaryLLMModel();
           const latency = Date.now() - contractStarted;
           const tokens = contractUsage?.totalTokens;
           const droppedCount = contract.droppedUngroundedRequirements?.length || 0;
@@ -1132,10 +1154,6 @@ export async function executeDiscoverySession(
       ),
     };
 
-    // Delta-serialization cursor: how many queryRuns previous checkpoints
-    // already captured. Checkpoints serialize only the tail beyond this.
-    let checkpointedQueryRunCount = 0;
-
     const initialSignalStore = SignalStore.fromJSON(
       options.initialCheckpoint?.signalStoreState,
     );
@@ -1203,9 +1221,10 @@ export async function executeDiscoverySession(
         `[Resume] Resuming session ${sessionId} from round ${cp.round} (${(cp.acceptedLeads || []).length} accepted leads).`,
       );
       stats.rounds = cp.round;
-      // Restore query runs from either format: legacy checkpoints carry the
-      // full array in `queryRuns`; delta checkpoints carry only new runs in
-      // `queryRunsDelta`. Both merge through the same dedupe guard.
+      // Restore query runs from either format: current checkpoints carry the
+      // full array in `queryRuns`; checkpoints written before the delta
+      // serialization fix carry only the tail in `queryRunsDelta`. Both merge
+      // through the same dedupe guard.
       const restoredRuns = [
         ...(Array.isArray(cp.queryRuns) ? cp.queryRuns : []),
         ...(Array.isArray(cp.queryRunsDelta) ? cp.queryRunsDelta : []),
@@ -1223,7 +1242,6 @@ export async function executeDiscoverySession(
           stats.queryRuns.push(run);
           if (run.query) seenQueryTexts.add(run.query);
         }
-        checkpointedQueryRunCount = stats.queryRuns.length;
       }
       // Replace (not merge) counters so a re-saved checkpoint at the same
       // boundary cannot double rejection/failure tallies.
@@ -2486,8 +2504,7 @@ export async function executeDiscoverySession(
           contract,
           searchSpec,
           requestContext: checkpointRequestContext,
-          queryRuns: [],
-          queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
+          queryRuns: stats.queryRuns,
           acceptedLeads: acceptedLeads.slice(0, 240),
           qualifiedLeads: qualifiedLeads.slice(0, 240),
           finalLeads: [],
@@ -2507,11 +2524,11 @@ export async function executeDiscoverySession(
           recoveryAttempts: sessionState.recoveryAttempts,
           datasetSearchAfter: sessionState.datasetSearchAfter,
           seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
-          parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+          parkedCandidates:
+            sessionState.parkedCandidates?.slice(-MAX_PARKED_CANDIDATES) || [],
           parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
           updatedAt: new Date().toISOString(),
         });
-        checkpointedQueryRunCount = stats.queryRuns.length;
         logEvent(telemetry.formatRoundCriticalPath(round, roundStageWallMs));
 
         // Early shortlist termination:
@@ -2822,8 +2839,7 @@ export async function executeDiscoverySession(
       contract,
       searchSpec,
       requestContext: checkpointRequestContext,
-      queryRuns: [],
-      queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
+      queryRuns: stats.queryRuns,
       acceptedLeads: acceptedLeads.slice(0, 240),
       qualifiedLeads: qualifiedLeads.slice(0, 240),
       finalLeads: [],
@@ -2843,11 +2859,11 @@ export async function executeDiscoverySession(
       recoveryAttempts: sessionState.recoveryAttempts,
       datasetSearchAfter: sessionState.datasetSearchAfter,
       seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
-      parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+      parkedCandidates:
+        sessionState.parkedCandidates?.slice(-MAX_PARKED_CANDIDATES) || [],
       parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
       updatedAt: new Date().toISOString(),
     });
-    checkpointedQueryRunCount = stats.queryRuns.length;
 
     // Checkpoint migration safety: If resuming an older session where qualifiedLeads was empty
     // but acceptedLeads exist, perform an initial micro-batch evaluation pass
@@ -2923,8 +2939,7 @@ export async function executeDiscoverySession(
       contract,
       searchSpec,
       requestContext: checkpointRequestContext,
-      queryRuns: [],
-      queryRunsDelta: stats.queryRuns.slice(checkpointedQueryRunCount),
+      queryRuns: stats.queryRuns,
       acceptedLeads: qualifiedLeads.slice(0, 240),
       qualifiedLeads: qualifiedLeads.slice(0, 240),
       disqualifiedCandidates: disqualifiedCandidates.slice(0, 240),
@@ -2945,11 +2960,11 @@ export async function executeDiscoverySession(
       recoveryAttempts: sessionState.recoveryAttempts,
       datasetSearchAfter: sessionState.datasetSearchAfter,
       seenCandidateKeys: Array.from(seenCandidateKeys).slice(-2000),
-      parkedCandidates: sessionState.parkedCandidates?.slice(-20) || [],
+      parkedCandidates:
+        sessionState.parkedCandidates?.slice(-MAX_PARKED_CANDIDATES) || [],
       parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
       updatedAt: new Date().toISOString(),
     });
-    checkpointedQueryRunCount = stats.queryRuns.length;
 
     if (acceptedLeads.length > 0 && qualifiedLeads.length > 0) {
       const observedPassRate = Number(
@@ -3034,11 +3049,23 @@ export async function executeDiscoverySession(
 
     throw error;
   } finally {
+    // Capture the final buffers before releasing them so the wrapper can keep them briefly
+    // for SSE subscribers; deleting first dropped every log line emitted since the last poll.
+    const finalLogs = activeSessions.get(sessionId);
+    const finalLogTotal =
+      activeSessionLogTotals?.get(sessionId) ?? finalLogs?.length ?? 0;
+    const finalEvents = activeSessionEvents.get(sessionId);
     activeSessions.delete(sessionId);
     activeSessionLogTotals?.delete(sessionId);
     activeSessionEvents.delete(sessionId);
     cancelledSessions.delete(sessionId);
     activeSessionControllers.delete(sessionId);
+    options.retainSessionBuffers?.({
+      sessionId,
+      logs: finalLogs,
+      logTotal: finalLogTotal,
+      events: finalEvents,
+    });
     // Re-use healthy MCP subprocess connections across discovery runs for performance;
     // only close if the client encountered transport errors or entered a cooldown state.
     await closeBrightDataClient({
@@ -3058,12 +3085,72 @@ export class SessionAlreadyActiveError extends Error {
   }
 }
 
+/**
+ * How long a finished session's live log/trace buffers stay readable. The SSE hub polls
+ * every 250 ms and reads the terminal DB row on the transition, so a few seconds is
+ * enough to flush the final logs; the bound keeps memory from growing across many runs.
+ */
+const SESSION_BUFFER_RETENTION_MS = (() => {
+  const raw = Number(process.env.LEAD_SESSION_BUFFER_RETENTION_MS ?? 15_000);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+})();
+
+type RetainedSessionBuffers = {
+  token: string;
+  logs: string[];
+  logTotal: number;
+  events: MiningTelemetryRecorder | null;
+  timer: NodeJS.Timeout;
+};
+
 export class DiscoverySessionEngine {
   private activeSessions = new Map<string, string[]>();
   private activeSessionLogTotals = new Map<string, number>();
   private activeSessionControllers = new Map<string, AbortController>();
   private activeSessionEvents = new Map<string, MiningTelemetryRecorder>();
   private cancelledSessions = new Set<string>();
+  private retainedSessionBuffers = new Map<string, RetainedSessionBuffers>();
+
+  /**
+   * Keep a completed run's buffers readable for a short grace period. A run token guards
+   * against a timer from an old run deleting the buffers of a newer run that reuses the
+   * same sessionId (tryClaim clears the retained entry, which also clears the timer).
+   */
+  private retainSessionBuffers(buffers: {
+    sessionId: string;
+    logs: string[] | undefined;
+    logTotal: number;
+    events: MiningTelemetryRecorder | undefined;
+  }): void {
+    const { sessionId } = buffers;
+    this.clearRetainedSessionBuffers(sessionId);
+    if (SESSION_BUFFER_RETENTION_MS <= 0) return;
+    if (!buffers.logs && !buffers.events) return;
+    const token = crypto.randomUUID
+      ? crypto.randomUUID()
+      : crypto.randomBytes(16).toString("hex");
+    const timer = setTimeout(() => {
+      const current = this.retainedSessionBuffers.get(sessionId);
+      if (!current || current.token !== token) return;
+      this.retainedSessionBuffers.delete(sessionId);
+    }, SESSION_BUFFER_RETENTION_MS);
+    // A finished run's debug buffer must not keep the process alive on its own.
+    timer.unref?.();
+    this.retainedSessionBuffers.set(sessionId, {
+      token,
+      logs: buffers.logs ? [...buffers.logs] : [],
+      logTotal: buffers.logTotal,
+      events: buffers.events || null,
+      timer,
+    });
+  }
+
+  private clearRetainedSessionBuffers(sessionId: string): void {
+    const retained = this.retainedSessionBuffers.get(sessionId);
+    if (!retained) return;
+    clearTimeout(retained.timer);
+    this.retainedSessionBuffers.delete(sessionId);
+  }
 
   /**
    * Atomically claim a session slot. The has-check and the placeholder insert
@@ -3073,6 +3160,8 @@ export class DiscoverySessionEngine {
    */
   private tryClaim(sessionId: string): boolean {
     if (this.activeSessions.has(sessionId)) return false;
+    // A fresh claim supersedes any retained tail from the previous run of this id.
+    this.clearRetainedSessionBuffers(sessionId);
     this.activeSessions.set(sessionId, []);
     this.activeSessionLogTotals.set(sessionId, 0);
     return true;
@@ -3112,25 +3201,42 @@ export class DiscoverySessionEngine {
   }
 
   getLiveTrace(sessionId: string): MiningTraceEvent[] | null {
-    return this.activeSessionEvents.get(sessionId)?.getEvents() || null;
+    return (
+      this.activeSessionEvents.get(sessionId)?.getEvents() ??
+      this.retainedSessionBuffers.get(sessionId)?.events?.getEvents() ??
+      null
+    );
   }
 
   getLiveTraceTotal(sessionId: string): number {
-    return (
-      this.activeSessionEvents.get(sessionId)?.getTotalEventsRecorded() ??
-      (this.activeSessionEvents.get(sessionId)?.getEvents()?.length || 0)
-    );
+    const active = this.activeSessionEvents.get(sessionId);
+    if (active) {
+      return active.getTotalEventsRecorded() ?? (active.getEvents()?.length || 0);
+    }
+    const retained = this.retainedSessionBuffers.get(sessionId)?.events;
+    if (retained) {
+      return (
+        retained.getTotalEventsRecorded() ?? (retained.getEvents()?.length || 0)
+      );
+    }
+    return 0;
   }
 
   getLiveLogs(sessionId: string): string[] | null {
-    return this.activeSessions.get(sessionId) || null;
+    return (
+      this.activeSessions.get(sessionId) ??
+      this.retainedSessionBuffers.get(sessionId)?.logs ??
+      null
+    );
   }
 
   getLiveLogTotal(sessionId: string): number {
-    return (
-      this.activeSessionLogTotals.get(sessionId) ??
-      (this.activeSessions.get(sessionId)?.length || 0)
-    );
+    const activeTotal = this.activeSessionLogTotals.get(sessionId);
+    if (activeTotal !== undefined) return activeTotal;
+    const activeLogs = this.activeSessions.get(sessionId);
+    if (activeLogs) return activeLogs.length;
+    const retained = this.retainedSessionBuffers.get(sessionId);
+    return retained ? retained.logTotal : 0;
   }
 
   addLog(sessionId: string, message: string): void {
@@ -3198,6 +3304,7 @@ export class DiscoverySessionEngine {
         parentSessionId: request.parentSessionId,
         deltaBrief: request.deltaBrief,
         listener,
+        retainSessionBuffers: (buffers) => this.retainSessionBuffers(buffers),
       });
     } catch (err) {
       this.activeSessions.delete(sessionId);
@@ -3270,6 +3377,7 @@ export class DiscoverySessionEngine {
         deltaBrief: replay.deltaBrief,
         excludeList,
         listener,
+        retainSessionBuffers: (buffers) => this.retainSessionBuffers(buffers),
       });
     } catch (err) {
       // executeDiscoverySession only cleans up once it is inside its own try block; an early

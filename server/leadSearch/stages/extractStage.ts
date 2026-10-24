@@ -20,7 +20,7 @@ import {
   openAIStructured,
   bulkLeadsArraySchema,
   EXTRACTION_SYSTEM_PROMPT,
-  DEFAULT_PRIMARY_MODEL,
+  getPrimaryLLMModel,
 
   type LLMProviderAttempt,
   type LLMUsage,
@@ -1212,8 +1212,7 @@ Evidence:
         extractionUsage?.model ||
         successfulAttempt?.actualModel ||
         successfulAttempt?.model ||
-        process.env.OPENAI_MODEL ||
-        DEFAULT_PRIMARY_MODEL;
+        getPrimaryLLMModel();
       const latency = Date.now() - extractionStarted;
       const tokens = extractionUsage?.totalTokens;
       if (extractionUsage?.outputTokens) {
@@ -1351,8 +1350,7 @@ Evidence:
       Math.max(
         Number(
           config.extractionConcurrency ||
-            process.env.LEAD_EXTRACTION_CONCURRENCY ||
-            4,
+            process.env.LEAD_EXTRACTION_CONCURRENCY || 8,
         ),
         1,
       ),

@@ -4886,11 +4886,32 @@ export function readResumableMiningSessions(): MiningSessionRecord[] {
 export class CheckpointBudgetExceededError extends Error {
   constructor(size: number, limit: number) {
     super(
-      `Checkpoint size ${size} bytes exceeds budget limit of ${limit} bytes even after maximum progressive trimming.`,
+      `Checkpoint size ${size} bytes exceeds budget limit of ${limit} bytes even after dropping diagnostics and bulky per-lead fields.`,
     );
     this.name = "CheckpointBudgetExceededError";
   }
 }
+
+const stripBulkyCheckpointLeadFields = (lead: any) => {
+  if (!lead || typeof lead !== "object") return lead;
+  const {
+    error,
+    summary,
+    headline,
+    rawDescription,
+    whyThisLead,
+    evidence,
+    evidenceList,
+    scout,
+    audit,
+    rawExperience,
+    searchHistory,
+    sourcePayload,
+    qualification,
+    ...rest
+  } = lead;
+  return rest;
+};
 
 export function enforceCheckpointByteBudgetWithPayload(
   checkpoint: MiningSessionCheckpoint,
@@ -4941,91 +4962,34 @@ export function enforceCheckpointByteBudgetWithPayload(
     return { checkpoint: cp, payload };
   }
 
-  // Step 3: Progressively clamp candidate lists (800 -> 400 -> 200 -> 100 -> 50 -> 25 -> 10)
-  const candidateLimits = [800, 400, 200, 100, 50, 25, 10];
-  for (const limit of candidateLimits) {
-    let modified = false;
-    if (Array.isArray(cp.acceptedLeads) && cp.acceptedLeads.length > limit) {
-      cp.acceptedLeads = cp.acceptedLeads.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray(cp.qualifiedLeads) && cp.qualifiedLeads.length > limit) {
-      cp.qualifiedLeads = cp.qualifiedLeads.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray(cp.finalLeads) && cp.finalLeads.length > limit) {
-      cp.finalLeads = cp.finalLeads.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray(cp.disqualifiedCandidates) && cp.disqualifiedCandidates.length > limit) {
-      cp.disqualifiedCandidates = cp.disqualifiedCandidates.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray((cp as any).provisionalLeads) && (cp as any).provisionalLeads.length > limit) {
-      (cp as any).provisionalLeads = (cp as any).provisionalLeads.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray((cp as any).finalistPool) && (cp as any).finalistPool.length > limit) {
-      (cp as any).finalistPool = (cp as any).finalistPool.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray((cp as any).rescuedLeads) && (cp as any).rescuedLeads.length > limit) {
-      (cp as any).rescuedLeads = (cp as any).rescuedLeads.slice(0, limit);
-      modified = true;
-    }
-    if (Array.isArray((cp as any).candidatePool) && (cp as any).candidatePool.length > limit) {
-      (cp as any).candidatePool = (cp as any).candidatePool.slice(0, limit);
-      modified = true;
-    }
-    if (!modified) continue;
-    payload = JSON.stringify(cp);
-    if (Buffer.byteLength(payload, "utf8") <= maxBytes) {
-      return { checkpoint: cp, payload };
-    }
-  }
+  // Step 3: Candidate lists are never sliced to satisfy the budget. Dropping accepted,
+  // qualified, or held-back candidates silently destroys resumable work; the persistence
+  // wrapper stores the compacted payload even when it exceeds the soft limit instead.
+  // Only diagnostics and bulky per-lead fields below are shed.
 
   // Step 4: Drop bulky candidate fields (evidence, scout, audit, rawExperience, searchHistory)
-  const stripBulkyFields = (lead: any) => {
-    if (!lead || typeof lead !== "object") return lead;
-    const {
-      error,
-      summary,
-      headline,
-      rawDescription,
-      whyThisLead,
-      evidence,
-      evidenceList,
-      scout,
-      audit,
-      rawExperience,
-      searchHistory,
-      sourcePayload,
-      qualification,
-      ...rest
-    } = lead;
-    return rest;
-  };
-  if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.map(stripBulkyFields);
-  if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.map(stripBulkyFields);
-  if (Array.isArray(cp.disqualifiedCandidates)) cp.disqualifiedCandidates = cp.disqualifiedCandidates.map(stripBulkyFields);
-  if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.map(stripBulkyFields);
-  if (Array.isArray((cp as any).finalistPool)) (cp as any).finalistPool = (cp as any).finalistPool.map(stripBulkyFields);
-  if (Array.isArray((cp as any).rescuedLeads)) (cp as any).rescuedLeads = (cp as any).rescuedLeads.map(stripBulkyFields);
+  if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.map(stripBulkyCheckpointLeadFields);
+  if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.map(stripBulkyCheckpointLeadFields);
+  if (Array.isArray(cp.disqualifiedCandidates)) cp.disqualifiedCandidates = cp.disqualifiedCandidates.map(stripBulkyCheckpointLeadFields);
+  if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.map(stripBulkyCheckpointLeadFields);
+  if (Array.isArray((cp as any).finalistPool)) (cp as any).finalistPool = (cp as any).finalistPool.map(stripBulkyCheckpointLeadFields);
+  if (Array.isArray((cp as any).rescuedLeads)) (cp as any).rescuedLeads = (cp as any).rescuedLeads.map(stripBulkyCheckpointLeadFields);
   payload = JSON.stringify(cp);
   let currentBytes = Buffer.byteLength(payload, "utf8");
   if (currentBytes <= maxBytes) {
     return { checkpoint: cp, payload };
   }
 
-  // Step 5: If still > maxBytes, clamp candidate lists down to 5 and drop remaining non-essential keys
+  // Step 5: Drop diagnostics only. Never slice accepted/qualified lists here: losing most of
+  // the accepted work is worse than persisting an oversized checkpoint, and the persistence
+  // helper below can store the compacted payload even if it exceeds the soft budget.
   cp.seenCandidateKeys = undefined;
   cp.queryRunsDelta = undefined;
-  if (Array.isArray(cp.acceptedLeads)) cp.acceptedLeads = cp.acceptedLeads.slice(0, 5);
-  if (Array.isArray(cp.qualifiedLeads)) cp.qualifiedLeads = cp.qualifiedLeads.slice(0, 5);
-  if (Array.isArray(cp.disqualifiedCandidates)) cp.disqualifiedCandidates = cp.disqualifiedCandidates.slice(0, 5);
-  if (Array.isArray(cp.finalLeads)) cp.finalLeads = cp.finalLeads.slice(0, 5);
-  if (Array.isArray(cp.parkedCandidates)) cp.parkedCandidates = cp.parkedCandidates.slice(0, 5);
-  if (Array.isArray(cp.roundHistory)) cp.roundHistory = cp.roundHistory.slice(-5);
+  cp.evidenceByUrl = {};
+  cp.debugLogsTail = [];
+  cp.leadQueryRunMap = {};
+  cp.signalStoreState = undefined;
+  if (Array.isArray(cp.roundHistory)) cp.roundHistory = cp.roundHistory.slice(-10);
   payload = JSON.stringify(cp);
   currentBytes = Buffer.byteLength(payload, "utf8");
   if (currentBytes <= maxBytes) {
@@ -5034,6 +4998,51 @@ export function enforceCheckpointByteBudgetWithPayload(
 
   // Step 6: Throw typed error only if budget is impossible to satisfy (e.g. maxBytes is trivially small)
   throw new CheckpointBudgetExceededError(currentBytes, maxBytes);
+}
+
+/**
+ * Persistence-safe checkpoint preparation. The hard budget function intentionally throws when
+ * even the minimal checkpoint exceeds the soft limit; dropping the checkpoint (or slicing the
+ * accepted leads to a handful) would silently lose resumable work. This wrapper keeps every
+ * accepted/qualified lead, strips diagnostics, and persists the compacted payload even when it
+ * is larger than the soft budget.
+ */
+export function prepareCheckpointForPersistence(
+  checkpoint: MiningSessionCheckpoint,
+  maxBytes = 512_000,
+): { checkpoint: MiningSessionCheckpoint; payload: string } {
+  try {
+    return enforceCheckpointByteBudgetWithPayload(checkpoint, maxBytes);
+  } catch (budgetError) {
+    const compacted: MiningSessionCheckpoint = {
+      ...checkpoint,
+      evidenceByUrl: {},
+      debugLogsTail: [],
+      leadQueryRunMap: {},
+      signalStoreState: undefined,
+      queryRunsDelta: [],
+      acceptedLeads: Array.isArray(checkpoint.acceptedLeads)
+        ? checkpoint.acceptedLeads.map(stripBulkyCheckpointLeadFields)
+        : checkpoint.acceptedLeads,
+      qualifiedLeads: Array.isArray(checkpoint.qualifiedLeads)
+        ? checkpoint.qualifiedLeads.map(stripBulkyCheckpointLeadFields)
+        : checkpoint.qualifiedLeads,
+      disqualifiedCandidates: Array.isArray(checkpoint.disqualifiedCandidates)
+        ? checkpoint.disqualifiedCandidates.map(stripBulkyCheckpointLeadFields)
+        : checkpoint.disqualifiedCandidates,
+      finalLeads: Array.isArray(checkpoint.finalLeads)
+        ? checkpoint.finalLeads.map(stripBulkyCheckpointLeadFields)
+        : checkpoint.finalLeads,
+      roundHistory: Array.isArray(checkpoint.roundHistory)
+        ? checkpoint.roundHistory.slice(-10)
+        : checkpoint.roundHistory,
+    };
+    const payload = JSON.stringify(compacted);
+    console.warn(
+      `[checkpoint] ${checkpoint.sessionId}: payload ${Buffer.byteLength(payload, "utf8")} bytes exceeds the ${maxBytes} byte soft budget after compaction; persisting without dropping accepted leads (${budgetError instanceof Error ? budgetError.message : String(budgetError)}).`,
+    );
+    return { checkpoint: compacted, payload };
+  }
 }
 
 export function enforceCheckpointByteBudget(
@@ -5050,7 +5059,7 @@ export function saveMiningSessionCheckpoint(
   try {
     const db = getLeadsDb();
     const { checkpoint: budgetedCheckpoint, payload } =
-      enforceCheckpointByteBudgetWithPayload(checkpoint);
+      prepareCheckpointForPersistence(checkpoint);
     const now = budgetedCheckpoint.updatedAt || new Date().toISOString();
 
     getCachedStatement(
@@ -5174,12 +5183,23 @@ export function readMiningSessionCheckpoint(
 export function upsertMiningSession(
   update: Pick<MiningSessionRecord, "id"> &
     Partial<
-      Omit<MiningSessionRecord, "id" | "updatedAt" | "completedAt" | "errorMessage">
+      Omit<
+        MiningSessionRecord,
+        | "id"
+        | "updatedAt"
+        | "completedAt"
+        | "errorMessage"
+        | "cancellationRequestedAt"
+        | "checkpoint"
+      >
     > & {
       updatedAt?: string;
-      /** `null` clears the stored value (a resumed session is no longer completed/failed). */
+      /** `null` clears the stored value (a resumed/fresh session is no longer completed/failed). */
       completedAt?: string | null;
       errorMessage?: string | null;
+      cancellationRequestedAt?: string | null;
+      /** `null` clears the stored checkpoint when a session id is reused for a fresh run. */
+      checkpoint?: MiningSessionCheckpoint | null;
     },
 ) {
   const db = getLeadsDb();
@@ -5198,7 +5218,9 @@ export function upsertMiningSession(
         ? undefined
         : (update.completedAt ?? existing?.completedAt),
     cancellationRequestedAt:
-      update.cancellationRequestedAt ?? existing?.cancellationRequestedAt,
+      update.cancellationRequestedAt === null
+        ? undefined
+        : (update.cancellationRequestedAt ?? existing?.cancellationRequestedAt),
     errorMessage:
       update.errorMessage === null
         ? undefined
@@ -5210,30 +5232,20 @@ export function upsertMiningSession(
   };
 
   const hasCheckpointUpdate = update.checkpoint !== undefined ? 1 : 0;
-  let budgetedCheckpoint = update.checkpoint;
+  let budgetedCheckpoint: MiningSessionCheckpoint | undefined;
   let checkpointJsonParam: string | null = null;
-  if (update.checkpoint) {
-    try {
-      const budgeted = enforceCheckpointByteBudgetWithPayload(update.checkpoint);
-      budgetedCheckpoint = budgeted.checkpoint;
-      checkpointJsonParam = budgeted.payload;
-    } catch (budgetError) {
-      console.warn(
-        `[upsertMiningSession] ${update.id}: non-fatal checkpoint budget warning:`,
-        budgetError instanceof Error ? budgetError.message : budgetError,
-      );
-      budgetedCheckpoint = {
-        ...update.checkpoint,
-        evidenceByUrl: {},
-        debugLogsTail: [],
-        leadQueryRunMap: {},
-        acceptedLeads: (update.checkpoint.acceptedLeads || []).slice(0, 5),
-        qualifiedLeads: (update.checkpoint.qualifiedLeads || []).slice(0, 5),
-      };
-      checkpointJsonParam = JSON.stringify(budgetedCheckpoint);
-    }
+  if (update.checkpoint === null) {
+    budgetedCheckpoint = undefined;
+    checkpointJsonParam = null;
+  } else if (update.checkpoint) {
+    const prepared = prepareCheckpointForPersistence(update.checkpoint);
+    budgetedCheckpoint = prepared.checkpoint;
+    checkpointJsonParam = prepared.payload;
   }
-  record.checkpoint = budgetedCheckpoint ?? existing?.checkpoint;
+  record.checkpoint =
+    update.checkpoint === null
+      ? undefined
+      : (budgetedCheckpoint ?? existing?.checkpoint);
 
   getCachedStatement(
     db,

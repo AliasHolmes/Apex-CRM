@@ -171,7 +171,7 @@ export async function executeRetrieveStage(
               const signatureKey = buildRetrievalSignatureKey(
                 "tavily",
                 plan.executableQuery,
-                { contract: config.contract, maxResults: dynamicTavilyMaxResults },
+                { ...tavilyOptions, contract: config.contract, maxResults: dynamicTavilyMaxResults },
               );
               cachedResult = readCachedSearch(signatureKey);
               signatureCacheHit = Boolean(cachedResult);
@@ -435,7 +435,7 @@ export async function executeRetrieveStage(
             const signatureKey = buildRetrievalSignatureKey(
               "tavily",
               plan.executableQuery,
-              { contract: config.contract, maxResults: dynamicTavilyMaxResults },
+              { ...tavilyOptions, contract: config.contract, maxResults: dynamicTavilyMaxResults },
             );
             if (signatureKey !== cacheKey) writeCachedSearch(signatureKey, res);
             tavilyResultsByIndex.set(index, res);

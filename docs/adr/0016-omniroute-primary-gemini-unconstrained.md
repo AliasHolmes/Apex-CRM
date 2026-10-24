@@ -8,7 +8,7 @@ Accepted (supersedes ADR-0014 as primary provider)
 
 ## Scope
 
-This ADR covers the architectural transition to local OmniRoute (`antigravity/gemini-3.8-flash-high`) as the Tier 1 primary LLM provider, relegating Byesu (`gpt-6.1-sol`) to secondary fallback, and dismantling legacy Cloudflare-era token, prompt, and concurrency constraints across the discovery engine:
+This ADR covers the architectural transition to local OmniRoute (`gemini-3.8-flash-high`) as the Tier 1 primary LLM provider, relegating Byesu (`gpt-6.1-sol`) to secondary fallback, and dismantling legacy Cloudflare-era token, prompt, and concurrency constraints across the discovery engine:
 - Primary and secondary provider routing in [`server/services/llm.ts`](../../server/services/llm.ts)
 - Prompt instruction unsuppression (permitting native `<think>` deliberation in JSON mode) in [`server/services/llm.ts`](../../server/services/llm.ts)
 - Global reasoning effort calibration (`TASK_REASONING_EFFORT` set to `"high"`) in [`server/services/llm.ts`](../../server/services/llm.ts), [`server/leadSearch/stages/planStage.ts`](../../server/leadSearch/stages/planStage.ts), and [`server/leadSearch/stages/extractStage.ts`](../../server/leadSearch/stages/extractStage.ts)
@@ -34,7 +34,7 @@ Apex CRM was previously configured around Byesu (`https://byesu.com/v1`) operati
 6. Non-Byesu endpoints defaulted to 2 slots and judge concurrency was serialized to 1 worker.
 7. Hard timeouts (35s for planner, 8s for health checks) caused timeouts during deep chain-of-thought deliberation.
 
-With local OmniRoute (`http://localhost:20128/v1`) serving `antigravity/gemini-3.8-flash-high` with native reasoning and a 1M token context, these legacy constraints caused false parse errors, low prospect yield, and severe throughput bottlenecks.
+With local OmniRoute (`http://localhost:20128/v1`) serving `gemini-3.8-flash-high` with native reasoning and a 1M token context, these legacy constraints caused false parse errors, low prospect yield, and severe throughput bottlenecks.
 
 ---
 
@@ -43,7 +43,7 @@ With local OmniRoute (`http://localhost:20128/v1`) serving `antigravity/gemini-3
 ### 1. OmniRoute Primary Provider Chain & Tier Topology
 
 The direct provider candidate chain in [`server/services/llm.ts`](../../server/services/llm.ts) establishes:
-- **Tier 1 (Primary)**: OmniRoute (`OPENAI_PROVIDER_NAME="OmniRoute"`, `OPENAI_BASE="http://localhost:20128/v1"`, `OPENAI_MODEL="antigravity/gemini-3.8-flash-high"`, `OPENAI_CONCURRENT_SLOTS=6`).
+- **Tier 1 (Primary)**: OmniRoute (`OPENAI_PROVIDER_NAME="OmniRoute"`, `OPENAI_BASE="http://localhost:20128/v1"`, `OPENAI_MODEL="gemini-3.8-flash-high"`, `OPENAI_CONCURRENT_SLOTS=8`).
 - **Tier 2 (Secondary Fallback)**: Byesu (`gpt-6.1-sol`, `BYESU_CONCURRENT_SLOTS=8`), activated if primary fails.
 - **Tier 3 (Failsafe Pair)**: Groq (`qwen/qwen3.8-27b`, output limit 4,096 tokens) and OpenRouter/Mistral (`devstral-2512`), engaged only during catastrophic failure or when both primaries are marked OUT.
 
@@ -62,10 +62,10 @@ The direct provider candidate chain in [`server/services/llm.ts`](../../server/s
 
 ### 4. Concurrency & Throughput Scaling
 
-- `OPENAI_CONCURRENT_SLOTS`: Shipped default increased from 2 to **6 slots** (code fallback defaults to 6 for non-Byesu bases).
-- `FINALIST_JUDGE_CONCURRENCY`: Shipped default and code fallback increased from 1 to **4 workers**.
+- `OPENAI_CONCURRENT_SLOTS`: Shipped default increased from 2 to **8 slots** (code fallback defaults to 8 matching Byesu parity).
+- `FINALIST_JUDGE_CONCURRENCY` & `LEAD_EXTRACTION_CONCURRENCY`: Shipped default and code fallbacks increased to **8 workers**, fully consuming the 8 primary provider slots without idle serialization.
 - `FINALIST_JUDGE_MICRO_BATCH_SIZE`: Increased from 2 to **4 candidates**.
-- `companyAttribution`: Concurrency clamp relaxed to **6 workers** (defaulting to 4).
+- `companyAttribution`: Concurrency clamp relaxed to **8 workers** (defaulting to 4).
 - `GROQ_MAX_OUTPUT_TOKENS`: Increased from 950 to **4,096 tokens** to prevent immediate JSON truncation upon failsafe failover.
 
 ### 5. Timeout Decoupling & Calibration

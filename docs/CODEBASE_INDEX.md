@@ -752,7 +752,7 @@ Remediates all 17 verified engine drags and test assertion mismatches from disco
 Remediated all legacy Cloudflare-era bounds, token caps, thinking suppressions, and concurrency limits across the discovery engine:
 
 - **OmniRoute Primary & Byesu Secondary**:
-  - Configured OmniRoute (`http://localhost:20128/v1`, `OPENAI_MODEL="antigravity/gemini-3.8-flash-high"`) as the Tier 1 primary LLM provider with 6 concurrent slots (`OPENAI_CONCURRENT_SLOTS="6"`).
+  - Configured OmniRoute (`http://localhost:20128/v1`, `OPENAI_MODEL="gemini-3.8-flash-high"`) as the Tier 1 primary LLM provider with 8 concurrent slots (`OPENAI_CONCURRENT_SLOTS="8"`), matching Byesu parity.
   - Preserved Byesu (`https://byesu.com/v1`, `BYESU_MODEL="gpt-6.1-sol"`, `BYESU_CONCURRENT_SLOTS="8"`) as the Tier 2 secondary fallback provider.
   - Retained Groq (`GROQ_MAX_OUTPUT_TOKENS="4096"`) and OpenRouter/Mistral as resilient Tier 3 disaster recovery failsafes.
 - **Thinking Unsuppression & High Reasoning Effort**:
@@ -766,8 +766,8 @@ Remediated all legacy Cloudflare-era bounds, token caps, thinking suppressions, 
   - Expanded extraction chunking: chunk chars default to 16,000 (max 64,000), provider budget default to 64,000 (max 250,000), blocks per chunk default to 6 (max 24), and round output tokens ceiling to 250,000.
   - Expanded evidence budgets in `evidenceSelection.ts` (8,000 chars total, 1,500 char sentence crops) and finalist judge evidence in `finalistJudge.ts` (3,000–8,000 chars, 8–16 items).
 - **Concurrency & Timeout Calibration**:
-  - Unclamped judge concurrency to 4 workers (`FINALIST_JUDGE_CONCURRENCY="4"`) and micro-batch size to 4 (`FINALIST_JUDGE_MICRO_BATCH_SIZE="4"`).
-  - Relaxed company attribution concurrency to 6 workers (defaulting to 4).
+  - Unclamped judge and extraction concurrency to 8 workers (`FINALIST_JUDGE_CONCURRENCY="8"`, `LEAD_EXTRACTION_CONCURRENCY="8"`), micro-batch size to 4 (`FINALIST_JUDGE_MICRO_BATCH_SIZE="4"`), and evidence collection to dynamic 8-10 items / 3,000-4,000 chars.
+  - Relaxed company attribution concurrency to 8 workers (defaulting to 4).
   - Decoupled Cloudflare 115s timeout ceiling for non-Byesu targets (scaling dynamically up to 300s).
   - Extended planner hard timeout (`PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary`) to 75s and `/api/llm-health` probe timeout to 20s.
   - Raised Groq failsafe output limit from 950 to 4,096 tokens to prevent truncation on fallback.

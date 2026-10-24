@@ -148,7 +148,7 @@ flowchart TD
 - **Upstream CRM Feedback, JSON Metro Saturation & Cross-Session Company Seeding**: Reads existing company domains, metro saturation counts (including SQLite JSON `$.profile.location` and `$.profile.city`), and cross-session `discovered_companies` (`readDiscoveredCompanyNames(25)`). Passes known domains directly into Tavily's `exclude_domains` parameter and directs the query strategist to pivot away from saturated hubs ($\ge 15$ leads) with negative search operators.
 - **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles. Acronyms (`MD`, `VP`, `CTO`, `CRO`) are expanded before matching.
 - **Pre-Judge Context Grounding**: Executes a lightweight, non-LLM site probe (~250ms) to fetch the root `<meta name="description">` or `<title>` for ambiguous accounts, appending verified business context before semantic evaluation.
-- **Primary Provider Concurrency**: OmniRoute (`gemini-3.8-flash-high`) serves as the Tier 1 primary engine provider with up to 6 concurrent slots (`OPENAI_CONCURRENT_SLOTS=6`), supported by Byesu (`gpt-6.1-sol`) as secondary fallback with 8 slots (`BYESU_CONCURRENT_SLOTS=8`). Groq and OpenRouter/Mistral form the resilient failsafe tier used only when both primary and secondary providers are unavailable; see ADR-0016.
+- **Primary Provider Concurrency**: OmniRoute (`gemini-3.8-flash-high`) serves as the Tier 1 primary engine provider with up to 8 concurrent slots (`OPENAI_CONCURRENT_SLOTS=8`), achieving full parity with Byesu (`gpt-6.1-sol`, `BYESU_CONCURRENT_SLOTS=8`). Groq and OpenRouter/Mistral form the resilient failsafe tier used only when both primary and secondary providers are unavailable; see ADR-0016.
 - **Contract-Aware Calibrated Judging**: `rankLeadForFinalSelection` weights hard-requirement coverage (`1.2x` spread) with active soft-signal boost (`0.4x`); evidence quote checks are symmetrically alias-aware (`MD` <-> `managing director`, `US` <-> `United States`).
 - **Quantized Adaptive Controller & Constraint Retention**: MAB priors pool by 24 deterministic brief centroids (`centroid_<cluster>_<00-23>`) with `historicalYield` keyed by `domain_cluster|family|lane|provider` and ` seedAdaptiveRandom` deterministic test support; `contract_guard` tasks are preserved above the `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **CRM Workflow Preservation & Persistence Status Fidelity**: Same-identity engine upserts refresh objective profile and score attributes while preserving human-managed `stage`, `reviewStatus`, `nextAction`, and `notes` unless `forceOverwrite: true` is passed. Session and search-log statuses (`success | partial_success | error`) are derived from actual persistence counts rather than hardcoded.
@@ -162,7 +162,7 @@ flowchart TD
 
 #### 12. Primary Provider Concurrency & Decoupled Timeouts (ADR-0016)
 
-- **OmniRoute Primary Architecture**: Configures primary concurrency slots (`OPENAI_CONCURRENT_SLOTS=6`) with Gemini 3.8 Flash High (`antigravity/gemini-3.8-flash-high`) and unconstrained 65k output tokens, backed by Byesu GPT-6.1 (`gpt-6.1-sol`, 8 slots) as secondary fallback.
+- **OmniRoute Primary Architecture**: Configures primary concurrency slots (`OPENAI_CONCURRENT_SLOTS=8`) with Gemini 3.8 Flash High (`gemini-3.8-flash-high`) and unconstrained 65k output tokens, backed by Byesu GPT-6.1 (`gpt-6.1-sol`, 8 slots) as secondary fallback.
 - **Dynamic Timeout Scaling & Cloudflare Decoupling**: Uses `computeByesuDynamicTimeoutMs` with Cloudflare proxy limits (`115,000ms`) applied strictly to Byesu targets, while local OmniRoute and direct endpoints scale dynamically up to a generous 300,000ms ceiling with 75s planner hard timeouts and 20s health check probes.
 
 #### 13. Persistent Candidate Verdicts & Company Attribution (Schema v26)
@@ -189,7 +189,7 @@ flowchart TD
 
 #### 16. Provider Concurrency & Modernized Batching (ADR-0009 & ADR-0016)
 
-- **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=6`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=4`, `FINALIST_JUDGE_CONCURRENCY=4`, `attributionConcurrency` up to 6), fully utilizing local OmniRoute throughput without rate limit stalls.
+- **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=8`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=8`, `attributionConcurrency` up to 8), fully utilizing local OmniRoute throughput without rate limit stalls.
 - **Modernized Token Envelopes**: Replaces legacy micro-chunking with 65k output / 1M context modern scaling. Extraction chunk chars expand to 16,000 (up to 64k) and 6 blocks per chunk (`LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=6`, max 24) with a 64,000 provider token budget. Finalist judge dynamic tokens scale up to 32,000 tokens with an integrated 10,000 reasoning buffer, and evidence budgets expand to 8,000 chars (1,500 char crops).
 - **Rolling-Pool Early Stopping**: Fine-grained quota fulfillment in `runRollingPool` halts evaluation as soon as the target cushion is reached and skips remaining batches to save token overhead and latency.
 
@@ -255,9 +255,9 @@ A minimal `.env` setup:
 # Primary LLM Provider: OmniRoute (Gemini 3.8 Flash High)
 OPENAI_API_KEY="your_omniroute_or_openai_key"
 OPENAI_BASE="http://localhost:20128/v1"
-OPENAI_MODEL="antigravity/gemini-3.8-flash-high"
+OPENAI_MODEL="gemini-3.8-flash-high"
 OPENAI_PROVIDER_NAME="OmniRoute"
-OPENAI_CONCURRENT_SLOTS="6"
+OPENAI_CONCURRENT_SLOTS="8"
 
 # Secondary Fallback Provider: Byesu (GPT-6.1)
 BYESU_API_KEY="your_byesu_key"
@@ -268,9 +268,9 @@ BYESU_CONCURRENT_SLOTS="8"
 # Modernized Batching & Stage Concurrency (ADR-0016)
 LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="6"
 LEAD_EXTRACTION_CHUNK_CHARS="16000"
-LEAD_EXTRACTION_CONCURRENCY="4"
+LEAD_EXTRACTION_CONCURRENCY="8"
 FINALIST_JUDGE_MICRO_BATCH_SIZE="4"
-FINALIST_JUDGE_CONCURRENCY="4"
+FINALIST_JUDGE_CONCURRENCY="8"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'
 TAVILY_API_KEY="tavily_key_3"

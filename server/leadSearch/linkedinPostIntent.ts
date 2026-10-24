@@ -1,7 +1,7 @@
 import {
   Type,
   openAIStructured,
-  DEFAULT_PRIMARY_MODEL,
+  getPrimaryLLMModel,
   type LLMProviderAttempt,
   type LLMUsage,
 } from '../services/llm.js';
@@ -308,8 +308,7 @@ Analyze the snippets and classify the prospect's intent:`;
       usage?.model ||
       successfulAttempt?.actualModel ||
       successfulAttempt?.model ||
-      process.env.OPENAI_MODEL ||
-      DEFAULT_PRIMARY_MODEL;
+      getPrimaryLLMModel();
     const latency = Date.now() - startedAt;
     const tokens = usage?.totalTokens;
     logEvent?.(
@@ -457,8 +456,7 @@ ${promptSections}`;
       usage?.model ||
       successfulAttempt?.actualModel ||
       successfulAttempt?.model ||
-      process.env.OPENAI_MODEL ||
-      DEFAULT_PRIMARY_MODEL;
+      getPrimaryLLMModel();
     const latency = Date.now() - startedAt;
     const tokens = usage?.totalTokens;
     logEvent?.(

@@ -174,13 +174,26 @@ export function isAtriaPrimary(): boolean {
   return false;
 }
 
+/**
+ * Strips the failing 'antigravity/' routing prefix to ensure direct provider routing.
+ * OmniRoute and Gemini handlers route directly with 'gemini-3.8-flash-high'.
+ */
+export function sanitizeModelName(model: string): string {
+  if (!model) return model;
+  const trimmed = model.trim();
+  if (trimmed.startsWith("antigravity/")) {
+    return trimmed.slice("antigravity/".length);
+  }
+  return trimmed;
+}
+
 function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
   // Tier 1: Primary Default Provider (OmniRoute or Byesu if OPENAI_BASE is unset)
   const primaryName = process.env.OPENAI_PROVIDER_NAME || "Byesu";
   const primaryBase = cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE);
-  const primaryModel = process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL;
+  const primaryModel = sanitizeModelName(process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL);
   const primaryKey = process.env.OPENAI_API_KEY || (process.env.OPENAI_BASE ? "" : process.env.BYESU_API_KEY || "");
 
   direct.push({
@@ -199,7 +212,7 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
       id: "byesu",
       name: "Byesu",
       baseUrl: cleanBaseUrl(process.env.BYESU_BASE || "https://byesu.com/v1"),
-      model: process.env.BYESU_MODEL || DEFAULT_PRIMARY_MODEL,
+      model: sanitizeModelName(process.env.BYESU_MODEL || DEFAULT_PRIMARY_MODEL),
       apiKey: byesuKey,
     });
   }
@@ -209,7 +222,7 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
     id: "groq",
     name: "Groq",
     baseUrl: cleanBaseUrl(process.env.GROQ_BASE_URL || DEFAULT_GROQ_BASE),
-    model: process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL,
+    model: sanitizeModelName(process.env.GROQ_MODEL || DEFAULT_GROQ_MODEL),
     apiKey: process.env.GROQ_API_KEY || "",
   });
 
@@ -220,7 +233,7 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
     id: "openrouter",
     name: process.env.OPENROUTER_PROVIDER_NAME || "OpenRouter",
     baseUrl: openRouterBase,
-    model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+    model: sanitizeModelName(process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL),
     apiKey: process.env.OPENROUTER_API_KEY || "",
     headers: getOpenRouterHeaders(openRouterBase),
   });
@@ -257,7 +270,7 @@ const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
 export function resetAtriaReasoningEffortRefusal(): void {}
 
 export function isReasoningProvider(provider: { id: string; model: string }): boolean {
-  return REASONING_MODEL_REGEX.test(provider.model);
+  return REASONING_MODEL_REGEX.test(sanitizeModelName(provider.model));
 }
 
 export function parseFastProviderIds(raw?: string): string[] {
@@ -344,7 +357,7 @@ export function getAPIKey(): string {
 
 export function getPrimaryLLMModel(): string {
   const providers = getConfiguredLLMProviders();
-  return providers[0]?.model || process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL;
+  return sanitizeModelName(providers[0]?.model || process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL);
 }
 
 export function getPrimaryLLMProvider(): string {
@@ -700,8 +713,8 @@ export function isCircuitBreakingProviderFailure(error: Error): boolean {
 export const providerCooldowns = new Map<string, number>();
 
 // --- Provider Concurrency & Slot Management ---
-// Byesu (id: "primary") is the primary default provider (BYESU_CONCURRENT_SLOTS parallel slots).
-// Groq and OpenRouter/Mistral form the failsafe tier, invoked only when Byesu is out.
+// Primary (OmniRoute / Byesu) supports up to 8 parallel slots (configurable via OPENAI_CONCURRENT_SLOTS / BYESU_CONCURRENT_SLOTS).
+// Groq and OpenRouter/Mistral form the failsafe tier, invoked only when primary is out.
 
 export function getProviderConcurrencyLimit(providerId: string): number {
   if (providerId === "primary") {
@@ -710,11 +723,11 @@ export function getProviderConcurrencyLimit(providerId: string): number {
     );
     const configured = Number(
       process.env.OPENAI_CONCURRENT_SLOTS ||
-        (isNonByesuBase ? 6 : (process.env.BYESU_CONCURRENT_SLOTS || 8)),
+        (isNonByesuBase ? 8 : (process.env.BYESU_CONCURRENT_SLOTS || 8)),
     );
     return Number.isFinite(configured) && configured >= 1
       ? Math.floor(configured)
-      : (isNonByesuBase ? 6 : 8);
+      : 8;
   }
   if (providerId === "byesu") {
     const configured = Number(process.env.BYESU_CONCURRENT_SLOTS || 8);
@@ -1250,14 +1263,14 @@ async function withProviderFallback<T>(
       const stage = executionOptions?.metadata?.stage || executionOptions?.metadata?.operation;
       const stageTag = stage ? ` \x1b[94m[${stage}]\x1b[0m` : "";
       console.error(
-        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${provider.model}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m${stageTag}`,
+        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${sanitizeModelName(provider.model)}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m${stageTag}`,
       );
 
       executionOptions.onProviderAttempt?.({
         providerId: provider.id,
         provider: provider.name,
-        model: provider.model,
-        actualModel: attemptUsage?.model || provider.model,
+        model: sanitizeModelName(provider.model),
+        actualModel: sanitizeModelName(attemptUsage?.model || provider.model),
         status: "error",
         statusCode: errStatus,
         latencyMs: Date.now() - attemptStartedAt,
@@ -1657,7 +1670,7 @@ async function sendChatCompletion(
           Authorization: `Bearer ${provider.apiKey}`,
         },
         body: JSON.stringify({
-          model: provider.model,
+          model: sanitizeModelName(provider.model),
           messages,
           // Some third-party OpenAI-compatible gateways default to SSE when the
           // flag is omitted. Apex expects one JSON response for structured calls.
@@ -1687,7 +1700,7 @@ async function sendChatCompletion(
       sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
       stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
       round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-      model: provider.model,
+      model: sanitizeModelName(provider.model),
       provider: provider.name,
       inputTokens: 0,
       outputTokens: 0,
@@ -1716,7 +1729,7 @@ async function sendChatCompletion(
       sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
       stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
       round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
-      model: provider.model,
+      model: sanitizeModelName(provider.model),
       provider: provider.name,
       inputTokens: 0,
       outputTokens: 0,
@@ -1775,10 +1788,11 @@ async function sendChatCompletion(
     }
 
     const latencyMs = Date.now() - callStartedAt;
-    const actualModel =
+    const actualModel = sanitizeModelName(
       typeof data?.model === "string" && data.model.trim()
         ? data.model.trim()
-        : provider.model;
+        : provider.model,
+    );
     const usage = data?.usage;
     const inputTokens = Number(usage?.prompt_tokens ?? usage?.input_tokens ?? 0);
     const outputTokens = Number(
@@ -2533,7 +2547,7 @@ export async function openAIStructured<T>(
       ].join("::")
     : "";
   const buildPromptHash = (providerName: string, providerModel: string, maxTokens?: number) => {
-    const fullContent = [cacheBaseContent, providerName, providerModel, maxTokens ?? 0].join("::");
+    const fullContent = [cacheBaseContent, providerName, sanitizeModelName(providerModel), maxTokens ?? 0].join("::");
     return crypto.createHash("sha256").update(fullContent).digest("hex");
   };
 

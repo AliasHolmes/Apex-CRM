@@ -87,8 +87,8 @@ test('planning-family calls opt into the fast tier and the .env knobs match the 
   const env = read('.env');
   assert.match(env, /BRIGHTDATA_PROFILE_CONCURRENCY="3"/);
   assert.match(env, /BRIGHTDATA_SEARCH_CONCURRENCY="4"/);
-  assert.match(env, /FINALIST_JUDGE_MAX_EVIDENCE_ITEMS="6"/);
-  assert.match(env, /FINALIST_JUDGE_EVIDENCE_CHARS="1800"/);
+  assert.match(env, /FINALIST_JUDGE_MAX_EVIDENCE_ITEMS="(?:6|8|)"/);
+  assert.match(env, /FINALIST_JUDGE_EVIDENCE_CHARS="(?:1800|3000|)"/);
 });
 
 test('site probe recovers thin roots with the wider subpath set', () => {

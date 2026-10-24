@@ -28,12 +28,12 @@ import { normalizeCompanyName } from '../../src/utils/leadDedupe.js';
 export { normalizeCompanyName };
 
 const genericCompanyTokens = new Set([
-  'agency', 'and', 'capital', 'company', 'consultancy', 'consulting', 'digital',
+  'agency', 'and', 'capital', 'cloud', 'company', 'consultancy', 'consulting', 'digital',
   'global', 'group', 'holdings', 'labs', 'partners', 'services', 'solutions',
   'studio', 'systems', 'technologies', 'technology', 'the', 'ventures', 'media',
-  'tech', 'ai', 'red', 'one', 'hub', 'pro', 'net', 'top', 'bot', 'app', 'io',
+  'tech', 'ai', 'red', 'one', 'hub', 'pro', 'net', 'bot', 'app', 'io',
   'hq', 'hqagency', 'us', 'uk', 'global', 'online', 'web', 'site', 'crm', 'saas',
-  'growth', 'automation', 'software', 'development'
+  'growth', 'automation', 'software', 'development', 'workflow'
 ]);
 
 const INDUSTRY_QUALIFIERS = new Set([
@@ -55,6 +55,22 @@ export const distinctiveTokens = (name: string): string[] => {
       if (WHITELISTED_3CHAR_BRANDS.has(token)) return true;
       return token.length >= 4;
     });
+};
+
+/**
+ * Two names match only when they carry the same distinctive brand tokens. Sharing a single
+ * token ("Acme Robotics" vs "Acme Health") is not enough: the extra distinctive word marks a
+ * genuinely different company, and merging them attaches one firm's signals to another.
+ */
+const hasSameDistinctiveTokenSet = (a: string[], b: string[]): boolean => {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size === 0 || setB.size === 0) return false;
+  if (setA.size !== setB.size) return false;
+  for (const token of setA) {
+    if (!setB.has(token)) return false;
+  }
+  return true;
 };
 
 export type CompanyEntity = {
@@ -108,9 +124,9 @@ export class CompanyRegistry {
       return true;
     }
 
-    const setB = new Set(entityB.distinctiveTokens);
-    const hasSharedDistinctive = entityA.distinctiveTokens.some(token => setB.has(token));
-    if (!hasSharedDistinctive) return false;
+    if (!hasSameDistinctiveTokenSet(entityA.distinctiveTokens, entityB.distinctiveTokens)) {
+      return false;
+    }
 
     const wordsA = entityA.normalizedName.split(' ').filter(Boolean);
     const wordsB = entityB.normalizedName.split(' ').filter(Boolean);
@@ -149,11 +165,7 @@ export function companiesMatch(a: string, b: string): boolean {
 
   const tokensA = distinctiveTokens(na);
   const tokensB = distinctiveTokens(nb);
-  if (!tokensA.length || !tokensB.length) return false;
-
-  const setB = new Set(tokensB);
-  const hasSharedDistinctive = tokensA.some(token => setB.has(token));
-  if (!hasSharedDistinctive) return false;
+  if (!hasSameDistinctiveTokenSet(tokensA, tokensB)) return false;
 
   // Collision prevention: If both names have distinct conflicting industry qualifiers (e.g. "Apex Solutions" vs "Apex Growth")
   const wordsA = na.split(' ').filter(Boolean);

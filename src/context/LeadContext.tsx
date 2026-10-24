@@ -171,12 +171,22 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
   // ETag/response pair untouched (the ETag already covers the updatedSince param).
   if (data.delta === true && hydratedLeadsById) {
     const serverTotal = Number(data.total);
-    // Guard against deletions the delta cannot express: if the map no longer matches the
-    // server's row count, drop to a full refetch on the next pass.
-    if (Number.isFinite(serverTotal) && hydratedLeadsById.size + sanitized.length < serverTotal) {
-      hydratedLeadsById = null;
-      hydratedHighWater = '';
-    } else {
+    // Deletions are invisible to an `updated_at > high-water` delta, and a changed row may
+    // already exist in the map. Counting "map size + changed rows" therefore hid every
+    // deletion whenever at least as many rows had been updated. Compute the post-merge map
+    // size instead and fall back to a full refetch on any mismatch.
+    if (Number.isFinite(serverTotal)) {
+      const mergedIds = new Set(hydratedLeadsById.keys());
+      for (const lead of sanitized) {
+        const id = leadIdentity(lead);
+        if (id) mergedIds.add(id);
+      }
+      if (mergedIds.size !== serverTotal) {
+        hydratedLeadsById = null;
+        hydratedHighWater = '';
+      }
+    }
+    if (hydratedLeadsById) {
       const merged = mergeLeadsDelta(sanitized, String(data.latestUpdatedAt || ''));
       if (merged) {
         if (etag) {
@@ -256,16 +266,31 @@ async function fetchLeadsStats(): Promise<LeadContextStats | null> {
   }
 }
 
+/** Server-enforced cap for /api/leads/bulk and DELETE /api/leads. */
+const LEAD_WRITE_CHUNK_SIZE = 1_000;
+
+function chunkLeadWrites<T>(items: T[]): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += LEAD_WRITE_CHUNK_SIZE) {
+    chunks.push(items.slice(i, i + LEAD_WRITE_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
 async function persistLeadsToSqliteBackend(leads: Lead[]): Promise<void> {
   invalidateClientLeadsCache();
-  const response = await fetch('/api/leads/bulk', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ leads })
-  });
+  // The endpoint rejects payloads above 1,000 rows; seeding a large import must not 400.
+  for (const chunk of chunkLeadWrites(leads)) {
+    const response = await fetch('/api/leads/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leads: chunk })
+    });
 
-  if (!response.ok) {
-    throw new Error(`Failed to save leads: ${response.status}`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `Failed to save leads: ${response.status}`);
+    }
   }
 }
 
@@ -880,60 +905,79 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     let bulkOperation!: Promise<boolean>;
     bulkOperation = (async () => {
       try {
-        invalidateClientLeadsCache();
-        const response = await fetch('/api/leads/bulk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ leads: leadsToSaveBackend })
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(data.error || `Failed to save bulk leads: ${response.status}`);
-        }
-        persistedCreatedCount = Number.isFinite(Number(data.createdCount))
-          ? Number(data.createdCount)
-          : leadsToSaveBackend.length;
-        serverDuplicateCount = Number.isFinite(Number(data.duplicateCount))
-          ? Number(data.duplicateCount)
-          : 0;
-        {
-          const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
-          const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
-          const duplicates = Array.isArray(data.duplicates) ? data.duplicates as Array<{ incomingId?: string; lead?: Lead }> : [];
-          const duplicateByIncomingId = new Map(
-            duplicates
-              .filter((duplicate): duplicate is { incomingId: string; lead: Lead } => Boolean(duplicate?.incomingId && duplicate?.lead))
-              .map(duplicate => [duplicate.incomingId, duplicate.lead]),
-          );
-          const duplicateIncomingIds = new Set(duplicateByIncomingId.keys());
-          const canonicalLeads = leadsToSaveBackend.map(
-            lead => duplicateByIncomingId.get(lead.id) ?? returnedById.get(lead.id) ?? lead,
-          );
-          const serverLeads = new Map(canonicalLeads.map(lead => [
-            lead.id,
-            preferNewerCanonical(lead, leadPatchRollbackRef.current.get(lead.id)),
-          ]));
-          for (const [leadId, canonicalLead] of serverLeads) {
-            if (!insertedIds.has(leadId)) continue;
-            if (leadPatchQueuesRef.current.get(leadId) !== bulkOperation) {
-              leadPatchRollbackRef.current.set(leadId, canonicalLead);
-            }
-          }
-          saveLeadsToStorage(currentLeads => {
-            const nextLeads = currentLeads.filter(lead => !duplicateIncomingIds.has(lead.id)).map(lead => {
-              const canonicalLead = serverLeads.get(lead.id);
-              if (!canonicalLead) return lead;
-              return leadPatchQueuesRef.current.get(lead.id) === bulkOperation
-                ? canonicalLead
-                : { ...canonicalLead, ...lead, revision: canonicalLead.revision };
-            });
-            const knownIds = new Set(nextLeads.map(lead => lead.id));
-            for (const canonicalLead of serverLeads.values()) {
-              if (!knownIds.has(canonicalLead.id)) nextLeads.unshift(canonicalLead);
-            }
-            return nextLeads;
+        // The bulk endpoint accepts at most 1,000 rows per request; split larger mining
+        // imports instead of letting the server reject the whole batch.
+        const chunkPayloads: Array<Record<string, any>> = [];
+        for (const chunk of chunkLeadWrites(leadsToSaveBackend)) {
+          invalidateClientLeadsCache();
+          const response = await fetch('/api/leads/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ leads: chunk })
           });
+          const chunkData = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(chunkData.error || `Failed to save bulk leads: ${response.status}`);
+          }
+          chunkPayloads.push(chunkData);
         }
+        persistedCreatedCount = chunkPayloads.every(
+          payload => Number.isFinite(Number(payload.createdCount)),
+        )
+          ? chunkPayloads.reduce((sum, payload) => sum + Number(payload.createdCount), 0)
+          : leadsToSaveBackend.length;
+        serverDuplicateCount = chunkPayloads.every(
+          payload => Number.isFinite(Number(payload.duplicateCount)),
+        )
+          ? chunkPayloads.reduce((sum, payload) => sum + Number(payload.duplicateCount), 0)
+          : 0;
+        const data = {
+          leads: chunkPayloads.flatMap(
+            payload => (Array.isArray(payload.leads) ? payload.leads as Lead[] : []),
+          ),
+          duplicates: chunkPayloads.flatMap(
+            payload => (Array.isArray(payload.duplicates)
+              ? payload.duplicates as Array<{ incomingId?: string; lead?: Lead }>
+              : []),
+          ),
+        };
+
+        const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
+        const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
+        const duplicates = Array.isArray(data.duplicates) ? data.duplicates as Array<{ incomingId?: string; lead?: Lead }> : [];
+        const duplicateByIncomingId = new Map(
+          duplicates
+            .filter((duplicate): duplicate is { incomingId: string; lead: Lead } => Boolean(duplicate?.incomingId && duplicate?.lead))
+            .map(duplicate => [duplicate.incomingId, duplicate.lead]),
+        );
+        const duplicateIncomingIds = new Set(duplicateByIncomingId.keys());
+        const canonicalLeads = leadsToSaveBackend.map(
+          lead => duplicateByIncomingId.get(lead.id) ?? returnedById.get(lead.id) ?? lead,
+        );
+        const serverLeads = new Map(canonicalLeads.map(lead => [
+          lead.id,
+          preferNewerCanonical(lead, leadPatchRollbackRef.current.get(lead.id)),
+        ]));
+        for (const [leadId, canonicalLead] of serverLeads) {
+          if (!insertedIds.has(leadId)) continue;
+          if (leadPatchQueuesRef.current.get(leadId) !== bulkOperation) {
+            leadPatchRollbackRef.current.set(leadId, canonicalLead);
+          }
+        }
+        saveLeadsToStorage(currentLeads => {
+          const nextLeads = currentLeads.filter(lead => !duplicateIncomingIds.has(lead.id)).map(lead => {
+            const canonicalLead = serverLeads.get(lead.id);
+            if (!canonicalLead) return lead;
+            return leadPatchQueuesRef.current.get(lead.id) === bulkOperation
+              ? canonicalLead
+              : { ...canonicalLead, ...lead, revision: canonicalLead.revision };
+          });
+          const knownIds = new Set(nextLeads.map(lead => lead.id));
+          for (const canonicalLead of serverLeads.values()) {
+            if (!knownIds.has(canonicalLead.id)) nextLeads.unshift(canonicalLead);
+          }
+          return nextLeads;
+        });
         return true;
       } catch (error) {
         bulkError = error;
@@ -1216,14 +1260,17 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       });
 
       invalidateClientLeadsCache();
-      const response = await fetch('/api/leads', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: leadIds })
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
+      // The bulk delete endpoint accepts at most 1,000 ids per request.
+      for (const chunk of chunkLeadWrites(leadIds)) {
+        const response = await fetch('/api/leads', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: chunk })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
+        }
       }
       deleteResolve!(true);
       void refreshStats();
@@ -1273,14 +1320,38 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     bulkStageOperation = (async () => {
       try {
         const persistStageBatch = async (batch: Lead[]) => {
-          invalidateClientLeadsCache();
-          const response = await fetch('/api/leads/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ leads: batch, requireExisting: true, perItemConflict: true, forceOverwrite: true })
-          });
-          const data = await response.json().catch(() => ({}));
-          return { response, data };
+          // Chunk to the endpoint's 1,000-row cap. Aggregate successful chunks so callers
+          // still see one logical result; a failing chunk returns its own response/data.
+          const mergedLeads: Lead[] = [];
+          const mergedConflicts: Array<{ incomingId?: string; lead: Lead }> = [];
+          let mergedCount = 0;
+          let lastResponse: Response | null = null;
+          for (const chunk of chunkLeadWrites(batch)) {
+            invalidateClientLeadsCache();
+            const response = await fetch('/api/leads/bulk', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ leads: chunk, requireExisting: true, perItemConflict: true, forceOverwrite: true })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              return { response, data };
+            }
+            lastResponse = response;
+            mergedCount += Number.isFinite(Number(data.count))
+              ? Number(data.count)
+              : chunk.length;
+            if (Array.isArray(data.leads)) {
+              mergedLeads.push(...data.leads as Lead[]);
+            }
+            if (Array.isArray(data.conflicts)) {
+              mergedConflicts.push(...data.conflicts as Array<{ incomingId?: string; lead: Lead }>);
+            }
+          }
+          return {
+            response: lastResponse ?? new Response(null, { status: 200 }),
+            data: { count: mergedCount, leads: mergedLeads, conflicts: mergedConflicts },
+          };
         };
 
         let leadsToPersist = updatedLeads;
@@ -1322,6 +1393,22 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           if (conflictingLeadsToRebase.length > 0) {
             rebasedCount += conflictingLeadsToRebase.length;
             const retryRes = await persistStageBatch(conflictingLeadsToRebase);
+            if (!retryRes.response.ok) {
+              throw new Error(
+                retryRes.data?.error ||
+                  `Failed to retry conflicting stage updates: ${retryRes.response.status}`,
+              );
+            }
+            // A second conflict means the rebase did not resolve the row. Continuing would
+            // report it as updated while the server kept the old revision.
+            if (
+              Array.isArray(retryRes.data?.conflicts) &&
+              retryRes.data.conflicts.length > 0
+            ) {
+              throw new Error(
+                `Could not resolve ${retryRes.data.conflicts.length} conflicting stage update(s) after rebasing.`,
+              );
+            }
             if (retryRes.data?.leads && Array.isArray(retryRes.data.leads)) {
               for (const cl of retryRes.data.leads as Lead[]) {
                 returnedById.set(cl.id, cl);

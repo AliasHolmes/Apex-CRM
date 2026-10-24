@@ -8,6 +8,7 @@ const MANAGED_KEYS = [
   'BYESU_API_KEY',
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
+  'GROQ_MAX_OUTPUT_TOKENS',
   'BYESU_CONCURRENT_SLOTS',
   'LLM_MAX_RETRIES',
   'LLM_RETRY_429',
@@ -50,6 +51,7 @@ describe('LLM routing policy (Byesu primary, failsafe only when primary is out)'
   it('a short per-call timeoutMs never blocks the failsafe fallback after a primary failure', async () => {
     process.env.OPENAI_API_KEY = 'test-primary-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.GROQ_MAX_OUTPUT_TOKENS = '950';
     const llm = await importLLM('budget-groq');
     const urls: string[] = [];
     globalThis.fetch = async (url: any) => {

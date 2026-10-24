@@ -358,7 +358,8 @@ test("Component 2: judgeStage dynamicMaxTokens scales with batch size, requireme
   // perCandidate = reqs * 65 + 60; budget = batch * perCandidate + 300 + (reasoning ? 10000 : 400)
   assert.equal(computeJudgeDynamicMaxTokens(1, 4, false), 1500); // 1020 raised to the 1500 floor
   assert.equal(computeJudgeDynamicMaxTokens(10, 5, true), 14150); // 10 * 385 + 300 + 10000
-  assert.equal(computeJudgeDynamicMaxTokens(20, 8, true), 16000); // 21900 clamped to the 16000 ceiling
+  assert.equal(computeJudgeDynamicMaxTokens(20, 8, true), 21900); // 20 * 580 + 300 + 10000
+  assert.equal(computeJudgeDynamicMaxTokens(40, 8, true), 32000); // clamped to the 32000 ceiling
 });
 
 

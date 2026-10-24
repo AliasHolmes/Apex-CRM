@@ -4,7 +4,7 @@ Date: 2026-10-16
 
 ## Status
 
-Accepted (supersedes ADR-0011)
+Superseded by ADR-0016 (Byesu transitioned from primary provider to secondary fallback provider behind OmniRoute Gemini 3.8 Flash High; superseded ADR-0011)
 
 ## Scope
 

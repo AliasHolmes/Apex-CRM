@@ -15,12 +15,14 @@ import { createServer as createViteServer } from "vite";
 import apiRouter from "./server/routes/api.js";
 import {
   getLeadsDb,
+  closeLeadsDb,
   pruneExpiredEnrichmentCache,
   pruneExpiredKnowledgeGraph,
   purgeLlmCacheExpired,
   reconcileOrphanedMiningSessions,
   clearStaleSessionErrorMessages,
 } from "./server/db.js";
+import { closeBrightDataClient } from "./server/services/brightdata.js";
 import { validateEngineConfig } from "./server/configValidation.js";
 import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
 
@@ -327,14 +329,14 @@ async function startServer() {
   }, MAINTENANCE_INTERVAL_MS);
   maintenanceTimer.unref();
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     clearInterval(maintenanceTimer);
-    console.log(`\n[${signal}] Shutting down Apex CRM server gracefully...`);
-    server.close(() => {
-      console.log("HTTP server closed.");
-      process.exit(0);
-    });
-    // Mark any active mining sessions as interrupted so the DB is consistent.
+    console.log(`
+[${signal}] Shutting down Apex CRM server gracefully...`);
+    setTimeout(() => {
+      console.error("Server did not close in time - forcing exit.");
+      process.exit(1);
+    }, 5_000).unref();
     try {
       const reconciled = reconcileOrphanedMiningSessions(
         `Server process exited (${signal}).`,
@@ -347,15 +349,28 @@ async function startServer() {
     } catch (dbErr) {
       console.warn("Could not update interrupted mining sessions:", dbErr);
     }
-    // Force-exit if server doesn't close within 5 seconds.
-    setTimeout(() => {
-      console.error("Server did not close in time - forcing exit.");
-      process.exit(1);
-    }, 5_000).unref();
+    try {
+      await closeBrightDataClient({ reason: `Server shutdown (${signal})` });
+    } catch (bdErr) {
+      console.warn("Could not cleanly close Bright Data client:", bdErr);
+    }
+    try {
+      closeLeadsDb();
+    } catch (dbCloseErr) {
+      console.warn("Could not cleanly close database:", dbCloseErr);
+    }
+    server.close(() => {
+      console.log("HTTP server closed.");
+      process.exit(0);
+    });
   };
 
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
 }
 
 startServer();

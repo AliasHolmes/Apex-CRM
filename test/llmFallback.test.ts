@@ -17,6 +17,7 @@ const MANAGED_KEYS = [
   'GROQ_API_KEY',
   'GROQ_BASE_URL',
   'GROQ_MODEL',
+  'GROQ_MAX_OUTPUT_TOKENS',
   'ATRIA_API_KEY',
   'ATRIA_BASE',
   'ATRIA_MODEL',
@@ -229,6 +230,7 @@ describe('LLM gateway and provider fallback', () => {
     process.env.BYESU_API_KEY = 'test-byesu-key';
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
     process.env.GROQ_API_KEY = 'test-groq-key';
+    process.env.GROQ_MAX_OUTPUT_TOKENS = '950';
     process.env.LLM_MAX_RETRIES = '0';
     process.env.LLM_RETRY_429 = 'false';
 

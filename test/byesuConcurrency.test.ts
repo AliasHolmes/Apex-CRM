@@ -138,13 +138,13 @@ describe('Byesu Concurrency & Slot Management', () => {
     }
   });
 
-  it('resolves Byesu concurrency limit from BYESU_CONCURRENT_SLOTS or defaults to 4', async () => {
+  it('resolves Byesu concurrency limit from BYESU_CONCURRENT_SLOTS or defaults to 8', async () => {
     const llm = await importLLM('byesu-slots-default');
-    assert.equal(llm.getProviderConcurrencyLimit('primary'), 4);
+    assert.equal(llm.getProviderConcurrencyLimit('primary'), 8);
 
-    process.env.BYESU_CONCURRENT_SLOTS = '8';
-    const llm8 = await importLLM('byesu-slots-8');
-    assert.equal(llm8.getProviderConcurrencyLimit('primary'), 8);
+    process.env.BYESU_CONCURRENT_SLOTS = '4';
+    const llm4 = await importLLM('byesu-slots-4');
+    assert.equal(llm4.getProviderConcurrencyLimit('primary'), 4);
 
     process.env.BYESU_CONCURRENT_SLOTS = '2';
     const llm2 = await importLLM('byesu-slots-2');

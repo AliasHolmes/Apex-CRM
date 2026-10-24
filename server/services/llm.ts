@@ -238,9 +238,8 @@ function getConfiguredLLMProviders(): LLMProvider[] {
   );
 }
 
-const GROQ_MAX_OUTPUT_TOKENS = Number(
-  process.env.GROQ_MAX_OUTPUT_TOKENS || 4096,
-);
+const getGroqMaxOutputTokens = () =>
+  Number(process.env.GROQ_MAX_OUTPUT_TOKENS || 950);
 const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning|gemini.*high|gemini.*thinking)\b/i;
 
 const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
@@ -320,7 +319,7 @@ export function describeLLMRoute(
   return {
     providerId: first.id,
     reasoning: isReasoningProvider(first),
-    outputTokenCap: first.id === "groq" ? GROQ_MAX_OUTPUT_TOKENS : Number.POSITIVE_INFINITY,
+    outputTokenCap: first.id === "groq" ? getGroqMaxOutputTokens() : Number.POSITIVE_INFINITY,
   };
 }
 
@@ -1603,7 +1602,7 @@ async function sendChatCompletion(
   const maxAllowedOutputTokens = isReasoningCapable ? 65_536 : 16_384;
   const effectiveMaxTokens =
     provider.id === "groq"
-      ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
+      ? Math.min(options?.maxTokens || 400, getGroqMaxOutputTokens())
       : Math.min(baseMaxTokens + reasoningAllowance, maxAllowedOutputTokens);
 
   // Health probes are status checks: they honor the caller timeout exactly (no Byesu
@@ -2635,7 +2634,7 @@ export async function openAIStructured<T>(
       const isReasoning = isReasoningProvider(provider);
       const retryMaxTokens =
         provider.id === "groq"
-          ? Math.min(options?.maxTokens || 400, GROQ_MAX_OUTPUT_TOKENS)
+          ? Math.min(options?.maxTokens || 400, getGroqMaxOutputTokens())
           : isReasoning
             ? 32_768
             : Math.max(

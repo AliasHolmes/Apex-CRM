@@ -100,16 +100,31 @@ process.on('exit', () => {
 async function main() {
   omniProcess = await ensureOmniRoute();
 
-  console.log('[dev-entry] Starting Apex CRM dev server...');
-  const crmCommand = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'npm';
-  const crmArgs = isWindows
-    ? ['/d', '/s', '/c', 'npm.cmd run dev:server']
-    : ['run', 'dev:server'];
+  console.log('[dev-entry] Building server bundle via esbuild...');
+  const buildResult = spawnSync(
+    process.execPath,
+    [
+      './node_modules/esbuild/bin/esbuild',
+      'server.ts',
+      '--bundle',
+      '--platform=node',
+      '--format=cjs',
+      '--packages=external',
+      '--sourcemap',
+      '--outfile=dist/server.cjs',
+    ],
+    { stdio: 'inherit' },
+  );
 
-  crmProcess = spawn(crmCommand, crmArgs, {
-    stdio: ['ignore', 'inherit', 'inherit'],
-    shell: false,
-    windowsHide: true,
+  if (buildResult.status !== 0) {
+    console.error('[dev-entry] esbuild compilation failed.');
+    cleanup();
+    process.exit(buildResult.status ?? 1);
+  }
+
+  console.log('[dev-entry] Starting Apex CRM server with native node...');
+  crmProcess = spawn(process.execPath, ['dist/server.cjs'], {
+    stdio: 'inherit',
     env: process.env,
   });
 

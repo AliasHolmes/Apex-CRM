@@ -1,14 +1,15 @@
-# Apex CRM ? Codebase Index
+# Apex CRM — Codebase Index
 
-Generated: 2026-10-16 ? Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-24 — Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> current HEAD (`39586cd`) plus the engine audit remediation overlay (Packages 1-3:
-> unbreak HEAD, routing & dedupe fixes, CRM saturation person-lane isolation,
-> calibrated continuous confidence scoring, symmetrical provenance, tightened checkpoint caps).
+> current HEAD (`087d686`) plus the OmniRoute unconstrained modernization overlay (ADR-0016:
+> OmniRoute Gemini 3.8 Flash High primary, unsuppressed `<think>` deliberation in JSON mode,
+> high reasoning effort, 65k output tokens, 32k judge tokens, 64k/16k extraction chunking,
+> 8k evidence budgets, decoupled 300s timeout ceilings, 6-slot concurrency, and 4k Groq failsafe).
 > `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. Full test suite completes
-> across 201 suites: **1,353 pass / 0 fail** with 100% strict ASCII and zero glyph regressions.
+> across 203 files with 100% strict ASCII and zero glyph regressions.
 > Line counts are physical lines (blank lines included).
 
 ---
@@ -27,42 +28,43 @@ Primary reference docs:
 
 - [`README.md`](../README.md) - product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) - domain glossary
-- [`docs/adr/0001`...`0015`](adr/) - fifteen ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`...`0016`](adr/) - sixteen ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, primary quad concurrency with micro-batching,
   dev-server HMR forced-reload containment, the Byesu primary (GPT-6.1)
-  routing and concurrency policy, engine bottleneck remediation (streaming judge seam,
+  routing and concurrency policy (ADR-0014), engine bottleneck remediation (streaming judge seam,
   signature/market-slice caches, saturation response, queue-wait telemetry),
   post-overhaul remediation (8-slot extraction, judge coalescing, post-intent parallelism,
-  retrieval streaming, DB lifecycle, delta hydration), Byesu primary architecture with GPT-6.1 (ADR-0014),
-  and the grounded engine-write invariant (ADR-0015)
+  retrieval streaming, DB lifecycle, delta hydration), the grounded engine-write invariant (ADR-0015),
+  and OmniRoute primary architecture with unconstrained Gemini 3.8 Flash High reasoning (ADR-0016)
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
 either fixed (commits `4c385da`, `e3c851d`, `4ae2193`) and pinned by a regression test, or
-carried forward in ?9 below. Recover them from git history if the detail is ever needed.
+carried forward in §9 below. Recover them from git history if the detail is ever needed.
 
 ## 2. Quick stats
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 15,550 lines across 63 TypeScript files (`components/` alone: 37 files / 10,989 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 28,140 lines: 53 modules + 9 `stages/` (stages: 7,450 lines)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,100 lines (db 5,800 / llm 3,140 / api 2,490 / brightdata 2,164 / rest 1,586)                                                             |
+| Frontend (`src/`)                                                | 15,790 lines across 64 TypeScript files (`components/` alone: 37 files / 11,026 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 29,223 lines: 53 modules + 9 `stages/` (stages: 7,790 lines)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,310 lines (db 5,796 / llm 3,145 / api 2,484 / brightdata 2,165 / rest 1,720)                                                             |
 | REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v27**, WAL                   |
-| Test suite                                                       | 203 TypeScript files: 200 `.test.ts` + 2 test helpers + 1 `.eval.ts`; 32,063 lines |
-| Total first-party LOC                                            | 92,014 TypeScript lines (incl. tests)                                    |
-| Anchor                                                           | measured at `39586cd` + Engine Audit Remediation (Packages 1-3); dated 2026-10-24                  |
+| Test suite                                                       | 203 TypeScript files: 200 `.test.ts` + 2 test helpers + 1 `.eval.ts`; 32,068 lines |
+| Total first-party LOC                                            | 92,778 TypeScript lines (345 files, incl. tests)                                    |
+| Anchor                                                           | measured at `087d686` + OmniRoute Unconstrained Modernization (ADR-0016); dated 2026-10-24                  |
 
 ## 3. Tech stack
 
-- **Frontend**: React 19 ? Vite ? Tailwind CSS 4 ? Radix UI ? Motion ? Lucide ?
-  `@tanstack/react-table` + `react-virtual` ? TypeScript
-- **Backend**: Express 5 ? `node:sqlite` (schema-versioned, migrated in-transaction with
-  pre-migration backups pruned to 3) ? TypeScript, run by `tsx`
+- **Frontend**: React 19 · Vite · Tailwind CSS 4 · Radix UI · Motion · Lucide ·
+  `@tanstack/react-table` + `react-virtual` · TypeScript
+- **Backend**: Express 5 · `node:sqlite` (schema-versioned, migrated in-transaction with
+  pre-migration backups pruned to 3) · TypeScript, run by `node`
 - **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP (scrape/search),
-  cross-round query retrieval cache, OpenAI-compatible LLM with Byesu primary (GPT-6.1 ?
+  cross-round query retrieval cache, OpenAI-compatible LLM with OmniRoute primary (Gemini 3.8 Flash High ·
+  6 runtime slots, unconstrained 65k output tokens), Byesu secondary fallback (GPT-6.1 ·
   8 runtime slots), Groq/OpenRouter failsafe tier, Langfuse telemetry
 - **Discipline**: `tsc --noEmit` under `strict`, `noImplicitAny`, `noUnusedLocals`,
   `noUnusedParameters`; `prebuild` gates on typecheck; strict ASCII enforced by
@@ -71,17 +73,17 @@ carried forward in ?9 below. Recover them from git history if the detail is ever
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (361 lines)
-server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,770)
-server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,483)
-server/services/             llm.ts (3,027, Byesu primary provider, dynamic timeouts,
-                             completion cache, queue-wait telemetry) ? brightdata.ts (2,164) ?
-                             keyRotator.ts (389) ? sessionStreamHub.ts (220, SSE) ? linkedinEvidence.ts (304,
-                             owns canonicalLinkedInIdentity) ? privateHosts.ts (162, SSRF) ?
-                             outboundPrompt.ts (167) ? langfuse.ts (122) ? sleepUtils.ts (39, shared sleep)
+server.ts                    Express app + static Vite serve (364 lines)
+server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,796)
+server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,484)
+server/services/             llm.ts (3,145, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+                             secondary fallback, dynamic timeouts, completion cache, queue-wait telemetry) ·
+                             brightdata.ts (2,165) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
+                             linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
+                             outboundPrompt.ts (167) · langfuse.ts (122) · sleepUtils.ts (39, shared sleep)
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming
-                             seams (now unconditional) (3,182)
+                             seams (now unconditional) (3,289)
   leadDomain.ts              EngineLead domain type bridging pipeline state/checkpoints to the
                              `Lead` contract (55)
   liveRollingPool.ts         bounded live rolling-window pool for streaming judge execution across
@@ -745,6 +747,31 @@ Remediates all 17 verified engine drags and test assertion mismatches from disco
   - B17: Tightened checkpoint evidence cap from 240 to 100, and debug log tail from 100 to 25.
 - **Total Test Suite Status**: 203 TypeScript files (200 `.test.ts`), **1,353 pass / 0 fail** (100% green).
 
+### 9.27 OmniRoute Primary Architecture & Unconstrained Gemini Reasoning (ADR-0016) — (2026-10-24)
+
+Remediated all legacy Cloudflare-era bounds, token caps, thinking suppressions, and concurrency limits across the discovery engine:
+
+- **OmniRoute Primary & Byesu Secondary**:
+  - Configured OmniRoute (`http://localhost:20128/v1`, `OPENAI_MODEL="antigravity/gemini-3.8-flash-high"`) as the Tier 1 primary LLM provider with 6 concurrent slots (`OPENAI_CONCURRENT_SLOTS="6"`).
+  - Preserved Byesu (`https://byesu.com/v1`, `BYESU_MODEL="gpt-6.1-sol"`, `BYESU_CONCURRENT_SLOTS="8"`) as the Tier 2 secondary fallback provider.
+  - Retained Groq (`GROQ_MAX_OUTPUT_TOKENS="4096"`) and OpenRouter/Mistral as resilient Tier 3 disaster recovery failsafes.
+- **Thinking Unsuppression & High Reasoning Effort**:
+  - Removed `<think>` ban when JSON mode is enabled (`server/services/llm.ts`); Gemini Flash High is permitted to use internal chain-of-thought deliberation in JSON mode.
+  - Set `TASK_REASONING_EFFORT` to `"high"` across all core analytical stages (`strategist`, `extraction`, `intent_signals`, `company_attribution`, `judge`, `contract`, `post_intent`).
+  - Removed hardcoded `reasoningEffort: "low"` overrides from `planStage.ts` and `extractStage.ts`.
+- **Token Capacity Modernization (65k Output / 1M Context)**:
+  - Raised global output token ceiling (`effectiveMaxTokens`) for reasoning providers from 16,384 to 65,536 tokens.
+  - Raised structured output retry max tokens to 32,768 tokens.
+  - Raised dynamic judge token ceiling to 32,000 tokens and synchronized `computeJudgeBatchCapacity` reasoning overhead to 10,000 tokens.
+  - Expanded extraction chunking: chunk chars default to 16,000 (max 64,000), provider budget default to 64,000 (max 250,000), blocks per chunk default to 6 (max 24), and round output tokens ceiling to 250,000.
+  - Expanded evidence budgets in `evidenceSelection.ts` (8,000 chars total, 1,500 char sentence crops) and finalist judge evidence in `finalistJudge.ts` (3,000–8,000 chars, 8–16 items).
+- **Concurrency & Timeout Calibration**:
+  - Unclamped judge concurrency to 4 workers (`FINALIST_JUDGE_CONCURRENCY="4"`) and micro-batch size to 4 (`FINALIST_JUDGE_MICRO_BATCH_SIZE="4"`).
+  - Relaxed company attribution concurrency to 6 workers (defaulting to 4).
+  - Decoupled Cloudflare 115s timeout ceiling for non-Byesu targets (scaling dynamically up to 300s).
+  - Extended planner hard timeout (`PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary`) to 75s and `/api/llm-health` probe timeout to 20s.
+  - Raised Groq failsafe output limit from 950 to 4,096 tokens to prevent truncation on fallback.
+
 
 ## 10. Recommended next actions
 
@@ -760,4 +787,4 @@ Updated 2026-10-24.
 8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `39586cd` + Engine Audit Remediation overlay (2026-10-24).
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `087d686` + OmniRoute Unconstrained Modernization (ADR-0016) (2026-10-24).

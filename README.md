@@ -29,7 +29,7 @@ Its primary workflow is intentionally practical:
 3. **Stage-Pipelined High-Efficiency Engine**:
    - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`), cross-round **Retrieval Cache** (`retrievalCache.ts`), and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
-   - Enforces **Provider Slot Concurrency** (`withProviderFallback`): establishes Byesu (GPT-6.1) as the primary engine provider with resilient fallback to OpenRouter/Mistral and Groq, achieving safe high-throughput execution without 429 rate limits or timeouts.
+   - Enforces **Provider Slot Concurrency & Unconstrained Reasoning** (`withProviderFallback`): establishes OmniRoute (`gemini-3.8-flash-high`) as the Tier 1 primary engine provider with 6 concurrent slots, unconstrained 65k output tokens, and high reasoning effort, backed by Byesu (`gpt-6.1-sol`) as secondary fallback (8 slots) and Groq/Mistral as failsafe tier, achieving safe high-throughput execution without rate limits or timeouts.
    - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v27.
    - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
@@ -148,7 +148,7 @@ flowchart TD
 - **Upstream CRM Feedback, JSON Metro Saturation & Cross-Session Company Seeding**: Reads existing company domains, metro saturation counts (including SQLite JSON `$.profile.location` and `$.profile.city`), and cross-session `discovered_companies` (`readDiscoveredCompanyNames(25)`). Passes known domains directly into Tavily's `exclude_domains` parameter and directs the query strategist to pivot away from saturated hubs ($\ge 15$ leads) with negative search operators.
 - **Deterministic Pre-Judge Role Triage**: Discards individual contributors (`intern`, `staff engineer`, `ml engineer`, `data scientist`, `recruiter`, `account executive`) in 0ms when the contract specifies leadership roles. Acronyms (`MD`, `VP`, `CTO`, `CRO`) are expanded before matching.
 - **Pre-Judge Context Grounding**: Executes a lightweight, non-LLM site probe (~250ms) to fetch the root `<meta name="description">` or `<title>` for ambiguous accounts, appending verified business context before semantic evaluation.
-- **Primary Provider Concurrency**: Byesu (GPT-6.1) serves as the primary engine provider with up to 8 concurrent slots (`BYESU_CONCURRENT_SLOTS=8`). Groq and OpenRouter/Mistral form the resilient failsafe tier used only when Byesu is unavailable. The older global single-mutex queue and stage-lane sharding (`FEATURE_LLM_STAGE_QUEUES`) no longer exist; see ADR-0007.
+- **Primary Provider Concurrency**: OmniRoute (`gemini-3.8-flash-high`) serves as the Tier 1 primary engine provider with up to 6 concurrent slots (`OPENAI_CONCURRENT_SLOTS=6`), supported by Byesu (`gpt-6.1-sol`) as secondary fallback with 8 slots (`BYESU_CONCURRENT_SLOTS=8`). Groq and OpenRouter/Mistral form the resilient failsafe tier used only when both primary and secondary providers are unavailable; see ADR-0016.
 - **Contract-Aware Calibrated Judging**: `rankLeadForFinalSelection` weights hard-requirement coverage (`1.2x` spread) with active soft-signal boost (`0.4x`); evidence quote checks are symmetrically alias-aware (`MD` <-> `managing director`, `US` <-> `United States`).
 - **Quantized Adaptive Controller & Constraint Retention**: MAB priors pool by 24 deterministic brief centroids (`centroid_<cluster>_<00-23>`) with `historicalYield` keyed by `domain_cluster|family|lane|provider` and ` seedAdaptiveRandom` deterministic test support; `contract_guard` tasks are preserved above the `maxTasks+2` cap so hard-requirement coverage is never pruned.
 - **CRM Workflow Preservation & Persistence Status Fidelity**: Same-identity engine upserts refresh objective profile and score attributes while preserving human-managed `stage`, `reviewStatus`, `nextAction`, and `notes` unless `forceOverwrite: true` is passed. Session and search-log statuses (`success | partial_success | error`) are derived from actual persistence counts rather than hardcoded.
@@ -160,10 +160,10 @@ flowchart TD
 - **Universal ISO Geographic Resolution** (`geo.ts`): Replaced manual country code maps with native `Intl` standard resolution, recognizing all 249 ISO 3166-1 alpha-2 countries and regions while guarding against English pronoun collisions.
 - **Brief-Gated Decision-Maker Scoring**: Authority and executive hierarchy weights are applied conditionally only when the user's brief explicitly requests authority or leadership, preventing technical or specialized searches from being improperly downweighted.
 
-#### 12. Primary Provider Concurrency & Bounded Timeouts
+#### 12. Primary Provider Concurrency & Decoupled Timeouts (ADR-0016)
 
-- **Byesu Primary Architecture**: Configures primary concurrency slots (`BYESU_CONCURRENT_SLOTS=8`) with GPT-6.1 (`gpt-6.1-sol`).
-- **Dynamic Timeout Scaling**: Uses `computeByesuDynamicTimeoutMs` bounded strictly within Cloudflare proxy limits (`CLOUDFLARE_MAX_TIMEOUT_MS = 115_000ms`), preventing premature aborts on large multi-candidate batches.
+- **OmniRoute Primary Architecture**: Configures primary concurrency slots (`OPENAI_CONCURRENT_SLOTS=6`) with Gemini 3.8 Flash High (`antigravity/gemini-3.8-flash-high`) and unconstrained 65k output tokens, backed by Byesu GPT-6.1 (`gpt-6.1-sol`, 8 slots) as secondary fallback.
+- **Dynamic Timeout Scaling & Cloudflare Decoupling**: Uses `computeByesuDynamicTimeoutMs` with Cloudflare proxy limits (`115,000ms`) applied strictly to Byesu targets, while local OmniRoute and direct endpoints scale dynamically up to a generous 300,000ms ceiling with 75s planner hard timeouts and 20s health check probes.
 
 #### 13. Persistent Candidate Verdicts & Company Attribution (Schema v26)
 
@@ -187,11 +187,11 @@ flowchart TD
 - **Uninterrupted Outreach Studio Lifecycle**: `App.tsx` retains Outreach Studio within the mounted DOM across tab switches (`mountedJobTabs`), ensuring in-flight LLM generations, custom prompts, and drafted messages are never lost during navigation.
 - **Pipeline Stage Preservation on CSV Re-Import**: The CSV importer maps pipeline stage columns (`CSV_FIELD_ALIASES.stage`), preventing existing prospect stage progressions from resetting to `SCRAPED` upon re-import.
 
-#### 16. Provider Concurrency & Micro-Batching (ADR-0009)
+#### 16. Provider Concurrency & Modernized Batching (ADR-0009 & ADR-0016)
 
-- **High Provider Concurrency**: Enables execution of concurrent in-flight requests simultaneously (`BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=6`), fully utilizing primary capacity.
-- **Micro-Batch Sizing**: Clamps extraction to 3 candidate profiles per chunk (`LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging to 2 candidates per batch (`FINALIST_JUDGE_MICRO_BATCH_SIZE=2`). Small payloads keep individual call latencies under ~25s-35s and prevent borderline prospects from stalling sibling candidates.
-- **Rolling-Pool Early Stopping**: Micro-batching unlocks fine-grained quota fulfillment in `runRollingPool`, halting evaluation as soon as the target cushion is reached and skipping remaining batches to save 50%+ in token costs and execution time.
+- **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=6`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=4`, `FINALIST_JUDGE_CONCURRENCY=4`, `attributionConcurrency` up to 6), fully utilizing local OmniRoute throughput without rate limit stalls.
+- **Modernized Token Envelopes**: Replaces legacy micro-chunking with 65k output / 1M context modern scaling. Extraction chunk chars expand to 16,000 (up to 64k) and 6 blocks per chunk (`LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=6`, max 24) with a 64,000 provider token budget. Finalist judge dynamic tokens scale up to 32,000 tokens with an integrated 10,000 reasoning buffer, and evidence budgets expand to 8,000 chars (1,500 char crops).
+- **Rolling-Pool Early Stopping**: Fine-grained quota fulfillment in `runRollingPool` halts evaluation as soon as the target cushion is reached and skips remaining batches to save token overhead and latency.
 
 ---
 
@@ -205,7 +205,8 @@ graph TD
     API --> DB[("SQLite Database (node:sqlite, Schema v27, WAL mode)")]
 
     API --> Direct["Direct OpenAI-Compatible Provider Chain"]
-    Direct --> Primary["Byesu Primary Provider (GPT-6.1)"]
+    Direct --> Primary["OmniRoute Primary Provider (Gemini 3.8 Flash High)"]
+    Direct --> Secondary["Byesu Secondary Fallback (GPT-6.1)"]
     Direct --> OpenRouter["OpenRouter"]
     Direct --> Groq["Groq"]
 
@@ -221,7 +222,7 @@ graph TD
 - **Frontend**: React 19, Vite 8, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
 - **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v27**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
-- **LLM Routing**: Direct OpenAI-compatible provider chain with Byesu primary (GPT-6.1), automatic fallback (OpenRouter -> Groq), session circuit breaker, and retry logic.
+- **LLM Routing**: Direct OpenAI-compatible provider chain with OmniRoute primary (Gemini 3.8 Flash High), Byesu secondary fallback (GPT-6.1), automatic failsafe (OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
 
 ---
@@ -251,17 +252,24 @@ cp .env.example .env
 A minimal `.env` setup:
 
 ```env
-# Primary LLM Provider: Byesu (GPT-6.1)
-OPENAI_API_KEY="your_byesu_or_openai_key"
-OPENAI_BASE="https://byesu.com/v1"
-OPENAI_MODEL="gpt-6.1-sol"
-OPENAI_PROVIDER_NAME="Byesu"
+# Primary LLM Provider: OmniRoute (Gemini 3.8 Flash High)
+OPENAI_API_KEY="your_omniroute_or_openai_key"
+OPENAI_BASE="http://localhost:20128/v1"
+OPENAI_MODEL="antigravity/gemini-3.8-flash-high"
+OPENAI_PROVIDER_NAME="OmniRoute"
+OPENAI_CONCURRENT_SLOTS="6"
+
+# Secondary Fallback Provider: Byesu (GPT-6.1)
+BYESU_API_KEY="your_byesu_key"
+BYESU_BASE="https://byesu.com/v1"
+BYESU_MODEL="gpt-6.1-sol"
 BYESU_CONCURRENT_SLOTS="8"
 
-# Optimal Micro-Batching & Quad Concurrency (ADR-0009)
-LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"
+# Modernized Batching & Stage Concurrency (ADR-0016)
+LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="6"
+LEAD_EXTRACTION_CHUNK_CHARS="16000"
 LEAD_EXTRACTION_CONCURRENCY="4"
-FINALIST_JUDGE_MICRO_BATCH_SIZE="2"
+FINALIST_JUDGE_MICRO_BATCH_SIZE="4"
 FINALIST_JUDGE_CONCURRENCY="4"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'

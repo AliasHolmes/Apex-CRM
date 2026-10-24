@@ -1191,7 +1191,10 @@ Evidence:
           },
         },
       );
-      const extractedLeads = Array.isArray(extracted) ? extracted : [];
+      const rawExtractedLeads = Array.isArray(extracted) ? extracted : [];
+      const extractedLeads = rawExtractedLeads.filter(
+        (lead): lead is Record<string, any> => !!lead && typeof lead === "object",
+      );
       for (const lead of extractedLeads) {
         const url = lead.contactDetails?.linkedinUrl || lead.sourceUrl || "";
         const linkedinKey = canonicalLinkedInIdentity(url);
@@ -1410,7 +1413,10 @@ Evidence:
     };
   }
 
-  const standardProfiles = extractionResults.flat().map((lead: any) => {
+  const standardProfiles = extractionResults
+    .flat()
+    .filter((lead): lead is Record<string, any> => !!lead && typeof lead === "object")
+    .map((lead: any) => {
     if (lead?.contactDetails?.linkedinUrl) {
       const unwrapped = unwrapRedirectUrl(lead.contactDetails.linkedinUrl);
       const normalized = normalizeLinkedInUrl(unwrapped);

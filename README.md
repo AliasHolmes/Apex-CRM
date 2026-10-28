@@ -187,11 +187,19 @@ flowchart TD
 - **Uninterrupted Outreach Studio Lifecycle**: `App.tsx` retains Outreach Studio within the mounted DOM across tab switches (`mountedJobTabs`), ensuring in-flight LLM generations, custom prompts, and drafted messages are never lost during navigation.
 - **Pipeline Stage Preservation on CSV Re-Import**: The CSV importer maps pipeline stage columns (`CSV_FIELD_ALIASES.stage`), preventing existing prospect stage progressions from resetting to `SCRAPED` upon re-import.
 
-#### 16. Provider Concurrency & Modernized Batching (ADR-0009 & ADR-0016)
+#### 16. Provider Concurrency & Modernized Batching (ADR-0009, ADR-0016, ADR-0017)
 
 - **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=8`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=8`, `attributionConcurrency` up to 8), fully utilizing local OmniRoute throughput without rate limit stalls.
-- **High-Concurrency Distributed Micro-Batching**: Distributes extraction and judging across 8 parallel slots in rapid micro-batches (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`, `FINALIST_JUDGE_MICRO_BATCH_SIZE=2`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for 10-15s execution, `high` on judging for deep qualification), eliminating oversized payload timeouts while executing rounds in ~30-45s total.
+- **1-Candidate Micro-Splits & Stage-Calibrated Reasoning (ADR-0017)**: Distributes extraction across 8 parallel slots (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging into 1-candidate micro-splits (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for ~10-15s execution, `high` on judging for deep qualification), eliminating multi-candidate reasoning thrashing while completing single-candidate evaluations in ~30-45s with dynamic 120s timeout scaling.
+- **OmniRoute 429 Cooldown & Reset Tracking**: Tracks upstream provider rate limit cooldowns (`model_cooldown` and `reset_seconds`) in `llm.ts`, pausing queue dispatch until the cooldown expires to prevent cascading 429 retries across concurrent slots.
 - **Rolling-Pool Early Stopping**: Fine-grained quota fulfillment in `runRollingPool` halts evaluation as soon as the target cushion is reached and skips remaining batches to save token overhead and latency.
+
+#### 17. Structural Intent Isolation & Entity Resilience (ADR-0017)
+
+- **Clausal Intent Tail Isolation**: Preprocesses briefs to separate trailing intent clauses (`who post about...`, `interested in...`, `specializing in...`) from firmographic company and industry entities, converting them to soft `signal` requirements and preventing query corruption.
+- **Prepositional Company Extraction Disambiguation**: Differentiates functional roles (`[Role] of [Function]`, e.g. "Head of Sales") from company entities (`at [Company]`), preventing discipline names from leaking into employer constraints.
+- **Admission Gate Enterprise Protection**: Guards non-agency briefs in `evaluatePrimaryAdmission` so corporate enterprise candidates are not false-positively withheld when the brief does not require an agency business model.
+- **LinkedIn Domain Rejection & Website Rescue**: Rejects domain-formatted LinkedIn handles (`.com`, `.ai`, etc.) in `isValidLinkedInHandle` and rescues corporate URLs to `contactDetails.website`, ensuring zero ghost company profiles enter the CRM.
 
 ---
 
@@ -265,11 +273,11 @@ BYESU_BASE="https://byesu.com/v1"
 BYESU_MODEL="gpt-6.1-sol"
 BYESU_CONCURRENT_SLOTS="8"
 
-# High-Concurrency Distributed Micro-Batching (ADR-0016)
+# High-Concurrency Distributed Micro-Batching (ADR-0016 & ADR-0017)
 LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"
 LEAD_EXTRACTION_CHUNK_CHARS="8000"
 LEAD_EXTRACTION_CONCURRENCY="8"
-FINALIST_JUDGE_MICRO_BATCH_SIZE="2"
+FINALIST_JUDGE_MICRO_BATCH_SIZE="1"
 FINALIST_JUDGE_CONCURRENCY="8"
 
 TAVILY_API_KEYS='["tavily_key_1", "tavily_key_2"]'
@@ -333,6 +341,7 @@ All API routes are mounted under `/api`:
 |                     | `GET /search-logs/:id`                    | Retrieve individual search log by ID                                                           |
 |                     | `GET /search-logs/:id/live`               | Live log stream for active search                                                              |
 | **Prospects & CRM** | `GET /leads`                              | List stored prospects with filtering, pagination, and fast summary path                        |
+|                     | `GET /leads/export`                       | Multi-preset CSV lead export (Outreach, CRM, Diagnostic, Legacy)                                |
 |                     | `GET /leads/stats`                        | Total lead counts and stage distribution metrics                                               |
 |                     | `PUT /leads`                              | Atomic replacement of stored leads collection                                                  |
 |                     | `POST /leads/bulk`                        | Bulk insert or update prospect records with per-item revision conflict detection               |
@@ -417,7 +426,7 @@ npm run test:dedupe
 ```text
 docs/
   CODEBASE_INDEX.md          Measured architecture, module inventory, and audit ledger
-  adr/                       Architecture Decision Records (ADR-0001 through ADR-0013)
+  adr/                       Architecture Decision Records (ADR-0001 through ADR-0017)
 src/
   components/                React UI components, modals, tables, badges
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog
@@ -469,7 +478,7 @@ server/
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v27 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts)
-test/                        Automated unit, integration, replay, and eval test suites (154 files via tsx --test)
+test/                        Automated unit, integration, replay, and eval test suites (205 files, 200 .test.ts + helpers)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

@@ -4,7 +4,13 @@ import {
   LEAD_STAGE_SET as leadStages,
   REVIEW_STATUS_SET as reviewStatuses,
   NEXT_ACTION_SET as nextActions,
+  type Lead,
 } from "../../src/types.js";
+import {
+  serializeLeadsToCsv,
+  EXPORT_PRESETS,
+  type ExportPresetId,
+} from "../../src/utils/csvExport.js";
 import {
   readLeadsSummary,
   readLeadsStats,
@@ -339,6 +345,60 @@ router.get("/leads", (req, res): any => {
   } catch (error: any) {
     console.error("Failed to read leads from SQLite:", error);
     res.status(500).json({ error: error.message || "Failed to read leads" });
+  }
+});
+
+router.get("/leads/export", (req, res): any => {
+  try {
+    const {
+      preset = "outreach",
+      stage,
+      reviewStatus,
+      nextAction,
+      search,
+      ids,
+    } = req.query as Record<string, string | undefined>;
+
+    const validPreset: ExportPresetId =
+      preset && EXPORT_PRESETS[preset as ExportPresetId]
+        ? (preset as ExportPresetId)
+        : "outreach";
+
+    let leadsToExport: Lead[] = [];
+
+    if (ids && typeof ids === "string" && ids.trim()) {
+      const idList = ids.split(",").map((s) => s.trim()).filter(Boolean);
+      if (idList.length > 0) {
+        const db = getLeadsDb();
+        const placeholders = idList.map(() => "?").join(",");
+        const rows = db
+          .prepare(`SELECT payload FROM leads WHERE id IN (${placeholders})`)
+          .all(...idList) as { payload: string }[];
+        leadsToExport = rows.map((r) => JSON.parse(r.payload));
+      }
+    } else {
+      const result = readLeadsSummary({
+        stage,
+        reviewStatus,
+        nextAction,
+        search,
+        limit: 10000,
+        summaryOnly: false,
+      });
+      leadsToExport = result.leads;
+    }
+
+    const csv = serializeLeadsToCsv(leadsToExport, validPreset);
+    const date = new Date().toISOString().slice(0, 10);
+    const filename = `apex_crm_leads_${validPreset}_${date}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Cache-Control", "no-cache, no-store");
+    return res.send(csv);
+  } catch (error: any) {
+    console.error("Failed to export leads:", error);
+    return res.status(500).json({ error: error.message || "Failed to export leads" });
   }
 });
 

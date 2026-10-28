@@ -4,7 +4,7 @@ Date: 2026-10-24
 
 ## Status
 
-Accepted (supersedes ADR-0014 as primary provider)
+Accepted (supersedes ADR-0014 as primary provider; amended by ADR-0017 for 1-candidate micro-splits and clausal isolation)
 
 ## Scope
 
@@ -64,7 +64,7 @@ The direct provider candidate chain in [`server/services/llm.ts`](../../server/s
 
 - `OPENAI_CONCURRENT_SLOTS`: Shipped default increased from 2 to **8 slots** (code fallback defaults to 8 matching Byesu parity).
 - `FINALIST_JUDGE_CONCURRENCY` & `LEAD_EXTRACTION_CONCURRENCY`: Shipped default and code fallbacks increased to **8 workers**, fully consuming the 8 primary provider slots without idle serialization.
-- `FINALIST_JUDGE_MICRO_BATCH_SIZE`: Configured to **2 candidates** per batch, enabling ~45-50s execution per batch and granular rolling-pool early stopping across the 8 slots.
+- `FINALIST_JUDGE_MICRO_BATCH_SIZE`: Configured to **2 candidates** per batch (later transitioned to **1-candidate micro-splits** under high reasoning in ADR-0017 to eliminate latency thrashing).
 - `companyAttribution`: Concurrency clamp relaxed to **8 workers** (defaulting to 4).
 - `GROQ_MAX_OUTPUT_TOKENS`: Increased from 950 to **4,096 tokens** to prevent immediate JSON truncation upon failsafe failover.
 

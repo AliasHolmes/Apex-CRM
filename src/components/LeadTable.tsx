@@ -8,6 +8,7 @@ import { useToast } from '../context/ToastContext';
 import { useLeads } from '../context/LeadContext';
 import { buildProfileDedupeKeys } from '../utils/leadDedupe';
 import { createCsvFieldReader, CSV_FIELD_ALIASES } from '../utils/csvFieldMapping';
+import { ExportModal, type ExportScope } from './ExportModal';
 import Papa from 'papaparse';
 import {
   ArrowDown,
@@ -634,6 +635,12 @@ export default function LeadTable({
   const [bulkMutation, setBulkMutation] = useState<'stage' | 'workflow' | 'delete' | 'purge' | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isMountedRef = useRef(true);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportScope, setExportScope] = useState<ExportScope>('all');
+  const handleOpenExport = useCallback((scope: ExportScope) => {
+    setExportScope(scope);
+    setIsExportModalOpen(true);
+  }, []);
   const [enrichmentQueue, setEnrichmentQueue] = useState<Lead[]>([]);
   const [enrichmentStep, setEnrichmentStep] = useState<string>('');
   const selectedLeadIdArray = useMemo(() => Array.from(selectedLeadIds), [selectedLeadIds]);
@@ -1347,102 +1354,10 @@ export default function LeadTable({
     }
   };
 
-  // Compile and format CSV string
-  const handleCsvExport = (exportAll: boolean) => {
-    const targets = exportAll ? leads : leads.filter(l => selectedLeadIds.has(l.id));
-    
-    if (targets.length === 0) {
-      triggerToast('No leads selected. Check row checkboxes to enable export.', 'info');
-      return;
-    }
-
-    // Define CSV Headings
-    const headings = [
-      'ID',
-      'First Name',
-      'Last Name',
-      'Full Name',
-      'Pipeline Stage',
-      'Review Status',
-      'Next Action',
-      'Current Title',
-      'Current Company',
-      'Buying Signals & Intent',
-      'Authority & Decision Maker',
-      'Corporate Email',
-      'Phone Number',
-      'LinkedIn Profile URL',
-      'Industry Segment',
-      'Geographic Location',
-      'Skills Keywords',
-      'Biography Summary',
-      'Discovery Query',
-      'Matched Criteria',
-      'Uncertainties',
-      'Log Internal Notes',
-      'Created Date'
-    ];
-
-    // Map each lead into a clean row array
-    const csvRows = targets.map(lead => {
-      const parts = lead.profile.fullName.trim().split(/\s+/);
-      const firstName = parts[0] || '';
-      const lastName = parts.slice(1).join(' ') || '';
-      const skillsStr = (lead.profile.skills || []).join('; ');
-      const provenance = getLeadProvenance(lead);
-      
-      const row = [
-        lead.id,
-        firstName,
-        lastName,
-        lead.profile.fullName,
-        lead.stage,
-        getReviewStatus(lead),
-        getNextAction(lead),
-        lead.profile.currentTitle || '',
-        lead.profile.currentCompany || '',
-        provenance.postIntentEvidence?.intentCategory
-          ? `${provenance.postIntentEvidence.intentCategory} (${provenance.postIntentEvidence.quality})`
-          : (lead.companyAccount?.buyingSignals?.map(s => s.label).join('; ') || (lead.buyingSignalsDetected || []).join('; ')),
-        (lead.decisionMakerVerification?.titleMatched && !lead.decisionMakerVerification?.ignoredTitle)
-          ? `Verified Decision Maker (${lead.decisionMakerVerification.reason || ''})`
-          : (lead.decisionMakerVerification?.trajectoryScore !== undefined ? `Authority ${lead.decisionMakerVerification.trajectoryScore}/10` : (lead.profile.currentTitle || '')),
-        lead.profile.contactDetails?.email || '',
-        lead.profile.contactDetails?.phone || '',
-        lead.profile.contactDetails?.linkedinUrl || '',
-        lead.profile.industry || 'Tech',
-        lead.profile.location || '',
-        skillsStr,
-        lead.profile.summary || '',
-        provenance.discoveryQuery,
-        provenance.matchedCriteria.join('; '),
-        provenance.uncertainties.join('; '),
-        lead.notes || '',
-        new Date(lead.createdAt).toLocaleDateString()
-      ];
-
-      // Escape quotes and double quotes for clean CSV syntax
-      return row.map(v => {
-        const value = String(v);
-        const formulaSafeValue = /^[=+\-@]/.test(value.trimStart()) ? `'${value}` : value;
-        const escaped = formulaSafeValue.replace(/"/g, '""');
-        return `"${escaped}"`;
-      }).join(',');
-    });
-
-    const csvContent = [headings.join(','), ...csvRows].join('\n');
-    
-    // Create Blob URL trigger download in browser safely
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `linkedin_crm_leads_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+  // Trigger modern export modal
+  const handleCsvExport = useCallback((exportAll: boolean) => {
+    handleOpenExport(exportAll ? 'all' : 'selected');
+  }, [handleOpenExport]);
 
   const handleCsvImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1477,6 +1392,17 @@ export default function LeadTable({
 
             const industry = getField(CSV_FIELD_ALIASES.industry) || 'Tech';
             const location = getField(CSV_FIELD_ALIASES.location);
+            const domain = getField(CSV_FIELD_ALIASES.domain);
+            const website = getField(CSV_FIELD_ALIASES.website) || (domain ? `https://${domain}` : '');
+            const seniority = getField(CSV_FIELD_ALIASES.seniority);
+            const rawTier = getField(CSV_FIELD_ALIASES.tier);
+            const tier = rawTier && /TIER\s*[1-4]/i.test(rawTier) ? (rawTier as Lead['tier']) : undefined;
+            const rawScore = getField(CSV_FIELD_ALIASES.score);
+            const scoreNum = rawScore ? parseFloat(rawScore) : NaN;
+            const score = !Number.isNaN(scoreNum) ? scoreNum : undefined;
+            const icebreaker = getField(CSV_FIELD_ALIASES.icebreaker);
+            const tagsStr = getField(CSV_FIELD_ALIASES.tags);
+            const extraTags = tagsStr ? tagsStr.split(/[;,]/).map((t) => t.trim()).filter(Boolean) : [];
             const summary = getField(CSV_FIELD_ALIASES.summary);
             const skillsStr = getField(CSV_FIELD_ALIASES.skills);
             const skills = skillsStr ? skillsStr.split(/[;,]/).map(s => s.trim()).filter(Boolean) : [];
@@ -1508,22 +1434,26 @@ export default function LeadTable({
                 headline: title ? `${title} @ ${company}` : 'Professional',
                 currentCompany: company || 'Independent',
                 currentTitle: title || 'Professional',
+                seniorityLevel: seniority || undefined,
                 location: location || 'Undisclosed Location',
                 industry,
-                summary: summary || 'Imported via bulk CSV upload.',
+                summary: summary || icebreaker || 'Imported via bulk CSV upload.',
                 contactDetails: {
                   email,
                   phone,
-                  linkedinUrl
+                  linkedinUrl,
+                  website: website || undefined,
                 },
-                skills
+                skills,
               },
               stage,
-              notes: summary || 'Imported via bulk CSV upload.',
+              notes: summary || icebreaker || 'Imported via bulk CSV upload.',
               createdAt: new Date().toISOString(),
-              tags: ['CSV Import', industry],
+              tags: Array.from(new Set(['CSV Import', industry, ...extraTags])),
               reviewStatus,
               nextAction,
+              tier,
+              compositeScore: score,
             }];
           });
 
@@ -1561,6 +1491,16 @@ export default function LeadTable({
 
   return (
     <>
+      <ExportModal
+        open={isExportModalOpen}
+        onOpenChange={setIsExportModalOpen}
+        allLeads={leads}
+        filteredLeads={filteredLeads}
+        selectedLeadIds={selectedLeadIds}
+        initialScope={exportScope}
+        onTriggerToast={triggerToast}
+      />
+
       <Dialog open={showConfirmBulkDelete} onOpenChange={(open) => {
         if (!isBulkMutating) setShowConfirmBulkDelete(open);
       }}>

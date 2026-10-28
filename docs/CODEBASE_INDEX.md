@@ -1,15 +1,16 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-10-24 — Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-28 — Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> current HEAD (`087d686`) plus the OmniRoute unconstrained modernization overlay (ADR-0016:
-> OmniRoute Gemini 3.8 Flash High primary, unsuppressed `<think>` deliberation in JSON mode,
-> high reasoning effort, 65k output tokens, 32k judge tokens, 64k/16k extraction chunking,
-> 8k evidence budgets, decoupled 300s timeout ceilings, 6-slot concurrency, and 4k Groq failsafe).
+> current HEAD (`8e6b74f`) plus the High-Concurrency Micro-Splitting, Intent Isolation,
+> and Cooldown Resilience overlay (ADR-0017: 1-candidate micro-splits under high reasoning effort,
+> dynamic 120s timeout scaling, clausal intent tail isolation, prepositional company extraction
+> disambiguation, admission gate enterprise protection, OmniRoute 429 reset cooldown backoff,
+> and LinkedIn domain handle rejection & website rescue).
 > `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. Full test suite completes
-> across 203 files with 100% strict ASCII and zero glyph regressions.
+> across 205 files with 100% strict ASCII and zero glyph regressions.
 > Line counts are physical lines (blank lines included).
 
 ---
@@ -28,7 +29,7 @@ Primary reference docs:
 
 - [`README.md`](../README.md) - product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) - domain glossary
-- [`docs/adr/0001`...`0016`](adr/) - sixteen ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`...`0017`](adr/) - seventeen ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, primary quad concurrency with micro-batching,
   dev-server HMR forced-reload containment, the Byesu primary (GPT-6.1)
@@ -36,7 +37,8 @@ Primary reference docs:
   signature/market-slice caches, saturation response, queue-wait telemetry),
   post-overhaul remediation (8-slot extraction, judge coalescing, post-intent parallelism,
   retrieval streaming, DB lifecycle, delta hydration), the grounded engine-write invariant (ADR-0015),
-  and OmniRoute primary architecture with unconstrained Gemini 3.8 Flash High reasoning (ADR-0016)
+  OmniRoute primary architecture with unconstrained Gemini 3.8 Flash High reasoning (ADR-0016),
+  and High-Concurrency Micro-Splitting, Intent Isolation, and Cooldown Resilience (ADR-0017)
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
@@ -47,14 +49,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 15,790 lines across 64 TypeScript files (`components/` alone: 37 files / 11,026 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 29,223 lines: 53 modules + 9 `stages/` (stages: 7,790 lines)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,310 lines (db 5,796 / llm 3,145 / api 2,484 / brightdata 2,165 / rest 1,720)                                                             |
-| REST routes                                                      | 41 (all under `/api`, also mounted at `/api/v1`)                           |
+| Frontend (`src/`)                                                | 15,615 lines across 63 TypeScript files (`components/` alone: 37 files / 11,008 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 29,439 lines: 53 modules + 9 `stages/`                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,734 lines (db 5,807 / llm 3,207 / api 2,589 / brightdata 2,164 / rest 1,967)                                                             |
+| REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v27**, WAL                   |
-| Test suite                                                       | 203 TypeScript files: 200 `.test.ts` + 2 test helpers + 1 `.eval.ts`; 32,068 lines |
-| Total first-party LOC                                            | 92,778 TypeScript lines (345 files, incl. tests)                                    |
-| Anchor                                                           | measured at `087d686` + OmniRoute Unconstrained Modernization (ADR-0016); dated 2026-10-24                  |
+| Test suite                                                       | 205 files: 200 `.test.ts` + 2 test helpers + 1 `.eval.ts` + 2 replay fixtures; 31,949 lines |
+| Total first-party LOC                                            | 93,051 TypeScript lines (344 files, incl. tests)                                    |
+| Anchor                                                           | measured at `8e6b74f` + High-Concurrency Micro-Splitting & Resilience (ADR-0017); dated 2026-10-28                  |
 
 ## 3. Tech stack
 
@@ -74,11 +76,11 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 ```
 server.ts                    Express app + static Vite serve (364 lines)
-server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,796)
-server/routes/api.ts         41 REST routes + binary outcome / cluster feedback (2,484)
-server/services/             llm.ts (3,145, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
-                             secondary fallback, dynamic timeouts, completion cache, queue-wait telemetry) ·
-                             brightdata.ts (2,165) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
+server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,807)
+server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,649)
+server/services/             llm.ts (3,207, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+                             secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
+                             brightdata.ts (2,164) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
                              linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
                              outboundPrompt.ts (167) · langfuse.ts (122) · sleepUtils.ts (39, shared sleep)
 server/leadSearch/           the discovery engine
@@ -92,12 +94,12 @@ server/leadSearch/           the discovery engine
   plannerRouting.ts          fast-tier route resolver for strategist/plan families (ADR-0012)
   agentBrainRunner.ts        Agent Brain path (committed `10c384b`, writes grounded-gated by ADR-0015):
                              standalone Tavily retrieval + deterministic title/entity filters writing
-                             through the standard persistence APIs (441; see ?9.22 / ?9.25)
+                             through the standard persistence APIs (441; see §9.22 / §9.25)
   domainBlocklists.ts        canonical social/search/directory/email-domain blocklists, single source
                              of truth shared by siteProbe, companyDomainLookup, companyIntent,
                              observations and db (141)
-  prospectContract.ts        brief -> contract compilation + validation, plural-persona & city-anchor support, known-metro registry (2,077)
-  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,517)
+  prospectContract.ts        brief -> contract compilation + validation, clausal intent tail isolation, roleOfMatches prepositional disambiguation, known-metro registry (2,519)
+  finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,534)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (789)
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
   querySignature.ts          role/org/topic/geo signatures for near-duplicate and exhausted-query detection (291)
@@ -113,34 +115,33 @@ server/leadSearch/           the discovery engine
   companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v26)
   profileQuality.ts          deterministic social-proof parsing, ghost/company-page & company-scoped contradiction gates
   providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
-  searchSpec.ts ? strategist.ts ? adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ?
-  collectionCapacity.ts ? constraintAblation.ts ? evidenceSelection.ts (alias-aware, location provenance guard) ?
-  intentSignals.ts (abbreviated units, 45d neutral undated age) ? intentEnrichment.ts ?
-  companyIntent.ts ? linkedinPostIntent.ts (annotate-only) ? siteProbe.ts (provenance-tagged, press-URL guard, subpath probe) ?
-  signalStore.ts ? telemetry.ts ? featureFlags.ts ? freeTier.ts ? discoveryRouting.ts ? leadMapping.ts ?
-  sessionHelpers.ts ? observations.ts (company-hint sanitizer: slogans, ellipses,
-                             marketing taglines) ? profileEnrichment.ts ? rejections.ts ?
-  roundDiagnostics.ts ? scoutScoring.ts ? verification.ts ?
-  evidence.ts ? llmBudget.ts ? pipelineTypes.ts ? titleTriage.ts (alias-aware,
+  searchSpec.ts · strategist.ts · adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ·
+  collectionCapacity.ts · constraintAblation.ts · evidenceSelection.ts (alias-aware, location provenance guard) ·
+  intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
+  companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard, subpath probe) ·
+  signalStore.ts · telemetry.ts · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
+  sessionHelpers.ts · observations.ts (company-hint sanitizer: slogans, ellipses,
+                             marketing taglines) · profileEnrichment.ts · rejections.ts ·
+  roundDiagnostics.ts · scoutScoring.ts · verification.ts ·
+  evidence.ts · llmBudget.ts · pipelineTypes.ts · titleTriage.ts (alias-aware,
                              student/intern/trainee denial)
   stages/                    plan (resolveGeo, cluster MAB, cross-session companies, outcome rate,
-                             near-duplicate/exhausted query suppression, stall recovery) ?
-                             retrieve (retrieval cache + vagueness-aware depth + rewriter on both paths) ?
-                             fuse (symmetrical alias-aware) ?
-                             extract (Stage 2.5 gate + deterministic LinkedIn parse that
-                             rejects slogan/ellipsis company fields and defers to the LLM) ?
-                             verify (identity-anchor and decision-maker filtering before attribution) ?
+                             near-duplicate/exhausted query suppression, stall recovery) ·
+                             retrieve (retrieval cache + vagueness-aware depth + rewriter on both paths) ·
+                             fuse (symmetrical alias-aware) ·
+                             extract (Stage 2.5 gate + deterministic LinkedIn parse + domain handle rejection & website rescue) ·
+                             verify (identity-anchor and decision-maker filtering before attribution) ·
                              enrich (company-domain lookup, title resolution, provenance-tagged site probe + annotate-only
-                             post intent) ? judge (strict grounding + polarity guard +
-                             verdict reuse + primary admission gate) ? select ?
+                             post intent) · judge (strict grounding + polarity guard +
+                             verdict reuse + primary admission gate with enterprise protection + 1-candidate micro-splits) · select ·
                              persist (CRM workflow preservation + derived session status)
-src/                         App.tsx (tab shell + error boundaries) ? context/ (LeadContext,
-                             ToastContext, ThemeContext) ? components/ (CRM dashboard, pipeline,
+src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
+                             ToastContext, ThemeContext) · components/ (CRM dashboard, pipeline,
                              prospect table/drawer, outreach, trace terminal, overview/, prospects/,
-                             shared controls) ? lib/ (navigation, saved views, workflow, stats, theme) ? utils/
+                             shared controls) · lib/ (navigation, saved views, workflow, stats, theme) · utils/
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        194 TypeScript files (192 `.test.ts` + `queryIntelligence.eval.ts` +
+test/                        205 files: 200 `.test.ts` + `queryIntelligence.eval.ts` + 2 test helpers + 2 replay fixtures; 31,949 lines
                              `helpers/mockLlm.ts` mock provider), node:test runner via tsx
 scripts/dev.ts               spawns Vite + Express (65 lines)
 scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; ?9.22) (148 lines)
@@ -759,17 +760,41 @@ Remediated all legacy Cloudflare-era bounds, token caps, thinking suppressions, 
   - Removed `<think>` ban when JSON mode is enabled (`server/services/llm.ts`); Gemini Flash High is permitted to use internal chain-of-thought deliberation in JSON mode.
   - Calibrated `TASK_REASONING_EFFORT` by stage complexity: `high` on judge, `medium` on contract/strategist, and `low` on extraction and attribution for fast ~10-15s execution.
 - **High-Concurrency Distributed Micro-Batching**:
-  - Unclamped judge and extraction concurrency to 8 parallel workers (`FINALIST_JUDGE_CONCURRENCY="8"`, `LEAD_EXTRACTION_CONCURRENCY="8"`), micro-batching into rapid parallel chunks (`LEAD_EXTRACTION_CHUNK_CHARS="8000"`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"`, `FINALIST_JUDGE_MICRO_BATCH_SIZE="2"`).
+  - Unclamped judge and extraction concurrency to 8 parallel workers (`FINALIST_JUDGE_CONCURRENCY="8"`, `LEAD_EXTRACTION_CONCURRENCY="8"`), micro-batching into rapid parallel chunks (`LEAD_EXTRACTION_CHUNK_CHARS="8000"`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="3"`, `FINALIST_JUDGE_MICRO_BATCH_SIZE="2"`, later refined to `"1"` in ADR-0017).
   - Synchronized `computeJudgeBatchCapacity` reasoning overhead to 10,000 tokens and dynamic timeout rates to 15ms/tok for reasoning models.
   - Relaxed company attribution concurrency to 8 workers (defaulting to 4).
   - Decoupled Cloudflare 115s timeout ceiling for non-Byesu targets (scaling dynamically up to 300s).
   - Extended planner hard timeout (`PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary`) to 75s and `/api/llm-health` probe timeout to 20s.
   - Raised Groq failsafe output limit from 950 to 4,096 tokens to prevent truncation on fallback.
 
+### 9.28 High-Concurrency Micro-Splitting, Intent Isolation, and Cooldown Resilience (ADR-0017) — (2026-10-28)
+
+Remediated latency thrashing under high reasoning effort, intent phrase contamination in firmographic entities, enterprise candidate withholding, cascading 429 retries, and domain handle false-flags:
+
+- **1-Candidate Micro-Splits for Finalist Judging**:
+  - Configured `FINALIST_JUDGE_MICRO_BATCH_SIZE=1` as the default in `judgeStage.ts`, isolating Gemini 3.8 Flash High chain-of-thought deliberation to single candidates.
+  - Scaled evaluations across 8 parallel slots (`FINALIST_JUDGE_CONCURRENCY=8`) to achieve steady 30-45s per-candidate throughput and instant rolling-pool early-stop halts.
+  - Scaled dynamic judge timeouts to 120s base for 1 candidate, scaling proportionally if micro-batch size is explicitly increased.
+- **Clausal Intent Tail Isolation & Soft Intent Routing**:
+  - Preprocessed briefs in `prospectContract.ts` to strip trailing clausal phrases (`who post about...`, `interested in...`, `focused on...`, `specializing in...`, `scaling with...`, `building...`, `using...`) before company entity extraction.
+  - Routed isolated clausal topics into soft `signal` requirements (`addWithAlternatives('signal', ...)`), keeping company name slots clean while boosting candidate MMR ranking.
+- **Prepositional Company Extraction Disambiguation**:
+  - Implemented `FUNCTION_ALT` expansion and `roleOfMatches` disambiguation in `prospectContract.ts` to distinguish functional leadership roles (`[Role] of [Function]`, e.g. "Head of Sales", "Director of Engineering") from true employer associations (`at [Company]`).
+  - Prevented functional discipline nouns from leaking into `company_name` or `company_type` query constraints.
+- **Enterprise Admission Gate Protection**:
+  - Updated `evaluatePrimaryAdmission` in `judgeStage.ts` with `isAgencyContract(contract)` and contract archetype guards.
+  - Protected corporate enterprise candidates from false-positive withholding on non-agency briefs.
+- **OmniRoute 429 Cooldown & Reset Tracking**:
+  - Introduced `providerRateLimitBackoffUntil` map in `server/services/llm.ts` parsing `reset_seconds`, `retry-after`, and `model_cooldown` error bodies from HTTP 429 responses.
+  - Paused provider queue dispatch until cooldown windows elapse, preventing retry storms across the 8 concurrent slots.
+- **LinkedIn Domain Rejection & Website Rescue**:
+  - Updated `isValidLinkedInHandle` in `src/utils/leadDedupe.ts` to reject handles containing top-level domain extensions (`.com`, `.ai`, `.org`, etc.).
+  - Added corporate handle sanitization in `extractStage.ts`, discarding company handles and rescuing website URLs to `contactDetails.website`.
+  - Pinned by new unit tests in `test/contractShape.test.ts` and `test/leadDedupe.test.ts`.
 
 ## 10. Recommended next actions
 
-Updated 2026-10-24.
+Updated 2026-10-28.
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done - Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
@@ -777,8 +802,8 @@ Updated 2026-10-24.
 4. ~~**Merge to main and branch cleanup.**~~ Done - fast-forward merged to `main`, pushed to `origin/main`, secondary branch deleted.
 5. ~~**Engine Audit Remediation (Packages 1-3)**~~ Done - all 17 audit findings resolved, 1,353 tests passing across 201 suites with 0 failures.
 6. ~~**Refresh the README test badge**~~ - Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
-7. **Watch the primary admission gate's precision/recall trade** - it withholds rather than re-queries, so a brief whose `company_type` evidence is genuinely thin will under-fill its target. `withheldByAdmissionGate` in the judge telemetry is the signal to watch before deciding whether a withheld candidate should trigger a supplementary retrieval instead of a drop.
+7. ~~**Watch the primary admission gate's precision/recall trade**~~ - Addressed by ADR-0017: `evaluatePrimaryAdmission` now includes enterprise admission protection via `isAgencyContract(contract)` to prevent false-positive withholding on corporate briefs.
 8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `087d686` + OmniRoute Unconstrained Modernization (ADR-0016) (2026-10-24).
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `8e6b74f` + High-Concurrency Micro-Splitting & Resilience (ADR-0017) (2026-10-28).

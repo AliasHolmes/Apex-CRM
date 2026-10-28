@@ -565,6 +565,34 @@ describe('Phase 1: Requirement Taxonomy', () => {
         );
       }
     });
+
+    it('Correctly parses corporate executive briefs with clausal tails and enterprise company targets', () => {
+      const brief = 'Heads of Responsible AI, VPs of AI Strategy, and Directors of AI Governance at mid-to-large enterprise companies in the United States who post about AI governance, risk, or human-in-the-loop systems';
+      const contract = buildDeterministicProspectContract(brief);
+
+      // 1. Roles: should capture executive titles, never owner/agency owner
+      const roleReq = contract.requirements.find(r => r.scope === 'person_role');
+      assert.ok(roleReq, 'Should have person_role requirement');
+      assert.ok(roleReq.acceptableTerms.some(t => /Responsible AI/i.test(t)), 'Should include Responsible AI role');
+      assert.ok(roleReq.acceptableTerms.some(t => /AI Strategy/i.test(t)), 'Should include AI Strategy role');
+      assert.ok(roleReq.acceptableTerms.some(t => /AI Governance/i.test(t)), 'Should include AI Governance role');
+      assert.ok(!roleReq.acceptableTerms.some(t => /\b(?:agency\s+owner|firm\s+owner|owner)\b/i.test(t)), 'Must not inject ownerFamily for executive brief');
+
+      // 2. Company: should capture enterprise companies, never human-in-the-loop systems or Responsible AI
+      const compReq = contract.requirements.find(r => r.scope === 'company_type');
+      assert.ok(compReq, 'Should have company_type requirement');
+      assert.ok(compReq.acceptableTerms.some(t => /enterprise/i.test(t)), 'Should include enterprise in acceptableTerms');
+      assert.ok(!compReq.acceptableTerms.some(t => /human-in-the-loop/i.test(t)), 'Must not classify human-in-the-loop systems as company_type');
+      assert.ok(!compReq.acceptableTerms.some(t => /Responsible AI/i.test(t)), 'Must not classify Responsible AI as company_type');
+
+      // 3. Signals: should capture intent topics as soft signal requirements
+      const signalReqs = contract.requirements.filter(r => r.scope === 'signal');
+      assert.ok(signalReqs.length >= 2, 'Should capture soft signal topics');
+      assert.ok(signalReqs.every(s => s.importance === 'soft'), 'Intent signal requirements must be soft');
+      const signalDescriptions = signalReqs.map(s => s.description.toLowerCase());
+      assert.ok(signalDescriptions.some(d => d.includes('governance')), 'Should include AI governance signal');
+      assert.ok(signalDescriptions.some(d => d.includes('human-in-the-loop')), 'Should include human-in-the-loop signal');
+    });
   });
 });
 

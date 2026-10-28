@@ -30,7 +30,7 @@ import {
 } from "../../db.js";
 import { candidateVerdictKey, computeEvidenceHash, isCacheableFingerprint } from "../candidateVerdicts.js";
 import type { SessionContext, LeadQueryRunTracker } from "../pipelineTypes.js";
-import type { ProspectContract } from "../prospectContract.js";
+import { isAgencyContract, type ProspectContract } from "../prospectContract.js";
 import { deriveContractDomainCluster } from "../adaptiveScheduler.js";
 import type { QueryRunStats } from "../strategist.js";
 import {
@@ -120,6 +120,20 @@ export function evaluatePrimaryAdmission(
     (qualification?.requirements || []).find((a: any) => a.requirementId === id)
       ?.status;
 
+  const isGenericEnterpriseReq = (req: any): boolean => {
+    const desc = String(req.description || "").toLowerCase();
+    const source = String(req.sourcePhrase || "").toLowerCase();
+    const terms = (req.acceptableTerms || []).map((t: string) => String(t).toLowerCase());
+    return (
+      [desc, source, ...terms].some((t) =>
+        /\b(?:enterprise|enterprises|mid-to-large|large enterprise|mid-market|corporate|corporation|corporations)\b/i.test(t)
+      ) &&
+      ![desc, source, ...terms].some((t) =>
+        /\b(?:agenc|broker|clinic|dental|law firm|boutique)\b/i.test(t)
+      )
+    );
+  };
+
   const groups = new Map<string, any[]>();
   for (const req of defining as any[]) {
     const key =
@@ -127,7 +141,13 @@ export function evaluatePrimaryAdmission(
     groups.set(key, [...(groups.get(key) || []), req]);
   }
   for (const members of groups.values()) {
+    const isEnterpriseGroup =
+      !isAgencyContract(contract) && members.every(isGenericEnterpriseReq);
     if (!members.some((m) => statusOf(m.id) === "pass")) {
+      // For enterprise briefs, do not withhold corporate candidates if company type is unknown but employer is present
+      if (isEnterpriseGroup && lead?.currentCompany) {
+        continue;
+      }
       return {
         admit: false,
         reason: `Company type is the defining requirement of this brief and was not proven (${members.map((m) => statusOf(m.id) || "missing").join("/")}).`,
@@ -874,11 +894,13 @@ export async function evaluateIncrementalJudgeBatches(
           retryOnParseFailure: batch.length === 1,
           timeoutMs: Math.max(
             30_000,
-            Number(
-              process.env.LLM_FINALIST_TIMEOUT_MS ||
-                process.env.LLM_TIMEOUT_MS ||
-                150_000,
-            ),
+            batch.length === 1
+              ? Number(process.env.LLM_FINALIST_SINGLE_TIMEOUT_MS || 120_000)
+              : Number(
+                  process.env.LLM_FINALIST_TIMEOUT_MS ||
+                    process.env.LLM_TIMEOUT_MS ||
+                    150_000,
+                ),
           ),
           circuitBreaker: llmCircuitBreaker,
           signal: state.abortController.signal,

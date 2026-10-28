@@ -93,6 +93,8 @@ export function isValidLinkedInHandle(handle: string): boolean {
   if (RESERVED_LINKEDIN_PATHS.has(clean)) return false;
   if (/^activity(?:[-_]|\b)/i.test(clean)) return false;
   if (/^\d+$/.test(clean)) return false;
+  // Reject website domains, top-level domain extensions, or URLs in handle
+  if (/\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(clean)) return false;
   return /^[a-z0-9\u0080-\uffff](?:[a-z0-9_.\u0080-\uffff-]*[a-z0-9\u0080-\uffff])?$/i.test(clean);
 }
 

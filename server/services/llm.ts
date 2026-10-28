@@ -583,18 +583,21 @@ export class LLMProviderError extends Error {
   status?: number;
   isTokenLimit: boolean;
   errorCode?: string | number;
+  resetSeconds?: number;
 
   constructor(
     provider: LLMProvider,
     status: number | undefined,
     message: string,
     errorCode?: string | number,
+    resetSeconds?: number,
   ) {
     super(`[${provider.name}] ${message}`);
     this.name = "LLMProviderError";
     this.provider = provider;
     this.status = status;
     this.errorCode = errorCode;
+    this.resetSeconds = resetSeconds;
     const is429OrRateLimit = status === 429 || /429|rate[-_ ]?limit/i.test(message);
     this.isTokenLimit =
       !is429OrRateLimit &&
@@ -711,6 +714,7 @@ export function isCircuitBreakingProviderFailure(error: Error): boolean {
 }
 
 export const providerCooldowns = new Map<string, number>();
+export const providerRateLimitBackoffUntil = new Map<string, number>();
 
 // --- Provider Concurrency & Slot Management ---
 // Primary (OmniRoute / Byesu) supports up to 8 parallel slots (configurable via OPENAI_CONCURRENT_SLOTS / BYESU_CONCURRENT_SLOTS).
@@ -1001,6 +1005,7 @@ export function recordProviderSuccess(providerId: string, breaker?: LLMSessionCi
   record.outReason = undefined;
   record.halfOpenActive = false;
   providerCooldowns.delete(providerId);
+  providerRateLimitBackoffUntil.delete(providerId);
   if (breaker) {
     const pid = providerId as LLMProvider["id"];
     breaker.disabledProviderIds.delete(pid);
@@ -1085,6 +1090,7 @@ export function recordProviderFailure(providerId: string, error: Error, breaker?
         : `${record.consecutiveFatalFailures} consecutive fatal failures`;
       record.halfOpenActive = false;
       providerCooldowns.delete(providerId);
+  providerRateLimitBackoffUntil.delete(providerId);
       markBreakerDisabledByHealth(breaker, providerId);
       console.warn(`[llm] ${providerId} marked OUT for 60s (${record.outReason}).`);
       return;
@@ -1093,6 +1099,7 @@ export function recordProviderFailure(providerId: string, error: Error, breaker?
     return;
   }
 
+  const resetSeconds = error instanceof LLMProviderError ? error.resetSeconds : undefined;
   // Rate limits and transient upstream errors back off briefly. Bad answers (unparseable
   // output, schema/validation errors) are quality failures, not availability failures: they
   // neither start a cooldown nor count toward OUT.
@@ -1102,12 +1109,22 @@ export function recordProviderFailure(providerId: string, error: Error, breaker?
     (status !== undefined && status >= 500) ||
     (!untrusted && /fetch failed|econnreset|econnrefused|socket hang up|network/i.test(error.message));
   if (isRateLimited || isTransientUpstream || isFullRequestTimeout) {
-    startProviderCooldown(providerId, cooldownMs);
+    let effectiveCooldownMs = cooldownMs;
+    if (resetSeconds && resetSeconds > 0) {
+      effectiveCooldownMs = Math.min(Math.max(resetSeconds * 1000, 5000), 60000);
+      providerRateLimitBackoffUntil.set(providerId, Date.now() + effectiveCooldownMs);
+      console.warn(`[llm] ${providerId} rate limited with model cooldown: backing off for ${effectiveCooldownMs / 1000}s.`);
+    } else if (isRateLimited) {
+      effectiveCooldownMs = Math.max(cooldownMs, 20_000);
+      providerRateLimitBackoffUntil.set(providerId, Date.now() + effectiveCooldownMs);
+    }
+    startProviderCooldown(providerId, effectiveCooldownMs);
   }
 }
 
 export function clearProviderCooldowns(): void {
   providerCooldowns.clear();
+  providerRateLimitBackoffUntil.clear();
   for (const health of providerHealthState.values()) {
     if (health.status === "cooling_down") {
       health.status = "healthy";
@@ -1575,6 +1592,10 @@ export function computeByesuDynamicTimeoutMs(
   );
 
   const candidateTimeout = Math.max(minByesuTimeout, workloadTimeoutMs);
+  if (metadata?.candidateCount === 1) {
+    const singleCeiling = Math.max(90_000, Number(process.env.SINGLE_CANDIDATE_TIMEOUT_MS || 120_000));
+    return Math.min(singleCeiling, candidateTimeout);
+  }
   if (isCloudflareBounded) {
     return Math.min(CLOUDFLARE_MAX_TIMEOUT_MS, candidateTimeout);
   }
@@ -1594,6 +1615,15 @@ async function sendChatCompletion(
     responseFormat?: { type: "json_object" };
   } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "hardTimeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata">,
 ): Promise<string> {
+  const backoffUntil = providerRateLimitBackoffUntil.get(provider.id);
+  if (backoffUntil && Date.now() < backoffUntil) {
+    const waitMs = Math.min(backoffUntil - Date.now(), 60000);
+    if (waitMs > 100) {
+      console.warn(`[llm] ${provider.name} rate limited: pausing slot dispatch for ${Math.round(waitMs / 1000)}s.`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+
   if (options?.signal?.aborted) {
     const cancelError = new Error("LLM request was aborted by caller.");
     cancelError.name = "AbortError";
@@ -1731,9 +1761,16 @@ async function sendChatCompletion(
   if (!res.ok) {
     const rawText = await res.text();
     let errorCode: string | number | undefined;
+    let resetSeconds: number | undefined;
     try {
       const parsed = JSON.parse(rawText);
       errorCode = parsed?.error?.code ?? parsed?.code;
+      if (parsed?.error?.reset_seconds !== undefined || parsed?.reset_seconds !== undefined) {
+        resetSeconds = Number(parsed?.error?.reset_seconds ?? parsed?.reset_seconds);
+      } else if (typeof parsed?.error?.message === "string") {
+        const match = parsed.error.message.match(/retry(?:ing)?\s+after\s+(\d+)\s*s/i) || parsed.error.message.match(/cooldown.*?(\d+)\s*s/i);
+        if (match) resetSeconds = Number(match[1]);
+      }
     } catch {}
     const err = truncateProviderError(rawText);
     void sendDirectLangfuseTrace({
@@ -1755,6 +1792,7 @@ async function sendChatCompletion(
       res.status,
       `chat completion error ${res.status}: ${err}`,
       errorCode,
+      resetSeconds,
     );
   }
 
@@ -3103,7 +3141,7 @@ export const STRATEGIST_SYSTEM_PROMPT = `You are an expert B2B sales search stra
 /** Focused prompt for Step 3 - initial scouting only. Deep enrichment and email
  * discovery deliberately happen after manual selection. */
 export const EXTRACTION_SYSTEM_PROMPT = `You are a B2B prospect scouting extraction engine. Extract candidates with verified identity/profile and exclude anonymous background mentions or passing citations. Only extract an individual if they have an identifiable professional profile/identity mentioned as the subject of the snippet. Extract only facts directly supported by source evidence and return valid JSON matching the schema exactly.
-Rules: Never invent data. Use empty strings for missing fields. Do not score or judge relevance. Do not infer or generate email addresses. Do not invent employment history, company size, funding, intent, or timing. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If current employment is unclear from the evidence, set extractionConfidence below 6. If reasoning is visible, keep it outside the final JSON markers.`;
+Rules: Never invent data. Use empty strings for missing fields. Do not score or judge relevance. Do not infer or generate email addresses. Do not invent employment history, company size, funding, intent, or timing. Never synthesize or invent LinkedIn URLs. Set contactDetails.linkedinUrl ONLY if the evidence explicitly contains the individual's personal /in/ profile URL. Never prepend /in/ to domain names or company names. If LINK is a company website, article, or company post without an individual personal profile URL, leave contactDetails.linkedinUrl empty. Classify seniorityLevel by actual buying authority, not substring matching: Assistant to CEO is Assistant, student club founder is Student/IC, Product Owner is not Company Owner, and CRO/CIO/Head of Engineering/VP of Sales are executive authority. Keep summaries under 140 characters and evidence reasons under 90 characters. If current employment is unclear from the evidence, set extractionConfidence below 6. If reasoning is visible, keep it outside the final JSON markers.`;
 
 // -----------------------------------------------------------------------------
 // Trimmed schema for bulk extraction.

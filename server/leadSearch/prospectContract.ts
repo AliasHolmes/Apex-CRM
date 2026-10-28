@@ -420,7 +420,7 @@ const TOOLING_SIGNAL_RE = new RegExp(
 
 /** An org-noun phrase (""... agencies", "... firms") is a vertical, not a tool. */
 const ORG_NOUN_RE = new RegExp(
-  '\\b(?:agenc(?:y|ies)|firms?|company|companies|consultan(?:t|cy|cies|ts)?|consulting|studios?|integrat(?:or|ors)?|businesses?|teams?|practices?)\\b',
+  '\\b(?:agenc(?:y|ies)|firms?|company|companies|consultan(?:t|cy|cies|ts)?|consulting|studios?|integrat(?:or|ors)?|businesses?|teams?|practices?|enterprises?|startups?|corporations?)\\b',
   'i',
 );
 
@@ -452,7 +452,7 @@ export function isGeoTermCandidate(term: string): boolean {
 // "Australia interested in ...") describe intent, not a place or a vertical.
 // Applied to location tokens and company-type candidates alike.
 const CLAUSAL_TAIL_RE =
-  /\s+(?:specializing|specialises?|specializ(?:ed|ing)|specialis(?:ed|ing)|focusing|focused|concentrating|aiming|targeting|interested|working|looking)\b[\s\S]*$/i;
+  /\s+(?:specializing|specialises?|specializ(?:ed|ing)|specialis(?:ed|ing)|focusing|focused|concentrating|aiming|targeting|interested|working|looking|who\s+(?:post|share|write|talk|discuss|speak|publish)(?:s|ed|ing)?(?:\s+about)?|post(?:ing|s)?(?:\s+about)?|sharing|discussing)\b[\s\S]*$/i;
 
 /**
  * Geo entities named anywhere in a brief (metros, countries, states, regions).
@@ -576,12 +576,21 @@ const expandAcceptableTerms = (
   }
 
   if (scope === 'person_role') {
-    if (terms.some(t => /\b(owners?|firm owner|agency owner|founders?|co-?founder|ceo|chief executive officer|president|managing partner|managing director|proprietor)\b/i.test(t))) {
+    if (terms.some(t => /\b(owners?|firm owner|agency owner|founders?|co-?founder|ceo|chief executive officer|(?<!vice\s+)presidents?|managing partner|managing director|proprietor)\b/i.test(t))) {
       const ownerFamily = ['owner', 'owners', 'firm owner', 'founder', 'founders', 'co-founder', 'cofounder', 'CEO', 'chief executive officer', 'managing partner', 'managing director', 'president', 'proprietor'];
       if (options.agencyBrief || terms.some(t => /\bagency\s+owner\b/i.test(t))) {
         ownerFamily.push('agency owner');
       }
       expanded.push(...ownerFamily);
+    }
+    if (terms.some(t => /\bheads?\b/i.test(t))) {
+      expanded.push('head', 'heads');
+    }
+    if (terms.some(t => /\bdirectors?\b/i.test(t))) {
+      expanded.push('director', 'directors');
+    }
+    if (terms.some(t => /\b(vps?|vice\s+presidents?)\b/i.test(t))) {
+      expanded.push('vp', 'vps', 'vice president', 'vice presidents');
     }
     if (terms.some(t => /\b(cto|chief technology officer|vp engineering|vice president engineering|vp product|vice president product)\b/i.test(t))) {
       expanded.push('CTO', 'chief technology officer', 'VP Engineering', 'vice president engineering', 'VP Product', 'vice president product', 'founder', 'co-founder', 'CEO');
@@ -598,6 +607,9 @@ const expandAcceptableTerms = (
   }
 
   if (scope === 'company_type' || scope === 'company_industry') {
+    if (terms.some(t => /\b(enterprise|mid-to-large\s+enterprise|large\s+enterprise)\b/i.test(t))) {
+      expanded.push('enterprise', 'mid-to-large enterprise', 'large enterprise', 'enterprise company', 'Fortune 500', 'corporate');
+    }
     const agencyTerms = Boolean(
       options.agencyBrief ||
       terms.some(t => /\b(agenc(?:y|ies)|consultanc(?:y|ies)|studios?|integrators?)\b/i.test(t))
@@ -781,7 +793,12 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   // G22: plural-tolerant role matchers -- "CEOs", "Presidents", "VPs",
   // "co-founders" must resolve to person_role, never leak to company_type.
   const roleHints = ['owner', 'owners', 'founder', 'founders', 'co-founder', 'co-founders', 'cofounder', 'cofounders', 'ceo', 'ceos', 'chief executive officer', 'chief executive officers', 'president', 'presidents', 'partner', 'partners', 'vp', 'vps', 'vice president', 'vice presidents', 'head of', 'director', 'directors'];
-  const hintedRoles = roleHints.filter(term => new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}(?:s|es)?\\b`, 'i').test(brief));
+  const hintedRoles = roleHints.filter(term => {
+    if (term === 'head of') {
+      return /\bheads?\s+of\b/i.test(brief);
+    }
+    return new RegExp(`\\b${term.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}(?:s|es)?\\b`, 'i').test(brief);
+  });
 
   // Guard rails: free-text briefs routinely contain buying-signal timeframes
   // ("from the last 45 days seeking...") and role modifiers ("Managing
@@ -815,8 +832,8 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     if (JUNK_TERM_PATTERN.test(v)) return false;
     // Buying-clause fragments ("UK who use Clay", "talk about ... deliverability",
     // "looking to adopt generative AI") are context, not company types.
-    if (/\bwho\s+(?:use|talk|need|want|require|adopt|care)\b/i.test(v)) return false;
-    if (/\b(?:talk(?:ing)?\s+about|looking\s+(?:to|for)|interested\s+in)\b/i.test(v)) return false;
+    if (/\bwho\s+(?:use|talk|need|want|require|adopt|care|post|share|write)\b/i.test(v)) return false;
+    if (/\b(?:talk(?:ing)?\s+about|looking\s+(?:to|for)|interested\s+in|post(?:ing|s)?\s+about|sharing\s+about|discussing)\b/i.test(v)) return false;
     if (ACTION_VERB_ALONE_PATTERN.test(v)) return false;
     return true;
   };
@@ -883,15 +900,49 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     ...capturedLocTokens,
   ]).filter(term => !TOOLING_SIGNAL_RE.test(term));
 
+  // Strip intent/posting clausal tails so their topics never leak into company_type or role
+  const postAboutMatch = clean(brief).match(
+    /\b(?:who\s+(?:post|share|write|talk|discuss|speak|publish)(?:s|ed|ing)?(?:\s+about)?|post(?:ing|s)?(?:\s+about)?|sharing|discussing)\s+([^.]+)/i
+  );
+  let intentClauseTopics: string[] = [];
+  let briefForCompanySegmentation = clean(brief);
+  if (postAboutMatch) {
+    const clauseText = postAboutMatch[1].trim();
+    intentClauseTopics = clauseText
+      .split(/,|\band\b|\bor\b/i)
+      .map(s => s.trim().replace(CLAUSAL_TAIL_RE, '').trim())
+      .filter(s => s.length >= 2 && !isGeoTermCandidate(s));
+    briefForCompanySegmentation = briefForCompanySegmentation.slice(0, postAboutMatch.index).trim();
+  }
+
   // Pattern A: Prepositional Postfix "[Role] of/at/in/for (a/an)? [Company Type]"
   // e.g. "Founder or owner of a marketing agency with 5-50 employees" -> "marketing agency"
   const ROLE_ALT = 'owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|heads?';
   // Business functions ("procurement directors", "sales VPs") belong to the role, not the company type.
-  const FUNCTION_ALT = 'procurement|purchasing|sales|marketing|growth|engineering|operations|finance|financial|hr|human resources|people|talent|it|information technology|product|supply chain|logistics|legal|compliance|security|data|analytics|customer success|revenue|partnerships|business development|research|clinical|nursing|medical|quality|facilities|training|learning|risk|treasury|tax|audit|communications|design|innovation|digital|strategy';
+  const FUNCTION_ALT = 'procurement|purchasing|sales|marketing|growth|engineering|operations|finance|financial|hr|human resources|people|talent|it|information technology|product|supply chain|logistics|legal|compliance|security|data|analytics|customer success|revenue|partnerships|business development|research|clinical|nursing|medical|quality|facilities|training|learning|risk|treasury|tax|audit|communications|design|innovation|digital|strategy|responsible ai|ai governance|ai strategy|ai safety|data governance|model governance|artificial intelligence|machine learning|ai';
   const FUNCTIONAL_AREA_PATTERN = new RegExp(`^(?:${FUNCTION_ALT})$`, 'i');
   const functionalRoleMatch =
     clean(brief).match(new RegExp(`\\b(?:${FUNCTION_ALT})\\s+(?:${ROLE_ALT}|managers?|leads?|officers?|buyers?)\\b`, 'i'))?.[0] || '';
-  const prepCompanyMatch = clean(brief).match(new RegExp(`\\b(?:${ROLE_ALT})\\b\\s+(?:of|at|in|for)\\s+(?:an?\\s+)?([^,.]+?)(?=\\s+(?:with|in|near|from|located|who|having|\\d+|,|\\.|$))`, 'i'))?.[1]?.trim() || '';
+  const prepAtCompanyMatch = briefForCompanySegmentation.match(
+    /\b(?:at|for)\s+(?:an?\s+)?([^,.]+?)(?=\s+(?:with|in|near|from|located|who|having|\d+|,|\.|$))/i
+  )?.[1]?.trim() || '';
+  const prepOfCompanyMatch = briefForCompanySegmentation.match(
+    new RegExp(`\\b(?:${ROLE_ALT})\\b\\s+(?:of)\\s+(?:an?\\s+)?([^,.]+?)(?=\\s+(?:with|in|near|from|located|who|having|\\d+|,|\\.|$))`, 'i')
+  )?.[1]?.trim() || '';
+  const prepCompanyMatch = prepAtCompanyMatch || (
+    prepOfCompanyMatch && (ORG_NOUN_RE.test(prepOfCompanyMatch) || !FUNCTIONAL_AREA_PATTERN.test(prepOfCompanyMatch)) && !/\b(?:ai|governance|strategy|operations|engineering|sales|marketing|finance|product|hr|compliance|risk|safety)\b/i.test(prepOfCompanyMatch)
+      ? prepOfCompanyMatch
+      : ''
+  );
+
+  const roleOfMatches = Array.from(
+    clean(brief).matchAll(new RegExp(`\\b(?:${ROLE_ALT}|managers?|leads?|officers?)\\s+of\\s+([A-Za-z0-9 /&-]+?)(?=\\s+(?:at|for|who|$)|[,.])`, 'gi'))
+  ).flatMap(m => {
+    const full = m[0].trim();
+    const sing = singularizeRole(full);
+    const alt = full.replace(/^vps?\b/i, 'Vice President');
+    return [full, sing, alt].filter(Boolean);
+  });
 
   // Pattern B: Direct Prefix "[Company Type] [Role]"
   // e.g. "AI agency owner" -> "AI agency"
@@ -930,6 +981,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   // (e.g. founder, CEO, owner, managing director) qualify without conjunction failures.
   const knownRoleTerms = unique([
     ...(functionalRoleMatch ? [functionalRoleMatch, singularizeRole(functionalRoleMatch)] : []),
+    ...roleOfMatches,
     ...(professionMatch && ownerMatch ? [`${professionMatch} ${ownerMatch}`, `${professionMatch} owner`, `${professionMatch} founder`] : []),
     ...(professionMatch ? [professionMatch, professionMatch.replace(/s\b/i, ''), professionMatch.endsWith('s') ? professionMatch : `${professionMatch}s`] : []),
     ...(spec?.person?.includeTitles || []),
@@ -1001,6 +1053,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     // ("B2B cold email agencies") where the tooling word qualifies the niche.
     if (TOOLING_SIGNAL_RE.test(cleaned) && !ORG_NOUN_RE.test(cleaned)) return;
     extractedCompanyTypes.push(cleaned);
+    if (/\b(?:enterprise|mid-to-large\s+enterprise|large\s+enterprise)\b/i.test(cleaned)) {
+      if (!extractedCompanyTypes.includes('enterprise')) extractedCompanyTypes.push('enterprise');
+    }
   };
 
   if (prepCompanyMatch && isCleanCompanyTypeTerm(prepCompanyMatch)) {
@@ -1028,7 +1083,7 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   }
 
   const roleStopRegex = /\b(?:owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|vice\s+presidents?|heads?)\b/i;
-  for (const segment of clean(brief).split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
+  for (const segment of briefForCompanySegmentation.split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
     if (!segment) continue;
     const rawPrefix = segment.match(new RegExp(`\\b([^,.]+?)\\s+(?:${ROLE_ALT})\\b`, 'i'))?.[1]?.trim();
     const prefix = rawPrefix ? rawPrefix.replace(ACTION_VERB_PREFIX_PATTERN, '').trim() : '';
@@ -1072,6 +1127,11 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     addWithAlternatives('signal', intentMatch, ['hiring', 'careers', 'open roles', 'recruiting', 'growing team'], 'soft');
   }
   add('signal', spec?.signals?.include || [], 'soft');
+  for (const topic of intentClauseTopics) {
+    if (topic && isCleanRequirementTerm(topic)) {
+      addWithAlternatives('signal', topic, [topic], 'soft');
+    }
+  }
 
   // Extract recognized tools from the brief into soft signal requirements
   const detectedBriefTools: string[] = [];

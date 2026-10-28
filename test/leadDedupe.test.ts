@@ -5,6 +5,7 @@ import {
   canonicalLinkedInIdentity,
   hasDuplicateProfile,
   checkHandleNameMismatch,
+  isValidLinkedInHandle,
 } from '../src/utils/leadDedupe.ts';
 
 test('canonical LinkedIn identity collapses URL presentation variations', () => {
@@ -99,6 +100,16 @@ test('checkHandleNameMismatch flags obvious multi-word name discrepancies withou
 
   const singleWordCase = checkHandleNameMismatch('Eli Rivera', 'https://linkedin.com/in/elirivera1');
   assert.equal(singleWordCase.mismatch, false);
+});
+
+test('isValidLinkedInHandle rejects website domain extensions and accepts valid personal handles', () => {
+  assert.equal(isValidLinkedInHandle('humanintheloopservices.com'), false);
+  assert.equal(isValidLinkedInHandle('marketing-agency.io'), false);
+  assert.equal(isValidLinkedInHandle('startup.ai'), false);
+  assert.equal(isValidLinkedInHandle('consulting.co'), false);
+  assert.equal(isValidLinkedInHandle('john-doe'), true);
+  assert.equal(isValidLinkedInHandle('davidvineyard'), true);
+  assert.equal(isValidLinkedInHandle('jason_riggs_123'), true);
 });
 
 

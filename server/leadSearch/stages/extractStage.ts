@@ -1047,7 +1047,7 @@ export async function executeExtractStage(
 Rules:
 - Extract every person who has a full name and an associated role, title, company, or headline.
 - Do not invent data. Use empty strings for missing fields.
-- Set contactDetails.linkedinUrl to the candidate's canonical LinkedIn profile URL from LINK or the snippet (e.g. https://linkedin.com/in/username). If LINK is a LinkedIn post or redirect, extract the person's profile URL.
+- Set contactDetails.linkedinUrl to the candidate's canonical LinkedIn profile URL from LINK or the snippet (e.g. https://linkedin.com/in/username). If LINK is a LinkedIn post or redirect, extract the person's profile URL. Never synthesize, invent, or guess a LinkedIn URL. If LINK is a company website, article, or company post without a personal profile URL, leave contactDetails.linkedinUrl empty.
 - If LINK is not a LinkedIn URL or is missing, leave contactDetails.linkedinUrl empty.
 - Preserve SOURCE_PROVIDER as sourceProvider.
 - Add evidenceReasons as 1 short factual summary of the person's role/company from the snippet.
@@ -1421,10 +1421,27 @@ Evidence:
       if (normalized) {
         lead.contactDetails.linkedinUrl = `https://${normalized}`;
       }
-      const handleCheck = checkHandleNameMismatch(lead.fullName, lead.contactDetails.linkedinUrl);
-      if (handleCheck.mismatch && handleCheck.reason) {
-        if (!Array.isArray(lead.evidenceReasons)) lead.evidenceReasons = [];
-        lead.evidenceReasons.push(`[Identity Warning] ${handleCheck.reason}`);
+      const handle = getLinkedInHandle(lead.contactDetails.linkedinUrl);
+      const rawMatch = lead.contactDetails.linkedinUrl.match(/linkedin\.com\/in\/([^/?#]+)/i);
+      const rawSegment = rawMatch?.[1] ? decodeURIComponent(rawMatch[1]).replace(/[.,;:)\]]+$/, "").trim().toLowerCase() : "";
+      const effectiveHandle = handle || rawSegment;
+      const rawComp = lead.currentCompany ? cleanCompanyNameFromUrlOrTitle(lead.currentCompany, lead.headline || lead.currentTitle) : "";
+      const companyClean = rawComp.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const handleClean = effectiveHandle.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const isDomainHandle = !isValidLinkedInHandle(effectiveHandle) || /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle);
+      const isCompanyHandle = companyClean.length >= 3 && handleClean === companyClean;
+
+      if (isDomainHandle || isCompanyHandle) {
+        if (isDomainHandle && !lead.contactDetails.website && /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle)) {
+          lead.contactDetails.website = `https://${effectiveHandle}`;
+        }
+        lead.contactDetails.linkedinUrl = "";
+      } else {
+        const handleCheck = checkHandleNameMismatch(lead.fullName, lead.contactDetails.linkedinUrl);
+        if (handleCheck.mismatch && handleCheck.reason) {
+          if (!Array.isArray(lead.evidenceReasons)) lead.evidenceReasons = [];
+          lead.evidenceReasons.push(`[Identity Warning] ${handleCheck.reason}`);
+        }
       }
     }
     if (lead?.currentCompany) {
@@ -1441,7 +1458,27 @@ Evidence:
     ...datasetExtractedProfiles,
     ...deterministicExtractedProfiles,
     ...standardProfiles,
-  ];
+  ].map((lead: any) => {
+    if (lead?.contactDetails?.linkedinUrl) {
+      const handle = getLinkedInHandle(lead.contactDetails.linkedinUrl);
+      const rawMatch = lead.contactDetails.linkedinUrl.match(/linkedin\.com\/in\/([^/?#]+)/i);
+      const rawSegment = rawMatch?.[1] ? decodeURIComponent(rawMatch[1]).replace(/[.,;:)\]]+$/, "").trim().toLowerCase() : "";
+      const effectiveHandle = handle || rawSegment;
+      const rawComp = lead.currentCompany ? cleanCompanyNameFromUrlOrTitle(lead.currentCompany, lead.headline || lead.currentTitle) : "";
+      const companyClean = rawComp.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const handleClean = effectiveHandle.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const isDomainHandle = !isValidLinkedInHandle(effectiveHandle) || /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle);
+      const isCompanyHandle = companyClean.length >= 3 && handleClean === companyClean;
+
+      if (isDomainHandle || isCompanyHandle) {
+        if (isDomainHandle && !lead.contactDetails.website && /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle)) {
+          lead.contactDetails.website = `https://${effectiveHandle}`;
+        }
+        lead.contactDetails.linkedinUrl = "";
+      }
+    }
+    return lead;
+  });
   return {
     extractedProfiles,
     evidenceByUrl,

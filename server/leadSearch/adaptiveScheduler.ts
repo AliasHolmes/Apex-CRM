@@ -215,9 +215,6 @@ const rowScopeKey = (row: AdaptivePerformanceRow & { domain_cluster?: string; do
  * Math.random; tests call seedAdaptiveRandom(n) for identical selections.
  */
 let adaptiveRandomSource: () => number = Math.random;
-export function setAdaptiveRandomSource(fn: () => number) {
-  adaptiveRandomSource = fn;
-}
 export function seedAdaptiveRandom(seed: number) {
   let s = seed >>> 0;
   adaptiveRandomSource = () => {
@@ -388,7 +385,6 @@ export function scoreAdaptiveArm(
   };
 }
 
-export const scoreQueryPerformanceRow = scoreAdaptiveArm;
 export const scheduleAdaptiveSearchTasks = scheduleAdaptiveRetrievalTasks;
 
 export function scheduleAdaptiveRetrievalTasks(

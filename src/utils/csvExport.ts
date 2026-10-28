@@ -154,7 +154,7 @@ export function extractIcebreakerQuote(lead: Lead): string {
 
   // 5. Explicit hiring signal in notes or summary
   const textToScan = [lead.notes, lead.profile?.summary].filter(Boolean).join(' ');
-  const signalMatch = textToScan.match(/(?:hiring signal|hiring intent)[:\s]+["“']?([^"”\n\r]+)["”']?/i);
+  const signalMatch = textToScan.match(/(?:hiring signal|hiring intent)[:\s]+["\u201C']?([^"\u201D\n\r]+)["\u201D']?/i);
   if (signalMatch && signalMatch[1]?.trim()) {
     return signalMatch[1].trim();
   }

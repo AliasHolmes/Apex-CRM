@@ -376,9 +376,6 @@ export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Pr
 
 export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
 
-/** @deprecated Atria has been decommissioned. Kept for backwards compatibility. */
-export const ATRIA_MAX_TIMEOUT_MS = 600_000;
-
 function resolveDynamicQueueTimeoutMs(): number {
   const configured = Number(process.env.LLM_QUEUE_TIMEOUT_MS);
   if (Number.isFinite(configured) && configured > 0 && configured < 5_000) {

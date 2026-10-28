@@ -9,7 +9,6 @@ import type { ProspectContract } from "./prospectContract.js";
 import type { SearchQueryPlanItem } from "./searchSpec.js";
 
 export const STALL_DUPLICATE_RATE_THRESHOLD = 0.40;
-export const STALL_PRODUCTIVE_ACCEPTED_THRESHOLD = 2;
 
 export type StallLevel = 0 | 1 | 2 | 3;
 

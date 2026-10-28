@@ -265,7 +265,7 @@ export function ExportModal({
                         <span className="text-sm font-bold text-foreground">{preset.label}</span>
                         <Badge
                           variant="outline"
-                          className={`h-5 text-[10px] px-1.5 font-medium ${
+                          className={`h-5 text-xs px-1.5 font-medium ${
                             presetId === 'outreach'
                               ? 'border-warning/40 bg-warning/10 text-warning'
                               : presetId === 'crm'
@@ -284,7 +284,7 @@ export function ExportModal({
                         {preset.description}
                       </p>
 
-                      <div className="mt-1.5 text-[11px] font-medium text-foreground/70 flex items-center gap-1">
+                      <div className="mt-1.5 text-xs font-medium text-foreground/70 flex items-center gap-1">
                         <span className="text-muted-foreground">Best for:</span>
                         <span className="truncate">{preset.targetTools}</span>
                       </div>
@@ -302,7 +302,7 @@ export function ExportModal({
                 <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
                 Columns included ({activePresetDef.columns.length})
               </span>
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 Targeting: {targetLeads.length} record{targetLeads.length === 1 ? '' : 's'}
               </span>
             </div>
@@ -320,7 +320,7 @@ export function ExportModal({
                   <Badge
                     key={col.id}
                     variant={isHighlight ? 'default' : 'secondary'}
-                    className={`text-[11px] px-2 py-0.5 font-normal ${
+                    className={`text-xs px-2 py-0.5 font-normal ${
                       isHighlight
                         ? 'bg-primary text-primary-foreground font-semibold shadow-2xs'
                         : 'bg-background/80 text-foreground/80 border border-border/50'

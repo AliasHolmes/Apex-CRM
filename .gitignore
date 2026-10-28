@@ -11,5 +11,6 @@ coverage/
 .apex-data-pre-v22-backup/
 .workbuddy-ai/
 .codebase-memory/
+.perch/
 
 apex-dev.pid

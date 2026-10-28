@@ -391,13 +391,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 160+ test files (unit/integration suites + 1 evaluation harness, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 204 TypeScript files in `test/` (201 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (100% pass)
+# Full test suite (1,370 pass / 0 fail)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -437,12 +437,14 @@ src/
     traceStore.ts            useSyncExternalStore reactive SSE trace and log store
     leadMutations.ts         Optimistic rebase and canonical preference utilities
   types.ts                   Shared TypeScript types and contract definitions
-  utils/                     Deduplication, normalization, and UI formatting
+  utils/                     Deduplication, normalization, UI formatting, and multi-preset CSV export
+    csvExport.ts             Four export presets (outreach/crm/diagnostic/legacy), CSV/TSV serializers, formula-injection guard
+    csvFieldMapping.ts       CSV re-import field mapping and pipeline stage preservation
 server/
   routes/
     api.ts                   REST API endpoints, dual-mode HTTP 202, outcome feedback, and resume routes
   services/
-    llm.ts                   LLM gateway, Byesu primary provider, dynamic timeouts, cache, fallbacks
+    llm.ts                   LLM gateway, OmniRoute primary provider, Byesu secondary fallback, dynamic timeouts, cache
     brightdata.ts            Bright Data MCP client, search, and scraper
     keyRotator.ts            Provider key pool and rate-limit manager
     linkedinEvidence.ts      LinkedIn profile evidence extraction
@@ -478,7 +480,7 @@ server/
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v27 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts)
-test/                        Automated unit, integration, replay, and eval test suites (205 files, 200 .test.ts + helpers)
+test/                        Automated unit, integration, replay, and eval test suites (204 files, 201 .test.ts + helpers)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

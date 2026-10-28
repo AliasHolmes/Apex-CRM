@@ -1,17 +1,20 @@
 # Apex CRM — Codebase Index
 
-Generated: 2026-10-28 — Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
+Generated: 2026-10-29 — Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> current HEAD (`8e6b74f`) plus the High-Concurrency Micro-Splitting, Intent Isolation,
-> and Cooldown Resilience overlay (ADR-0017: 1-candidate micro-splits under high reasoning effort,
-> dynamic 120s timeout scaling, clausal intent tail isolation, prepositional company extraction
-> disambiguation, admission gate enterprise protection, OmniRoute 429 reset cooldown backoff,
-> and LinkedIn domain handle rejection & website rescue).
-> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. Full test suite completes
-> across 205 files with 100% strict ASCII and zero glyph regressions.
+> current HEAD (`153dab3`) plus the Multi-Preset CSV Export overlay (ADR-0017 remains the
+> last engine ADR: 1-candidate micro-splits under high reasoning effort, dynamic 120s timeout
+> scaling, clausal intent tail isolation, prepositional company extraction disambiguation,
+> admission gate enterprise protection, OmniRoute 429 reset cooldown backoff, and LinkedIn
+> domain handle rejection & website rescue).
+> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (re-verified 2026-10-29 at `153dab3`).
+> `npm test` on 2026-10-29 (working tree from `153dab3` + the fixes in `9.30`): **1,370 pass / 0 fail**,
+> exit 0. The five failures recorded in `9.30` are fixed; see `9.31` for what changed.
 > Line counts are physical lines (blank lines included).
+> Re-measured 2026-10-29: the previous pin (`8e6b74f`) predated the CSV export feature, so the
+> frontend, route, test, and total counts below moved. See `9.29`.
 
 ---
 
@@ -49,14 +52,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 15,615 lines across 63 TypeScript files (`components/` alone: 37 files / 11,008 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 29,439 lines: 53 modules + 9 `stages/`                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,734 lines (db 5,807 / llm 3,207 / api 2,589 / brightdata 2,164 / rest 1,967)                                                             |
+| Frontend (`src/`)                                                | 16,928 lines across 65 TypeScript files (`components/` alone: 38 files / 11,373 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 29,501 lines: 53 modules + 9 `stages/` (modules 21,645 / stages 7,856)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,618 lines (db 5,808 / llm 3,208 / api 2,650 / brightdata 2,165 / rest 1,787)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v27**, WAL                   |
-| Test suite                                                       | 205 files: 200 `.test.ts` + 2 test helpers + 1 `.eval.ts` + 2 replay fixtures; 31,949 lines |
-| Total first-party LOC                                            | 93,051 TypeScript lines (344 files, incl. tests)                                    |
-| Anchor                                                           | measured at `8e6b74f` + High-Concurrency Micro-Splitting & Resilience (ADR-0017); dated 2026-10-28                  |
+| Test suite                                                       | 204 TypeScript files: 201 `.test.ts` + 1 test helper + 1 `.eval.ts` + 1 corpus module + 2 replay fixtures; 32,436 lines |
+| Total first-party LOC                                            | 94,989 TypeScript lines (347 files, incl. tests)                                    |
+| Anchor                                                           | measured at `153dab3` + Multi-Preset CSV Export; dated 2026-10-29                  |
 
 ## 3. Tech stack
 
@@ -75,14 +78,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (364 lines)
-server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,807)
-server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,649)
-server/services/             llm.ts (3,207, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+server.ts                    Express app + static Vite serve (377 lines)
+server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,808)
+server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,650)
+server/services/             llm.ts (3,208, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
-                             brightdata.ts (2,164) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
-                             linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
-                             outboundPrompt.ts (167) · langfuse.ts (122) · sleepUtils.ts (39, shared sleep)
+                             brightdata.ts (2,165) · keyRotator.ts (390) · sessionStreamHub.ts (221, SSE) ·
+                             linkedinEvidence.ts (305, owns canonicalLinkedInIdentity) · privateHosts.ts (163, SSRF) ·
+                             outboundPrompt.ts (168) · langfuse.ts (123) · sleepUtils.ts (40, shared sleep)
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming
                              seams (now unconditional) (3,289)
@@ -138,13 +141,15 @@ server/leadSearch/           the discovery engine
 src/                         App.tsx (tab shell + error boundaries) · context/ (LeadContext,
                              ToastContext, ThemeContext) · components/ (CRM dashboard, pipeline,
                              prospect table/drawer, outreach, trace terminal, overview/, prospects/,
-                             shared controls) · lib/ (navigation, saved views, workflow, stats, theme) · utils/
+                             shared controls, ExportModal) · lib/ (navigation, saved views, workflow, stats, theme) ·
+                             utils/ (csvExport: 4 export presets + formula-injection guard, csvFieldMapping,
+                             leadDedupe, leadScore)
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        205 files: 200 `.test.ts` + `queryIntelligence.eval.ts` + 2 test helpers + 2 replay fixtures; 31,949 lines
+test/                        204 files: 201 `.test.ts` + `queryIntelligence.eval.ts` + `helpers/mockLlm.ts` + `prospectContractCorpus.ts` + 2 replay fixtures; 32,436 lines
                              `helpers/mockLlm.ts` mock provider), node:test runner via tsx
-scripts/dev.ts               spawns Vite + Express (65 lines)
-scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; ?9.22) (148 lines)
+scripts/dev.ts               spawns Vite + Express (149 lines)
+scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; ?9.22) (167 lines)
 ```
 
 ## 5. The discovery pipeline
@@ -268,9 +273,10 @@ invariants.
 
 ## 7. Test suite
 
-192 `.test.ts` files, 1 eval file, and `helpers/mockLlm.ts` are present; suite totals at this
-measurement: **1,287 pass / 0 fail** across 194 suites (~1m50s wall clock), with the earlier
-`encodingHygiene` overlay failure (non-ASCII glyph bytes) resolved by the ASCII cleanup. A
+201 `.test.ts` files, 1 eval file, `helpers/mockLlm.ts`, and `test/fixtures/prospectContractCorpus.ts`
+are present (204 `.ts` files in `test/`, 32,436 lines). Current measured state (2026-10-29):
+**1,370 pass / 0 fail**, exit 0. The 1,287/0 figure below is historical and predates the current
+suite. A
 historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval tests. Composition:
 
 - **Query & intelligence eval**: `queryIntelligence.eval` (13 tests over 30 gold briefs,
@@ -746,7 +752,7 @@ Remediates all 17 verified engine drags and test assertion mismatches from disco
   - B11: Replaced static step-jumps with calibrated continuous confidence scoring (0-10) in `verification.ts`.
   - B13: Stamped symmetrical `provenance: "engine"` and `provenance: "agent_brain"`, replacing `VERIFIED_FOUNDER` with `AGENT_BRAIN_CANDIDATE`.
   - B17: Tightened checkpoint evidence cap from 240 to 100, and debug log tail from 100 to 25.
-- **Total Test Suite Status**: 203 TypeScript files (200 `.test.ts`), **1,353 pass / 0 fail** (100% green).
+- **Total Test Suite Status at that time**: 203 TypeScript files (200 `.test.ts`), **1,353 pass / 0 fail** (100% green). Superseded by the 201-file suite; see `9.29` for the current inventory.
 
 ### 9.27 OmniRoute Primary Architecture & Unconstrained Gemini Reasoning (ADR-0016) — (2026-10-24)
 
@@ -792,6 +798,161 @@ Remediated latency thrashing under high reasoning effort, intent phrase contamin
   - Added corporate handle sanitization in `extractStage.ts`, discarding company handles and rescuing website URLs to `contactDetails.website`.
   - Pinned by new unit tests in `test/contractShape.test.ts` and `test/leadDedupe.test.ts`.
 
+### 9.29 Multi-Preset CSV Export & Re-Measurement - LANDED (`153dab3`, 2026-10-28)
+
+Re-pinned this index to `153dab3`. The previous pin (`8e6b74f`) predated the CSV export feature,
+so the frontend, route, test, and total counts above had drifted. What landed:
+
+- **`src/utils/csvExport.ts` (932 lines, new)**: four export presets (`outreach`, `crm`, `diagnostic`,
+  `legacy`) as declarative `ExportColumnDef` tables, plus `sanitizeFormulaInjection` (CSV formula-injection
+  guard), `formatCsvCell` / `formatTsvCell`, `serializeLeadsToCsv` / `serializeLeadsToTsv`, and
+  `downloadCsvFile`. Derived-field extractors: `extractCleanDomain`, `extractSeniorityLevel`,
+  `extractIcebreakerQuote`, `getLeadPriorityTier`, `extractHiringOrSourceUrl`, `extractIntentCategoryLabel`,
+  `extractDecisionMakerLabel`, `splitFullName`.
+- **`src/components/ExportModal.tsx` (387 lines, new)**: preset picker with scope selection
+  (`all` / `filtered` / `selected`), persisted via `apex_crm_export_preset` in local storage.
+- **`server/routes/api.ts` (+60)**: new `GET /api/leads/export` route taking `preset`, `stage`,
+  `reviewStatus`, `nextAction`, `search`, and `ids`, reusing the same `serializeLeadsToCsv` and
+  `EXPORT_PRESETS` as the client. Route count stays at 42.
+- **`src/components/LeadTable.tsx` (-142)**: export logic extracted out of the table into the modal.
+- **`test/csvExport.test.ts` (283 lines, new)**: covers presets, cell formatting, and formula-injection
+  sanitization. This is what moves the suite from 200 to 201 `.test.ts` files.
+
+Verification at this re-measurement: `npm run typecheck` (`tsc --noEmit`) passes with 0 errors. The
+full suite was **not** re-run for this pass, so no pass/fail total is claimed here.
+### 9.30 Full Suite Run at `153dab3` - 5 FAILURES (2026-10-29)
+
+First end-to-end `npm test` recorded against the current tree: **1,577 pass / 5 fail** across 1,582
+tests. `npm run typecheck` is clean, so these are runtime/contract failures, not type errors. All
+five trace to the two most recent commits (`153dab3`, `8e6b74f`):
+
+1. **`test/encodingHygiene.test.ts:36` - non-ASCII in `src/utils/csvExport.ts:157`** (U+201C, a
+   curly left double quote). Violates the strict-ASCII rule this repo enforces in code. Introduced
+   by the CSV export commit. Fix: replace with a plain `"`.
+2. **`test/uiContracts.test.ts:129` - `ExportModal.tsx` uses `text-[10px]` and three `text-[11px]`**
+   (lines 268, 287, 305, 323). The UI contract test forbids sub-12px type. Introduced by the CSV
+   export commit. Fix: raise to `text-xs` (12px) or the project token.
+3. **`test/symbioticEntityParsing.test.ts:5` - company `sourcePhrase` resolves to `"LinkedIn active"`**
+   instead of `"marketing agency"` for the brief "Founder or owner of a marketing agency with 5-50
+   employees, US or Canada, LinkedIn active". The ADR-0017 clausal intent tail isolation strips
+   `who post about` / `interested in` / `focused on` / `specializing in` / `scaling with` / `building`
+   / `using`, but not the trailing `LinkedIn active` clause, so it wins the company slot.
+4. **`test/freeTierYieldAndExclusions.test.ts:30` - trailing location prepositions not stripped from
+   company types.** Same `prospectContract.ts` extraction path as (3).
+5. **`test/intentFulfillmentGating.test.ts:161` - `enforceContractQueries` no longer repairs bare
+   identity query plans with intent terms.** Same contract-compilation surface.
+
+Items 3-5 are one root cause: the ADR-0017 intent-tail isolation changed `prospectContract.ts`
+extraction behaviour and three contract tests were not updated with it. Items 1-2 are two small
+hygiene regressions in the new export files. None of these are documentation drift - they are
+live code defects that the docs were previously claiming did not exist.
+### 9.31 The Five Failures in `9.30` - FIXED (2026-10-29)
+
+All five resolved. `npm test` now reports **1,370 pass / 0 fail** (exit 0) and `npm run typecheck`
+is clean. Two were hygiene slips in the new export files; three were one extraction defect in
+`prospectContract.ts` plus one intent-repair defect in `enforceContractQueries`.
+
+**Hygiene (2)**
+
+- `src/utils/csvExport.ts:157` - the curly quotes in the hiring-signal regex are now `\u201C` /
+  `\u201D` escapes, so the pattern still matches smart quotes while the file stays strict ASCII.
+- `src/components/ExportModal.tsx` - four `text-[10px]` / `text-[11px]` classes raised to `text-xs`.
+
+**Extraction (3, one root cause)**
+
+The `company_type` `sourcePhrase` was being taken from `extractedCompanyTypes[0]`, and three
+separate paths could put a wrong phrase in slot 0 before the real vertical arrived:
+
+1. `prefixCompanyMatch` captured a role phrase. For "Founder or owner of a marketing agency" the
+   Pattern-B prefix capture returned `"Founder or"`, which passed `FUNCTIONAL_AREA_PATTERN` and
+   became a company candidate. It is now rejected when the capture contains a role word or ends in
+   a dangling conjunction.
+2. Platform status was treated as a vertical. `"LinkedIn active"` reached `addCompanyType` via the
+   comma-segment loop. `addCompanyType` now rejects `<platform> active|presence|profile|verified|
+   available` outright.
+3. A vertical followed by a place was discarded as a bare location. `"consultancies in Manchester"`
+   hit the `isLikelyLocation` guard because it ends in a known metro, so the vertical was lost. The
+   segment now has its location tail stripped first and the remainder is added as a vertical.
+
+Additionally the `openCompanyMatch` (the `[Role] of <verticals>` capture, the most complete phrase)
+is now emitted before the segment loop rather than after, so the leading vertical - `"AI agencies"`
+in "AI agencies and consultancies" - is the primary `sourcePhrase` instead of a later segment.
+
+**Intent repair (1)**
+
+`enforceContractQueries` gated its repair pass on `signalQueries.length < 2` and counted signal-lane
+queries toward intent coverage. A plan with two signal queries therefore skipped repair entirely and
+left bare identity queries (`"agency owner Austin"`) unqualified. The gate now always runs when
+tooling qualifiers exist, and coverage counts person-lane queries only, so bare identity queries get
+the qualifier appended.
+
+Net effect on the three briefs that were failing:
+
+| Brief | Before | After |
+| --- | --- | --- |
+| Founder or owner of a marketing agency ... LinkedIn active | `LinkedIn active` | `marketing agency` |
+| Find founders of AI agencies and consultancies in Manchester | `AI agencies and consultancies` | `AI agencies` |
+| Agency owners ... posting about n8n workflows | 1 query with intent | 3 queries with intent |
+### 9.32 Dead Code, Config Drift, and a Clamp Bug - FIXED (2026-10-29)
+
+A static audit pass over the whole tree (unreferenced exports, env-key coverage, duplicate
+constants, numeric-sort and radix hazards, duplicated route definitions). `npm test` stays at
+**1,370 pass / 0 fail** and `npm run typecheck` is clean after every change below.
+
+**Dead code removed (7)**
+
+Each was confirmed to have zero references outside its own declaration, including in tests:
+
+- `server/services/llm.ts` - `ATRIA_MAX_TIMEOUT_MS` (600_000). Atria was decommissioned; the
+  constant outlived it.
+- `server/leadSearch/evidence.ts` - `sourceProviderForScore`, an identity function that returned
+  its own argument.
+- `server/leadSearch/adaptiveScheduler.ts` - `scoreQueryPerformanceRow` (alias of `scoreAdaptiveArm`)
+  and `setAdaptiveRandomSource` (unused test hook; `seedAdaptiveRandom` is the one tests use).
+- `server/leadSearch/prospectContract.ts` - `validateCompiledProspectContract`, an alias of
+  `normalizeProspectContract`. Callers already import the real name.
+- `server/leadSearch/stallLadder.ts` - `STALL_PRODUCTIVE_ACCEPTED_THRESHOLD` (2), never read.
+
+**Bug fixed: `clampEnvInt` / `clampEnvFloat` bounds asymmetry**
+
+Both helpers gated on `raw >= min` before clamping. The result: a value *above* `max` clamped
+correctly to `max`, but a value *below* `min` silently discarded the operator's setting and fell
+back to the hardcoded default. Setting `LEAD_VERIFY_BORDERLINE_PER_ROUND=-1` gave you 5 (the
+fallback), not 0 (the floor). Now any finite value clamps to the nearest bound and only an unset or
+non-numeric value falls back. Affects every `clampEnvInt`/`clampEnvFloat` call site in the engine.
+
+**Config drift fixed**
+
+- **23 undocumented keys** that the engine reads were added to `.env.example` with their real code
+  defaults: streaming-judge batch target and flush interval, extraction round token ceiling, the
+  three parked-candidate limits, reinjection cap, finalist single-candidate timeouts, session buffer
+  retention, extended round ceiling, plan cache and deterministic planner toggles, company-intent
+  concurrency, Bright Data dataset lane settings, citation-quote enforcement, Agent Brain routing,
+  test DB switch, checkpoint retention, `NO_COLOR`, and `LANGFUSE_BASEURL`.
+- **`DISABLE_HMR`** was read by `server.ts` and `vite.config.ts` but never documented. Added.
+- **`STORAGE_ENCRYPTION_KEY` was a false security claim.** `.env.example` described it as the key
+  that encrypts provider credentials in SQLite at rest. No code path reads it, and there is no
+  `createCipher`/`createDecipher` anywhere in the tree - provider keys are stored in plaintext.
+  The entry now says RESERVED - NOT YET IMPLEMENTED instead of implying protection that does not
+  exist. This is a real gap, not a doc nit: see `10` item 14.
+
+**Vestigial test-only flags (documented, not removed)**
+
+`ENHANCED_DIAGNOSTICS_ENABLED`, `SEMANTIC_GROUPING_ENABLED`, and `LLM_GATEWAY_MODE` are set only by
+tests. Production never reads them: `buildRoundDiagnostics` always computes `classSummary`, and
+`validateFinalistJudgments` always applies any_of semantic grouping. The tests still describe
+flag-gated behaviour that graduated to unconditional. Left in place because deleting the flags
+means rewriting three test files, but the flags no longer control anything.
+
+**Checked and clean**
+
+- No duplicate REST route definitions (42 routes, all unique).
+- No constants with divergent values across files.
+- All 14 bare `.sort()` calls are string sorts, where the default comparator is correct.
+- Both `parseInt` calls in `privateHosts.ts` pass radix 16 explicitly.
+- `.env` is gitignored and untracked; no credentials are committed.
+- The 6 remaining `console.log` calls in server code are intentional operator-facing output
+  (LLM 200 OK lines, scrape progress, backup pruning), not debug leftovers.
 ## 10. Recommended next actions
 
 Updated 2026-10-28.
@@ -806,4 +967,7 @@ Updated 2026-10-28.
 8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `8e6b74f` + High-Concurrency Micro-Splitting & Resilience (ADR-0017) (2026-10-28).
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `153dab3` + Multi-Preset CSV Export (2026-10-29). Supersedes the `8e6b74f` pin.
+12. ~~**Re-run the full suite and record a real pass/fail total**~~ Done (2026-10-29): **1,370 pass / 0 fail**, exit 0. The five failures found in `9.30` are fixed in `9.31`.
+13. **Keep the `company_type` primary-phrase ordering pinned by test** - `9.31` fixed three extraction paths that could take slot 0 before the real vertical. `symbioticEntityParsing` and `freeTierYieldAndExclusions` cover two of them; the platform-status rejection (`LinkedIn active`) has no dedicated test yet.
+14. **Decide the fate of `STORAGE_ENCRYPTION_KEY`** - `.env.example` used to claim provider credentials are encrypted at rest in SQLite. They are not: no cipher exists and the key is never read. Either implement encryption at rest for stored provider keys, or delete the key from the template. Do not leave the template implying protection that is not there. (See `9.32`.)

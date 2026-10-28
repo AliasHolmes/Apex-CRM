@@ -47,7 +47,10 @@ export function clampEnvInt(
   max: number,
 ): number {
   const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw >= min
+  // A set-but-out-of-range value clamps to the nearest bound; only an unset or
+  // non-numeric value falls back. Previously a below-min value silently fell
+  // back while an above-max value clamped, which was inconsistent.
+  return Number.isFinite(raw)
     ? Math.min(Math.max(Math.floor(raw), min), max)
     : fallback;
 }
@@ -59,7 +62,7 @@ export function clampEnvFloat(
   max: number,
 ): number {
   const raw = Number(process.env[name]);
-  return Number.isFinite(raw) && raw >= min
+  return Number.isFinite(raw)
     ? Math.min(Math.max(raw, min), max)
     : fallback;
 }

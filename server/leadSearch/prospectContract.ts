@@ -948,7 +948,15 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
   // e.g. "AI agency owner" -> "AI agency"
   const rawPrefixMatch = clean(brief).match(new RegExp(`\\b([^,.]+?)\\s+(?:${ROLE_ALT})\\b`, 'i'))?.[1]?.trim() || '';
   const prefixCompanyCandidate = rawPrefixMatch.replace(ACTION_VERB_PREFIX_PATTERN, '').trim();
-  const prefixCompanyMatch = FUNCTIONAL_AREA_PATTERN.test(prefixCompanyCandidate) ? '' : prefixCompanyCandidate;
+  // A role word inside the captured prefix means the capture is a role phrase
+  // ("Founder or owner of ..." -> "Founder or"), not a company type. Reject it
+  // so it cannot become the primary company_type sourcePhrase.
+  const prefixCompanyMatch =
+    FUNCTIONAL_AREA_PATTERN.test(prefixCompanyCandidate) ||
+    new RegExp(`\\b(?:${ROLE_ALT})\\b`, 'i').test(prefixCompanyCandidate) ||
+    /\b(?:or|and)\s*$/i.test(prefixCompanyCandidate)
+      ? ''
+      : prefixCompanyCandidate;
 
   // Open-vocabulary role: "<role phrase> at|of|in|for <organizations>" for any title,
   // used only when no known role word matched (engineers, nurses, buyers, principals).
@@ -1040,6 +1048,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
       .replace(/\s+(?:in|near|from|located\s+in)\s+.*$/i, '')
       .trim();
     if (!cleaned || !isCleanCompanyTypeTerm(cleaned) || extractedCompanyTypes.includes(cleaned)) return;
+    // Platform/availability status ("LinkedIn active", "Twitter presence") describes
+    // a channel, not a vertical.
+    if (/\b(?:linkedin|twitter|facebook|instagram|tiktok|x)\s+(?:active|presence|profile|verified|available)\b/i.test(cleaned)) return;
     // Functional-area nouns ("Data", "Engineering") describe the role, not a
     // company vertical ("Head of Data at companies" -> not "Data at companies").
     if (FUNCTIONAL_AREA_PATTERN.test(cleaned)) return;
@@ -1082,6 +1093,15 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
     addCompanyType(firmMatch.replace(/lawyer firm/i, 'law firm'));
   }
 
+  // "[Role] of <verticals>" is the canonical company phrase: emit its parts in
+  // order so the leading vertical ("AI agencies") is the primary sourcePhrase.
+  if (openCompanyMatch) {
+    for (const sub of openCompanyMatch.split(/,|\band\b|\bor\b/i).map((x) => x.trim())) {
+      if (sub) addCompanyType(sub);
+    }
+    addCompanyType(openCompanyMatch);
+  }
+
   const roleStopRegex = /\b(?:owners?|founders?|co-founders?|cofounders?|ceos?|presidents?|partners?|directors?|executives?|vps?|vice\s+presidents?|heads?)\b/i;
   for (const segment of briefForCompanySegmentation.split(/,|\band\b|\bor\b/i).map(s => s.trim())) {
     if (!segment) continue;
@@ -1097,6 +1117,9 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
       !(openRolePhrase && cleanSegment.toLowerCase().startsWith(openRolePhrase.toLowerCase()))
     ) {
       // Guard: skip segments that look like bare location names (already captured by rawLocMatch)
+      // "consultancies in Manchester" is a vertical followed by a place, not a
+      // bare place name: strip the location tail before the location guard.
+      const segmentWithoutLoc = cleanSegment.replace(/\s+(?:in|near|from|located\s+in|based\s+in)\s+.*$/i, '').trim();
       const isLikelyLocation =
         namesKnownMetro(cleanSegment) ||
         extractedLocations.some(
@@ -1106,11 +1129,13 @@ export function buildDeterministicProspectContract(brief: string, spec: Partial<
           !/\b(agency|agencies|firm|firms|studio|studios|consultancy|consultancies|company|companies|startup|startups|platform|platforms|software|services|clinic|clinics|practice|group|labs?|shop|store|brand|brands|tech|fintech|healthtech|edtech|biotech|medtech|martech|proptech|insurtech|legaltech)\b/i.test(cleanSegment));
       if (!isLikelyLocation) {
         addCompanyType(cleanSegment);
+      } else if (segmentWithoutLoc && segmentWithoutLoc !== cleanSegment && isCleanCompanyTypeTerm(segmentWithoutLoc)) {
+        // The place was stripped; the remainder is still a usable vertical.
+        addCompanyType(segmentWithoutLoc);
       }
     }
   }
 
-  if (openCompanyMatch) addCompanyType(openCompanyMatch);
   const primaryCompanyType = extractedCompanyTypes[0] || prefixCompanyMatch || prepCompanyMatch || firmMatch;
   if (primaryCompanyType && isCleanCompanyTypeTerm(primaryCompanyType)) {
     addWithAlternatives('company_type', primaryCompanyType, extractedCompanyTypes);
@@ -1951,8 +1976,6 @@ export function normalizeProspectContract(
   };
 }
 
-export const validateCompiledProspectContract = normalizeProspectContract;
-
 // ============================================================================
 // Contract coherence validation (v11)
 // ============================================================================
@@ -2356,13 +2379,15 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
     .filter(t => Boolean(t) && t.split(/\s+/).length <= 3)
     .map(lower);
 
-  const signalQueries = normalized.filter(q => q.lane === 'signal');
-  if (toolingQualifiers.length > 0 && signalQueries.length < 2) {
+  // Signal-lane queries are not interchangeable with person-lane intent coverage:
+  // a bare identity query ("agency owner Austin") still needs a qualifier. Count
+  // only person-lane intent coverage here so identity queries get repaired.
+  if (toolingQualifiers.length > 0) {
     const personQueries = normalized.filter(q => q.lane === 'person');
     const personWithIntent = personQueries.filter(q =>
       toolingQualifiers.some(term => lower(q.query).includes(term))
     );
-    const totalIntentCoverage = signalQueries.length + personWithIntent.length;
+    const totalIntentCoverage = personWithIntent.length;
     const deficit = Math.max(0, 2 - totalIntentCoverage);
     if (deficit > 0) {
       const bareIdentityQueries = personQueries

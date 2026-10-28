@@ -41,7 +41,3 @@ export function createLeadEvidence(params: {
     whyThisLead: params.whyThisLead,
   };
 }
-
-export function sourceProviderForScore(provider: LeadSourceProvider): LeadSourceProvider {
-  return provider;
-}

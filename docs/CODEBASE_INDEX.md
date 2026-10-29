@@ -32,7 +32,7 @@ Primary reference docs:
 
 - [`README.md`](../README.md) - product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) - domain glossary
-- [`docs/adr/0001`...`0018`](adr/) - eighteen ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`...`0019`](adr/) - nineteen ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, primary quad concurrency with micro-batching,
   dev-server HMR forced-reload containment, the Byesu primary (GPT-6.1)
@@ -972,6 +972,22 @@ Forensic remediation of all 5 LLM errors observed in session `7885bcac` (1 compi
   - Hoisted `DISCOVERY_MODES` before `normalizeSearchSpec` to eliminate TypeScript temporal dead-zone warnings.
 - **Unit Test Coverage**:
   - Added test coverage in `test/byesuConcurrency.test.ts` (caller timeout respect and 180s single ceiling) and `test/architecturalImprovements.test.ts` (multi-anchor nuance windowing across 12k char profiles and `isTransientLLMError` matching).
+
+### 9.34 Single-Candidate Timeout Headroom & Cross-Provider Judge Retry Escalation (ADR-0019) — (2026-10-30)
+
+Forensic remediation of judge timeouts observed in session `ae1f471d`:
+
+- **Single-Candidate Timeout Headroom (210s)**:
+  - In `server/services/llm.ts`, elevated `computeByesuDynamicTimeoutMs` non-Cloudflare single-candidate ceiling to 210s (`210_000` ms), giving deep chain-of-thought evaluations on `gemini-3.8-flash-high` a 35–45s safety margin beyond typical 160–175s deliberation times.
+  - In `judgeStage.ts`, dynamically scales single-candidate floors to 180s standard and 210s dense (>2,000 estimated input tokens).
+- **Cross-Provider Judge Retry Escalation**:
+  - In `server/leadSearch/plannerRouting.ts`, added `resolveJudgeRetryProviderOrder()` returning `["byesu", "primary", "openrouter", "groq"]` with `LEAD_JUDGE_RETRY_PROVIDER_ORDER` override.
+  - In `judgeStage.ts`, passes `tierProviderOrder: resolveJudgeRetryProviderOrder()` on transient retries (`retries > 0`).
+  - When an initial single-candidate evaluation times out on OmniRoute (`primary`), the retry immediately shifts to Byesu (`gpt-6.1-sol`), bypassing stalled upstream pods and completing evaluation in ~30–50s.
+- **Strict Tier Provider Order Enforcement**:
+  - In `server/services/llm.ts`, `withProviderFallback` now detects explicit `tierProviderOrder` and sorts all non-out configured providers strictly by caller rank, ensuring caller-specified failover sequences are honored.
+- **Unit Test Coverage**:
+  - Added `test/crossProviderRetryEscalation.test.ts` verifying the 210s ceiling, `resolveJudgeRetryProviderOrder` resolution, and Byesu-first retry dispatch. Expanded `test/plannerRoutingOverride.test.ts`.
 
 ## 10. Recommended next actions
 

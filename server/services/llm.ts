@@ -1370,6 +1370,47 @@ async function withProviderFallback<T>(
 
   let lastPrimaryError: Error | undefined;
 
+  // 0. EXPLICIT TIER PROVIDER ORDER (e.g. planner fast-tier, judge retry cross-provider escalation)
+  const explicitOrder = executionOptions.tierProviderOrder;
+  if (explicitOrder && explicitOrder.length > 0) {
+    const orderedCandidates = [...allConfigured]
+      .filter((p) => !isProviderOut(p.id, breaker))
+      .sort((a, b) => {
+        const idxA = explicitOrder.indexOf(a.id);
+        const idxB = explicitOrder.indexOf(b.id);
+        const rankA = idxA === -1 ? Number.MAX_SAFE_INTEGER : idxA;
+        const rankB = idxB === -1 ? Number.MAX_SAFE_INTEGER : idxB;
+        return rankA - rankB;
+      });
+
+    if (orderedCandidates.length > 0) {
+      const explicitFailures: Error[] = [];
+      for (const provider of orderedCandidates) {
+        if (budgetExceeded()) {
+          explicitFailures.push(budgetError());
+          break;
+        }
+        const attempt = await runOn([provider]);
+        if (attempt?.result.ok) return attempt.result.val;
+        if (attempt && !attempt.result.ok) {
+          explicitFailures.push(attempt.result.err);
+        }
+      }
+
+      const failureErr = new Error(
+        `All configured LLM providers in explicit order failed: ${formatProviderFailures(explicitFailures)}`,
+      );
+      if (explicitFailures.length > 0) {
+        const lastErr = explicitFailures[explicitFailures.length - 1];
+        (failureErr as any).cause = lastErr;
+        if (lastErr instanceof LLMProviderError && lastErr.status) {
+          (failureErr as any).status = lastErr.status;
+        }
+      }
+      throw failureErr;
+    }
+  }
+
   // 1. PRIMARY TIER (Byesu): the first attempt goes to Byesu.
   //    Busy slots are waited for in the slot queue.
   //    Groq/OpenRouter stay reserved as failsafes when Byesu is out.
@@ -1591,7 +1632,7 @@ export function computeByesuDynamicTimeoutMs(
   const candidateTimeout = Math.max(minByesuTimeout, workloadTimeoutMs);
   if (metadata?.candidateCount === 1) {
     const configuredCeiling = Number(process.env.SINGLE_CANDIDATE_TIMEOUT_MS);
-    const defaultCeiling = isCloudflareBounded ? CLOUDFLARE_MAX_TIMEOUT_MS : 180_000;
+    const defaultCeiling = isCloudflareBounded ? CLOUDFLARE_MAX_TIMEOUT_MS : 210_000;
     const singleCeiling = Math.max(
       90_000,
       Number.isFinite(configuredCeiling) && configuredCeiling > 0 ? configuredCeiling : defaultCeiling,

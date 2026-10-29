@@ -45,6 +45,7 @@ import {
 import { runGatedCompanyAttribution } from "../companyAttribution.js";
 import { runRollingPool } from "../liveRollingPool.js";
 import { resolveTitleFromQualification } from "../titleResolution.js";
+import { resolveJudgeRetryProviderOrder } from "../plannerRouting.js";
 export { NON_DECISION_MAKER_REGEX, OWNER_TERMS_REGEX };
 
 export const JUDGE_PROMPT_VERSION = "v1.0.0";
@@ -879,15 +880,23 @@ export async function evaluateIncrementalJudgeBatches(
     const judgeAttempts: LLMProviderAttempt[] = [];
     let judgeUsage: LLMUsage | undefined;
     const judgePrompt = buildFinalistJudgePrompt(contract, batch, pastDecisions);
+    const isRetry = retries > 0;
+    const retryProviderOrder = isRetry
+      ? resolveJudgeRetryProviderOrder()
+      : undefined;
+
     const dynamicMaxTokens = computeJudgeDynamicMaxTokens(
       batch.length,
       contract?.requirements?.length || 4,
-      describeLLMRoute(depth > 0 ? "reasoning" : "fast").reasoning,
+      describeLLMRoute(
+        depth > 0 ? "reasoning" : "fast",
+        retryProviderOrder,
+      ).reasoning,
     );
     const estimatedInputTokens = estimateTokenCount(judgePrompt);
 
     const singleTimeoutFloor =
-      estimatedInputTokens > 2000 ? 180_000 : 150_000;
+      estimatedInputTokens > 2000 ? 210_000 : 180_000;
 
     try {
       const judgmentResult = await openAIStructured<any>(
@@ -914,11 +923,14 @@ export async function evaluateIncrementalJudgeBatches(
           circuitBreaker: llmCircuitBreaker,
           signal: state.abortController.signal,
           routingTier: depth > 0 ? "reasoning" : "fast",
+          tierProviderOrder: retryProviderOrder,
           metadata: {
             stage: "judge",
             candidateCount: batch.length,
             promptSize: judgePrompt.length,
             sessionId: config.sessionId,
+            isRetry,
+            retryCount: retries,
           },
           onProviderAttempt: (attempt) => judgeAttempts.push(attempt),
           onUsage: (usage) => {
@@ -1156,7 +1168,7 @@ export async function evaluateIncrementalJudgeBatches(
         error?.name === "AbortError" || isTransientLLMError(error);
       if (retries < 1 && isRetryable) {
         logEvent(
-          `Incremental judge batch ${batchIndex + 1} failed with transient error (${error.message || String(error)}); retrying once...`,
+          `Incremental judge batch ${batchIndex + 1} failed with transient error (${error.message || String(error)}); retrying once with cross-provider escalation...`,
         );
         return evaluateSingleBatch(batch, batchIndex, depth, retries + 1);
       }

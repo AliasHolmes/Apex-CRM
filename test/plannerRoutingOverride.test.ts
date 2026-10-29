@@ -5,6 +5,7 @@ import {
   computeByesuDynamicTimeoutMs,
 } from '../server/services/llm.js';
 import { resolvePlannerProviderOrder } from '../server/leadSearch/stages/planStage.js';
+import { resolveJudgeRetryProviderOrder } from '../server/leadSearch/plannerRouting.js';
 
 test('resolvePlannerProviderOrder defaults to the fast tier order (primary, byesu, openrouter, groq)', () => {
   const originalEnv = process.env.LEAD_PLANNER_PROVIDER_ORDER;
@@ -40,4 +41,35 @@ test('computeByesuDynamicTimeoutMs honors hardTimeoutMs bypassing the 75s floor'
   // With hardTimeoutMs, returns requested 35,000ms
   const hardTimeout = computeByesuDynamicTimeoutMs(4000, sampleMessages as any, undefined, undefined, 35_000);
   assert.equal(hardTimeout, 35_000);
+});
+
+test('resolveJudgeRetryProviderOrder defaults to cross-provider escalation order (byesu, primary, openrouter, groq)', () => {
+  const originalEnv = process.env.LEAD_JUDGE_RETRY_PROVIDER_ORDER;
+  try {
+    delete process.env.LEAD_JUDGE_RETRY_PROVIDER_ORDER;
+    assert.deepEqual(resolveJudgeRetryProviderOrder(), ['byesu', 'primary', 'openrouter', 'groq']);
+
+    process.env.LEAD_JUDGE_RETRY_PROVIDER_ORDER = 'primary, byesu';
+    assert.deepEqual(resolveJudgeRetryProviderOrder(), ['primary', 'byesu']);
+  } finally {
+    if (originalEnv !== undefined) {
+      process.env.LEAD_JUDGE_RETRY_PROVIDER_ORDER = originalEnv;
+    } else {
+      delete process.env.LEAD_JUDGE_RETRY_PROVIDER_ORDER;
+    }
+  }
+});
+
+test('computeByesuDynamicTimeoutMs provides 210s ceiling for non-Cloudflare single-candidate judge calls', () => {
+  const sampleMessages = [{ role: 'user', content: 'Dense single candidate judge prompt'.repeat(200) }];
+  const nonCloudflareTimeout = computeByesuDynamicTimeoutMs(
+    14000,
+    sampleMessages as any,
+    210_000,
+    { candidateCount: 1, promptSize: 5000 },
+    undefined,
+    false,
+    true,
+  );
+  assert.equal(nonCloudflareTimeout, 210_000);
 });

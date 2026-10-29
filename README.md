@@ -208,6 +208,12 @@ flowchart TD
 - **Canonical Transient Error Unification**: Standardizes judge stage error recovery on `isTransientLLMError` from `sessionHelpers.ts`, correctly retrying `"timed out"` errors and socket failures.
 - **Nuance-Preserving Multi-Anchor Windowing**: Expands raw profile scan capacity to 24,000 characters in `finalistJudge.ts` (`extractNuancedEvidenceWindows`), anchoring contextual windows around all distinct contract terms across work history, recommendations, certifications, and projects with zero profile category deletions.
 
+#### 19. Single-Candidate Timeout Headroom & Cross-Provider Judge Retry Escalation (ADR-0019)
+
+- **Single-Candidate 210s Timeout Ceiling**: Raises non-Cloudflare single-candidate timeout ceiling from 180s to 210s in `computeByesuDynamicTimeoutMs` and sets `singleTimeoutFloor` to 180s standard / 210s dense in `judgeStage.ts`, giving deep chain-of-thought evaluations a 35–45s safety buffer against upstream latency jitter.
+- **Cross-Provider Judge Retry Escalation**: Implements `resolveJudgeRetryProviderOrder` in `plannerRouting.ts` (`["byesu", "primary", "openrouter", "groq"]`). When an initial judge evaluation on OmniRoute times out or encounters transient network errors, the retry immediately escalates across providers to Byesu (`gpt-6.1-sol`), ensuring diverse upstream infrastructure and rescuing candidates in ~30–50s.
+- **Strict Tier Provider Order Enforcement**: Updates `withProviderFallback` in `server/services/llm.ts` to respect caller-specified `tierProviderOrder` across all configured providers, executing caller failover sequences without forced primary pre-emption.
+
 ---
 
 

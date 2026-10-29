@@ -362,4 +362,47 @@ test("Component 2: judgeStage dynamicMaxTokens scales with batch size, requireme
   assert.equal(computeJudgeDynamicMaxTokens(40, 8, true), 32000); // clamped to the 32000 ceiling
 });
 
+test("Nuance-Preserving Evidence Windows: returns short text unchanged", async () => {
+  const { extractNuancedEvidenceWindows } = await import("../server/leadSearch/finalistJudge.js");
+  const shortText = "Jane Doe is the Founder of Apex Agency, an outbound B2B agency using Clay and Smartlead.";
+  const result = extractNuancedEvidenceWindows(shortText, ["founder", "clay", "smartlead"], 4000);
+  assert.equal(result, shortText);
+});
+
+test("Nuance-Preserving Evidence Windows: captures multi-anchor terms across entire 12k char profile", async () => {
+  const { extractNuancedEvidenceWindows } = await import("../server/leadSearch/finalistJudge.js");
+
+  // Simulate a long 12,000 char profile
+  const fillerA = "x".repeat(1500);
+  const fillerB = "y".repeat(4500);
+  const fillerC = "z".repeat(5000);
+  const bio = "Headline: Experienced B2B Outbound Strategist and Agency Leader. ";
+  const roleSection = "Career Experience: Founder & CEO of ScaleLead Agency from 2021 to present. ";
+  const midSection = "Technology Stack & Processes: Expert user of Clay for data enrichment and scraping. ";
+  const recSection = "Recommendation: Worked with Jane who implemented Smartlead cold email infrastructure saving task costs. ";
+
+  const longProfile = bio + fillerA + roleSection + fillerB + midSection + fillerC + recSection;
+  assert.ok(longProfile.length > 10_000, `Expected > 10k chars, got ${longProfile.length}`);
+
+  const terms = ["founder", "clay", "smartlead", "task costs"];
+  const windowed = extractNuancedEvidenceWindows(longProfile, terms, 4000);
+
+  assert.ok(windowed.length <= 4000, `Expected <= 4000 chars, got ${windowed.length}`);
+  assert.ok(windowed.toLowerCase().includes("founder"), "Must preserve founder keyword");
+  assert.ok(windowed.toLowerCase().includes("clay"), "Must preserve clay keyword");
+  assert.ok(windowed.toLowerCase().includes("smartlead"), "Must preserve smartlead keyword");
+  assert.ok(windowed.toLowerCase().includes("task costs"), "Must preserve task costs keyword");
+  assert.ok(windowed.includes("[...]"), "Must include ellipsis delimiters between disjoint windows");
+});
+
+test("isTransientLLMError identifies timeout error messages with spaces", async () => {
+  const { isTransientLLMError } = await import("../server/leadSearch/sessionHelpers.js");
+  const timeoutErr = new Error("[OmniRoute] LLM request timed out after 120s");
+  assert.equal(isTransientLLMError(timeoutErr), true);
+
+  const cfTimeoutErr = new Error("LLM request timed out after 115s (bounded within Cloudflare 120s limit)");
+  assert.equal(isTransientLLMError(cfTimeoutErr), true);
+});
+
+
 

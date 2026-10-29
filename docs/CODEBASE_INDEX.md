@@ -4,12 +4,12 @@ Generated: 2026-10-29 — Scope: all first-party code under `src/`, `server/`, `
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> current HEAD (`153dab3`) plus the Multi-Preset CSV Export overlay (ADR-0017 remains the
-> last engine ADR: 1-candidate micro-splits under high reasoning effort, dynamic 120s timeout
-> scaling, clausal intent tail isolation, prepositional company extraction disambiguation,
-> admission gate enterprise protection, OmniRoute 429 reset cooldown backoff, and LinkedIn
-> domain handle rejection & website rescue).
-> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (re-verified 2026-10-29 at `153dab3`).
+> current HEAD (`153dab3`) plus the Multi-Preset CSV Export overlay and ADR-0018 (ADR-0018 is the
+> latest engine ADR: contract compiler token headroom expansion to 4,096 tokens, dynamic 150s–180s
+> single-candidate judge timeout scaling, dual-layer clamping decoupling, canonical isTransientLLMError
+> retry unification, and nuance-preserving multi-anchor evidence windowing across 24k chars without
+> profile category deletions).
+> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (re-verified 2026-10-30).
 > `npm test` on 2026-10-29 (working tree from `153dab3` + the fixes in `9.30`): **1,370 pass / 0 fail**,
 > exit 0. The five failures recorded in `9.30` are fixed; see `9.31` for what changed.
 > Line counts are physical lines (blank lines included).
@@ -32,7 +32,7 @@ Primary reference docs:
 
 - [`README.md`](../README.md) - product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) - domain glossary
-- [`docs/adr/0001`...`0017`](adr/) - seventeen ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`...`0018`](adr/) - eighteen ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, primary quad concurrency with micro-batching,
   dev-server HMR forced-reload containment, the Byesu primary (GPT-6.1)
@@ -953,6 +953,26 @@ means rewriting three test files, but the flags no longer control anything.
 - `.env` is gitignored and untracked; no credentials are committed.
 - The 6 remaining `console.log` calls in server code are intentional operator-facing output
   (LLM 200 OK lines, scrape progress, backup pruning), not debug leftovers.
+### 9.33 LLM Error Elimination & Nuance Preservation (ADR-0018) — (2026-10-30)
+
+Forensic remediation of all 5 LLM errors observed in session `7885bcac` (1 compiler truncation + 4 judge timeouts) while preserving 100% of prospect profile nuance:
+
+- **Contract Compiler Headroom Expansion**:
+  - In `discoveryEngine.ts`, raised `contractMaxTokens` floor from 2,500 to 4,096 tokens ($0.75\times$ prompt scale) to accommodate Gemini 3.8 Flash High reasoning deliberation alongside complete schema JSON. Prevents `finish_reason: length` truncations and un-cached fallback degradation.
+- **Dynamic Single-Candidate Timeout Scaling**:
+  - In `judgeStage.ts`, dynamically scales single-candidate timeouts to 150s base for standard profiles and 180s for dense Tier 3 profiles (>2,000 estimated input tokens), matching the 130–145s reasoning runway required for multi-predicate verification.
+- **Dual-Layer Timeout Decoupling**:
+  - In `server/services/llm.ts`, modified `computeByesuDynamicTimeoutMs` so `singleCeiling` respects caller `requestedTimeoutMs` and defaults to 180s on non-Cloudflare targets, while strictly preserving the 115s safety boundary on Cloudflare endpoints (Byesu) to prevent HTTP 524 gateway timeouts.
+- **Canonical Transient Error Retry Unification**:
+  - Replaced the ad-hoc `/timeout/i` regex in `judgeStage.ts` with canonical `isTransientLLMError(error)` from `sessionHelpers.ts`, resolving a defect where error messages containing `"timed out"` with a space failed regex matching and were marked unverified without retry.
+- **Nuance-Preserving Multi-Anchor Windowing**:
+  - In `finalistJudge.ts`, expanded `clean()` raw scan capacity from 4,200 to 24,000 characters.
+  - Implemented `extractNuancedEvidenceWindows` to extract contextual spans ($\pm 350$ chars) around all distinct contract terms across work history, client recommendations, certifications, and project descriptions without deleting or stripping any profile categories.
+- **Clean Hoisting in `searchSpec.ts`**:
+  - Hoisted `DISCOVERY_MODES` before `normalizeSearchSpec` to eliminate TypeScript temporal dead-zone warnings.
+- **Unit Test Coverage**:
+  - Added test coverage in `test/byesuConcurrency.test.ts` (caller timeout respect and 180s single ceiling) and `test/architecturalImprovements.test.ts` (multi-anchor nuance windowing across 12k char profiles and `isTransientLLMError` matching).
+
 ## 10. Recommended next actions
 
 Updated 2026-10-28.

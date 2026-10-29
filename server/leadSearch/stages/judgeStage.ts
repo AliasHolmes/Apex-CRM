@@ -21,7 +21,10 @@ import { estimateTokenCount } from "../llmBudget.js";
 import { formatLatencySeconds } from "../terminalLog.js";
 import { summarizeLLM } from "../telemetry.js";
 import { rankLeadForFinalSelection } from "../scoring.js";
-import { effectiveScore as sharedEffectiveScore } from "../sessionHelpers.js";
+import {
+  effectiveScore as sharedEffectiveScore,
+  isTransientLLMError,
+} from "../sessionHelpers.js";
 import {
   readPastUserDecisions,
   computeRequirementsFingerprint,
@@ -883,6 +886,9 @@ export async function evaluateIncrementalJudgeBatches(
     );
     const estimatedInputTokens = estimateTokenCount(judgePrompt);
 
+    const singleTimeoutFloor =
+      estimatedInputTokens > 2000 ? 180_000 : 150_000;
+
     try {
       const judgmentResult = await openAIStructured<any>(
         judgePrompt,
@@ -895,7 +901,10 @@ export async function evaluateIncrementalJudgeBatches(
           timeoutMs: Math.max(
             30_000,
             batch.length === 1
-              ? Number(process.env.LLM_FINALIST_SINGLE_TIMEOUT_MS || 120_000)
+              ? Number(
+                  process.env.LLM_FINALIST_SINGLE_TIMEOUT_MS ||
+                    singleTimeoutFloor,
+                )
               : Number(
                   process.env.LLM_FINALIST_TIMEOUT_MS ||
                     process.env.LLM_TIMEOUT_MS ||
@@ -1144,10 +1153,7 @@ export async function evaluateIncrementalJudgeBatches(
         return [...left, ...right];
       }
       const isRetryable =
-        error?.status === 429 ||
-        (typeof error?.status === "number" && error.status >= 500) ||
-        error?.name === "AbortError" ||
-        /timeout|network|econnreset|fetch failed/i.test(error?.message || "");
+        error?.name === "AbortError" || isTransientLLMError(error);
       if (retries < 1 && isRetryable) {
         logEvent(
           `Incremental judge batch ${batchIndex + 1} failed with transient error (${error.message || String(error)}); retrying once...`,

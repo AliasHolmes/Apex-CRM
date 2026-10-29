@@ -1590,7 +1590,16 @@ export function computeByesuDynamicTimeoutMs(
 
   const candidateTimeout = Math.max(minByesuTimeout, workloadTimeoutMs);
   if (metadata?.candidateCount === 1) {
-    const singleCeiling = Math.max(90_000, Number(process.env.SINGLE_CANDIDATE_TIMEOUT_MS || 120_000));
+    const configuredCeiling = Number(process.env.SINGLE_CANDIDATE_TIMEOUT_MS);
+    const defaultCeiling = isCloudflareBounded ? CLOUDFLARE_MAX_TIMEOUT_MS : 180_000;
+    const singleCeiling = Math.max(
+      90_000,
+      Number.isFinite(configuredCeiling) && configuredCeiling > 0 ? configuredCeiling : defaultCeiling,
+      requestedTimeoutMs || 0,
+    );
+    if (isCloudflareBounded) {
+      return Math.min(CLOUDFLARE_MAX_TIMEOUT_MS, singleCeiling, candidateTimeout);
+    }
     return Math.min(singleCeiling, candidateTimeout);
   }
   if (isCloudflareBounded) {

@@ -108,6 +108,14 @@ const asArray = (value: unknown, max = 20) =>
 const clean = (value: unknown) =>
   typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 
+/** Canonical discovery modes. Single source of truth for mode validation. */
+const DISCOVERY_MODES: readonly DiscoveryMode[] = [
+  "person_first",
+  "account_first",
+  "signal_first",
+  "local_business",
+]; 
+
 export const normalizeSearchSpec = (
   input: unknown,
   query: string,
@@ -118,14 +126,7 @@ export const normalizeSearchSpec = (
   const requestedMode = clean(source.mode) as DiscoveryMode;
   const mode: DiscoveryMode =
     forcedMode ||
-    ([
-      "person_first",
-      "account_first",
-      "signal_first",
-      "local_business",
-    ].includes(requestedMode)
-      ? requestedMode
-      : "person_first");
+    (DISCOVERY_MODES.includes(requestedMode) ? requestedMode : "person_first"); 
   const employeeRange =
     source.company?.employeeRange &&
     typeof source.company.employeeRange === "object"
@@ -168,13 +169,6 @@ export const normalizeSearchSpec = (
     maxPerCompany: boundedNumber(source.maxPerCompany, 2, 1, 5),
   };
 };
-
-const DISCOVERY_MODES: readonly DiscoveryMode[] = [
-  "person_first",
-  "account_first",
-  "signal_first",
-  "local_business",
-];
 
 /**
  * The user's explicit discovery-mode choice wins over whatever mode an LLM-generated spec

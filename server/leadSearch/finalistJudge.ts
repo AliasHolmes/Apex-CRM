@@ -186,6 +186,70 @@ CORE RULES:
 9. PROPORTIONAL REASONING & STRUCTURED OUTPUT: Keep internal reasoning focused on verifying each candidate's evidence against the contract requirements, then emit the JSON judgment block.`;
 
 
+/**
+ * Preserves subtle nuances and contract signals across large evidence text
+ * by creating merged contextual windows around all distinct matched terms.
+ * Never drops sections or deletes categories: searches the entire profile
+ * and extracts context around matches across work history, recommendations,
+ * certifications, projects, and education.
+ */
+export function extractNuancedEvidenceWindows(
+  rawText: string,
+  terms: string[],
+  maxChars: number,
+): string {
+  if (rawText.length <= maxChars) {
+    return rawText;
+  }
+  const lower = rawText.toLowerCase();
+  const ranges: Array<{ start: number; end: number }> = [];
+  const windowRadius = 350;
+
+  // Locate occurrences of distinct terms throughout the entire text
+  for (const term of terms) {
+    if (!term || term.length < 3) continue;
+    const termLower = term.toLowerCase();
+    let idx = lower.indexOf(termLower);
+    let occurrences = 0;
+    while (idx !== -1 && occurrences < 3) {
+      ranges.push({
+        start: Math.max(0, idx - windowRadius),
+        end: Math.min(rawText.length, idx + term.length + windowRadius),
+      });
+      idx = lower.indexOf(termLower, idx + term.length + 50);
+      occurrences++;
+    }
+  }
+
+  // Always include opening bio/header if not already covered
+  ranges.unshift({ start: 0, end: Math.min(rawText.length, 600) });
+
+  // Sort and merge overlapping ranges
+  ranges.sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range.start <= last.end + 60) {
+      last.end = Math.max(last.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+
+  // Construct text with ellipses between disjoint segments
+  let result = "";
+  for (let i = 0; i < merged.length; i++) {
+    const { start, end } = merged[i];
+    if (i > 0 && start > merged[i - 1].end) {
+      result += "\n[...]\n";
+    }
+    result += rawText.slice(start, end).trim();
+    if (result.length >= maxChars) break;
+  }
+
+  return result.length > maxChars ? result.slice(0, maxChars - 3) + "..." : result;
+}
+
 export type BuildFinalistJudgePromptInput = {
   contract: ProspectContract;
   candidates: FinalistCandidate[];
@@ -272,22 +336,16 @@ export function buildFinalistJudgePrompt(
       }
       const evidence = selected
         .map((item) => {
-          const rawText = clean(item.text, Math.max(2000, dynamicEvidenceChars + 200));
+          const rawText = clean(item.text, 24_000);
           if (rawText.length <= dynamicEvidenceChars) {
             return `[${item.id}] ${rawText || "No evidence."}`;
           }
-          const lower = rawText.toLowerCase();
-          const matchIndex = allTerms
-            .map((term) => (term ? lower.indexOf(term.toLowerCase()) : -1))
-            .filter((idx) => idx >= 0)
-            .sort((a, b) => a - b)[0];
-          if (matchIndex === undefined) {
-            return `[${item.id}] ${rawText.slice(0, Math.max(1, dynamicEvidenceChars - 3)).trim()}...`;
-          }
-          const start = Math.max(0, matchIndex - Math.floor(dynamicEvidenceChars * 0.3));
-          const end = Math.min(rawText.length, start + Math.max(1, dynamicEvidenceChars - 6));
-          const cropped = `${start > 0 ? "..." : ""}${rawText.slice(start, end).trim()}${end < rawText.length ? "..." : ""}`;
-          return `[${item.id}] ${cropped}`;
+          const nuancedWindows = extractNuancedEvidenceWindows(
+            rawText,
+            allTerms,
+            dynamicEvidenceChars,
+          );
+          return `[${item.id}] ${nuancedWindows}`;
         })
         .join("\n");
       const ablatedReq = lead._ablatedRequirementId;

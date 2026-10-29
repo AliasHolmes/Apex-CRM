@@ -187,10 +187,10 @@ flowchart TD
 - **Uninterrupted Outreach Studio Lifecycle**: `App.tsx` retains Outreach Studio within the mounted DOM across tab switches (`mountedJobTabs`), ensuring in-flight LLM generations, custom prompts, and drafted messages are never lost during navigation.
 - **Pipeline Stage Preservation on CSV Re-Import**: The CSV importer maps pipeline stage columns (`CSV_FIELD_ALIASES.stage`), preventing existing prospect stage progressions from resetting to `SCRAPED` upon re-import.
 
-#### 16. Provider Concurrency & Modernized Batching (ADR-0009, ADR-0016, ADR-0017)
+#### 16. Provider Concurrency & Modernized Batching (ADR-0009, ADR-0016, ADR-0017, ADR-0018)
 
 - **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=8`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=8`, `attributionConcurrency` up to 8), fully utilizing local OmniRoute throughput without rate limit stalls.
-- **1-Candidate Micro-Splits & Stage-Calibrated Reasoning (ADR-0017)**: Distributes extraction across 8 parallel slots (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging into 1-candidate micro-splits (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for ~10-15s execution, `high` on judging for deep qualification), eliminating multi-candidate reasoning thrashing while completing single-candidate evaluations in ~30-45s with dynamic 120s timeout scaling.
+- **1-Candidate Micro-Splits & Stage-Calibrated Reasoning (ADR-0017, ADR-0018)**: Distributes extraction across 8 parallel slots (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging into 1-candidate micro-splits (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for ~10-15s execution, `high` on judging for deep qualification), eliminating multi-candidate reasoning thrashing while completing single-candidate evaluations with dynamic 150s–180s timeout scaling (ADR-0018).
 - **OmniRoute 429 Cooldown & Reset Tracking**: Tracks upstream provider rate limit cooldowns (`model_cooldown` and `reset_seconds`) in `llm.ts`, pausing queue dispatch until the cooldown expires to prevent cascading 429 retries across concurrent slots.
 - **Rolling-Pool Early Stopping**: Fine-grained quota fulfillment in `runRollingPool` halts evaluation as soon as the target cushion is reached and skips remaining batches to save token overhead and latency.
 
@@ -200,6 +200,13 @@ flowchart TD
 - **Prepositional Company Extraction Disambiguation**: Differentiates functional roles (`[Role] of [Function]`, e.g. "Head of Sales") from company entities (`at [Company]`), preventing discipline names from leaking into employer constraints.
 - **Admission Gate Enterprise Protection**: Guards non-agency briefs in `evaluatePrimaryAdmission` so corporate enterprise candidates are not false-positively withheld when the brief does not require an agency business model.
 - **LinkedIn Domain Rejection & Website Rescue**: Rejects domain-formatted LinkedIn handles (`.com`, `.ai`, etc.) in `isValidLinkedInHandle` and rescues corporate URLs to `contactDetails.website`, ensuring zero ghost company profiles enter the CRM.
+
+#### 18. LLM Error Elimination & Nuance-Preserving Evidence Assembly (ADR-0018)
+
+- **Contract Compiler Token Headroom Expansion**: Expands `contractMaxTokens` floor from 2,500 to 4,096 tokens ($0.75\times$ prompt scale) in `discoveryEngine.ts`, eliminating `finish_reason: length` truncations on multi-predicate briefs under high-reasoning Gemini models.
+- **Dual-Layer Timeout Clamping Decoupling**: Updates `computeByesuDynamicTimeoutMs` to respect caller `requestedTimeoutMs` and defaults single-candidate reasoning ceilings to 180s for non-Cloudflare providers while strictly enforcing Cloudflare 115s safety boundaries for Byesu.
+- **Canonical Transient Error Unification**: Standardizes judge stage error recovery on `isTransientLLMError` from `sessionHelpers.ts`, correctly retrying `"timed out"` errors and socket failures.
+- **Nuance-Preserving Multi-Anchor Windowing**: Expands raw profile scan capacity to 24,000 characters in `finalistJudge.ts` (`extractNuancedEvidenceWindows`), anchoring contextual windows around all distinct contract terms across work history, recommendations, certifications, and projects with zero profile category deletions.
 
 ---
 

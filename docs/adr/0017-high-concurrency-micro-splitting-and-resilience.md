@@ -4,13 +4,13 @@ Date: 2026-10-28
 
 ## Status
 
-Accepted (amends ADR-0016)
+Accepted (amends ADR-0016; amended by ADR-0018 for 150s–180s dynamic timeout scaling and nuance windowing)
 
 ## Scope
 
 This ADR covers resilience, throughput, and accuracy upgrades to the discovery engine under OmniRoute Gemini 3.8 Flash High primary execution:
 - 1-candidate micro-batching for finalist judging (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`) across 8 parallel slots in [`server/leadSearch/stages/judgeStage.ts`](../../server/leadSearch/stages/judgeStage.ts)
-- Dynamic judge timeout scaling (120s floor for 1 candidate, scaling with candidate count) in [`server/services/llm.ts`](../../server/services/llm.ts)
+- Dynamic judge timeout scaling (120s floor for 1 candidate, updated to 150s–180s dynamic in ADR-0018) in [`server/services/llm.ts`](../../server/services/llm.ts)
 - Clausal intent tail isolation and automatic soft signal extraction in [`server/leadSearch/prospectContract.ts`](../../server/leadSearch/prospectContract.ts)
 - Prepositional company extraction disambiguation (`[Role] of [Function]` vs `at [Company]`) in [`server/leadSearch/prospectContract.ts`](../../server/leadSearch/prospectContract.ts)
 - Enterprise admission gate protection in [`server/leadSearch/stages/judgeStage.ts`](../../server/leadSearch/stages/judgeStage.ts)
@@ -46,7 +46,7 @@ Following the transition to OmniRoute proxying `gemini-3.8-flash-high` with unco
 - Workloads multiplex across the 8 parallel provider slots (`FINALIST_JUDGE_CONCURRENCY=8`).
 - Evaluating a single candidate under high reasoning isolates the chain-of-thought deliberation to that candidate alone, dropping latency to ~30-45 seconds per call.
 - The rolling pool can halt immediately upon satisfying the target cushion without discarding in-flight multi-candidate evaluations.
-- Dynamic timeout in `llm.ts` scales to 120s for 1 candidate, scaling proportionally for larger batches if explicitly overridden.
+- Dynamic timeout in `llm.ts` scales to 120s base for 1 candidate (updated to 150s–180s dynamic based on payload density in ADR-0018), scaling proportionally for larger batches if explicitly overridden.
 
 ### 2. Clausal Intent Tail Isolation & Soft Intent Routing
 

@@ -33,6 +33,9 @@ const ROLE_CLASS_EXECUTIVE = new Set([
   "chief executive officer",
 ]);
 
+// NOTE: Taxonomy divergence is intentional. In this module, ROLE_CLASS_FOUNDER is checked
+// before ROLE_CLASS_PARTNER, classifying "founding partner" as founder.
+// Do not consolidate with stallLadder.ts, which classifies it as partner.
 const ROLE_CLASS_PARTNER = new Set([
   "managing partner",
   "partner",

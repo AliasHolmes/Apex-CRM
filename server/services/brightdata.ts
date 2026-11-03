@@ -446,10 +446,6 @@ function parseRateLimitPerMinute(message: string): number | undefined {
 
 export const isBrightDataRetryableError = (error: unknown) =>
   classifyBrightDataError(error).retryable;
-export const isBrightDataProviderDisabledError = (error: unknown) =>
-  classifyBrightDataError(error).providerDisabled;
-export const isBrightDataTransientTargetError = (error: unknown) =>
-  classifyBrightDataError(error).reasonCode === "target_transient";
 
 export type BrightDataSearchRetryOptions = {
   maxRetries?: number;

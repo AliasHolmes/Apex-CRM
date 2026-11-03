@@ -66,6 +66,9 @@ const ROLE_CLASS_OWNER_PRINCIPAL = new Set([
   "principal",
 ]);
 
+// NOTE: Taxonomy divergence is intentional. In this module, "founding partner" is
+// classified as partner via ROLE_CLASS_PARTNER.
+// Do not consolidate with querySignature.ts, which classifies it as founder.
 const ROLE_CLASS_PARTNER = new Set([
   "managing partner",
   "partner",

@@ -1312,6 +1312,9 @@ router.get("/search-logs", (req, res): any => {
 
 router.get("/search-logs/:id", (req, res): any => {
   try {
+    if (!isSafeSessionId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid session ID format." });
+    }
     const log = readSearchLogById(req.params.id);
     if (!log) return res.status(404).json({ error: "Search log not found." });
     const session = readMiningSessionSummaryById(req.params.id) || readMiningSessionById(req.params.id);
@@ -1846,6 +1849,9 @@ router.post("/saved-searches", (req, res): any => {
 
 router.delete("/saved-searches/:id", (req, res): any => {
   try {
+    if (!isSafeLeadId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid saved search ID format." });
+    }
     res.json({ apiVersion: 1, deleted: deleteSavedSearch(req.params.id) > 0 });
   } catch (error: any) {
     res
@@ -1905,6 +1911,9 @@ router.post("/lead-search/preview", paidRouteLimit("lead-search-preview"), async
 
 router.get("/mining-sessions/:sessionId/trace", (req, res): any => {
   try {
+    if (!isSafeSessionId(req.params.sessionId)) {
+      return res.status(400).json({ error: "Invalid session ID format." });
+    }
     const log = readSearchLogById(req.params.sessionId);
     const session = readMiningSessionById(req.params.sessionId);
     if (!log && !session)

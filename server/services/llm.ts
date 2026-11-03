@@ -3054,11 +3054,6 @@ Refuse to generate outreach copy that:
 *End of System Prompt - Apex LinkedIn CRM Intelligence Platform v2.0*
 `;
 
-export const leadsArraySchema = {
-  type: Type.ARRAY,
-  items: singleProfileSchema,
-};
-
 export const searchQueriesSchema = {
   type: Type.OBJECT,
   properties: {

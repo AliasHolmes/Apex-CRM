@@ -135,8 +135,8 @@ describe('Byesu Dynamic Timeout & Cloudflare Safety Ceiling', () => {
     assert.equal(timeout, 180_000);
   });
 
-  it('defaults single-candidate ceiling to 180s for non-Cloudflare reasoning calls', async () => {
-    const llm = await importLLM('byesu-single-candidate-180s');
+  it('defaults single-candidate ceiling to 210s for non-Cloudflare reasoning calls', async () => {
+    const llm = await importLLM('byesu-single-candidate-210s');
 
     const hugeContent = 'word '.repeat(5000);
     const timeout = llm.computeByesuDynamicTimeoutMs(
@@ -148,7 +148,7 @@ describe('Byesu Dynamic Timeout & Cloudflare Safety Ceiling', () => {
       false, // non-Cloudflare
       true,  // reasoning
     );
-    assert.equal(timeout, 180_000);
+    assert.equal(timeout, 210_000);
   });
 
   it('enforces Cloudflare ceiling for single candidate when isCloudflareBounded is true', async () => {

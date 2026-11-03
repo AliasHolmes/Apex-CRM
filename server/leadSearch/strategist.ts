@@ -1,4 +1,4 @@
-import type { QueryFamily, QueryIntent, SearchQueryPlanItem } from './searchSpec.js';
+import { isValidTavilySearchDepth, type QueryFamily, type QueryIntent, type SearchQueryPlanItem } from './searchSpec.js';
 import { isGeoTermCandidate } from './prospectContract.js';
 export type { QueryFamily, QueryIntent, SearchQueryPlanItem };
 export { STRATEGIST_PROMPT_VERSION } from './stages/planStage.js';
@@ -129,7 +129,7 @@ export function normalizeQueryPlanItems(input: unknown): SearchQueryPlanItem[] {
           priority: Number.isFinite(Number(item.priority)) ? Number(item.priority) : undefined,
           lane: item.lane === 'person' || item.lane === 'account' || item.lane === 'signal' ? item.lane : undefined,
           providerPreference: item.providerPreference === 'tavily' || item.providerPreference === 'brightdata' || item.providerPreference === 'corroborate' ? item.providerPreference : undefined,
-          searchDepth: ['basic', 'fast', 'ultra-fast', 'advanced'].includes(item.searchDepth) ? item.searchDepth : undefined,
+          searchDepth: isValidTavilySearchDepth(item.searchDepth) ? item.searchDepth : undefined,
           topic: item.topic === 'news' || item.topic === 'general' ? item.topic : undefined,
           timeRange: ['week', 'month', 'year'].includes(item.timeRange) ? item.timeRange : undefined,
           country: typeof item.country === 'string' ? item.country.trim() : undefined,

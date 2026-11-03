@@ -803,7 +803,9 @@ function runMigrations(db: DatabaseSync) {
           if (mapped?.lead_id && mapped.lead_id !== row.id) {
             recordConflict.run(identityKey, mapped.lead_id, row.id, detectedAt);
           }
-        } catch (error) {}
+        } catch (error) {
+          console.error("[db:migration] Failed to record identity mapping or conflict:", error);
+        }
       }
     }
 
@@ -1873,10 +1875,6 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
   return { leads, total };
 }
 
-export function readStoredLeads() {
-  return readLeadsSummary().leads;
-}
-
 export type LeadsStats = {
   total: number;
   stageCounts: Record<string, number>;
@@ -2232,11 +2230,6 @@ export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
   return keys;
 }
 
-export const leadIdentityKey = (lead: Record<string, any>): string | undefined => {
-  const keys = buildLeadIdentityKeys(lead);
-  return keys.values().next().value;
-};
-
 const readLeadFromRow = (
   row: { payload: string; revision: number } | undefined,
 ) => {
@@ -2423,7 +2416,9 @@ export function upsertLeadInExistingTransaction(
           "engine",
           now,
         );
-      } catch {}
+      } catch (error) {
+        console.error("[db:demotion] Failed to record ungrounded_write_demotion activity:", error);
+      }
     }
   }
 
@@ -4024,63 +4019,6 @@ export function readMiningSessionTokenStats(sessionId: string): MiningSessionTok
     models,
     logs,
   };
-}
-
-export function getIcpHypothesisCache(query: string): any | null {
-  try {
-    const db = getLeadsDb();
-    const queryHash = crypto
-      .createHash("sha256")
-      .update(query.trim().toLowerCase())
-      .digest("hex");
-    const now = new Date().toISOString();
-    const row = db
-      .prepare(
-        "SELECT hypothesis_json FROM icp_hypothesis_cache WHERE query_hash = ? AND expires_at > ?",
-      )
-      .get(queryHash, now) as any | undefined;
-    if (!row) return null;
-    return JSON.parse(row.hypothesis_json);
-  } catch (err) {
-    return null;
-  }
-}
-
-export function upsertIcpHypothesisCache(
-  query: string,
-  hypothesis: any,
-  ttlDays = 7,
-) {
-  try {
-    const db = getLeadsDb();
-    const queryHash = crypto
-      .createHash("sha256")
-      .update(query.trim().toLowerCase())
-      .digest("hex");
-    const now = new Date();
-    const expires = new Date(
-      now.getTime() + ttlDays * 24 * 60 * 60 * 1000,
-    ).toISOString();
-    db.prepare(
-      `
-      INSERT INTO icp_hypothesis_cache (query_hash, raw_query, hypothesis_json, synthesized_at, expires_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(query_hash) DO UPDATE SET
-        raw_query = excluded.raw_query,
-        hypothesis_json = excluded.hypothesis_json,
-        synthesized_at = excluded.synthesized_at,
-        expires_at = excluded.expires_at
-    `,
-    ).run(
-      queryHash,
-      query.trim(),
-      JSON.stringify(hypothesis),
-      now.toISOString(),
-      expires,
-    );
-  } catch (err) {
-    console.warn("Failed to cache ICP hypothesis:", err);
-  }
 }
 
 export function getProspectContractCache(

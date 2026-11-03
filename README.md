@@ -190,7 +190,7 @@ flowchart TD
 #### 16. Provider Concurrency & Modernized Batching (ADR-0009, ADR-0016, ADR-0017, ADR-0018)
 
 - **High Provider Concurrency**: Enables concurrent in-flight requests across stages (`OPENAI_CONCURRENT_SLOTS=8`, `BYESU_CONCURRENT_SLOTS=8`, `LEAD_EXTRACTION_CONCURRENCY=8`, `FINALIST_JUDGE_CONCURRENCY=8`, `attributionConcurrency` up to 8), fully utilizing local OmniRoute throughput without rate limit stalls.
-- **1-Candidate Micro-Splits & Stage-Calibrated Reasoning (ADR-0017, ADR-0018)**: Distributes extraction across 8 parallel slots (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging into 1-candidate micro-splits (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for ~10-15s execution, `high` on judging for deep qualification), eliminating multi-candidate reasoning thrashing while completing single-candidate evaluations with dynamic 150s–180s timeout scaling (ADR-0018).
+- **1-Candidate Micro-Splits & Stage-Calibrated Reasoning (ADR-0017, ADR-0018)**: Distributes extraction across 8 parallel slots (`LEAD_EXTRACTION_CHUNK_CHARS=8000`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK=3`) and finalist judging into 1-candidate micro-splits (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`). Calibrates `TASK_REASONING_EFFORT` per stage (`low` on extraction and attribution for ~10-15s execution, `high` on judging for deep qualification), eliminating multi-candidate reasoning thrashing while completing single-candidate evaluations with dynamic 150s-180s timeout scaling (ADR-0018).
 - **OmniRoute 429 Cooldown & Reset Tracking**: Tracks upstream provider rate limit cooldowns (`model_cooldown` and `reset_seconds`) in `llm.ts`, pausing queue dispatch until the cooldown expires to prevent cascading 429 retries across concurrent slots.
 - **Rolling-Pool Early Stopping**: Fine-grained quota fulfillment in `runRollingPool` halts evaluation as soon as the target cushion is reached and skips remaining batches to save token overhead and latency.
 
@@ -210,8 +210,8 @@ flowchart TD
 
 #### 19. Single-Candidate Timeout Headroom & Cross-Provider Judge Retry Escalation (ADR-0019)
 
-- **Single-Candidate 210s Timeout Ceiling**: Raises non-Cloudflare single-candidate timeout ceiling from 180s to 210s in `computeByesuDynamicTimeoutMs` and sets `singleTimeoutFloor` to 180s standard / 210s dense in `judgeStage.ts`, giving deep chain-of-thought evaluations a 35–45s safety buffer against upstream latency jitter.
-- **Cross-Provider Judge Retry Escalation**: Implements `resolveJudgeRetryProviderOrder` in `plannerRouting.ts` (`["byesu", "primary", "openrouter", "groq"]`). When an initial judge evaluation on OmniRoute times out or encounters transient network errors, the retry immediately escalates across providers to Byesu (`gpt-6.1-sol`), ensuring diverse upstream infrastructure and rescuing candidates in ~30–50s.
+- **Single-Candidate 210s Timeout Ceiling**: Raises non-Cloudflare single-candidate timeout ceiling from 180s to 210s in `computeByesuDynamicTimeoutMs` and sets `singleTimeoutFloor` to 180s standard / 210s dense in `judgeStage.ts`, giving deep chain-of-thought evaluations a 35-45s safety buffer against upstream latency jitter.
+- **Cross-Provider Judge Retry Escalation**: Implements `resolveJudgeRetryProviderOrder` in `plannerRouting.ts` (`["byesu", "primary", "openrouter", "groq"]`). When an initial judge evaluation on OmniRoute times out or encounters transient network errors, the retry immediately escalates across providers to Byesu (`gpt-6.1-sol`), ensuring diverse upstream infrastructure and rescuing candidates in ~30-50s.
 - **Strict Tier Provider Order Enforcement**: Updates `withProviderFallback` in `server/services/llm.ts` to respect caller-specified `tierProviderOrder` across all configured providers, executing caller failover sequences without forced primary pre-emption.
 
 ---
@@ -378,6 +378,13 @@ All API routes are mounted under `/api`:
 ## Database & Schema (v27)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
+
+### Security & Storage Model
+
+Apex CRM stores CRM state, lead attributes, and provider settings locally in SQLite (`.apex-data/apex-crm.sqlite`). Storage is transparent at rest (unencrypted). The security model is designed for single-tenant local operation:
+- **Loopback binding**: The backend server binds exclusively to `127.0.0.1` by default.
+- **Operating system permissions**: Protect `.apex-data/` with user-only file access permissions (e.g. `chmod 700`).
+- **Source control exclusion**: `.apex-data/` and `.env` are gitignored and never committed.
 
 ### Schema Capabilities:
 

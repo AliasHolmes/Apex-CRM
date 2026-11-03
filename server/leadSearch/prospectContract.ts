@@ -1,5 +1,5 @@
 import { Type } from '../services/llm.js';
-import type { SearchQueryPlanItem, SearchSpec } from './searchSpec.js';
+import { isValidTavilySearchDepth, type SearchQueryPlanItem, type SearchSpec } from './searchSpec.js';
 import type { IntentSignalSpec } from './intentSignals.js';
 import { deriveDomainCluster } from './adaptiveScheduler.js';
 import { sanitizeQueryText } from './strategist.js';
@@ -1345,7 +1345,7 @@ export function buildAtsLaneQueries(
   const role = roleTerms[0] || 'Software Engineer';
   const context = contextTerms[0] || '';
 
-  const atsSiteUnion = '(site:boards.greenhouse.io OR site:jobs.lever.co OR site:jobs.ashbyhq.com OR site:apply.workable.com)';
+  const atsSiteUnion = '(' + ATS_SEARCH_DOMAINS.map(d => `site:${d}`).join(' OR ') + ')';
   const rawQuery = `${atsSiteUnion} "${role}" ${context}`.trim();
 
   return [{
@@ -2341,7 +2341,7 @@ export function enforceContractQueries(input: unknown, contract: ProspectContrac
       priority: Number.isFinite(Number(candidate.priority)) ? Number(candidate.priority) : normalized.length + 1,
       lane: candidate.lane === 'account' || candidate.lane === 'signal' || candidate.lane === 'person' ? candidate.lane : 'person',
       providerPreference: ['tavily', 'brightdata', 'corroborate'].includes(candidate.providerPreference) ? candidate.providerPreference : 'tavily',
-      searchDepth: ['basic', 'fast', 'ultra-fast', 'advanced'].includes(candidate.searchDepth) ? candidate.searchDepth : 'basic',
+      searchDepth: isValidTavilySearchDepth(candidate.searchDepth) ? candidate.searchDepth : 'basic',
       coveredRequirementIds: computeCoveredRequirementIds(query, contract.requirements, isSignalLane)
     });
   }

@@ -100,11 +100,3 @@ export function shouldRunBrightDataForTask(
   return false;
 }
 
-export function filterTasksForBrightData<T extends Pick<RetrievalTask, 'lane' | 'providerPreference'>>(
-  tasks: T[],
-  discoveryMode: DiscoveryProviderMode,
-  brightDataSearchMode: BrightDataSearchMode,
-  options: { brightDataReady: boolean; tavilyResultCount?: number }
-): T[] {
-  return tasks.filter(task => shouldRunBrightDataForTask(task, discoveryMode, brightDataSearchMode, options));
-}

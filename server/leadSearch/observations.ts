@@ -330,30 +330,3 @@ export function extractCompanyHintFromProfile(obs: FusedObservation): string {
   return '';
 }
 
-/** Async version: deterministic heuristics first, then an optional bounded LLM fallback. */
-export async function extractCompanyHintFromSignal(
-  obs: FusedObservation,
-  llmCall?: <T>(prompt: string, schema: any, systemInstruction?: string, options?: any) => Promise<T>
-): Promise<string> {
-  const deterministic = extractCompanyHintDeterministic(obs);
-  if (deterministic) return deterministic;
-
-  if (!llmCall || obs.content.length < 120) return '';
-
-  try {
-    const result = await llmCall<{ company: string }>(
-      `Extract the hiring company name from this web page snippet.\n\nTitle: ${obs.title}\nURL: ${obs.url}\nContent (first 400 chars): ${obs.content.slice(0, 400)}`,
-      {
-        type: 'OBJECT',
-        properties: { company: { type: 'STRING' } },
-        required: ['company']
-      },
-      'You extract company names. Return only the company name, or an empty string if unknown.',
-      { maxTokens: 40, temperature: 0 }
-    );
-    const candidate = cleanCompanyHint(result?.company);
-    return looksLikeCompanyHint(candidate) ? candidate : '';
-  } catch {
-    return '';
-  }
-}

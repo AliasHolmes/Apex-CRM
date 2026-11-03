@@ -73,6 +73,7 @@ import {
   type MiningTraceEvent,
 } from "./telemetry.js";
 import {
+  DISCOVERY_MODES,
   buildFallbackSearchSpec,
   normalizeSearchSpec,
   type SearchSpec,
@@ -646,17 +647,10 @@ export async function executeDiscoverySession(
         )
       : undefined;
 
-    const requestedMode = [
-      "person_first",
-      "account_first",
-      "signal_first",
-      "local_business",
-    ].includes(
-      options.discoveryMode || options.discoveryProviderMode || "person_first",
-    )
-      ? ((options.discoveryMode ||
-          options.discoveryProviderMode ||
-          "person_first") as DiscoveryMode)
+    const rawMode =
+      options.discoveryMode || options.discoveryProviderMode || "person_first";
+    const requestedMode = (DISCOVERY_MODES as readonly string[]).includes(rawMode)
+      ? (rawMode as DiscoveryMode)
       : "person_first";
 
     const parentSession = options.parentSessionId

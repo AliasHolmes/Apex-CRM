@@ -7,7 +7,17 @@ export type DiscoveryMode =
   | "local_business";
 export type QueryLane = "person" | "account" | "signal" | "archetype";
 export type ProviderPreference = "tavily" | "brightdata" | "corroborate";
-export type TavilySearchDepth = "basic" | "fast" | "ultra-fast" | "advanced";
+export const TAVILY_SEARCH_DEPTHS = [
+  "basic",
+  "fast",
+  "ultra-fast",
+  "advanced",
+] as const;
+export type TavilySearchDepth = (typeof TAVILY_SEARCH_DEPTHS)[number];
+
+export function isValidTavilySearchDepth(val: unknown): val is TavilySearchDepth {
+  return typeof val === "string" && (TAVILY_SEARCH_DEPTHS as readonly string[]).includes(val);
+}
 
 export type SearchSpec = {
   version: 1;
@@ -109,7 +119,7 @@ const clean = (value: unknown) =>
   typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 
 /** Canonical discovery modes. Single source of truth for mode validation. */
-const DISCOVERY_MODES: readonly DiscoveryMode[] = [
+export const DISCOVERY_MODES: readonly DiscoveryMode[] = [
   "person_first",
   "account_first",
   "signal_first",

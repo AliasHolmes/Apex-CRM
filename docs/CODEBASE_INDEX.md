@@ -973,25 +973,48 @@ Forensic remediation of all 5 LLM errors observed in session `7885bcac` (1 compi
 - **Unit Test Coverage**:
   - Added test coverage in `test/byesuConcurrency.test.ts` (caller timeout respect and 180s single ceiling) and `test/architecturalImprovements.test.ts` (multi-anchor nuance windowing across 12k char profiles and `isTransientLLMError` matching).
 
-### 9.34 Single-Candidate Timeout Headroom & Cross-Provider Judge Retry Escalation (ADR-0019) — (2026-10-30)
+### 9.34 Single-Candidate Timeout Headroom & Cross-Provider Judge Retry Escalation (ADR-0019) - (2026-10-30)
 
 Forensic remediation of judge timeouts observed in session `ae1f471d`:
 
 - **Single-Candidate Timeout Headroom (210s)**:
-  - In `server/services/llm.ts`, elevated `computeByesuDynamicTimeoutMs` non-Cloudflare single-candidate ceiling to 210s (`210_000` ms), giving deep chain-of-thought evaluations on `gemini-3.8-flash-high` a 35–45s safety margin beyond typical 160–175s deliberation times.
+  - In `server/services/llm.ts`, elevated `computeByesuDynamicTimeoutMs` non-Cloudflare single-candidate ceiling to 210s (`210_000` ms), giving deep chain-of-thought evaluations on `gemini-3.8-flash-high` a 35-45s safety margin beyond typical 160-175s deliberation times.
   - In `judgeStage.ts`, dynamically scales single-candidate floors to 180s standard and 210s dense (>2,000 estimated input tokens).
 - **Cross-Provider Judge Retry Escalation**:
   - In `server/leadSearch/plannerRouting.ts`, added `resolveJudgeRetryProviderOrder()` returning `["byesu", "primary", "openrouter", "groq"]` with `LEAD_JUDGE_RETRY_PROVIDER_ORDER` override.
   - In `judgeStage.ts`, passes `tierProviderOrder: resolveJudgeRetryProviderOrder()` on transient retries (`retries > 0`).
-  - When an initial single-candidate evaluation times out on OmniRoute (`primary`), the retry immediately shifts to Byesu (`gpt-6.1-sol`), bypassing stalled upstream pods and completing evaluation in ~30–50s.
+  - When an initial single-candidate evaluation times out on OmniRoute (`primary`), the retry immediately shifts to Byesu (`gpt-6.1-sol`), bypassing stalled upstream pods and completing evaluation in ~30-50s.
 - **Strict Tier Provider Order Enforcement**:
   - In `server/services/llm.ts`, `withProviderFallback` now detects explicit `tierProviderOrder` and sorts all non-out configured providers strictly by caller rank, ensuring caller-specified failover sequences are honored.
 - **Unit Test Coverage**:
   - Added `test/crossProviderRetryEscalation.test.ts` verifying the 210s ceiling, `resolveJudgeRetryProviderOrder` resolution, and Byesu-first retry dispatch. Expanded `test/plannerRoutingOverride.test.ts`.
 
+### 9.35 Comprehensive Defect Remediation & Technical Debt Elimination - (2026-11-04)
+
+Resolution of all findings identified in the Outstanding Defect Report on HEAD `f45170e`:
+
+- **Test Suite & ASCII Hygiene Alignment**:
+  - Synchronized `test/byesuConcurrency.test.ts` assertion and test title with ADR-0019's 210s single-candidate ceiling (`210_000` ms).
+  - Sanitized non-ASCII en-dashes in `README.md` and `docs/CODEBASE_INDEX.md` to maintain strict UTF-8 / ASCII-only compliance (`codePoint <= 127`).
+- **Configuration & Storage Security Alignment (Option A)**:
+  - Pruned unused `STORAGE_ENCRYPTION_KEY` from `.env.example` and local `.env`. Documented transparent at-rest SQLite storage model secured via loopback interface binding (`127.0.0.1`) and filesystem DACLs in `.env.example`, `CONTEXT.md`, and `README.md`.
+  - Added optional `API_TOKEN` documentation in `.env.example` as legacy alias for `BRIGHTDATA_API_TOKEN`.
+- **Dead Code & Dependency Pruning**:
+  - Deleted orphaned UI components `src/components/ui/separator.tsx` and `src/components/ui/tooltip.tsx`.
+  - Removed unused dependencies `@radix-ui/react-separator`, `@radix-ui/react-tooltip`, and `autoprefixer` from `package.json` and `vite.config.ts`.
+  - Removed 14 unreachable exported symbols: `readStoredLeads`, `leadIdentityKey`, `getIcpHypothesisCache`, `upsertIcpHypothesisCache` in `server/db.ts`; `fetchCompanyFirmographics` in `companyIntent.ts`; `filterTasksForBrightData` in `discoveryRouting.ts`; `resetJudgeEvidenceTelemetry` in `finalistJudge.ts`; `extractCompanyHintFromSignal` in `observations.ts`; `summarizeProviders`, `summarizePhases` in `telemetry.ts`; `isBrightDataProviderDisabledError`, `isBrightDataTransientTargetError` in `brightdata.ts`; `leadsArraySchema` in `llm.ts`.
+- **Deduplication of Constants & Lists**:
+  - Canonicalized `DISCOVERY_MODES` in `server/leadSearch/searchSpec.ts` and reused across `discoveryEngine.ts` and `searchSpec.ts`.
+  - Canonicalized `TAVILY_SEARCH_DEPTHS` and `isValidTavilySearchDepth` validator in `searchSpec.ts`, eliminating duplicate literals in `prospectContract.ts` and `strategist.ts`.
+  - Wired `ATS_SEARCH_DOMAINS` into `buildAtsLaneQueries` in `prospectContract.ts`.
+  - Formally documented intentional role classification divergence for `"founding partner"` between `querySignature.ts` (founder) and `stallLadder.ts` (partner).
+- **Error Observability & Route Parameter Validation**:
+  - Added explicit `console.error` diagnostic logging in `server/db.ts` write failure catch blocks (identity migration and ungrounded write demotion).
+  - Added strict parameter format guards (`isSafeSessionId`, `isSafeLeadId`) to `GET /search-logs/:id`, `DELETE /saved-searches/:id`, and `GET /mining-sessions/:sessionId/trace` in `server/routes/api.ts`.
+
 ## 10. Recommended next actions
 
-Updated 2026-10-28.
+Updated 2026-11-04.
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done - Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.
@@ -1004,6 +1027,6 @@ Updated 2026-10-28.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
 11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `153dab3` + Multi-Preset CSV Export (2026-10-29). Supersedes the `8e6b74f` pin.
-12. ~~**Re-run the full suite and record a real pass/fail total**~~ Done (2026-10-29): **1,370 pass / 0 fail**, exit 0. The five failures found in `9.30` are fixed in `9.31`.
+12. ~~**Re-run the full suite and record a real pass/fail total**~~ Done (2026-11-04): **1,381 pass / 0 fail**, exit 0 across 207 suites. The 2 failures identified on HEAD `f45170e` are remediated in `9.35`.
 13. **Keep the `company_type` primary-phrase ordering pinned by test** - `9.31` fixed three extraction paths that could take slot 0 before the real vertical. `symbioticEntityParsing` and `freeTierYieldAndExclusions` cover two of them; the platform-status rejection (`LinkedIn active`) has no dedicated test yet.
-14. **Decide the fate of `STORAGE_ENCRYPTION_KEY`** - `.env.example` used to claim provider credentials are encrypted at rest in SQLite. They are not: no cipher exists and the key is never read. Either implement encryption at rest for stored provider keys, or delete the key from the template. Do not leave the template implying protection that is not there. (See `9.32`.)
+14. ~~**Decide the fate of `STORAGE_ENCRYPTION_KEY`**~~ - Done (2026-11-04): deleted key from `.env.example` and `.env`; documented plaintext SQLite at-rest storage secured via loopback binding and OS file permissions (Option A). (See `9.35`.)

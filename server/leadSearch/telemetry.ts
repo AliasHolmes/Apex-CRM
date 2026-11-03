@@ -377,14 +377,6 @@ function accumulateProviderEvent(
   }
 }
 
-export function summarizeProviders(events: MiningTraceEvent[]): ProviderSummary {
-  const summary = blankProviderSummary();
-  for (const event of events) {
-    accumulateProviderEvent(summary, event);
-  }
-  return summary;
-}
-
 function accumulatePhaseEvent(
   byPhase: Map<
     MiningPhase,
@@ -496,19 +488,6 @@ export function formatCriticalPathLine(
   }
   parts.push(`Total: ${formatSeconds(totalMs)}`);
   return `[Round ${round} Critical Path] ${parts.join(" | ")}`;
-}
-
-export function summarizePhases(events: MiningTraceEvent[]): PhaseTimelineItem[] {
-  const byPhase = new Map<
-    MiningPhase,
-    PhaseTimelineItem & { firstMs?: number; lastMs?: number }
-  >();
-  for (const event of events) {
-    accumulatePhaseEvent(byPhase, event);
-  }
-  return Array.from(byPhase.values()).map(
-    ({ firstMs, lastMs, ...item }) => item,
-  );
 }
 
 export class MiningTelemetryRecorder {

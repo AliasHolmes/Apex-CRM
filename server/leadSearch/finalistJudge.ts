@@ -67,11 +67,6 @@ export const judgeEvidenceTelemetry = {
   companyDerivedLocationAutoPasses: 0,
 };
 
-export function resetJudgeEvidenceTelemetry() {
-  judgeEvidenceTelemetry.uncitedPasses = 0;
-  judgeEvidenceTelemetry.companyDerivedLocationAutoPasses = 0;
-}
-
 export type Qualification = {
   policyVersion: string;
   verdict: "qualified" | "qualified_partial" | "unverified";

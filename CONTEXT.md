@@ -231,3 +231,7 @@ The dynamic rate limit backoff system in `server/services/llm.ts` that tracks pr
 
 ### LinkedIn Domain Rejection & Website Rescue (`leadDedupe.ts`, `extractStage.ts`)
 The candidate identity sanitation boundary that rejects LinkedIn handles containing top-level domain extensions (`.com`, `.ai`, `.org`, `.io`, etc.) in `isValidLinkedInHandle`. When an extracted profile URL represents an organizational domain rather than a personal profile, `extractStage.ts` discards the corporate handle and rescues the URL into `contactDetails.website`, preventing ghost company records from entering the CRM as individuals.
+
+### SQLite Storage Security
+Provider credentials and search checkpoints are stored in local SQLite (`.apex-data/apex-crm.sqlite`) without transparent application-layer encryption. Security relies on local loopback binding (`127.0.0.1`), strict OS file system permissions on the data directory, and excluding the database and `.env` from source control.
+

@@ -162,8 +162,10 @@ const NON_TRANSIENT_LLM_ERROR = /chat completion truncated/i;
 
 /** True when an LLM/provider error looks transient and worth retrying. */
 export function isTransientLLMError(error: unknown): boolean {
+  if (Boolean(error && (error as any).isStall === true)) return true;
   const message = error instanceof Error ? error.message : String(error || "");
   if (NON_TRANSIENT_LLM_ERROR.test(message)) return false;
+  if (/stall(?:ed)?/i.test(message)) return true;
   return TRANSIENT_LLM_ERROR.test(message);
 }
 

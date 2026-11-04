@@ -88,6 +88,7 @@ export type LLMExecutionOptions = {
   reasoningEffort?: "low" | "medium" | "high";
   routingTier?: LLMRoutingTier;
   metadata?: Record<string, any>;
+  stream?: boolean;
 };
 
 export function createLLMSessionCircuitBreaker(
@@ -191,7 +192,8 @@ function getDirectLLMProviderCandidates(): LLMProvider[] {
   const direct: LLMProvider[] = [];
 
   // Tier 1: Primary Default Provider (OmniRoute or Byesu if OPENAI_BASE is unset)
-  const primaryName = process.env.OPENAI_PROVIDER_NAME || "Byesu";
+  const isPrimaryLocalOmni = /omniroute|localhost|127\.0\.0\.1|20128/i.test(process.env.OPENAI_BASE || "");
+  const primaryName = process.env.OPENAI_PROVIDER_NAME || (isPrimaryLocalOmni ? "OmniRoute" : "Byesu");
   const primaryBase = cleanBaseUrl(process.env.OPENAI_BASE || DEFAULT_PRIMARY_BASE);
   const primaryModel = sanitizeModelName(process.env.OPENAI_MODEL || DEFAULT_PRIMARY_MODEL);
   const primaryKey = process.env.OPENAI_API_KEY || (process.env.OPENAI_BASE ? "" : process.env.BYESU_API_KEY || "");
@@ -453,10 +455,21 @@ async function fetchWithRetry(
 
     let controller: AbortController | undefined;
     let timer: NodeJS.Timeout | undefined;
+    let headerStallTimer: NodeJS.Timeout | undefined;
+    let isHeaderStalled = false;
 
     try {
       controller = new AbortController();
       timer = setTimeout(() => controller?.abort(), effectiveTimeoutMs);
+
+      // Early headers stall detection: abort if initial response headers don't arrive within stall threshold
+      const stallHeaderTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
+      if (stallHeaderTimeoutMs < effectiveTimeoutMs) {
+        headerStallTimer = setTimeout(() => {
+          isHeaderStalled = true;
+          controller?.abort(new Error(`LLM_STALL: No response headers received within ${Math.round(stallHeaderTimeoutMs / 1000)}s.`));
+        }, stallHeaderTimeoutMs);
+      }
       let compositeSignal = controller.signal;
       if (callerSignal) {
         if (callerSignal.aborted) {
@@ -478,6 +491,7 @@ async function fetchWithRetry(
         signal: compositeSignal,
       });
 
+      if (headerStallTimer) clearTimeout(headerStallTimer);
       if (timer) clearTimeout(timer);
       lastResponse = res;
 
@@ -534,9 +548,19 @@ async function fetchWithRetry(
       }
       return res;
     } catch (err: any) {
+      if (headerStallTimer) clearTimeout(headerStallTimer);
       if (timer) clearTimeout(timer);
       lastResponse = undefined;
       const isCallerAbort = Boolean(callerSignal?.aborted);
+      if (isHeaderStalled) {
+        const stallHeaderTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
+        const stallErr = new LLMStallError(
+          { id: (_providerId as LLMProvider["id"]) || "primary", name: _providerId || "LLM", baseUrl: url, model: "", apiKey: "" },
+          `LLM request stalled after ${Math.round(stallHeaderTimeoutMs / 1000)}s (no response headers received).`,
+          stallHeaderTimeoutMs,
+        );
+        throw stallErr;
+      }
       const isFetchTimeout =
         !isCallerAbort &&
         ((controller && controller.signal.aborted) ||
@@ -603,6 +627,25 @@ export class LLMProviderError extends Error {
           message,
         ));
   }
+}
+
+export class LLMStallError extends LLMProviderError {
+  public readonly isStall = true;
+  public readonly isTimeout = true;
+  public readonly elapsedMs: number;
+
+  constructor(provider: LLMProvider, message: string, elapsedMs: number = 0) {
+    super(provider, 408, message);
+    this.name = "LLMStallError";
+    this.elapsedMs = elapsedMs;
+  }
+}
+
+export function isStallError(error: unknown): error is LLMStallError {
+  return Boolean(
+    error &&
+      (error instanceof LLMStallError || (error as any).isStall === true),
+  );
 }
 
 /**
@@ -1145,7 +1188,7 @@ function resolvePrimaryRecoveryMaxWaitMs(): number {
   return Number.isFinite(configured) && configured >= 0 ? configured : 10 * 60_000;
 }
 
-type AttemptResult<T> = { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean };
+type AttemptResult<T> = { ok: true; val: T } | { ok: false; err: Error; isTimeout: boolean; isStall?: boolean };
 
 async function withProviderFallback<T>(
   operation: (
@@ -1259,13 +1302,14 @@ async function withProviderFallback<T>(
       return { ok: true, val };
     } catch (error: any) {
       const normalized = error instanceof Error ? error : new Error(String(error));
+      const isStall = isStallError(normalized);
       const cause = (normalized as { cause?: { name?: string } }).cause;
       const isAbort =
         executionOptions.signal?.aborted ||
         normalized.name === "AbortError" ||
         cause?.name === "AbortError" ||
         (normalized as unknown as { code?: string }).code === "ABORT_ERR";
-      if (isAbort) {
+      if (isAbort && !isStall) {
         throw normalized;
       }
 
@@ -1277,7 +1321,7 @@ async function withProviderFallback<T>(
       const stage = executionOptions?.metadata?.stage || executionOptions?.metadata?.operation;
       const stageTag = stage ? ` \x1b[94m[${stage}]\x1b[0m` : "";
       console.error(
-        `\x1b[31m[LLM ERROR ${errStatus ? errStatus : "FAIL"}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${sanitizeModelName(provider.model)}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m${stageTag}`,
+        `\x1b[31m[LLM ERROR ${isStall ? "STALL" : (errStatus ? errStatus : "FAIL")}]\x1b[0m \x1b[1m${provider.name}\x1b[0m - model: \x1b[36m${sanitizeModelName(provider.model)}\x1b[0m - \x1b[31m${truncateProviderError(normalized.message)}\x1b[0m${stageTag}`,
       );
 
       executionOptions.onProviderAttempt?.({
@@ -1294,13 +1338,14 @@ async function withProviderFallback<T>(
 
       // Circuit breaker health isolation:
       // When a hardTimeoutMs was applied AND this was a timeout failure, do NOT record failure
-      // against global provider health or the session circuit breaker. This prevents planner-induced
-      // tight timeouts from cooling down or marking Byesu OUT for extract and judge.
+      // against global provider health or the session circuit breaker.
+      // Similarly, do NOT record an initial stall against the global circuit breaker:
+      // same-model retry will attempt Gemini first, and only repeated failures mark the provider.
       const isPlannerHardTimeout = Boolean(resolvedHardTimeoutMs && isTimeout);
-      if (!isHealthProbe && !isPlannerHardTimeout) {
+      if (!isHealthProbe && !isPlannerHardTimeout && !isStall) {
         recordProviderFailure(provider.id, normalized, breaker);
       }
-      return { ok: false, err: normalized, isTimeout };
+      return { ok: false, err: normalized, isTimeout, isStall };
     }
   };
 
@@ -1390,7 +1435,20 @@ async function withProviderFallback<T>(
           explicitFailures.push(budgetError());
           break;
         }
-        const attempt = await runOn([provider]);
+        let attempt = await runOn([provider]);
+        // Same-model retry on stall before escalating:
+        if (attempt && !attempt.result.ok && isStallError(attempt.result.err)) {
+          console.warn(
+            `\x1b[33m[LLM STALL DETECTED]\x1b[0m ${provider.name} (${provider.model}) stalled (${attempt.result.err.message}); retrying same call on ${provider.name} first...`
+          );
+          attempt = await runOn([provider]);
+          if (attempt && !attempt.result.ok) {
+            console.warn(
+              `\x1b[31m[LLM REPEATED STALL]\x1b[0m ${provider.name} failed repeatedly after same-model retry. Delegating to next provider in tier...`
+            );
+            recordProviderFailure(provider.id, attempt.result.err, breaker);
+          }
+        }
         if (attempt?.result.ok) return attempt.result.val;
         if (attempt && !attempt.result.ok) {
           explicitFailures.push(attempt.result.err);
@@ -1416,7 +1474,18 @@ async function withProviderFallback<T>(
   //    Groq/OpenRouter stay reserved as failsafes when Byesu is out.
   const eligiblePrimaries = primaryTier.filter((p) => !isProviderOut(p.id, breaker));
   if (eligiblePrimaries.length > 0) {
-    const first = await runOn(eligiblePrimaries);
+    let first = await runOn(eligiblePrimaries);
+
+    // If first attempt stalled, retry the same call on Gemini first!
+    let primaryStallRetried = false;
+    if (first && !first.result.ok && isStallError(first.result.err)) {
+      primaryStallRetried = true;
+      console.warn(
+        `\x1b[33m[LLM STALL DETECTED]\x1b[0m ${first.provider.name} (${first.provider.model}) stalled after ${(first.result.err as LLMStallError).elapsedMs || 0}ms; retrying same call on ${first.provider.name} first...`
+      );
+      first = await runOn([first.provider]);
+    }
+
     if (first?.result.ok) return first.result.val;
     if (first && !first.result.ok) lastPrimaryError = first.result.err;
 
@@ -1426,8 +1495,39 @@ async function withProviderFallback<T>(
     let second: Awaited<ReturnType<typeof runOn>> = null;
     if (first && partners.length > 0) {
       second = await runOn(partners);
+      if (second && !second.result.ok && isStallError(second.result.err)) {
+        console.warn(
+          `\x1b[33m[LLM STALL DETECTED]\x1b[0m ${second.provider.name} stalled; retrying same call on ${second.provider.name} first...`
+        );
+        second = await runOn([second.provider]);
+      }
       if (second?.result.ok) return second.result.val;
       if (second && !second.result.ok) lastPrimaryError = second.result.err;
+    }
+
+    // Repeated failure escalation:
+    // If Gemini stalled initially AND its same-model retry also stalled or failed:
+    // Repeated failure is confirmed -> Delegate directly to Byesu in failsafeTier!
+    if (primaryStallRetried && first && !first.result.ok) {
+      console.warn(
+        `\x1b[31m[LLM REPEATED STALL]\x1b[0m ${first.provider.name} (${first.provider.model}) failed repeatedly on same-model retry. Delegating to Byesu...`
+      );
+      recordProviderFailure(first.provider.id, first.result.err, breaker);
+      const byesuCandidate = failsafeTier.find(
+        (p) => p.id === "byesu" && !isProviderOut(p.id, breaker),
+      );
+      if (byesuCandidate) {
+        const byesuAttempt = await runOn([byesuCandidate]);
+        if (byesuAttempt?.result.ok) {
+          console.log(
+            `\x1b[32m[LLM RECOVERED]\x1b[0m Delegated call succeeded on Byesu (${byesuCandidate.model}).`
+          );
+          return byesuAttempt.result.val;
+        }
+        if (byesuAttempt && !byesuAttempt.result.ok) {
+          lastPrimaryError = byesuAttempt.result.err;
+        }
+      }
     }
 
     const isFastTierCall = Boolean(executionOptions.tierProviderOrder?.length);
@@ -1660,7 +1760,7 @@ async function sendChatCompletion(
     maxTokens?: number;
     temperature?: number;
     responseFormat?: { type: "json_object" };
-  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "hardTimeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata">,
+  } & Pick<LLMExecutionOptions, "onUsage" | "timeoutMs" | "hardTimeoutMs" | "maxRetries" | "signal" | "reasoningEffort" | "metadata" | "stream">,
 ): Promise<string> {
   const backoffUntil = providerRateLimitBackoffUntil.get(provider.id);
   if (backoffUntil && Date.now() < backoffUntil) {
@@ -1746,23 +1846,34 @@ async function sendChatCompletion(
     isReasoningCapable;
 
   const callStartedAt = Date.now();
+  const isLocalOmniRoute = /omniroute|localhost|127\.0\.0\.1|20128/i.test(provider.name + provider.baseUrl);
+  const allowStreaming =
+    options?.stream ??
+    (process.env.LLM_STREAMING === "true" ||
+      (process.env.LLM_STREAMING !== "false" && isLocalOmniRoute));
+  const requestHeaders: Record<string, string> = {
+    ...(provider.headers || {}),
+    ...sessionHeaders,
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${provider.apiKey}`,
+  };
+  if (isLocalOmniRoute) {
+    requestHeaders["X-OmniRoute-Progress"] = "true";
+    requestHeaders["X-OmniRoute-Strip-Reasoning"] = "true";
+    requestHeaders["X-OmniRoute-No-Memory"] = "true";
+  }
+
   try {
     res = await fetchWithRetry(
       `${provider.baseUrl}/chat/completions`,
       {
         method: "POST",
-        headers: {
-          ...(provider.headers || {}),
-          ...sessionHeaders,
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
+        headers: requestHeaders,
         body: JSON.stringify({
           model: sanitizeModelName(provider.model),
           messages,
-          // Some third-party OpenAI-compatible gateways default to SSE when the
-          // flag is omitted. Apex expects one JSON response for structured calls.
-          stream: false,
+          stream: allowStreaming,
+          ...(allowStreaming ? { stream_options: { include_usage: true } } : {}),
           temperature:
             options?.temperature !== undefined ? options.temperature : 0.1,
           max_tokens: effectiveMaxTokens,
@@ -1781,6 +1892,23 @@ async function sendChatCompletion(
       provider.id,
     );
   } catch (error: any) {
+    if (isStallError(error)) {
+      void sendDirectLangfuseTrace({
+        sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+        stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+        round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+        model: sanitizeModelName(provider.model),
+        provider: provider.name,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        latencyMs: Date.now() - callStartedAt,
+        status: "error",
+        errorMessage: error.message,
+        messages,
+      });
+      throw error;
+    }
     if (error?.name === "AbortError" || options?.signal?.aborted) {
       throw error;
     }
@@ -1803,6 +1931,204 @@ async function sendChatCompletion(
       undefined,
       error instanceof Error ? error.message : String(error),
     );
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+  const isStreamResponse = Boolean(res.ok && res.body && (contentType.includes("text/event-stream") || contentType.includes("application/x-ndjson")));
+
+  if (isStreamResponse && res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let streamBuffer = "";
+    let accumulatedContent = "";
+    let streamModel = "";
+    let streamFinishReason: string | undefined;
+    let streamUsage: any = undefined;
+
+    const stallTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
+    const inactivityTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_INACTIVITY_MS || 25_000));
+
+    let streamStallTimer: NodeJS.Timeout | undefined;
+    let streamInactivityTimer: NodeJS.Timeout | undefined;
+    let isStreamStalled = false;
+    let stallReasonMsg = "";
+
+    const clearStreamTimers = () => {
+      if (streamStallTimer) {
+        clearTimeout(streamStallTimer);
+        streamStallTimer = undefined;
+      }
+      if (streamInactivityTimer) {
+        clearTimeout(streamInactivityTimer);
+        streamInactivityTimer = undefined;
+      }
+    };
+
+    const triggerStreamStall = (reason: string) => {
+      isStreamStalled = true;
+      stallReasonMsg = reason;
+      clearStreamTimers();
+      try {
+        reader.cancel().catch(() => {});
+      } catch {}
+    };
+
+    streamStallTimer = setTimeout(() => {
+      triggerStreamStall(`No forward token progress received within ${Math.round(stallTimeoutMs / 1000)}s.`);
+    }, stallTimeoutMs);
+
+    const resetStreamInactivity = () => {
+      if (streamStallTimer) {
+        clearTimeout(streamStallTimer);
+        streamStallTimer = undefined;
+      }
+      if (streamInactivityTimer) clearTimeout(streamInactivityTimer);
+      streamInactivityTimer = setTimeout(() => {
+        triggerStreamStall(`Stream went silent for ${Math.round(inactivityTimeoutMs / 1000)}s mid-generation.`);
+      }, inactivityTimeoutMs);
+    };
+
+    let streamDone = false;
+    const processStreamLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(":")) return;
+      if (trimmed.startsWith("event: progress")) return;
+      if (trimmed.startsWith("data:")) {
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === "[DONE]") {
+          streamFinishReason = streamFinishReason || "stop";
+          streamDone = true;
+          return;
+        }
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (typeof parsed.tokens_generated === "number" && parsed.tokens_generated > 0) {
+            resetStreamInactivity();
+            return;
+          }
+          if (parsed.model && !streamModel) streamModel = parsed.model;
+          if (parsed.usage) streamUsage = parsed.usage;
+          const choice = parsed.choices?.[0];
+          if (choice) {
+            if (typeof choice.finish_reason === "string") {
+              streamFinishReason = choice.finish_reason;
+            }
+            const delta = choice.delta;
+            if (delta) {
+              if (delta.reasoning_content || delta.thought || delta.thinking) {
+                resetStreamInactivity();
+              }
+              if (typeof delta.content === "string") {
+                accumulatedContent += delta.content;
+                resetStreamInactivity();
+              }
+            }
+          }
+        } catch {}
+      }
+    };
+
+    try {
+      while (true) {
+        if (options?.signal?.aborted) {
+          clearStreamTimers();
+          const cancelError = new Error("LLM request was aborted by caller.");
+          cancelError.name = "AbortError";
+          throw cancelError;
+        }
+        if (isStreamStalled) break;
+
+        const { done, value } = await reader.read();
+        if (done) {
+          if (streamBuffer.trim()) {
+            processStreamLine(streamBuffer);
+          }
+          break;
+        }
+
+        streamBuffer += decoder.decode(value, { stream: true });
+        const lines = streamBuffer.split("\n");
+        streamBuffer = lines.pop() || "";
+
+        for (const line of lines) {
+          processStreamLine(line);
+          if (streamDone) break;
+        }
+        if (streamDone) break;
+      }
+    } finally {
+      clearStreamTimers();
+      try {
+        reader.releaseLock();
+      } catch {}
+    }
+
+    if (isStreamStalled) {
+      throw new LLMStallError(
+        provider,
+        `LLM request stalled after ${Math.round((Date.now() - callStartedAt) / 1000)}s: ${stallReasonMsg}`,
+        Date.now() - callStartedAt,
+      );
+    }
+
+    if (streamFinishReason === "length") {
+      const isJsonCutoff =
+        options?.responseFormat?.type === "json_object" &&
+        (!accumulatedContent.trim().endsWith("}") && !accumulatedContent.trim().endsWith("]"));
+      if (accumulatedContent === "" || isJsonCutoff) {
+        throw new LLMProviderError(
+          provider,
+          200,
+          `chat completion truncated: finish_reason "length"` +
+            (accumulatedContent === "" ? ` produced no visible content` : ` cut off incomplete JSON response`) +
+            `. Raise max_tokens or token headroom.`,
+        );
+      }
+    }
+
+    const latencyMs = Date.now() - callStartedAt;
+    const actualModel = sanitizeModelName(streamModel || provider.model);
+    const inputTokens = Number(streamUsage?.prompt_tokens ?? streamUsage?.input_tokens ?? 0);
+    const outputTokens = Number(streamUsage?.completion_tokens ?? streamUsage?.output_tokens ?? 0);
+    const suppliedTotal = Number(streamUsage?.total_tokens ?? streamUsage?.totalTokens ?? 0);
+    const totalTokens =
+      Number.isFinite(suppliedTotal) && suppliedTotal > 0
+        ? suppliedTotal
+        : Math.max(0, inputTokens) + Math.max(0, outputTokens);
+
+    sendDirectLangfuseTrace({
+      sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
+      stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
+      round: typeof options?.metadata?.round === "number" ? options.metadata.round : undefined,
+      model: actualModel,
+      provider: provider.name,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      latencyMs,
+      status: "success",
+      messages,
+      output: accumulatedContent,
+    });
+
+    if (typeof options?.onUsage === "function") {
+      options.onUsage({
+        inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
+        outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
+        totalTokens,
+        provider: provider.name,
+        model: actualModel,
+      });
+    }
+
+    const stageName = stage || options?.metadata?.operation;
+    const stageTag = stageName ? ` \x1b[94m[${stageName}]\x1b[0m` : "";
+    const latencySec = (latencyMs / 1000).toFixed(1);
+    console.log(
+      `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencySec}s\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m${stageTag}`,
+    );
+
+    return accumulatedContent;
   }
 
   if (!res.ok) {

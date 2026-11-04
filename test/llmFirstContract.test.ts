@@ -5,7 +5,7 @@ import {
   buildDeterministicProspectContract,
   searchSpecFromProspectContract,
   buildSignalLaneQueries,
-  ProspectContract,
+  type ProspectContract,
   PROSPECT_CONTRACT_POLICY_VERSION
 } from '../server/leadSearch/prospectContract.js';
 import { buildFallbackSearchSpec } from '../server/leadSearch/searchSpec.js';

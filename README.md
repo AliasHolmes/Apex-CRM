@@ -29,7 +29,7 @@ Its primary workflow is intentionally practical:
 3. **Stage-Pipelined High-Efficiency Engine**:
    - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`), cross-round **Retrieval Cache** (`retrievalCache.ts`), and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
-   - Enforces **Provider Slot Concurrency & Unconstrained Reasoning** (`withProviderFallback`): establishes OmniRoute (`gemini-3.8-flash-high`) as the Tier 1 primary engine provider with 6 concurrent slots, unconstrained 65k output tokens, and high reasoning effort, backed by Byesu (`gpt-6.1-sol`) as secondary fallback (8 slots) and Groq/Mistral as failsafe tier, achieving safe high-throughput execution without rate limits or timeouts.
+   - Enforces **Provider Slot Concurrency & Unconstrained Reasoning** (`withProviderFallback`): establishes OmniRoute (`gemini-3.8-flash-high`) as the Tier 1 primary engine provider with 8 concurrent slots, unconstrained 65k output tokens, and high reasoning effort, backed by Byesu (`gpt-6.1-sol`) as secondary fallback (8 slots) and Groq/Mistral as failsafe tier, achieving safe high-throughput execution without rate limits or timeouts.
    - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v27.
    - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
@@ -165,7 +165,7 @@ flowchart TD
 - **OmniRoute Primary Architecture**: Configures primary concurrency slots (`OPENAI_CONCURRENT_SLOTS=8`) with Gemini 3.8 Flash High (`gemini-3.8-flash-high`) and unconstrained 65k output tokens, backed by Byesu GPT-6.1 (`gpt-6.1-sol`, 8 slots) as secondary fallback.
 - **Dynamic Timeout Scaling & Cloudflare Decoupling**: Uses `computeByesuDynamicTimeoutMs` with Cloudflare proxy limits (`115,000ms`) applied strictly to Byesu targets, while local OmniRoute and direct endpoints scale dynamically up to a generous 300,000ms ceiling with 75s planner hard timeouts and 20s health check probes.
 
-#### 13. Persistent Candidate Verdicts & Company Attribution (Schema v26)
+#### 13. Persistent Candidate Verdicts & Company Attribution (Schema v27)
 
 - **Candidate Verdict Cache** (`candidate_verdicts`): Persists candidate pass and hard-fail evaluations indexed by canonical LinkedIn identity key and contract requirement hash, enabling 0ms evaluation reuse across discovery rounds.
 - **Company Taxonomy & Attribution Persistence** (`company_profiles`, `company_attribution_verdicts`): Stores verified company business models, offerings, and per-brief attribution verdicts, cutting redundant company-level LLM calls by up to 85%.
@@ -411,13 +411,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 204 TypeScript files in `test/` (201 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 206 TypeScript files in `test/` (203 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (1,370 pass / 0 fail)
+# Full test suite (1,385 pass / 0 fail)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -446,7 +446,7 @@ npm run test:dedupe
 ```text
 docs/
   CODEBASE_INDEX.md          Measured architecture, module inventory, and audit ledger
-  adr/                       Architecture Decision Records (ADR-0001 through ADR-0017)
+  adr/                       Architecture Decision Records (ADR-0001 through ADR-0019)
 src/
   components/                React UI components, modals, tables, badges
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog
@@ -484,7 +484,7 @@ server/
     discoveryEngine.ts       Discovery Session Engine orchestrator & stage pipelining (parentSessionId/deltaBrief/interactive)
     prospectContract.ts      Contract schema, prompt intelligence & decomposition (plural-persona, alias-aware grounding, no geo invention)
     queryUnderstanding.ts    Complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
-    candidateVerdicts.ts     Candidate qualification and hard-fail verdict cache (Schema v26)
+    candidateVerdicts.ts     Candidate qualification and hard-fail verdict cache (Schema v27)
     defaultRoles.ts          Dynamic role and business function extraction for any domain
     geo.ts                   Universal ISO 3166-1 country code resolution via Intl
     retrievalCache.ts        Query-hash-keyed search retrieval cache
@@ -492,7 +492,7 @@ server/
     queryRewriter.ts         Bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection, max 3)
     intentSignals.ts         Dynamic signal compiler, categories & freshness decay (abbreviated units, 45d neutral undated age)
     companyIntent.ts         Phase 4 company website TF-IDF intent scoring
-    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating (Schema v26)
+    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating (Schema v27)
     profileQuality.ts        Deterministic social-proof parsing, ghost/company-page & company-scoped contradiction detection
     linkedinPostIntent.ts    Phase 5 annotate-only LinkedIn post SERP intent research
     providerQueue.ts         Bounded-concurrency provider task queue (`runProviderQueue`)
@@ -500,7 +500,7 @@ server/
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v27 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts)
-test/                        Automated unit, integration, replay, and eval test suites (204 files, 201 .test.ts + helpers)
+test/                        Automated unit, integration, replay, and eval test suites (206 files, 203 .test.ts + helpers)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

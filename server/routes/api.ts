@@ -344,7 +344,7 @@ router.get("/leads", (req, res): any => {
     });
   } catch (error: any) {
     console.error("Failed to read leads from SQLite:", error);
-    res.status(500).json({ error: error.message || "Failed to read leads" });
+    res.status(500).json({ error: "Failed to read leads" });
   }
 });
 
@@ -367,14 +367,33 @@ router.get("/leads/export", (req, res): any => {
     let leadsToExport: Lead[] = [];
 
     if (ids && typeof ids === "string" && ids.trim()) {
-      const idList = ids.split(",").map((s) => s.trim()).filter(Boolean);
-      if (idList.length > 0) {
+      const rawIds = ids.split(",").map((s) => s.trim()).filter(Boolean);
+      const uniqueIds = Array.from(new Set(rawIds));
+      const MAX_EXPORT_IDS = 10_000;
+      if (uniqueIds.length > MAX_EXPORT_IDS) {
+        return res.status(400).json({
+          error: `Too many lead IDs requested for export (maximum is ${MAX_EXPORT_IDS}).`,
+        });
+      }
+      if (uniqueIds.length > 0) {
         const db = getLeadsDb();
-        const placeholders = idList.map(() => "?").join(",");
-        const rows = db
-          .prepare(`SELECT payload FROM leads WHERE id IN (${placeholders})`)
-          .all(...idList) as { payload: string }[];
-        leadsToExport = rows.map((r) => JSON.parse(r.payload));
+        const SQLITE_CHUNK_SIZE = 900;
+        const leads: Lead[] = [];
+        for (let i = 0; i < uniqueIds.length; i += SQLITE_CHUNK_SIZE) {
+          const chunk = uniqueIds.slice(i, i + SQLITE_CHUNK_SIZE);
+          const placeholders = chunk.map(() => "?").join(",");
+          const rows = db
+            .prepare(`SELECT payload FROM leads WHERE id IN (${placeholders})`)
+            .all(...chunk) as { payload: string }[];
+          for (const r of rows) {
+            try {
+              leads.push(JSON.parse(r.payload));
+            } catch {
+              // Ignore individual malformed records
+            }
+          }
+        }
+        leadsToExport = leads;
       }
     } else {
       const result = readLeadsSummary({
@@ -398,7 +417,7 @@ router.get("/leads/export", (req, res): any => {
     return res.send(csv);
   } catch (error: any) {
     console.error("Failed to export leads:", error);
-    return res.status(500).json({ error: error.message || "Failed to export leads" });
+    return res.status(500).json({ error: "Failed to export leads" });
   }
 });
 
@@ -419,7 +438,7 @@ router.get("/leads/stats", (req, res): any => {
     });
   } catch (error: any) {
     console.error("Failed to read leads stats from SQLite:", error);
-    res.status(500).json({ error: error.message || "Failed to read leads stats" });
+    res.status(500).json({ error: "Failed to read leads stats" });
   }
 });
 
@@ -443,7 +462,7 @@ router.put("/leads", (req, res): any => {
     res.json({ apiVersion: 1, success: true, count: leads.length });
   } catch (error: any) {
     console.error("Failed to persist leads to SQLite:", error);
-    res.status(500).json({ error: error.message || "Failed to persist leads" });
+    res.status(500).json({ error: "Failed to persist leads" });
   }
 });
 
@@ -600,7 +619,7 @@ router.patch("/leads/:id", (req, res): any => {
         });
     }
     console.error(`Failed to upsert lead ${req.params.id} to SQLite:`, error);
-    res.status(500).json({ error: error.message || "Failed to upsert lead" });
+    res.status(500).json({ error: "Failed to upsert lead" });
   }
 });
 
@@ -613,7 +632,7 @@ router.delete("/leads/:id", (req, res): any => {
     res.json({ apiVersion: 1, success: true });
   } catch (error: any) {
     console.error(`Failed to delete lead ${req.params.id} from SQLite:`, error);
-    res.status(500).json({ error: error.message || "Failed to delete lead" });
+    res.status(500).json({ error: "Failed to delete lead" });
   }
 });
 
@@ -626,9 +645,10 @@ router.get("/leads/:id/activities", (req, res): any => {
     const activities = readLeadActivities(req.params.id, limit);
     res.json({ apiVersion: 1, activities });
   } catch (error: any) {
+    console.error(`Failed to read lead activities for ${req.params.id}:`, error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to read lead activities." });
+      .json({ error: "Failed to read lead activities." });
   }
 });
 
@@ -822,7 +842,7 @@ router.post("/leads/:id/merge", (req, res): any => {
     }
   } catch (error: any) {
     console.error("Failed to merge leads:", error);
-    res.status(500).json({ error: error.message || "Lead merge failed." });
+    res.status(500).json({ error: "Lead merge failed." });
   }
 });
 
@@ -860,7 +880,7 @@ router.delete("/leads", (req, res): any => {
     console.error("Failed to bulk delete leads from SQLite:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to bulk delete leads" });
+      .json({ error: "Failed to bulk delete leads" });
   }
 });
 
@@ -966,7 +986,7 @@ router.post("/leads/bulk", (req, res): any => {
     console.error("Failed to bulk upsert leads in SQLite:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to bulk upsert leads" });
+      .json({ error: "Failed to bulk upsert leads" });
   }
 });
 
@@ -1157,7 +1177,7 @@ ${rawText}`;
     console.error("Error in /api/scrape-url:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to scrape this profile." });
+      .json({ error: "Failed to scrape this profile." });
   }
 });
 
@@ -1221,7 +1241,7 @@ ${pastedText}`;
     res
       .status(500)
       .json({
-        error: error.message || "Failed to extract pasted profile data.",
+        error: "Failed to extract pasted profile data.",
       });
   }
 });
@@ -1758,7 +1778,9 @@ router.post(
       return res
         .status(cancelled ? 499 : 500)
         .json({
-          error: error.message || "Failed to resume lead mining session.",
+          error: cancelled
+            ? "Mining session cancelled."
+            : "Failed to resume lead mining session.",
           cancelled,
         });
     }
@@ -1773,7 +1795,7 @@ router.get("/engine-metrics", (req, res): any => {
     console.error("Failed to read engine metrics:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to compute engine metrics." });
+      .json({ error: "Failed to compute engine metrics." });
   }
 });
 
@@ -1808,10 +1830,11 @@ router.get("/provider-capabilities", (_req, res): any => {
       },
     });
   } catch (error: any) {
+    console.error("Could not read provider capabilities:", error);
     res
       .status(500)
       .json({
-        error: error.message || "Could not read provider capabilities.",
+        error: "Could not read provider capabilities.",
       });
   }
 });
@@ -1823,9 +1846,10 @@ router.get("/saved-searches", (req, res): any => {
       searches: readSavedSearches(Number(req.query.limit || 50)),
     });
   } catch (error: any) {
+    console.error("Could not read saved searches:", error);
     res
       .status(500)
-      .json({ error: error.message || "Could not read saved searches." });
+      .json({ error: "Could not read saved searches." });
   }
 });
 
@@ -1854,9 +1878,10 @@ router.delete("/saved-searches/:id", (req, res): any => {
     }
     res.json({ apiVersion: 1, deleted: deleteSavedSearch(req.params.id) > 0 });
   } catch (error: any) {
+    console.error("Could not delete saved search:", error);
     res
       .status(500)
-      .json({ error: error.message || "Could not delete saved search." });
+      .json({ error: "Could not delete saved search." });
   }
 });
 
@@ -2245,9 +2270,13 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
     if (error.message?.includes("must be a non-empty string")) {
       return res.status(400).json({ error: error.message });
     }
+    console.error("Failed to locate leads:", error);
     return res
       .status(cancelled ? 499 : 500)
-      .json({ error: error.message || "Failed to locate leads.", cancelled });
+      .json({
+        error: cancelled ? "Lead search cancelled." : "Failed to locate leads.",
+        cancelled,
+      });
   } finally {
     await closeBrightDataClient({
       onlyIfIdle: true,
@@ -2349,7 +2378,7 @@ router.post("/leads/:id/enrich-profile", paidRouteLimit("enrich-profile"), async
     console.error("Error in /api/leads/:id/enrich-profile:", error);
     res
       .status(500)
-      .json({ error: error.message || "Profile enrichment failed." });
+      .json({ error: "Profile enrichment failed." });
   }
 });
 // -- Outreach Draft Endpoints -------------------------------------------------
@@ -2359,9 +2388,10 @@ router.get("/outreach-drafts", (req, res): any => {
     const limit = parseBoundedLimit(req.query.limit, 50, 200);
     res.json({ apiVersion: 1, drafts: readOutreachDrafts(limit) });
   } catch (error: any) {
+    console.error("Failed to read outreach drafts:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to read outreach drafts." });
+      .json({ error: "Failed to read outreach drafts." });
   }
 });
 
@@ -2413,9 +2443,10 @@ router.post("/outreach-drafts", (req, res): any => {
     });
     res.json({ apiVersion: 1, draft });
   } catch (error: any) {
+    console.error("Failed to save outreach draft:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to save outreach draft." });
+      .json({ error: "Failed to save outreach draft." });
   }
 });
 
@@ -2427,9 +2458,10 @@ router.delete("/outreach-drafts/:id", (req, res): any => {
     deleteOutreachDraft(req.params.id);
     res.json({ apiVersion: 1, success: true });
   } catch (error: any) {
+    console.error("Failed to delete outreach draft:", error);
     res
       .status(500)
-      .json({ error: error.message || "Failed to delete outreach draft." });
+      .json({ error: "Failed to delete outreach draft." });
   }
 });
 
@@ -2542,7 +2574,7 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
     res
       .status(500)
       .json({
-        error: error.message || "Outreach template calculation failed.",
+        error: "Outreach template calculation failed.",
       });
   }
 });
@@ -2651,7 +2683,7 @@ Answer the user's question about their CRM pipeline, leads, outreach strategy, o
     });
   } catch (error: any) {
     console.error("Error in Copilot Chat:", error);
-    res.status(500).json({ error: error.message || "Chat generation failed." });
+    res.status(500).json({ error: "Chat generation failed." });
   }
 });
 

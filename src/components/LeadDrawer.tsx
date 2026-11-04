@@ -246,24 +246,29 @@ function LeadDrawerBody({
   const [loadingActivities, setLoadingActivities] = useState(false);
   const [activitiesError, setActivitiesError] = useState<string | null>(null);
 
-  const fetchActivities = useCallback(async () => {
+  const fetchActivities = useCallback(async (signal?: AbortSignal) => {
     setLoadingActivities(true);
     setActivitiesError(null);
     try {
-      const res = await fetch(`/api/leads/${lead.id}/activities?limit=50`);
+      const res = await fetch(`/api/leads/${lead.id}/activities?limit=50`, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setActivities(Array.isArray(data.activities) ? data.activities : []);
     } catch (err: any) {
+      if (err.name === 'AbortError') return;
       setActivitiesError(err.message || 'Could not load activities.');
     } finally {
-      setLoadingActivities(false);
+      if (!signal?.aborted) {
+        setLoadingActivities(false);
+      }
     }
   }, [lead.id]);
 
   useEffect(() => {
     if (activeTab === 'activity') {
-      void fetchActivities();
+      const controller = new AbortController();
+      void fetchActivities(controller.signal);
+      return () => controller.abort();
     }
   }, [activeTab, fetchActivities]);
 

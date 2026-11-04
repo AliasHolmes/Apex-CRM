@@ -182,8 +182,10 @@ async function loadLeadsFromSqliteBackend(): Promise<StoredLeadsResponse> {
         if (id) mergedIds.add(id);
       }
       if (mergedIds.size !== serverTotal) {
-        hydratedLeadsById = null;
-        hydratedHighWater = '';
+        // Deletions occurred or delta counts diverged. Invalidate cache and
+        // immediately perform an authoritative full refetch.
+        invalidateClientLeadsCache();
+        return loadLeadsFromSqliteBackend();
       }
     }
     if (hydratedLeadsById) {
@@ -333,6 +335,9 @@ function sanitizeLeads(loadedLeads: unknown[]): Lead[] {
 
 function loadLegacyBrowserLeads(): Lead[] | null {
   try {
+    if (localStorage.getItem('apex_crm_leads_migrated_v1') === 'true') {
+      return null;
+    }
     const legacyStored = localStorage.getItem(LEGACY_LEADS_STORAGE_KEY);
     if (!legacyStored) return null;
 
@@ -593,7 +598,15 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       const initialLeads = loadLegacyBrowserLeads() || [];
       saveLeadsToStorage(initialLeads);
       setStats(computeStatsFromLeads(initialLeads));
-      persistLeadsToSqliteBackend(initialLeads).catch(error => console.warn('SQLite seed migration failed:', error));
+      if (initialLeads.length > 0) {
+        persistLeadsToSqliteBackend(initialLeads)
+          .then(() => {
+            try {
+              localStorage.setItem('apex_crm_leads_migrated_v1', 'true');
+            } catch {}
+          })
+          .catch(error => console.warn('SQLite seed migration failed:', error));
+      }
       return true;
     } catch (error) {
       console.error('SQLite lead load failed:', error);

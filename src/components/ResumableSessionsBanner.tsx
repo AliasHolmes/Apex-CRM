@@ -105,6 +105,8 @@ export function ResumableSessionsBanner({
 
   const handleDeleteOne = async (sessionId: string, event?: React.MouseEvent) => {
     event?.stopPropagation();
+    const previousSessions = resumableSessions;
+    const previousSelected = selectedIds;
     setResumableSessions(prev => prev.filter(s => s.id !== sessionId));
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -113,9 +115,14 @@ export function ResumableSessionsBanner({
     });
 
     try {
-      await fetch(`/api/mining-sessions/${sessionId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/mining-sessions/${sessionId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        throw new Error(`Failed to delete mining session (${res.status})`);
+      }
     } catch (err) {
       console.error('Failed to delete mining session:', err);
+      setResumableSessions(previousSessions);
+      setSelectedIds(previousSelected);
       void fetchResumable();
     }
   };
@@ -123,18 +130,25 @@ export function ResumableSessionsBanner({
   const handleDeleteSelected = async () => {
     if (selectedIds.size === 0 || isDeleting) return;
     const idsToDelete = Array.from(selectedIds);
+    const previousSessions = resumableSessions;
+    const previousSelected = selectedIds;
     setIsDeleting(true);
     setResumableSessions(prev => prev.filter(s => !selectedIds.has(s.id)));
     setSelectedIds(new Set());
 
     try {
-      await fetch('/api/mining-sessions/resumable', {
+      const res = await fetch('/api/mining-sessions/resumable', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionIds: idsToDelete })
       });
+      if (!res.ok) {
+        throw new Error(`Failed to delete selected sessions (${res.status})`);
+      }
     } catch (err) {
       console.error('Failed to delete selected sessions:', err);
+      setResumableSessions(previousSessions);
+      setSelectedIds(previousSelected);
       void fetchResumable();
     } finally {
       setIsDeleting(false);
@@ -143,18 +157,25 @@ export function ResumableSessionsBanner({
 
   const handleClearAll = async () => {
     if (resumableSessions.length === 0 || isDeleting) return;
+    const previousSessions = resumableSessions;
+    const previousSelected = selectedIds;
     setIsDeleting(true);
     setResumableSessions([]);
     setSelectedIds(new Set());
 
     try {
-      await fetch('/api/mining-sessions/resumable', {
+      const res = await fetch('/api/mining-sessions/resumable', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ all: true })
       });
+      if (!res.ok) {
+        throw new Error(`Failed to clear all interrupted sessions (${res.status})`);
+      }
     } catch (err) {
       console.error('Failed to clear all interrupted sessions:', err);
+      setResumableSessions(previousSessions);
+      setSelectedIds(previousSelected);
       void fetchResumable();
     } finally {
       setIsDeleting(false);

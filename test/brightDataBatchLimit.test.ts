@@ -70,3 +70,47 @@ test("classifyBrightDataError classifies getaddrinfo ENOTFOUND as transport_tran
   assert.equal(classifiedNet.retryable, true);
 });
 
+test("validateEngineConfig strictly enforces BRIGHTDATA_SCRAPE_BATCH_MAX_URLS contract in 1-5 range", async () => {
+  const { validateEngineConfig } = await import("../server/configValidation.js");
+  const prev = process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS;
+  try {
+    // Valid values in 1-5 produce no warning
+    for (const validVal of ["1", "3", "5"]) {
+      process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = validVal;
+      const warnings = validateEngineConfig();
+      const batchWarnings = warnings.filter((w) =>
+        w.includes("BRIGHTDATA_SCRAPE_BATCH_MAX_URLS"),
+      );
+      assert.deepEqual(
+        batchWarnings,
+        [],
+        `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS=${validVal} should not produce warnings`,
+      );
+    }
+
+    // Invalid values outside 1-5 produce warnings
+    for (const invalidVal of ["0", "6", "10", "20", "-1", "invalid"]) {
+      process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = invalidVal;
+      const warnings = validateEngineConfig();
+      const batchWarnings = warnings.filter((w) =>
+        w.includes("BRIGHTDATA_SCRAPE_BATCH_MAX_URLS"),
+      );
+      assert.equal(
+        batchWarnings.length,
+        1,
+        `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS=${invalidVal} must produce 1 warning`,
+      );
+      assert.ok(
+        batchWarnings[0].includes("clamped to the 1-5 range"),
+        `Warning message must state 1-5 range: ${batchWarnings[0]}`,
+      );
+    }
+  } finally {
+    if (prev === undefined) {
+      delete process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS;
+    } else {
+      process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = prev;
+    }
+  }
+});
+

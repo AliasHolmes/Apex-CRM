@@ -5,6 +5,7 @@ import {
   scrapeAsMarkdown,
   isBrightDataPro,
   brightDataScrapeAsHtml,
+  brightDataScrapeAsLdJson,
 } from '../services/brightdata.js';
 import {
   getEnrichmentCacheEntry,
@@ -441,17 +442,28 @@ export function extractSchemaOrgSignals(htmlOrJson: string): Partial<SiteSignals
 }
 
 export function extractSiteSignals(markdown: string): SiteSignals | null {
-  if (!markdown || markdown.length < 180) return null;
+  if (!markdown || typeof markdown !== "string") return null;
 
   // Sanity check: reject parked/junk/blocked pages
   if (PARKED_JUNK_PATTERNS.some(pattern => pattern.test(markdown))) {
     return null;
   }
 
-  const signals: SiteSignals = {};
-
   // Extract Schema.org signals if JSON-LD exists in HTML/JSON content
   const schemaSignals = extractSchemaOrgSignals(markdown);
+  const hasSchema = Boolean(
+    schemaSignals.companyName ||
+    schemaSignals.legalName ||
+    schemaSignals.founders ||
+    schemaSignals.location ||
+    schemaSignals.headcount ||
+    schemaSignals.socials
+  );
+
+  // Free-form markdown requires at least 180 chars to avoid false matches on stub 404s
+  if (!hasSchema && markdown.length < 180) return null;
+
+  const signals: SiteSignals = {};
   if (schemaSignals.location && !signals.location) signals.location = schemaSignals.location;
   if (schemaSignals.headcount && !signals.headcount) signals.headcount = schemaSignals.headcount;
   if (schemaSignals.companyName) signals.companyName = schemaSignals.companyName;
@@ -709,12 +721,22 @@ export async function probeCompanySites(
       try {
         let content: string | null = null;
         if (isBrightDataPro()) {
-          content = await brightDataScrapeAsHtml(domain, 15000);
+          const ldJson = await brightDataScrapeAsLdJson(domain, 15000);
+          if (ldJson && ldJson.trim().length > 10) {
+            content = ldJson;
+          } else {
+            content = await brightDataScrapeAsHtml(domain, 15000);
+          }
         }
         if (!content) {
           content = await scrapeAsMarkdown(domain, 12000, options.abortSignal);
         }
-        if (content && content.trim().length > 100) {
+        if (
+          content &&
+          (content.trim().length > 100 ||
+            ((content.trim().startsWith('{') || content.trim().startsWith('[')) &&
+              content.trim().length > 20))
+        ) {
           extractedByDomain.set(domain, [content]);
         }
       } catch {

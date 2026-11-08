@@ -1238,11 +1238,12 @@ export async function executeDiscoverySession(
       // instead of letting in-flight and queued scrapes run to completion.
       scrapeMarkdown: (url, format) =>
         scrapeAsMarkdown(url, undefined, sessionState.abortController.signal, format),
-      scrapeBatchMarkdown: (urls) =>
+      scrapeBatchMarkdown: (urls, format) =>
         scrapeBatchAsMarkdown(
           urls,
           undefined,
           sessionState.abortController.signal,
+          format,
         ),
     };
 

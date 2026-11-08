@@ -75,7 +75,10 @@ export type PipelinePorts = {
     items: any[];
   }>;
   scrapeMarkdown: (url: string, format?: "markdown" | "html" | "ld_json" | "text") => Promise<string | null>;
-  scrapeBatchMarkdown: (urls: string[]) => Promise<any>;
+  scrapeBatchMarkdown: (
+    urls: string[],
+    format?: "markdown" | "html" | "ld_json" | "text",
+  ) => Promise<any>;
 };
 
 import type { SignalStore, SignalStoreData } from "./signalStore.js";

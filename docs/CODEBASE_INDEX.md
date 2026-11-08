@@ -260,7 +260,7 @@ Cross-cutting invariants:
 - `LEAD_RETRIEVAL_CACHE_TTL_DAYS` (default 3; 0 disables, max 30) ? market-slice + exact-query
   retrieval reuse.
 - `LLM_MAX_RETRIES=0` is now honoured; a 429 falls through immediately with a 5s cooldown.
-- `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` clamped 1?20 (default 10).
+- `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` clamped 1-5 (default 5) satisfying @brightdata/mcp schema.
 - `LEAD_SEARCH_TIMEOUT_MS=0` disables the 15-minute safety timeout.
 - `APEX_LLM_BRAIN="agent"` (committed `10c384b`, ?9.22) reroutes `POST /find-leads` to the Agent Brain path.
 - `server/configValidation.ts` emits non-fatal boot warnings for misconfigurations.

@@ -88,6 +88,7 @@ let cooldownLogMutedUntil = 0;
 let scrapeBatchToolAvailable: boolean | null = null;
 let searchToolAvailable: boolean | null = null;
 let searchBatchToolAvailable: boolean | null = null;
+let runtimeDiscoveredTools: string[] | null = null;
 
 export type BatchToolState = {
   documented: boolean;
@@ -276,6 +277,7 @@ const resetToolAvailability = () => {
   scrapeBatchToolAvailable = null;
   searchToolAvailable = null;
   searchBatchToolAvailable = null;
+  runtimeDiscoveredTools = null;
   batchToolState = {
     documented: true,
     detected: null,
@@ -726,8 +728,60 @@ export function isBrightDataPro() {
   return !isBrightDataFreeTier() && isBrightDataConfigured();
 }
 
+export const BRIGHTDATA_PRO_SUPPORTED_TOOLS: string[] = [
+  // Search & Scraping
+  "search_engine",
+  "search_engine_batch",
+  "scrape_as_markdown",
+  "scrape_batch",
+  "ask_brightdata_assistant",
+  "session_stats",
+  // Scraper Discovery & Execution
+  "search_scrapers",
+  "get_scraper_details",
+  "run_scraper",
+  "get_scraper_progress",
+  "get_scraper_results",
+  "refresh_scrapers",
+  // Searchable Datasets
+  "search_dataset",
+  "list_dataset_fields",
+  // AI Insights
+  "chatgpt_ai_insights",
+  "perplexity_ai_insights",
+  // Scraping Browser Automation (all 14 tools)
+  "scraping_browser_navigate",
+  "scraping_browser_go_back",
+  "scraping_browser_go_forward",
+  "scraping_browser_snapshot",
+  "scraping_browser_click_ref",
+  "scraping_browser_type_ref",
+  "scraping_browser_screenshot",
+  "scraping_browser_network_requests",
+  "scraping_browser_wait_for_ref",
+  "scraping_browser_fill_form",
+  "scraping_browser_get_text",
+  "scraping_browser_get_html",
+  "scraping_browser_scroll",
+  "scraping_browser_scroll_to_ref",
+];
+
 export function getBrightDataCapabilities() {
   const free = isBrightDataFreeTier();
+  const proStaticTools = BRIGHTDATA_PRO_SUPPORTED_TOOLS;
+  const activeDiscovered = runtimeDiscoveredTools ? [...runtimeDiscoveredTools] : undefined;
+  const effectiveTools = free
+    ? brightDataFreeTierCapabilities().supported
+    : (activeDiscovered && activeDiscovered.length > 0)
+      ? activeDiscovered
+      : proStaticTools;
+
+  const unavailableTools = free
+    ? []
+    : (activeDiscovered && activeDiscovered.length > 0)
+      ? proStaticTools.filter((t) => !activeDiscovered.includes(t))
+      : [];
+
   return {
     ...(free
       ? brightDataFreeTierCapabilities()
@@ -736,24 +790,30 @@ export function getBrightDataCapabilities() {
           plan: "pro" as const,
           monthlyUnitLimit:
             Number(process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET) || undefined,
-          supportedTools: [
-            "search_engine",
-            "search_engine_batch",
-            "scrape_as_markdown",
-            "scrape_batch",
-            "search_dataset",
-            "list_dataset_fields",
-            "run_scraper",
-            "get_scraper_results",
-            "chatgpt_ai_insights",
-            "perplexity_ai_insights",
-            "scraping_browser_snapshot",
-          ],
-          unavailableTools: [] as string[],
+          supportedTools: effectiveTools,
+          unavailableTools,
         }),
+    discoveredTools: activeDiscovered,
     configured: isBrightDataConfigured(),
     rapidModeOnly: free,
   };
+}
+
+export async function discoverBrightDataCapabilities(): Promise<ReturnType<typeof getBrightDataCapabilities>> {
+  if (isBrightDataConfigured() && !isBrightDataCoolingDown()) {
+    try {
+      const client = await getBrightDataClient();
+      if (client) {
+        const toolsResult = await client.listTools();
+        if (toolsResult?.tools) {
+          runtimeDiscoveredTools = toolsResult.tools.map((t) => t.name);
+        }
+      }
+    } catch {
+      // Best-effort runtime discovery
+    }
+  }
+  return getBrightDataCapabilities();
 }
 
 export function isBrightDataCoolingDown() {
@@ -890,8 +950,35 @@ async function connectLocalClient(apiToken: string, generation: number) {
   const safeEnv = { ...process.env };
   delete (safeEnv as any)["PRO_MODE"];
   delete (safeEnv as any)["POLLING_TIMEOUT"];
-  delete (safeEnv as any)["GROUPS"];
-  delete (safeEnv as any)["TOOLS"];
+
+  // MCP safety, server-control, and rate-limit configuration:
+  // - CONTENT_GATE: Defaults to "off" in Apex CRM for unattended background mining.
+  //   @brightdata/mcp defaults CONTENT_GATE to "on" to prompt for human approval via MCP
+  //   elicitation when web content resembles instructions to alter MCP configs. In non-interactive
+  //   services, leaving it on causes the server to wait for CONTENT_GATE_TIMEOUT (default 120s)
+  //   and silently withhold web data with a refusal. We turn it off for unattended operations,
+  //   relying on cryptographic untrusted nonce unwrapping and isolated prompt parsing for safety.
+  // - RATE_LIMIT: Enforces MCP server-level rate limits (e.g. "100/1h", "50/30m", "10/1s").
+  // - CONTENT_GATE_TIMEOUT: Timeout in seconds for interactive user approval if CONTENT_GATE is on.
+  // - BROWSER_FILTERED_SNAPSHOT: If "on", omits free page text from ARIA snapshots, saving tokens.
+  // - GROUPS / TOOLS: Allowlist specific tool groups or tools when configured.
+  const contentGate =
+    process.env.BRIGHTDATA_CONTENT_GATE || process.env.CONTENT_GATE || "off";
+  const rateLimit =
+    process.env.BRIGHTDATA_RATE_LIMIT || process.env.RATE_LIMIT;
+  const contentGateTimeout =
+    process.env.BRIGHTDATA_CONTENT_GATE_TIMEOUT || process.env.CONTENT_GATE_TIMEOUT;
+  const contentGateProgressMs =
+    process.env.BRIGHTDATA_CONTENT_GATE_PROGRESS_MS || process.env.CONTENT_GATE_PROGRESS_MS;
+  const browserFilteredSnapshot =
+    process.env.BRIGHTDATA_BROWSER_FILTERED_SNAPSHOT || process.env.BROWSER_FILTERED_SNAPSHOT;
+  const configuredGroups =
+    process.env.BRIGHTDATA_GROUPS || process.env.GROUPS;
+  const configuredTools =
+    process.env.BRIGHTDATA_TOOLS || process.env.TOOLS;
+
+  if (!configuredGroups) delete (safeEnv as any)["GROUPS"];
+  if (!configuredTools) delete (safeEnv as any)["TOOLS"];
 
   const envOverrides: Record<string, string> = {
     API_TOKEN: apiToken,
@@ -899,9 +986,15 @@ async function connectLocalClient(apiToken: string, generation: number) {
     BASE_TIMEOUT: timeoutSeconds,
     BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
     BASE_MAX_RETRIES: maxRetries,
-    CONTENT_GATE: process.env.CONTENT_GATE || "off", // Critical: prevents 2s silent withholding refusal
+    CONTENT_GATE: contentGate,
     SERP_ZONE: process.env.BRIGHTDATA_SERP_ZONE || "mcp_serp",
     BROWSER_ZONE: process.env.BRIGHTDATA_BROWSER_ZONE || "mcp_browser",
+    ...(rateLimit ? { RATE_LIMIT: rateLimit } : {}),
+    ...(contentGateTimeout ? { CONTENT_GATE_TIMEOUT: contentGateTimeout } : {}),
+    ...(contentGateProgressMs ? { CONTENT_GATE_PROGRESS_MS: contentGateProgressMs } : {}),
+    ...(browserFilteredSnapshot ? { BROWSER_FILTERED_SNAPSHOT: browserFilteredSnapshot } : {}),
+    ...(configuredGroups ? { GROUPS: configuredGroups } : {}),
+    ...(configuredTools ? { TOOLS: configuredTools } : {}),
   };
 
   const transport = new StdioClientTransport({
@@ -1644,9 +1737,24 @@ export async function brightDataScrapeAsHtml(
   return scrapeAsMarkdown(url, timeoutMs, undefined, "html");
 }
 
+export async function brightDataScrapeAsLdJson(
+  url: string,
+  timeoutMs: number = 60_000,
+): Promise<string | null> {
+  return scrapeAsMarkdown(url, timeoutMs, undefined, "ld_json");
+}
+
+export async function brightDataScrapeAsText(
+  url: string,
+  timeoutMs: number = 60_000,
+): Promise<string | null> {
+  return scrapeAsMarkdown(url, timeoutMs, undefined, "text");
+}
+
 export type BrightDataBatchResult = {
   url: string;
   content: string;
+  format?: "markdown" | "html" | "ld_json" | "text";
   sourceProvider: "brightdata_batch";
 };
 
@@ -1667,6 +1775,7 @@ export async function scrapeBatchAsMarkdown(
   urls: string[],
   timeoutMs = baseTimeoutMs(),
   signal?: AbortSignal,
+  format: "markdown" | "html" | "ld_json" | "text" = "markdown",
 ): Promise<BrightDataBatchResult[]> {
   if (signal?.aborted) return [];
   const cleanUrls = Array.from(
@@ -1692,6 +1801,9 @@ export async function scrapeBatchAsMarkdown(
     async (client) => {
       if (scrapeBatchToolAvailable === null) {
         const tools = await client.listTools();
+        if (tools?.tools) {
+          runtimeDiscoveredTools = tools.tools.map((t) => t.name);
+        }
         scrapeBatchToolAvailable = tools.tools.some(
           (t) => t.name === "scrape_batch",
         );
@@ -1703,28 +1815,33 @@ export async function scrapeBatchAsMarkdown(
         console.warn(
           "[brightdata:tool_fallback] scrape_batch not in listTools(); falling back to parallel scrape_as_markdown",
         );
-        const fallbackResults = await Promise.all(
-          cleanUrls.map(async (url) => {
-            try {
-              // Each scrape checks the signal itself, so a cancelled batch stops issuing
-              // further paid calls as soon as cancellation is observed.
-              const content = await scrapeAsMarkdown(url, timeoutMs, signal);
-              return content
-                ? { url, content, sourceProvider: "brightdata_batch" as const }
-                : null;
-            } catch {
-              return null;
-            }
-          }),
-        );
-        return fallbackResults.filter((item): item is BrightDataBatchResult =>
-          Boolean(item),
-        );
+        const fallbackResults: BrightDataBatchResult[] = (
+          await Promise.all(
+            cleanUrls.map(async (url): Promise<BrightDataBatchResult | null> => {
+              try {
+                // Each scrape checks the signal itself, so a cancelled batch stops issuing
+                // further paid calls as soon as cancellation is observed.
+                const content = await scrapeAsMarkdown(url, timeoutMs, signal, format);
+                return content
+                  ? { url, content, format, sourceProvider: "brightdata_batch" as const }
+                  : null;
+              } catch {
+                return null;
+              }
+            }),
+          )
+        ).filter((item): item is BrightDataBatchResult => Boolean(item));
+        return fallbackResults;
+      }
+
+      const batchArgs: Record<string, any> = { urls: cleanUrls };
+      if (format && format !== "markdown") {
+        batchArgs.format = format;
       }
 
       const toolResult = await withHardTimeout(
         client.callTool(
-          { name: "scrape_batch", arguments: { urls: cleanUrls } },
+          { name: "scrape_batch", arguments: batchArgs },
           undefined,
           { timeout: timeoutMs },
         ),
@@ -1753,6 +1870,7 @@ export async function scrapeBatchAsMarkdown(
           .map((item: any) => ({
             url: item.url || item.source_url || "",
             content: item.markdown || item.content || item.text || "",
+            format: (item.format as any) || format,
             sourceProvider: "brightdata_batch" as const,
           }))
           .filter((item: BrightDataBatchResult) => item.url);
@@ -1766,6 +1884,7 @@ export async function scrapeBatchAsMarkdown(
               .map((item: any) => ({
                 url: item.url || item.source_url || "",
                 content: item.markdown || item.content || item.text || "",
+                format: (item.format as any) || format,
                 sourceProvider: "brightdata_batch" as const,
               }))
               .filter((item: BrightDataBatchResult) => item.url);
@@ -1773,6 +1892,7 @@ export async function scrapeBatchAsMarkdown(
             parsedItems = cleanUrls.map((url) => ({
               url,
               content: textResult,
+              format,
               sourceProvider: "brightdata_batch" as const,
             }));
           }
@@ -1801,10 +1921,10 @@ export async function scrapeBatchAsMarkdown(
       );
       const retries: Promise<BrightDataBatchResult | null>[] = retryUrls.map(
         (url) =>
-          scrapeAsMarkdown(url, timeoutMs)
+          scrapeAsMarkdown(url, timeoutMs, signal, format)
             .then((content) =>
               content
-                ? { url, content, sourceProvider: "brightdata_batch" as const }
+                ? { url, content, format, sourceProvider: "brightdata_batch" as const }
                 : null,
             )
             .catch(() => null),
@@ -2147,6 +2267,9 @@ export async function brightDataSearch(
       async (client) => {
         if (searchToolAvailable === null) {
           const tools = await client.listTools();
+          if (tools?.tools) {
+            runtimeDiscoveredTools = tools.tools.map((t) => t.name);
+          }
           searchToolAvailable = tools.tools.some(
             (t) => t.name === "search_engine",
           );
@@ -2324,6 +2447,9 @@ export async function brightDataSearchBatch(
         async (client) => {
           if (searchBatchToolAvailable === null) {
             const tools = await client.listTools();
+            if (tools?.tools) {
+              runtimeDiscoveredTools = tools.tools.map((t) => t.name);
+            }
             searchBatchToolAvailable = tools.tools.some(
               (t) => t.name === "search_engine_batch",
             );
@@ -2475,6 +2601,7 @@ export function resetBrightDataModuleState() {
   activeApiToken = "";
   activeApiTokenFingerprint = "";
   resetToolAvailability();
+  runtimeDiscoveredTools = null;
   disabledReason = "";
   disabledUntil = 0;
   healthOverride = null;
@@ -2482,4 +2609,710 @@ export function resetBrightDataModuleState() {
   stickyBingActiveSince = 0;
   consecutiveFailures = 0;
   lastError = "";
+}
+
+export const brightDataScrapeBatch = scrapeBatchAsMarkdown;
+
+// --- Scraper Discovery & Execution Wrappers ---------------------------------
+
+export interface BrightDataScraperCatalogItem {
+  dataset_id: string;
+  name: string;
+  domain?: string;
+  collection_methods?: string[];
+  [key: string]: any;
+}
+
+export interface BrightDataScraperDetails {
+  dataset_id: string;
+  method: string;
+  description?: string;
+  input_fields?: Record<string, any>;
+  sample_input?: any;
+  output_fields?: Record<string, any>;
+  [key: string]: any;
+}
+
+export async function brightDataSearchScrapers(
+  query: string,
+  limit: number = 10,
+  timeoutMs: number = 30_000,
+): Promise<BrightDataScraperCatalogItem[]> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return [];
+  const clampedLimit = Math.min(50, Math.max(1, limit || 10));
+
+  return (
+    (await withBrightDataClient(
+      "search_scrapers",
+      async (client) => {
+        const toolResult = await withHardTimeout(
+          client.callTool(
+            {
+              name: "search_scrapers",
+              arguments: { query, limit: clampedLimit },
+            },
+            undefined,
+            { timeout: timeoutMs },
+          ),
+          timeoutMs,
+          "Bright Data search_scrapers",
+        );
+
+        if ((toolResult as any)?.isError) {
+          throw new Error(
+            textFromToolResult(toolResult) ||
+              "Bright Data search_scrapers returned an error",
+          );
+        }
+
+        const text = textFromToolResult(toolResult);
+        if (!text || !text.trim()) return [];
+        try {
+          const parsed = JSON.parse(text);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      },
+      { throwOnUnavailable: false, throwOnFailure: false },
+    )) || []
+  );
+}
+
+export async function brightDataGetScraperDetails(
+  datasetId: string,
+  method: string,
+  timeoutMs: number = 30_000,
+): Promise<BrightDataScraperDetails | null> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "get_scraper_details",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "get_scraper_details",
+            arguments: { dataset_id: datasetId, method },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data get_scraper_details",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data get_scraper_details returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataRefreshScrapers(
+  timeoutMs: number = 30_000,
+): Promise<{ scrapers: number } | null> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "refresh_scrapers",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "refresh_scrapers", arguments: {} },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data refresh_scrapers",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data refresh_scrapers returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataRunScraper(
+  datasetId: string,
+  method: string,
+  input: Array<Record<string, any>>,
+  limitPerInput: number = 10,
+  timeoutMs: number = 60_000,
+): Promise<any | null> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "run_scraper",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "run_scraper",
+            arguments: {
+              dataset_id: datasetId,
+              method,
+              input,
+              limit_per_input: limitPerInput,
+            },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        `Bright Data run_scraper (${datasetId})`,
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data run_scraper returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataGetScraperProgress(
+  snapshotId: string,
+  timeoutMs: number = 30_000,
+): Promise<any | null> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "get_scraper_progress",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "get_scraper_progress",
+            arguments: { snapshot_id: snapshotId },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data get_scraper_progress",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data get_scraper_progress returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+export async function brightDataGetScraperResults(
+  snapshotId: string,
+  timeoutMs: number = 30_000,
+): Promise<any | null> {
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  return await withBrightDataClient(
+    "get_scraper_results",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          {
+            name: "get_scraper_results",
+            arguments: { snapshot_id: snapshotId },
+          },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data get_scraper_results",
+      );
+
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data get_scraper_results returned an error",
+        );
+      }
+
+      const text = textFromToolResult(toolResult);
+      if (!text || !text.trim()) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+    { throwOnUnavailable: false, throwOnFailure: false },
+  );
+}
+
+// --- Browser Automation Wrappers (All 14 FastMCP Tools) ---------------------
+
+export async function brightDataBrowserNavigate(
+  url: string,
+  country?: string,
+  timeoutMs: number = 120_000,
+): Promise<string> {
+  const targetUrl = normalizeBrightDataUrl(url);
+  const result = await withBrightDataClient(
+    "scraping_browser_navigate",
+    async (client) => {
+      const args: Record<string, any> = { url: targetUrl };
+      if (country) args.country = country.toUpperCase();
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_navigate", arguments: args },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_navigate",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_navigate returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserSnapshot(
+  filtered?: boolean,
+  timeoutMs: number = 30_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_snapshot",
+    async (client) => {
+      const args: Record<string, any> = {};
+      if (filtered !== undefined) args.filtered = filtered;
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_snapshot", arguments: args },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_snapshot",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_snapshot returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserClick(
+  ref: string,
+  element: string,
+  timeoutMs: number = 15_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_click_ref",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_click_ref", arguments: { ref, element } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_click_ref",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_click_ref returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+export const brightDataBrowserClickRef = brightDataBrowserClick;
+
+export async function brightDataBrowserType(
+  ref: string,
+  element: string,
+  text: string,
+  submit?: boolean,
+  timeoutMs: number = 15_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_type_ref",
+    async (client) => {
+      const args: Record<string, any> = { ref, element, text };
+      if (submit !== undefined) args.submit = submit;
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_type_ref", arguments: args },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_type_ref",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_type_ref returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+export const brightDataBrowserTypeRef = brightDataBrowserType;
+
+export interface BrowserFormField {
+  name: string;
+  type: "textbox" | "checkbox" | "radio" | "combobox" | "slider";
+  ref: string;
+  value: string;
+}
+
+export async function brightDataBrowserFillForm(
+  fields: BrowserFormField[],
+  timeoutMs: number = 30_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_fill_form",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_fill_form", arguments: { fields } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_fill_form",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_fill_form returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserWaitForRef(
+  ref: string,
+  element: string,
+  timeout?: number,
+  timeoutMs: number = 35_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_wait_for_ref",
+    async (client) => {
+      const args: Record<string, any> = { ref, element };
+      if (timeout !== undefined) args.timeout = timeout;
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_wait_for_ref", arguments: args },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_wait_for_ref",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_wait_for_ref returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserScroll(
+  timeoutMs: number = 15_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_scroll",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_scroll", arguments: {} },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_scroll",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_scroll returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserScrollToRef(
+  ref: string,
+  element: string,
+  timeoutMs: number = 15_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_scroll_to_ref",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_scroll_to_ref", arguments: { ref, element } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_scroll_to_ref",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_scroll_to_ref returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserGetText(
+  timeoutMs: number = 20_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_get_text",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_get_text", arguments: {} },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_get_text",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_get_text returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserGetHtml(
+  fullPage: boolean = false,
+  timeoutMs: number = 25_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_get_html",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_get_html", arguments: { full_page: fullPage } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_get_html",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_get_html returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserScreenshot(
+  fullPage: boolean = false,
+  timeoutMs: number = 30_000,
+): Promise<any> {
+  return await withBrightDataClient(
+    "scraping_browser_screenshot",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_screenshot", arguments: { full_page: fullPage } },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_screenshot",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_screenshot returned an error",
+        );
+      }
+      return toolResult;
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+}
+
+export async function brightDataBrowserNetworkRequests(
+  timeoutMs: number = 15_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_network_requests",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_network_requests", arguments: {} },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_network_requests",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_network_requests returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserGoBack(
+  timeoutMs: number = 20_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_go_back",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_go_back", arguments: {} },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_go_back",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_go_back returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
+}
+
+export async function brightDataBrowserGoForward(
+  timeoutMs: number = 20_000,
+): Promise<string> {
+  const result = await withBrightDataClient(
+    "scraping_browser_go_forward",
+    async (client) => {
+      const toolResult = await withHardTimeout(
+        client.callTool(
+          { name: "scraping_browser_go_forward", arguments: {} },
+          undefined,
+          { timeout: timeoutMs },
+        ),
+        timeoutMs,
+        "Bright Data scraping_browser_go_forward",
+      );
+      if ((toolResult as any)?.isError) {
+        throw new Error(
+          textFromToolResult(toolResult) ||
+            "Bright Data scraping_browser_go_forward returned an error",
+        );
+      }
+      return textFromToolResult(toolResult);
+    },
+    { throwOnUnavailable: true, throwOnFailure: true },
+  );
+  return result || "";
 }

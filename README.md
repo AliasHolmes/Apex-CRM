@@ -214,9 +214,16 @@ flowchart TD
 - **Cross-Provider Judge Retry Escalation**: Implements `resolveJudgeRetryProviderOrder` in `plannerRouting.ts` (`["byesu", "primary", "openrouter", "groq"]`). When an initial judge evaluation on OmniRoute times out or encounters transient network errors, the retry immediately escalates across providers to Byesu (`gpt-6.1-sol`), ensuring diverse upstream infrastructure and rescuing candidates in ~30-50s.
 - **Strict Tier Provider Order Enforcement**: Updates `withProviderFallback` in `server/services/llm.ts` to respect caller-specified `tierProviderOrder` across all configured providers, executing caller failover sequences without forced primary pre-emption.
 
+#### 20. Bright Data MCP v4.6.0 FastMCP Schema, Scraper Discovery & Browser Automation (ADR-0020)
+
+- **Standardized 5-URL Batch Contract**: Standardizes `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` strictly to 1-5 (default 5) across all services, startup validation, tests, and configuration files to strictly satisfy FastMCP schema requirements.
+- **Scraper Discovery & Execution API**: Wraps and exports `brightDataSearchScrapers`, `brightDataGetScraperDetails`, `brightDataRefreshScrapers`, and `brightDataRunScraper` for dynamic discovery across 1,200+ Bright Data Web Scraper API datasets.
+- **Scraping Browser Automation Suite**: Wraps and exports all 14 FastMCP browser automation tools (`brightDataBrowserNavigate`, `brightDataBrowserSnapshot`, `brightDataBrowserClick`, `brightDataBrowserType`, `brightDataBrowserFillForm`, `brightDataBrowserWaitForRef`, `brightDataBrowserScroll`, `brightDataBrowserScrollToRef`, `brightDataBrowserGetText`, `brightDataBrowserGetHtml`, `brightDataBrowserScreenshot`, `brightDataBrowserNetworkRequests`, `brightDataBrowserGoBack`, `brightDataBrowserGoForward`).
+- **Native Structured Extraction (`ld_json`, `html`, `text`)**: Upgrades `scrapeBatchAsMarkdown` and pipeline ports to support multi-format extraction, and accelerates `siteProbe.ts` with direct zero-cost `brightDataScrapeAsLdJson` extraction.
+- **Runtime Capability Discovery**: Dynamically discovers MCP tools via runtime `listTools()` on connected clients, augmenting static Pro tool definitions to surface all 30 modern FastMCP tools in `getBrightDataCapabilities()`.
+- **MCP Safety & Server-Control Governance**: Explicitly documents and forwards MCP controls (`CONTENT_GATE="off"` for unattended mining with cryptographic nonce isolation, `CONTENT_GATE_TIMEOUT`, `RATE_LIMIT`, `BROWSER_FILTERED_SNAPSHOT`, `BRIGHTDATA_GROUPS`, and `BRIGHTDATA_TOOLS`).
+
 ---
-
-
 
 ## System Architecture
 
@@ -235,8 +242,9 @@ graph TD
     KeyRotator --> Tavily["Tavily Search & Extract"]
     KeyRotator --> MCP["Bright Data MCP v4.6"]
     MCP --> BDSearch["search_engine & search_engine_batch"]
-    MCP --> BDScrape["scrape_as_markdown (HTML / ld_json)"]
-    MCP --> BDDataset["run_scraper (LinkedIn Datasets)"]
+    MCP --> BDScrape["scrape_as_markdown & scrape_batch (HTML / ld_json)"]
+    MCP --> BDScraper["Scraper Discovery & Execution (1,200+ Datasets)"]
+    MCP --> BDBrowser["Browser Automation Suite (14 Tools)"]
 ```
 
 ### Technology Stack

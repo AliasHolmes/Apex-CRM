@@ -1494,3 +1494,266 @@ test("executeRetrieveStage falls back to Tavily and records trace when Bright Da
   assert.strictEqual(output.roundItems[0].item.sourceProvider, "tavily");
   assert.strictEqual(output.roundItems[0].item.title, "Jane Doe - Founder");
 });
+
+test("brightDataSearchScrapers, getScraperDetails, and refreshScrapers execute successfully", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "pro";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
+
+  const calledTools: Array<{ name: string; args: any }> = [];
+  Client.prototype.connect = async () => {};
+  Client.prototype.callTool = async (params) => {
+    calledTools.push({ name: params.name, args: params.arguments });
+    if (params.name === "search_scrapers") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              { dataset_id: "gd_l1viktl72bvl7bjuj0", name: "LinkedIn Person" },
+            ]),
+          },
+        ],
+      } as any;
+    }
+    if (params.name === "get_scraper_details") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              dataset_id: "gd_l1viktl72bvl7bjuj0",
+              method: "collect_by_url",
+            }),
+          },
+        ],
+      } as any;
+    }
+    if (params.name === "refresh_scrapers") {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ scrapers: 1250 }) }],
+      } as any;
+    }
+    return { content: [] } as any;
+  };
+
+  const scrapers = await bd.brightDataSearchScrapers("linkedin", 5);
+  assert.strictEqual(scrapers.length, 1);
+  assert.strictEqual(scrapers[0].dataset_id, "gd_l1viktl72bvl7bjuj0");
+  assert.deepStrictEqual(calledTools[0], {
+    name: "search_scrapers",
+    args: { query: "linkedin", limit: 5 },
+  });
+
+  const details = await bd.brightDataGetScraperDetails(
+    "gd_l1viktl72bvl7bjuj0",
+    "collect_by_url",
+  );
+  assert.ok(details);
+  assert.strictEqual(details?.dataset_id, "gd_l1viktl72bvl7bjuj0");
+  assert.strictEqual(details?.method, "collect_by_url");
+
+  const refresh = await bd.brightDataRefreshScrapers();
+  assert.strictEqual(refresh?.scrapers, 1250);
+});
+
+test("All 14 Scraping Browser automation wrappers invoke respective FastMCP tools", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "pro";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
+
+  const calls: Record<string, any> = {};
+  Client.prototype.connect = async () => {};
+  Client.prototype.callTool = async (params) => {
+    calls[params.name] = params.arguments;
+    return {
+      content: [{ type: "text", text: `Success for ${params.name}` }],
+    } as any;
+  };
+
+  await bd.brightDataBrowserNavigate("https://example.com/login", "US");
+  assert.ok(calls["scraping_browser_navigate"]);
+  assert.strictEqual(calls["scraping_browser_navigate"].country, "US");
+
+  await bd.brightDataBrowserSnapshot(true);
+  assert.ok(calls["scraping_browser_snapshot"]);
+  assert.strictEqual(calls["scraping_browser_snapshot"].filtered, true);
+
+  await bd.brightDataBrowserClick("ref-12", "Submit Button");
+  assert.deepStrictEqual(calls["scraping_browser_click_ref"], {
+    ref: "ref-12",
+    element: "Submit Button",
+  });
+
+  await bd.brightDataBrowserType("ref-15", "Search", "CEO", true);
+  assert.deepStrictEqual(calls["scraping_browser_type_ref"], {
+    ref: "ref-15",
+    element: "Search",
+    text: "CEO",
+    submit: true,
+  });
+
+  await bd.brightDataBrowserFillForm([
+    { name: "email", type: "textbox", ref: "1", value: "test@example.com" },
+  ]);
+  assert.strictEqual(calls["scraping_browser_fill_form"].fields.length, 1);
+
+  await bd.brightDataBrowserWaitForRef("ref-20", "Header", 5000);
+  assert.deepStrictEqual(calls["scraping_browser_wait_for_ref"], {
+    ref: "ref-20",
+    element: "Header",
+    timeout: 5000,
+  });
+
+  await bd.brightDataBrowserScroll();
+  assert.ok("scraping_browser_scroll" in calls);
+
+  await bd.brightDataBrowserScrollToRef("ref-99", "Footer");
+  assert.deepStrictEqual(calls["scraping_browser_scroll_to_ref"], {
+    ref: "ref-99",
+    element: "Footer",
+  });
+
+  await bd.brightDataBrowserGetText();
+  assert.ok("scraping_browser_get_text" in calls);
+
+  await bd.brightDataBrowserGetHtml(true);
+  assert.deepStrictEqual(calls["scraping_browser_get_html"], { full_page: true });
+
+  await bd.brightDataBrowserScreenshot(false);
+  assert.deepStrictEqual(calls["scraping_browser_screenshot"], { full_page: false });
+
+  await bd.brightDataBrowserNetworkRequests();
+  assert.ok("scraping_browser_network_requests" in calls);
+
+  await bd.brightDataBrowserGoBack();
+  assert.ok("scraping_browser_go_back" in calls);
+
+  await bd.brightDataBrowserGoForward();
+  assert.ok("scraping_browser_go_forward" in calls);
+});
+
+test("scrapeBatchAsMarkdown and brightDataScrapeAsLdJson support ld_json, html, and text formats", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [
+      {
+        name: "scrape_batch",
+        description: "Scrape batch of URLs",
+        inputSchema: {} as any,
+      },
+      {
+        name: "scrape_as_markdown",
+        description: "Scrape single URL",
+        inputSchema: {} as any,
+      },
+    ],
+  });
+
+  let batchArgsCalled: any = null;
+  let singleArgsCalled: any = null;
+  Client.prototype.callTool = async (params) => {
+    if (params.name === "scrape_batch") {
+      batchArgsCalled = params.arguments;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              {
+                url: "https://example.com/data",
+                content: '{"@type":"Organization","name":"Acme"}',
+                format: "ld_json",
+              },
+            ]),
+          },
+        ],
+      } as any;
+    }
+    if (params.name === "scrape_as_markdown") {
+      singleArgsCalled = params.arguments;
+      const args = (params.arguments || {}) as Record<string, any>;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              url: args.url,
+              content: '{"@type":"Corporation","name":"SoloCorp"}',
+              format: args.format,
+            }),
+          },
+        ],
+      } as any;
+    }
+    return { content: [] } as any;
+  };
+
+  const batchResults = await bd.scrapeBatchAsMarkdown(
+    ["https://example.com/data"],
+    undefined,
+    undefined,
+    "ld_json",
+  );
+  assert.strictEqual(batchResults.length, 1);
+  assert.strictEqual(batchResults[0].format, "ld_json");
+  assert.deepStrictEqual(batchArgsCalled, {
+    urls: ["https://example.com/data"],
+    format: "ld_json",
+  });
+
+  const singleLdJson = await bd.brightDataScrapeAsLdJson("https://example.com/ld");
+  assert.ok(singleLdJson);
+  assert.strictEqual(singleArgsCalled.format, "ld_json");
+
+  const singleText = await bd.brightDataScrapeAsText("https://example.com/text");
+  assert.ok(singleText);
+  assert.strictEqual(singleArgsCalled.format, "text");
+});
+
+test("getBrightDataCapabilities surfaces all 30 Pro tools and integrates runtime listTools discovery", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "pro";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
+
+  assert.strictEqual(bd.BRIGHTDATA_PRO_SUPPORTED_TOOLS.length, 30);
+  assert.ok(bd.BRIGHTDATA_PRO_SUPPORTED_TOOLS.includes("scraping_browser_navigate"));
+  assert.ok(bd.BRIGHTDATA_PRO_SUPPORTED_TOOLS.includes("search_scrapers"));
+  assert.ok(bd.BRIGHTDATA_PRO_SUPPORTED_TOOLS.includes("chatgpt_ai_insights"));
+
+  const initialCaps = bd.getBrightDataCapabilities();
+  assert.strictEqual(initialCaps.plan, "pro");
+  if (initialCaps.plan === "pro") {
+    assert.ok(initialCaps.supportedTools.includes("scraping_browser_fill_form"));
+    assert.ok(initialCaps.supportedTools.includes("get_scraper_details"));
+  }
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [
+      { name: "custom_account_tool", inputSchema: {} as any },
+      { name: "search_engine", inputSchema: {} as any },
+    ],
+  });
+
+  const discoveredCaps = await bd.discoverBrightDataCapabilities();
+  assert.ok(discoveredCaps.discoveredTools);
+  assert.ok(discoveredCaps.discoveredTools.includes("custom_account_tool"));
+  if (discoveredCaps.plan === "pro") {
+    assert.ok(discoveredCaps.supportedTools.includes("custom_account_tool"));
+    assert.ok(discoveredCaps.unavailableTools.includes("scraping_browser_fill_form"));
+  }
+});
+

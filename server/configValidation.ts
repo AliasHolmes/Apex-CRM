@@ -68,9 +68,9 @@ export function validateEngineConfig(): string[] {
   const batchRaw = process.env.BRIGHTDATA_SCRAPE_BATCH_MAX_URLS;
   if (batchRaw !== undefined && batchRaw !== "") {
     const requested = Number(batchRaw);
-    if (!Number.isFinite(requested) || requested < 1 || requested > 20) {
+    if (!Number.isFinite(requested) || requested < 1 || requested > 5) {
       warnings.push(
-        `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS="${batchRaw}" will be clamped to the 1-20 range.`,
+        `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS="${batchRaw}" will be clamped to the 1-5 range.`,
       );
     }
   }

@@ -157,6 +157,20 @@ Ray ID: 123456789.
 `;
       assert.equal(extractSiteSignals(cloudflarePage), null);
     });
+
+    it('extracts Schema.org signals from compact JSON-LD under 180 chars', () => {
+      const jsonLd = JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'Organization',
+        'name': 'Acme Automation',
+        'address': 'Austin, TX',
+      });
+      assert.ok(jsonLd.length < 180);
+      const signals = extractSiteSignals(jsonLd);
+      assert.ok(signals);
+      assert.equal(signals.companyName, 'Acme Automation');
+      assert.equal(signals.location, 'Austin, TX');
+    });
   });
 
   describe('applySiteProbe', () => {

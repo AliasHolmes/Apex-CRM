@@ -18,7 +18,13 @@ export function setLockedLeadIds(ids: Iterable<string>): void {
   const next = new Set(ids);
   if (sameMembers(lockedLeadIds, next)) return;
   lockedLeadIds = next;
-  for (const listener of listeners) listener();
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch {
+      // Prevent listener errors during unmount/cleanup from crashing fiber reconciliation
+    }
+  }
 }
 
 function subscribe(listener: () => void): () => void {

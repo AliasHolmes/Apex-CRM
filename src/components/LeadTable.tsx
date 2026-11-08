@@ -570,6 +570,8 @@ const DEFAULT_SORT_DIRECTION: Record<ProspectSortKey, ProspectSort['direction']>
   score: 'desc',
 };
 
+const defaultCoreRowModel = getCoreRowModel();
+
 export default function LeadTable({
   onAddManualLead,
   onOpenLead,
@@ -951,25 +953,28 @@ export default function LeadTable({
   const table = useReactTable({
     data: paginatedLeads,
     columns,
-    getCoreRowModel: getCoreRowModel(),
+    getCoreRowModel: defaultCoreRowModel,
   });
 
   const { rows } = table.getRowModel();
 
 
   React.useEffect(() => {
-    setCurrentPage(1);
+    setCurrentPage((prev) => (prev === 1 ? prev : 1));
   }, [industryFilter, locationFilter, nextActionFilter, normalizedSearch, reviewFilter, signalFilter, sort, stageFilter]);
 
   React.useEffect(() => {
-    setCurrentPage(prev => Math.min(prev, totalPages));
+    setCurrentPage((prev) => {
+      const clamped = Math.min(prev, totalPages);
+      return clamped === prev ? prev : clamped;
+    });
   }, [totalPages]);
 
   // Keep the jump-to-page field in sync with page changes made outside it
   // (prev/next buttons, filter resets, result-set shrinking). Typing does not
   // change activePage, so an in-progress edit is never overwritten.
   React.useEffect(() => {
-    setPageInput(String(activePage));
+    setPageInput((prev) => (prev === String(activePage) ? prev : String(activePage)));
   }, [activePage]);
 
   React.useEffect(() => {

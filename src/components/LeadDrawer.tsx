@@ -153,8 +153,8 @@ export default function LeadDrawer({ leadId, onClose, onOpenOutreach }: LeadDraw
 
   // Close the drawer when a deep link points at a lead that does not exist (anymore).
   useEffect(() => {
-    if (leadId && isHydrated && !lead) onClose();
-  }, [isHydrated, lead, leadId, onClose]);
+    if (leadId && isHydrated && leads.length > 0 && !lead) onClose();
+  }, [isHydrated, lead, leadId, leads.length, onClose]);
 
   if (!lead) return null;
   return <LeadDrawerBody key={lead.id} lead={lead} onClose={onClose} onOpenOutreach={onOpenOutreach} />;

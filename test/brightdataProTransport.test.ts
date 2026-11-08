@@ -19,9 +19,11 @@ test("Bright Data capabilities reflect Pro vs Free mode accurately", () => {
     assert.equal(proCaps.rapidModeOnly, false);
     assert.ok(proCaps.supportedTools.includes("search_dataset"));
     assert.ok(proCaps.supportedTools.includes("list_dataset_fields"));
-    assert.ok(proCaps.supportedTools.includes("web_data_linkedin_person_profile"));
-    assert.ok(proCaps.supportedTools.includes("web_data_linkedin_company_profile"));
-    assert.ok(proCaps.supportedTools.includes("scrape_as_html"));
+    assert.ok(proCaps.supportedTools.includes("run_scraper"));
+    assert.ok(proCaps.supportedTools.includes("get_scraper_results"));
+    assert.ok(proCaps.supportedTools.includes("search_engine_batch"));
+    assert.equal(proCaps.supportedTools.includes("web_data_linkedin_person_profile"), false);
+    assert.equal(proCaps.supportedTools.includes("web_data_linkedin_company_profile"), false);
 
     process.env.BRIGHTDATA_PLAN = "free";
     assert.equal(isBrightDataFreeTier(), true);

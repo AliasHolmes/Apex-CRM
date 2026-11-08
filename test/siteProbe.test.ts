@@ -97,6 +97,27 @@ Services: Custom Zapier integrations | Make workflow architecture
       assert.equal(partialSignals.headcount, undefined);
       assert.equal(partialSignals.services, undefined);
     });
+
+    it('parses Schema.org legal name and founders from cached evidence block', () => {
+      const cachedBlock = `
+Location: Austin, TX
+Team: 24
+[site-probe] Legal Name: Acme Workflow Corp
+[site-probe] Founders: Alice Smith, Bob Jones
+`;
+      const signals = parseSiteSignalsFromEvidenceBlock(cachedBlock);
+      assert.equal(signals.location, 'Austin, TX');
+      assert.equal(signals.legalName, 'Acme Workflow Corp');
+      assert.equal(signals.founders, 'Alice Smith, Bob Jones');
+
+      // Also verify pipe-separated [COMPANY SITE ...] format
+      const pipeBlock = '[COMPANY SITE (verified-site): https://acme.com] Location: New York | Team: 10 | [site-probe] Legal Name: Acme NY Inc | [site-probe] Founders: Carol Danvers';
+      const pipeSignals = parseSiteSignalsFromEvidenceBlock(pipeBlock);
+      assert.equal(pipeSignals.location, 'New York');
+      assert.equal(pipeSignals.headcount, '10');
+      assert.equal(pipeSignals.legalName, 'Acme NY Inc');
+      assert.equal(pipeSignals.founders, 'Carol Danvers');
+    });
   });
 
   describe('extractSiteSignals', () => {
@@ -260,6 +281,38 @@ Ray ID: 123456789.
       const derived = deriveCompanyDomainWithProvenance(ownLead);
       assert.ok(derived && derived.domain.includes('flowops.io'));
       assert.equal(derived?.provenance, 'evidence_url');
+    });
+
+    it('populates Schema.org legalName and founders in companyAccount and evidence block', () => {
+      const lead: Record<string, any> = {
+        fullName: 'Jane Doe',
+        currentCompany: 'Flow Studio',
+        companyAccount: {},
+        evidence: { evidenceBlock: 'NAME: Jane Doe' },
+      };
+      const target: any = {
+        lead,
+        evidenceMeta: { evidenceBlock: 'NAME: Jane Doe' },
+      };
+      applySiteProbe(
+        target,
+        {
+          legalName: 'Flow Studio Technologies Inc.',
+          founders: ['Jane Doe', 'John Smith'],
+          provenance: 'explicit',
+        },
+        'https://flowstudio.io',
+      );
+      assert.equal(lead.companyAccount.legalName, 'Flow Studio Technologies Inc.');
+      assert.equal(lead.companyAccount.founders, 'Jane Doe, John Smith');
+      assert.match(target.evidenceMeta.evidenceBlock, /\[site-probe\] Legal Name: Flow Studio Technologies Inc\./);
+      assert.match(target.evidenceMeta.evidenceBlock, /\[site-probe\] Founders: Jane Doe, John Smith/);
+
+      // Verify lead.evidence object integrity is preserved and not stringified to [object Object]
+      assert.equal(typeof lead.evidence, 'object');
+      assert.match(lead.evidence.evidenceBlock, /\[site-probe\] Legal Name: Flow Studio Technologies Inc\./);
+      assert.ok(Array.isArray(lead.evidence.snippets));
+      assert.ok(lead.evidence.snippets.some((s: string) => s.includes('Flow Studio Technologies Inc.')));
     });
   });
 });

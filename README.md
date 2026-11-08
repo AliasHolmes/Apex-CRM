@@ -233,9 +233,10 @@ graph TD
 
     API --> KeyRotator["Key Rotation Pool"]
     KeyRotator --> Tavily["Tavily Search & Extract"]
-    KeyRotator --> MCP["Bright Data MCP"]
-    MCP --> BDSearch["search_engine"]
-    MCP --> BDScrape["scrape_as_markdown"]
+    KeyRotator --> MCP["Bright Data MCP v4.6"]
+    MCP --> BDSearch["search_engine & search_engine_batch"]
+    MCP --> BDScrape["scrape_as_markdown (HTML / ld_json)"]
+    MCP --> BDDataset["run_scraper (LinkedIn Datasets)"]
 ```
 
 ### Technology Stack
@@ -244,7 +245,7 @@ graph TD
 - **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
 - **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v27**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
 - **LLM Routing**: Direct OpenAI-compatible provider chain with OmniRoute primary (Gemini 3.8 Flash High), Byesu secondary fallback (GPT-6.1), automatic failsafe (OpenRouter -> Groq), session circuit breaker, and retry logic.
-- **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP (`search_engine`, `scrape_as_markdown`).
+- **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP v4.6 (`search_engine`, `search_engine_batch`, `scrape_as_markdown`, `run_scraper`, Schema.org extraction).
 
 ---
 
@@ -298,6 +299,9 @@ TAVILY_API_KEY="tavily_key_3"
 
 BRIGHTDATA_API_TOKENS='["brightdata_token_1", "brightdata_token_2"]'
 BRIGHTDATA_API_TOKEN="brightdata_token_3"
+BRIGHTDATA_SERP_ZONE="mcp_serp"
+BRIGHTDATA_BROWSER_ZONE="mcp_browser"
+CONTENT_GATE="off"
 
 DISCOVERY_PROVIDER_MODE="hybrid"
 BRIGHTDATA_MCP_TRANSPORT="local"
@@ -465,7 +469,7 @@ server/
     api.ts                   REST API endpoints, dual-mode HTTP 202, outcome feedback, and resume routes
   services/
     llm.ts                   LLM gateway, OmniRoute primary provider, Byesu secondary fallback, dynamic timeouts, cache
-    brightdata.ts            Bright Data MCP client, search, and scraper
+    brightdata.ts            Bright Data MCP v4.6 client (FastMCP, 5-query search_engine_batch, run_scraper, nonce unwrapping, Schema.org)
     keyRotator.ts            Provider key pool and rate-limit manager
     linkedinEvidence.ts      LinkedIn profile evidence extraction
     privateHosts.ts          Shared SSRF guard for private/internal hosts

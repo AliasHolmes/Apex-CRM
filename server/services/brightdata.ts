@@ -87,6 +87,7 @@ let healthOverride: BrightDataHealth | null = null;
 let cooldownLogMutedUntil = 0;
 let scrapeBatchToolAvailable: boolean | null = null;
 let searchToolAvailable: boolean | null = null;
+let searchBatchToolAvailable: boolean | null = null;
 
 export type BatchToolState = {
   documented: boolean;
@@ -127,7 +128,7 @@ export type BrightDataMcpStderrFilterState = {
 };
 
 const MCP_TRANSIENT_ERROR_PATTERN =
-  /\[(?:search_engine|search_engine_batch|scrape_as_markdown|scrape_batch)\] error .*(?:Unexpected non-JSON response from Bright Data|recently failed and cannot be attempted|failed_query_rejected|repeat_query_rejected)/;
+  /\[(?:search_engine|search_engine_batch|scrape_as_markdown|scrape_batch)\] error .*(?:Unexpected non-JSON response from Bright Data|recently failed and cannot be attempted|failed_query_rejected|repeat_query_rejected|the search engine answer was not json|search failed: google search failed)/i;
 const MCP_STACK_FRAME_PATTERN = /^\s+at\s/;
 
 const mcpStderrDebugEnabled = () =>
@@ -274,6 +275,7 @@ const withHardTimeout = async <T>(
 const resetToolAvailability = () => {
   scrapeBatchToolAvailable = null;
   searchToolAvailable = null;
+  searchBatchToolAvailable = null;
   batchToolState = {
     documented: true,
     detected: null,
@@ -313,7 +315,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   if (
     statusCode === 401 ||
     statusCode === 403 ||
-    /unauthorized|forbidden|invalid token|api[_ -]?token|cannot run mcp server without api_token/.test(
+    /unauthorized|forbidden|invalid token|api[_ -]?token|cannot run mcp server without api_token|sign-in failed/.test(
       lower,
     )
   ) {
@@ -343,7 +345,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   }
   if (
     statusCode === 400 ||
-    /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most/.test(
+    /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most|invalid argument|was renamed to|unknown argument|scraper input rejected|unrecognized_keys/.test(
       lower,
     )
   ) {
@@ -382,7 +384,11 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   }
   // Non-JSON SERP response = BD returned a challenge/verification page (HTTP 502 "verifying").
   // Per BD docs: wait >=15s before retrying the same query. Mark non-retryable -> Tavily fallback.
-  if (/unexpected non-json response from bright data/.test(lower)) {
+  if (
+    /unexpected non-json response from bright data|search failed: google search failed|the search engine answer was not json|engine error|search failed/.test(
+      lower,
+    )
+  ) {
     return new BrightDataError(message, {
       reasonCode: "target_transient",
       retryable: false,
@@ -414,7 +420,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     });
   }
   if (
-    /your system is sending too many|sending too many of this type|contact your account manager|exceeded the allowed rate limits|reduce requests rate/.test(
+    /your system is sending too many|sending too many of this type|contact your account manager|exceeded the allowed rate limits|reduce requests rate|site rate limited|call limit reached|rate_limit is/.test(
       lower,
     )
   ) {
@@ -732,18 +738,16 @@ export function getBrightDataCapabilities() {
             Number(process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET) || undefined,
           supportedTools: [
             "search_engine",
+            "search_engine_batch",
             "scrape_as_markdown",
             "scrape_batch",
             "search_dataset",
             "list_dataset_fields",
-            "web_data_linkedin_person_profile",
-            "web_data_linkedin_company_profile",
-            "web_data_linkedin_job_listings",
-            "web_data_linkedin_posts",
-            "web_data_crunchbase_company",
-            "web_data_zoominfo_company_profile",
+            "run_scraper",
+            "get_scraper_results",
+            "chatgpt_ai_insights",
+            "perplexity_ai_insights",
             "scraping_browser_snapshot",
-            "scrape_as_html",
           ],
           unavailableTools: [] as string[],
         }),
@@ -884,23 +888,21 @@ async function connectLocalClient(apiToken: string, generation: number) {
   const timeoutSeconds = String(baseTimeoutSeconds());
   const maxRetries = String(baseMaxRetries());
   const safeEnv = { ...process.env };
+  delete (safeEnv as any)["PRO_MODE"];
+  delete (safeEnv as any)["POLLING_TIMEOUT"];
+  delete (safeEnv as any)["GROUPS"];
+  delete (safeEnv as any)["TOOLS"];
+
   const envOverrides: Record<string, string> = {
     API_TOKEN: apiToken,
     BRIGHTDATA_API_TOKEN: apiToken,
     BASE_TIMEOUT: timeoutSeconds,
     BRIGHTDATA_BASE_TIMEOUT: timeoutSeconds,
     BASE_MAX_RETRIES: maxRetries,
+    CONTENT_GATE: process.env.CONTENT_GATE || "off", // Critical: prevents 2s silent withholding refusal
+    SERP_ZONE: process.env.BRIGHTDATA_SERP_ZONE || "mcp_serp",
+    BROWSER_ZONE: process.env.BRIGHTDATA_BROWSER_ZONE || "mcp_browser",
   };
-
-  if (!isBrightDataFreeTier()) {
-    envOverrides.PRO_MODE = "true";
-    envOverrides.POLLING_TIMEOUT =
-      process.env.BRIGHTDATA_POLLING_TIMEOUT || "110";
-  } else {
-    delete (safeEnv as any)["PRO_MODE"];
-    delete (safeEnv as any)["GROUPS"];
-    delete (safeEnv as any)["TOOLS"];
-  }
 
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -1110,14 +1112,34 @@ async function withBrightDataClient<T>(
   }
 }
 
+/**
+ * Unwraps Bright Data v4.6.0 cryptographic untrusted content nonces:
+ * SECURITY NOTICE: ...
+ * =====UNTRUSTED_<nonce>_BEGIN=====
+ * <actual content>
+ * =====UNTRUSTED_<nonce>_END=====
+ */
+export function unwrapBrightDataUntrustedContent(raw: string): string {
+  if (!raw || typeof raw !== "string") return "";
+  const match = raw.match(
+    /=====UNTRUSTED_([A-Za-z0-9+/=_-]+)_BEGIN=====\r?\n([\s\S]*?)\r?\n?=====UNTRUSTED_\1_END=====/
+  );
+  if (match && match[2] !== undefined) {
+    return match[2].trim();
+  }
+  return raw.trim();
+}
+
 const textFromToolResult = (result: any) => {
+  let text = "";
   if (typeof result?.structuredContent?.markdown === "string")
-    return result.structuredContent.markdown;
-  if (typeof result?.structuredContent?.text === "string")
-    return result.structuredContent.text;
-  if (typeof result?.toolResult === "string") return result.toolResult;
-  if (Array.isArray(result?.content)) {
-    return result.content
+    text = result.structuredContent.markdown;
+  else if (typeof result?.structuredContent?.text === "string")
+    text = result.structuredContent.text;
+  else if (typeof result?.toolResult === "string")
+    text = result.toolResult;
+  else if (Array.isArray(result?.content)) {
+    text = result.content
       .map((part: any) => {
         if (typeof part?.text === "string") return part.text;
         if (typeof part?.resource?.text === "string") return part.resource.text;
@@ -1126,7 +1148,7 @@ const textFromToolResult = (result: any) => {
       .filter(Boolean)
       .join("\n");
   }
-  return "";
+  return unwrapBrightDataUntrustedContent(text);
 };
 
 const AUTHWALLED_HOST_PATTERN =
@@ -1257,6 +1279,7 @@ export async function scrapeAsMarkdown(
   url: string,
   timeoutMs = baseTimeoutMs(),
   signal?: AbortSignal,
+  format: "markdown" | "html" | "ld_json" | "text" = "markdown",
 ) {
   const scrapeUrl = normalizeBrightDataUrl(url);
   if (!scrapeUrl) {
@@ -1286,7 +1309,7 @@ export async function scrapeAsMarkdown(
       async (client) => {
         const toolResult = await withHardTimeout(
           client.callTool(
-            { name: "scrape_as_markdown", arguments: { url: scrapeUrl } },
+            { name: "scrape_as_markdown", arguments: { url: scrapeUrl, format } },
             undefined,
             { timeout: timeoutMs },
           ),
@@ -1301,8 +1324,8 @@ export async function scrapeAsMarkdown(
           );
         }
 
-        const markdown = textFromToolResult(toolResult);
-        if (!markdown || !markdown.trim()) {
+        const rawText = textFromToolResult(toolResult);
+        if (!rawText || !rawText.trim()) {
           throw new BrightDataError(
             "Bright Data scrape_as_markdown returned empty body",
             {
@@ -1311,7 +1334,17 @@ export async function scrapeAsMarkdown(
             },
           );
         }
-        return markdown;
+
+        let content = rawText;
+        try {
+          const parsed = JSON.parse(rawText);
+          if (parsed && typeof parsed.content === "string") {
+            content = parsed.content;
+          } else if (parsed && typeof parsed.content === "object" && parsed.content !== null) {
+            content = JSON.stringify(parsed.content);
+          }
+        } catch {}
+        return content;
       },
       { throwOnUnavailable: true, throwOnFailure: true },
     );
@@ -1427,38 +1460,86 @@ export async function brightDataGetPersonProfile(
   const targetUrl = normalizeBrightDataUrl(url);
   if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
 
+  const minTimeout = Number(process.env.BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS) || 50_000;
+  const effectiveTimeout = Math.max(timeoutMs, minTimeout);
+
   return await withBrightDataClient(
-    "web_data_linkedin_person_profile",
+    "run_scraper",
     async (client) => {
       const toolResult = await withHardTimeout(
         client.callTool(
           {
-            name: "web_data_linkedin_person_profile",
-            arguments: { url: targetUrl },
+            name: "run_scraper",
+            arguments: {
+              dataset_id: "gd_l1viktl72bvl7bjuj0",
+              method: "collect_by_url",
+              input: [{ url: targetUrl }],
+            },
           },
           undefined,
-          { timeout: timeoutMs },
+          { timeout: effectiveTimeout },
         ),
-        timeoutMs,
-        "Bright Data web_data_linkedin_person_profile",
+        effectiveTimeout,
+        "Bright Data run_scraper (gd_l1viktl72bvl7bjuj0)",
       );
 
       if ((toolResult as any)?.isError) {
         throw new Error(
           textFromToolResult(toolResult) ||
-            "Bright Data web_data_linkedin_person_profile returned an error",
+            "Bright Data run_scraper returned an error",
         );
       }
 
       const text = textFromToolResult(toolResult);
       if (!text || !text.trim()) return null;
+
+      let parsed: any;
       try {
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) return parsed[0] || null;
-        return parsed;
+        parsed = JSON.parse(text);
       } catch {
         return null;
       }
+
+      const deadline = Date.now() + effectiveTimeout;
+      if (parsed?.status === "running" && parsed?.snapshot_id) {
+        while (Date.now() + 2000 < deadline) {
+          await abortableSleep(2000);
+          try {
+            const pollResult = await client.callTool(
+              {
+                name: "get_scraper_results",
+                arguments: { snapshot_id: parsed.snapshot_id },
+              },
+              undefined,
+              { timeout: 10_000 },
+            );
+            const pollText = textFromToolResult(pollResult);
+            if (!pollText) continue;
+            const pollParsed = JSON.parse(pollText);
+            if (pollParsed?.status === "ready") {
+              parsed = pollParsed;
+              break;
+            }
+            if (pollParsed?.status === "failed" || pollParsed?.status === "canceled") {
+              parsed = pollParsed;
+              break;
+            }
+          } catch {}
+        }
+      }
+
+      if (!parsed || parsed.error || parsed.status !== "ready") return null;
+      if (!Array.isArray(parsed.data) || parsed.data.length === 0) return null;
+      const record = parsed.data[0];
+      if (!record || record.error) {
+        if (record?.error) {
+          console.warn(
+            `[brightdata] Scraper returned error record for ${targetUrl}: ${typeof record.error === "object" ? JSON.stringify(record.error) : record.error}`,
+          );
+        }
+        return null;
+      }
+      return record;
     },
     { throwOnUnavailable: false, throwOnFailure: false },
   );
@@ -1471,38 +1552,86 @@ export async function brightDataGetCompanyProfile(
   const targetUrl = normalizeBrightDataUrl(url);
   if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
 
+  const minTimeout = Number(process.env.BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS) || 50_000;
+  const effectiveTimeout = Math.max(timeoutMs, minTimeout);
+
   return await withBrightDataClient(
-    "web_data_linkedin_company_profile",
+    "run_scraper",
     async (client) => {
       const toolResult = await withHardTimeout(
         client.callTool(
           {
-            name: "web_data_linkedin_company_profile",
-            arguments: { url: targetUrl },
+            name: "run_scraper",
+            arguments: {
+              dataset_id: "gd_l1vikfnt1wgvvqz95w",
+              method: "collect_by_url",
+              input: [{ url: targetUrl }],
+            },
           },
           undefined,
-          { timeout: timeoutMs },
+          { timeout: effectiveTimeout },
         ),
-        timeoutMs,
-        "Bright Data web_data_linkedin_company_profile",
+        effectiveTimeout,
+        "Bright Data run_scraper (gd_l1vikfnt1wgvvqz95w)",
       );
 
       if ((toolResult as any)?.isError) {
         throw new Error(
           textFromToolResult(toolResult) ||
-            "Bright Data web_data_linkedin_company_profile returned an error",
+            "Bright Data run_scraper returned an error",
         );
       }
 
       const text = textFromToolResult(toolResult);
       if (!text || !text.trim()) return null;
+
+      let parsed: any;
       try {
-        const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) return parsed[0] || null;
-        return parsed;
+        parsed = JSON.parse(text);
       } catch {
         return null;
       }
+
+      const deadline = Date.now() + effectiveTimeout;
+      if (parsed?.status === "running" && parsed?.snapshot_id) {
+        while (Date.now() + 2000 < deadline) {
+          await abortableSleep(2000);
+          try {
+            const pollResult = await client.callTool(
+              {
+                name: "get_scraper_results",
+                arguments: { snapshot_id: parsed.snapshot_id },
+              },
+              undefined,
+              { timeout: 10_000 },
+            );
+            const pollText = textFromToolResult(pollResult);
+            if (!pollText) continue;
+            const pollParsed = JSON.parse(pollText);
+            if (pollParsed?.status === "ready") {
+              parsed = pollParsed;
+              break;
+            }
+            if (pollParsed?.status === "failed" || pollParsed?.status === "canceled") {
+              parsed = pollParsed;
+              break;
+            }
+          } catch {}
+        }
+      }
+
+      if (!parsed || parsed.error || parsed.status !== "ready") return null;
+      if (!Array.isArray(parsed.data) || parsed.data.length === 0) return null;
+      const record = parsed.data[0];
+      if (!record || record.error) {
+        if (record?.error) {
+          console.warn(
+            `[brightdata] Scraper returned error record for ${targetUrl}: ${typeof record.error === "object" ? JSON.stringify(record.error) : record.error}`,
+          );
+        }
+        return null;
+      }
+      return record;
     },
     { throwOnUnavailable: false, throwOnFailure: false },
   );
@@ -1512,37 +1641,7 @@ export async function brightDataScrapeAsHtml(
   url: string,
   timeoutMs: number = 60_000,
 ): Promise<string | null> {
-  const targetUrl = normalizeBrightDataUrl(url);
-  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
-
-  return await withBrightDataClient(
-    "scrape_as_html",
-    async (client) => {
-      const toolResult = await withHardTimeout(
-        client.callTool(
-          {
-            name: "scrape_as_html",
-            arguments: { url: targetUrl },
-          },
-          undefined,
-          { timeout: timeoutMs },
-        ),
-        timeoutMs,
-        "Bright Data scrape_as_html",
-      );
-
-      if ((toolResult as any)?.isError) {
-        throw new Error(
-          textFromToolResult(toolResult) ||
-            "Bright Data scrape_as_html returned an error",
-        );
-      }
-
-      const text = textFromToolResult(toolResult);
-      return text && text.trim() ? text : null;
-    },
-    { throwOnUnavailable: false, throwOnFailure: false },
-  );
+  return scrapeAsMarkdown(url, timeoutMs, undefined, "html");
 }
 
 export type BrightDataBatchResult = {
@@ -1768,6 +1867,8 @@ export type BrightDataSearchOptions = {
   onEngineAttempt?: (engine: "google" | "bing" | "yandex") => void;
   onBingFallback?: (event: { query: string; resultsCount: number }) => void;
   start?: number;
+  page?: number;
+  timeRange?: "hour" | "day" | "week" | "month" | "year" | "any";
   /** Cancels in-flight and pending search work; results are discarded on abort. */
   signal?: AbortSignal;
 };
@@ -1939,27 +2040,46 @@ export function parseBingMarkdownResults(
 }
 
 /**
- * Keep the MCP argument names aligned with @brightdata/mcp's search_engine
- * schema: query, engine, cursor, and geo_location. In particular, `country`
- * and `page` are not valid tool arguments in the installed client.
+ * FastMCP search argument builder conforming to @brightdata/mcp v4.6.0 search_engine schema:
+ * query, engine, country, page, time_range.
  */
 export function buildBrightDataSearchArguments(
   query: string,
   options: BrightDataSearchOptions = {},
 ) {
   const configuredGeo =
-    options.geoLocation ||
     options.country ||
+    options.geoLocation ||
     process.env.BRIGHTDATA_SEARCH_GEO_LOCATION ||
     "us";
-  const geoLocation = normalizeBrightDataGeoLocation(configuredGeo);
-  const engine = options.engine || "google";
+  const country = normalizeBrightDataGeoLocation(configuredGeo);
+  const engine = options.engine === "bing" ? "bing" : "google";
+  const rawPage =
+    typeof options.page === "number"
+      ? options.page
+      : typeof options.start === "number"
+        ? Math.floor(options.start / 10)
+        : typeof (options as any).cursor === "number"
+          ? (options as any).cursor
+          : typeof (options as any).cursor === "string" && /^\d+$/.test((options as any).cursor)
+            ? parseInt((options as any).cursor, 10)
+            : undefined;
+  const page =
+    typeof rawPage === "number" && !isNaN(rawPage)
+      ? Math.max(0, Math.floor(rawPage))
+      : undefined;
+
+  let timeRange = options.timeRange;
+  if (engine === "bing" && (timeRange === "hour" || timeRange === "month")) {
+    timeRange = "day";
+  }
+
   return {
     query,
     engine,
-    ...(options.cursor ? { cursor: options.cursor } : {}),
-    ...(geoLocation ? { geo_location: geoLocation } : {}),
-    ...(typeof options.start === "number" ? { start: options.start } : {}),
+    ...(country ? { country } : {}),
+    ...(typeof page === "number" ? { page } : {}),
+    ...(timeRange ? { time_range: timeRange } : {}),
   };
 }
 
@@ -2022,7 +2142,7 @@ export async function brightDataSearch(
     activeEngine: "google" | "bing" | "yandex",
   ): Promise<BrightDataSearchResult[]> => {
     options?.onEngineAttempt?.(activeEngine);
-    return withBrightDataClient(
+    const searchRes = await withBrightDataClient(
       "search_engine",
       async (client) => {
         if (searchToolAvailable === null) {
@@ -2073,23 +2193,24 @@ export async function brightDataSearch(
         const textResult = textFromToolResult(toolResult);
         if (!textResult) return [];
 
-        if (activeEngine === "bing" || activeEngine === "yandex") {
-          return parseBingMarkdownResults(textResult);
-        }
-
-        let parsed: any;
+        let items: any[] = [];
+        let parsed: any = null;
         try {
           parsed = JSON.parse(textResult);
+          items = Array.isArray(parsed)
+            ? parsed
+            : parsed?.organic || parsed?.results || [];
         } catch {
+          if (activeEngine === "bing" || (activeEngine as string) === "yandex") {
+            const mdResults = parseBingMarkdownResults(textResult);
+            if (mdResults.length > 0) return mdResults;
+          }
           throw new BrightDataError(
             `Unexpected non-JSON response from Bright Data search_engine (${activeEngine}): ${textResult.slice(0, 200)}`,
             { reasonCode: "empty_body_transient", retryable: false },
           );
         }
 
-        const items = Array.isArray(parsed)
-          ? parsed
-          : parsed.organic || parsed.results || [];
         return items
           .map((item: any) =>
             normalizeBrightDataSearchResult({
@@ -2101,6 +2222,7 @@ export async function brightDataSearch(
       },
       { throwOnUnavailable: true, throwOnFailure: true },
     );
+    return searchRes || [];
   };
 
   const result = await executeBrightDataSearchWithEmptyBodyRecovery(
@@ -2157,4 +2279,207 @@ export async function brightDataSearch(
   );
 
   return result || [];
+}
+
+export async function brightDataSearchBatch(
+  queries: string[],
+  options?: BrightDataSearchOptions,
+): Promise<Map<string, BrightDataSearchResult[]>> {
+  const resultsMap = new Map<string, BrightDataSearchResult[]>();
+  if (!queries || queries.length === 0) return resultsMap;
+  if (options?.signal?.aborted) return resultsMap;
+
+  // Max 5 queries per batch call
+  const cleanQueries = queries.slice(0, 5);
+  cleanQueries.forEach((q) => resultsMap.set(q, []));
+
+  const defaultEngine =
+    (process.env.BRIGHTDATA_DEFAULT_SEARCH_ENGINE as "google" | "bing") ||
+    "google";
+  let activeEngine: "google" | "bing" =
+    options?.engine === "bing"
+      ? "bing"
+      : options?.engine === "google"
+        ? "google"
+        : defaultEngine === "bing"
+          ? "bing"
+          : "google";
+
+  if (isStickyBingActive() && activeEngine === "google" && !options?.forceEngine) {
+    activeEngine = "bing";
+  }
+
+  const allowBingFallback =
+    (options?.allowBingFallback ??
+      process.env.BRIGHTDATA_FALLBACK_ENGINE !== "false") &&
+    activeEngine === "google";
+
+  const executeBatch = async (
+    engine: "google" | "bing",
+  ): Promise<Map<string, BrightDataSearchResult[]>> => {
+    options?.onEngineAttempt?.(engine);
+    return (
+      (await withBrightDataClient(
+        "search_engine_batch",
+        async (client) => {
+          if (searchBatchToolAvailable === null) {
+            const tools = await client.listTools();
+            searchBatchToolAvailable = tools.tools.some(
+              (t) => t.name === "search_engine_batch",
+            );
+          }
+
+          if (!searchBatchToolAvailable) {
+            // Fall back to parallel brightDataSearch
+            const singles = await Promise.all(
+              cleanQueries.map((q) =>
+                brightDataSearch(q, { ...options, engine }).catch(() => []),
+              ),
+            );
+            cleanQueries.forEach((q, idx) => resultsMap.set(q, singles[idx] || []));
+            return resultsMap;
+          }
+
+          // Each query in queries is a search_schema object
+          const batchQueryObjects = cleanQueries.map((q) =>
+            buildBrightDataSearchArguments(q, { ...options, engine }),
+          );
+
+          const timeoutMs = options?.timeoutMs || baseTimeoutMs();
+          const effectiveTimeoutMs =
+            engine === "google" && allowBingFallback
+              ? Math.min(
+                  timeoutMs,
+                  Number(
+                    process.env.BRIGHTDATA_GOOGLE_CHALLENGE_TIMEOUT_MS || 20_000,
+                  ),
+                )
+              : timeoutMs;
+
+          const toolResult = await withHardTimeout(
+            client.callTool(
+              {
+                name: "search_engine_batch",
+                arguments: { queries: batchQueryObjects },
+              },
+              undefined,
+              { timeout: effectiveTimeoutMs },
+            ),
+            effectiveTimeoutMs,
+            `Bright Data search_engine_batch (${engine})`,
+          );
+
+          if ((toolResult as any)?.isError) {
+            throw new Error(
+              textFromToolResult(toolResult) ||
+                `Bright Data search_engine_batch (${engine}) returned an error`,
+            );
+          }
+
+          const textResult = textFromToolResult(toolResult);
+          if (!textResult) return resultsMap;
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(textResult);
+          } catch {
+            throw new BrightDataError(
+              `Unexpected non-JSON response from Bright Data search_engine_batch (${engine})`,
+              { reasonCode: "empty_body_transient", retryable: false },
+            );
+          }
+
+          const items = Array.isArray(parsed) ? parsed : [];
+          items.forEach((entry: any, idx: number) => {
+            const queryKey = entry?.query || cleanQueries[idx] || "";
+            // Unpack from entry.result.organic
+            const organic = entry?.result?.organic || [];
+            const normalized = organic
+              .map((item: any) =>
+                normalizeBrightDataSearchResult({
+                  ...item,
+                  sourceEngine: entry?.engine || engine,
+                }),
+              )
+              .filter((item: BrightDataSearchResult) => item.url && item.title);
+            resultsMap.set(queryKey, normalized);
+          });
+
+          return resultsMap;
+        },
+        { throwOnUnavailable: true, throwOnFailure: true },
+      )) || resultsMap
+    );
+  };
+
+  try {
+    const results = await executeBatch(activeEngine);
+    if (activeEngine === "google") {
+      let totalCount = 0;
+      for (const [, items] of results) {
+        totalCount += items.length;
+      }
+      if (totalCount > 0 && (googleSerpChallengeCount > 0 || isStickyBingActive())) {
+        googleSerpChallengeCount = 0;
+        stickyBingActiveSince = 0;
+      }
+    }
+    return results;
+  } catch (error) {
+    const classified = classifyBrightDataError(error);
+    const isBotChallenge =
+      classified.reasonCode === "target_transient" ||
+      classified.reasonCode === "target_blocked" ||
+      /unexpected non-json response|captcha|challenge|bot|blocked/i.test(
+        classified.message,
+      );
+
+    if (activeEngine === "google" && isBotChallenge) {
+      googleSerpChallengeCount++;
+      if (googleSerpChallengeCount >= GOOGLE_CHALLENGE_STICKY_THRESHOLD) {
+        stickyBingActiveSince = Date.now();
+        console.warn(
+          `[brightdata] Google SERP bot challenges reached threshold (${googleSerpChallengeCount}) via batch search. Activated sticky Bing fallback.`,
+        );
+      }
+    }
+
+    if (activeEngine === "google" && isBotChallenge && allowBingFallback) {
+      try {
+        console.warn(
+          "[brightdata] Google SERP batch challenged; falling back to Bing batch...",
+        );
+        const bingMap = await executeBatch("bing");
+        let totalRecovered = 0;
+        for (const [, items] of bingMap) {
+          totalRecovered += items.length;
+        }
+        if (totalRecovered > 0) {
+          options?.onBingFallback?.({
+            query: cleanQueries.join("; "),
+            resultsCount: totalRecovered,
+          });
+        }
+        return bingMap;
+      } catch {
+        // Fall back to empty map so retrieveStage can run Tavily fallback
+      }
+    }
+    return resultsMap;
+  }
+}
+
+export function resetBrightDataModuleState() {
+  clearCurrentClient();
+  activeTransport = null;
+  activeApiToken = "";
+  activeApiTokenFingerprint = "";
+  resetToolAvailability();
+  disabledReason = "";
+  disabledUntil = 0;
+  healthOverride = null;
+  googleSerpChallengeCount = 0;
+  stickyBingActiveSince = 0;
+  consecutiveFailures = 0;
+  lastError = "";
 }

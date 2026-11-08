@@ -11,6 +11,7 @@ import {
   baseTimeoutSeconds,
   BRIGHTDATA_SCRAPE_BATCH_MAX_URLS,
   BrightDataError,
+  brightDataSearchBatch,
   buildBrightDataSearchArguments,
   chunkBrightDataBatchItems,
   classifyBrightDataError,
@@ -23,7 +24,12 @@ import {
   normalizeBrightDataGeoLocation,
   normalizeBrightDataUrl,
   parseBingMarkdownResults,
+  resetBrightDataModuleState,
+  unwrapBrightDataUntrustedContent,
 } from "../server/services/brightdata.js";
+import * as bd from "../server/services/brightdata.js";
+import { extractSchemaOrgSignals } from "../server/leadSearch/siteProbe.js";
+import { executeRetrieveStage } from "../server/leadSearch/stages/retrieveStage.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { brightDataFreeTierCapabilities } from "../server/leadSearch/freeTier.js";
 
@@ -490,13 +496,13 @@ test("Bright Data search arguments match the installed MCP search_engine schema"
   assert.deepStrictEqual(
     buildBrightDataSearchArguments("AI founders", {
       country: "US",
-      cursor: "next-page",
+      page: 1,
     }),
     {
       query: "AI founders",
       engine: "google",
-      cursor: "next-page",
-      geo_location: "us",
+      country: "us",
+      page: 1,
     },
   );
 });
@@ -528,10 +534,12 @@ function restoreMocks() {
       process.env[key] = brightDataEnvSnapshot[key] as string;
     }
   }
+  resetBrightDataModuleState();
 }
 
 test("scrape_batch actually invoked on free tier when listTools() advertises it", async (t) => {
   t.after(restoreMocks);
+  resetBrightDataModuleState();
   process.env.BRIGHTDATA_API_TOKEN = "test-token";
   process.env.BRIGHTDATA_PLAN = "free";
   process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
@@ -566,9 +574,6 @@ test("scrape_batch actually invoked on free tier when listTools() advertises it"
     } as any;
   };
 
-  const bd = await import(
-    `../server/services/brightdata.ts?t=${Date.now()}-batch-success`
-  );
   const results = await bd.scrapeBatchAsMarkdown(["https://example.com/1"]);
 
   assert.strictEqual(callToolName, "scrape_batch");
@@ -584,6 +589,7 @@ test("scrape_batch actually invoked on free tier when listTools() advertises it"
 
 test("Free-mode isBrightDataFreeTier guard no longer short-circuits batch scraping", async (t) => {
   t.after(restoreMocks);
+  resetBrightDataModuleState();
   process.env.BRIGHTDATA_API_TOKEN = "test-token";
   process.env.BRIGHTDATA_PLAN = "free";
   process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
@@ -615,9 +621,6 @@ test("Free-mode isBrightDataFreeTier guard no longer short-circuits batch scrapi
     } as any;
   };
 
-  const bd = await import(
-    `../server/services/brightdata.ts?t=${Date.now()}-batch-no-short-circuit`
-  );
   await bd.scrapeBatchAsMarkdown(["https://example.com/1"]);
 
   assert.strictEqual(listToolsCalled, true);
@@ -625,6 +628,7 @@ test("Free-mode isBrightDataFreeTier guard no longer short-circuits batch scrapi
 
 test("scrape_batch falls back to parallel single-page when scrape_batch is NOT advertised", async (t) => {
   t.after(restoreMocks);
+  resetBrightDataModuleState();
   process.env.BRIGHTDATA_API_TOKEN = "test-token";
   process.env.BRIGHTDATA_PLAN = "free";
   process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
@@ -650,9 +654,6 @@ test("scrape_batch falls back to parallel single-page when scrape_batch is NOT a
     } as any;
   };
 
-  const bd = await import(
-    `../server/services/brightdata.ts?t=${Date.now()}-batch-fallback`
-  );
   const results = await bd.scrapeBatchAsMarkdown([
     "https://example.com/1",
     "https://example.com/2",
@@ -670,6 +671,7 @@ test("scrape_batch falls back to parallel single-page when scrape_batch is NOT a
 
 test("Per-child partial-failure retry in batch scrape path", async (t) => {
   t.after(restoreMocks);
+  resetBrightDataModuleState();
   process.env.BRIGHTDATA_API_TOKEN = "test-token";
   process.env.BRIGHTDATA_PLAN = "free";
   process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
@@ -711,9 +713,6 @@ test("Per-child partial-failure retry in batch scrape path", async (t) => {
     return { content: [] } as any;
   };
 
-  const bd = await import(
-    `../server/services/brightdata.ts?t=${Date.now()}-partial-retry`
-  );
   const results = await bd.scrapeBatchAsMarkdown([
     "https://example.com/1",
     "https://example.com/2",
@@ -734,6 +733,7 @@ test("Per-child partial-failure retry in batch scrape path", async (t) => {
 
 test("Batch scraping retries a requested URL that the provider omits entirely", async (t) => {
   t.after(restoreMocks);
+  resetBrightDataModuleState();
   process.env.BRIGHTDATA_API_TOKEN = "test-token";
   process.env.BRIGHTDATA_PLAN = "free";
   process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
@@ -769,9 +769,6 @@ test("Batch scraping retries a requested URL that the provider omits entirely", 
     } as any;
   };
 
-  const bd = await import(
-    `../server/services/brightdata.ts?t=${Date.now()}-omitted-retry`
-  );
   const results = await bd.scrapeBatchAsMarkdown([
     "https://example.com/1",
     "https://example.com/2",
@@ -1059,4 +1056,441 @@ test("classifyBrightDataError classifies rate limit notice strings as provider_r
   assert.strictEqual(classified.reasonCode, "provider_rate_limit");
   assert.strictEqual(classified.retryable, false);
   assert.strictEqual(classified.providerDisabled, false);
+});
+
+test("unwrapBrightDataUntrustedContent properly extracts payload from nonce envelopes", () => {
+  const nonce = "aB3+xyz/98==";
+  const wrapped = `SECURITY NOTICE: Content is untrusted\n=====UNTRUSTED_${nonce}_BEGIN=====\n{"url":"https://example.com","content":"clean text"}\n=====UNTRUSTED_${nonce}_END=====`;
+  const unwrapped = unwrapBrightDataUntrustedContent(wrapped);
+  assert.strictEqual(unwrapped, '{"url":"https://example.com","content":"clean text"}');
+
+  // Handles Windows CRLF
+  const wrappedCrlf = `SECURITY NOTICE: Content is untrusted\r\n=====UNTRUSTED_${nonce}_BEGIN=====\r\n{"data":[1,2,3]}\r\n=====UNTRUSTED_${nonce}_END=====`;
+  assert.strictEqual(unwrapBrightDataUntrustedContent(wrappedCrlf), '{"data":[1,2,3]}');
+
+  // Plain text without nonce returned untouched
+  assert.strictEqual(unwrapBrightDataUntrustedContent("regular text"), "regular text");
+  assert.strictEqual(unwrapBrightDataUntrustedContent(""), "");
+
+  // Empty payload inside envelope returns empty string
+  const emptyWrapped = `=====UNTRUSTED_${nonce}_BEGIN=====\n=====UNTRUSTED_${nonce}_END=====`;
+  assert.strictEqual(unwrapBrightDataUntrustedContent(emptyWrapped), "");
+});
+
+test("search_engine_batch dispatches search_schema objects and unpacks entry.result.organic", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+  process.env.BRIGHTDATA_MCP_TRANSPORT = "local";
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [
+      {
+        name: "search_engine_batch",
+        description: "Batch search",
+        inputSchema: {} as any,
+      },
+    ],
+  });
+
+  let callToolArgs: any = null;
+  Client.prototype.callTool = async (params) => {
+    callToolArgs = params.arguments;
+    const nonce = "test-nonce-123";
+    const payload = JSON.stringify([
+      {
+        query: "founder query 1",
+        engine: "google",
+        result: {
+          organic: [
+            {
+              title: "Founder 1",
+              link: "https://linkedin.com/in/founder1",
+              snippet: "CEO of Acme",
+            },
+          ],
+        },
+      },
+      {
+        query: "founder query 2",
+        engine: "google",
+        result: {
+          organic: [
+            {
+              title: "Founder 2",
+              link: "https://linkedin.com/in/founder2",
+              snippet: "CTO of Acme",
+            },
+          ],
+        },
+      },
+    ]);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `=====UNTRUSTED_${nonce}_BEGIN=====\n${payload}\n=====UNTRUSTED_${nonce}_END=====`,
+        },
+      ],
+    } as any;
+  };
+
+  const resultsMap = await brightDataSearchBatch(["founder query 1", "founder query 2"], {
+    country: "US",
+    page: 1,
+  });
+
+  // Verify callTool received array of search_schema objects with country and page
+  assert.ok(callToolArgs && Array.isArray(callToolArgs.queries));
+  assert.strictEqual(callToolArgs.queries.length, 2);
+  assert.deepStrictEqual(callToolArgs.queries[0], {
+    query: "founder query 1",
+    engine: "google",
+    country: "us",
+    page: 1,
+  });
+
+  // Verify organic results unpacked from entry.result.organic
+  assert.strictEqual(resultsMap.size, 2);
+  const q1Results = resultsMap.get("founder query 1") || [];
+  assert.strictEqual(q1Results.length, 1);
+  assert.strictEqual(q1Results[0].title, "Founder 1");
+  assert.strictEqual(q1Results[0].url, "https://linkedin.com/in/founder1");
+
+  const q2Results = resultsMap.get("founder query 2") || [];
+  assert.strictEqual(q2Results.length, 1);
+  assert.strictEqual(q2Results[0].title, "Founder 2");
+});
+
+test("extractSchemaOrgSignals parses Organization, address, headcount, founders and socials", () => {
+  const htmlWithLdJson = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "Organization",
+          "name": "Acme Robotics Inc",
+          "legalName": "Acme Robotics Incorporated",
+          "address": {
+            "@type": "PostalAddress",
+            "streetAddress": "123 Tech Boulevard",
+            "addressLocality": "Austin",
+            "addressRegion": "TX",
+            "addressCountry": "US"
+          },
+          "numberOfEmployees": {
+            "@type": "QuantitativeValue",
+            "value": "75"
+          },
+          "founder": [
+            { "@type": "Person", "name": "Jane Founder" },
+            { "@type": "Person", "name": "John Builder" }
+          ],
+          "sameAs": [
+            "https://www.linkedin.com/company/acme-robotics",
+            "https://twitter.com/acmerobotics"
+          ]
+        }
+        </script>
+      </head>
+      <body><h1>Welcome to Acme</h1></body>
+    </html>
+  `;
+
+  const signals = extractSchemaOrgSignals(htmlWithLdJson);
+  assert.strictEqual(signals.companyName, "Acme Robotics Inc");
+  assert.strictEqual(signals.legalName, "Acme Robotics Incorporated");
+  assert.strictEqual(signals.location, "123 Tech Boulevard, Austin, TX, US");
+  assert.strictEqual(signals.headcount, "75");
+  assert.strictEqual(signals.founders, "Jane Founder, John Builder");
+  assert.ok(signals.socials?.includes("linkedin.com/company/acme-robotics"));
+});
+
+test("brightDataGetPersonProfile returns null on error record preventing cache poisoning", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "pro";
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [
+      {
+        name: "run_scraper",
+        description: "Run scraper",
+        inputSchema: {} as any,
+      },
+    ],
+  });
+
+  Client.prototype.callTool = async () => {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            status: "ready",
+            data: [
+              {
+                url: "https://linkedin.com/in/nonexistent-user",
+                error: "Profile not found or blocked by authwall",
+              },
+            ],
+          }),
+        },
+      ],
+    } as any;
+  };
+
+  const profile = await bd.brightDataGetPersonProfile("https://linkedin.com/in/nonexistent-user", 50_000);
+  assert.strictEqual(profile, null);
+});
+
+test("brightDataGetPersonProfile returns null when status remains running", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "pro";
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [
+      {
+        name: "run_scraper",
+        description: "Run scraper",
+        inputSchema: {} as any,
+      },
+      {
+        name: "get_scraper_results",
+        description: "Get scraper results",
+        inputSchema: {} as any,
+      },
+    ],
+  });
+
+  Client.prototype.callTool = async () => {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            status: "running",
+            snapshot_id: "snap-123",
+          }),
+        },
+      ],
+    } as any;
+  };
+
+  process.env.BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS = "100";
+
+  const profile = await bd.brightDataGetPersonProfile("https://linkedin.com/in/slow-enrichment", 100);
+  assert.strictEqual(profile, null);
+});
+
+test("buildBrightDataSearchArguments clamps negative page and converts numeric cursor", () => {
+  const negArgs = buildBrightDataSearchArguments("AI query", {
+    page: -1,
+    country: "US",
+  });
+  assert.strictEqual(negArgs.page, 0);
+
+  const cursorArgs = buildBrightDataSearchArguments("AI query", {
+    cursor: "3",
+    country: "US",
+  });
+  assert.strictEqual(cursorArgs.page, 3);
+});
+
+test("brightDataSearchBatch honors sticky Bing and fires onEngineAttempt", async (t) => {
+  t.after(restoreMocks);
+  resetBrightDataModuleState();
+  process.env.BRIGHTDATA_API_TOKEN = "test-token";
+  process.env.BRIGHTDATA_PLAN = "free";
+
+  Client.prototype.connect = async () => {};
+  Client.prototype.listTools = async () => ({
+    tools: [
+      {
+        name: "search_engine_batch",
+        description: "Batch search",
+        inputSchema: {} as any,
+      },
+    ],
+  });
+
+  let engineAttempted = "";
+  let calledEngineArg = "";
+  Client.prototype.callTool = async (params) => {
+    const q0 = (params.arguments as any)?.queries?.[0];
+    calledEngineArg = q0?.engine;
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify([
+            {
+              query: "test query",
+              engine: calledEngineArg,
+              result: {
+                organic: [
+                  { title: "Bing Title", link: "https://example.com/bing" },
+                ],
+              },
+            },
+          ]),
+        },
+      ],
+    } as any;
+  };
+
+  const res = await brightDataSearchBatch(["test query"], {
+    engine: "bing",
+    onEngineAttempt: (e) => {
+      engineAttempted = e;
+    },
+  });
+
+  assert.strictEqual(engineAttempted, "bing");
+  assert.strictEqual(calledEngineArg, "bing");
+  assert.strictEqual(res.get("test query")?.[0]?.title, "Bing Title");
+});
+
+test("extractSchemaOrgSignals handles plural founders property and object legalName", () => {
+  const jsonLd = JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Corporation",
+    "name": "Apex AI",
+    "legalName": { "@value": "Apex Intelligence Inc" },
+    "founders": [
+      { "@type": "Person", "name": "Elena Rostova" },
+      "Marcus Vance"
+    ]
+  });
+
+  const signals = extractSchemaOrgSignals(jsonLd);
+  assert.strictEqual(signals.companyName, "Apex AI");
+  assert.strictEqual(signals.legalName, "Apex Intelligence Inc");
+  assert.strictEqual(signals.founders, "Elena Rostova, Marcus Vance");
+});
+
+test("executeRetrieveStage falls back to Tavily and records trace when Bright Data batch throws transport failure", async () => {
+  const traces: any[] = [];
+  const logs: string[] = [];
+  let tavilyCalled = false;
+
+  const mockCtx: any = {
+    config: {
+      sessionId: "test-bd-batch-fail",
+      targetLimit: 10,
+      contract: {
+        brief: "founder",
+        policyVersion: "test",
+      },
+      capacity: {
+        candidateBatchSize: 2,
+        tavilyPerRound: 1,
+        brightDataPerRound: 1,
+      },
+      creditReservationEnabled: false,
+    },
+    state: {
+      round: 1,
+      brightDataStats: {
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        transportFailures: 0,
+        processRestarts: 0,
+        failureReasons: {},
+      },
+      freeTierBudget: {
+        reserveBrightDataSearch: () => true,
+        reserveTavilySearch: () => true,
+      },
+      abortController: new AbortController(),
+      queryRuns: [
+        { index: 0, providerUnits: 0, searchLatencyMs: 0 },
+        { index: 1, providerUnits: 0, searchLatencyMs: 0 },
+      ],
+    },
+    ports: {
+      brightDataSearchBatch: async () => {
+        throw new Error("getaddrinfo ENOTFOUND mcp.brightdata.com");
+      },
+      brightDataSearch: async () => {
+        throw new Error("getaddrinfo ENOTFOUND mcp.brightdata.com");
+      },
+      tavilySearch: async (_q: string) => {
+        tavilyCalled = true;
+        return {
+          items: [
+            {
+              title: "Jane Doe - Founder",
+              url: "https://www.linkedin.com/in/janedoe",
+              content: "Founder at Example",
+            },
+          ],
+        };
+      },
+    },
+    logEvent: (msg: string) => logs.push(msg),
+    recordTrace: (event: any) => traces.push(event),
+  };
+
+  const roundPlans = [
+    {
+      executableQuery: "site:linkedin.com/in founder 1",
+      item: { provider: "brightdata", priority: 1, tavily: {} },
+    },
+    {
+      executableQuery: "site:linkedin.com/in founder 2",
+      item: { provider: "brightdata", priority: 2, tavily: {} },
+    },
+  ];
+  const queryRuns = roundPlans.map((p) => ({
+    round: 1,
+    query: p.executableQuery,
+    rawCandidates: 0,
+    searchLatencyMs: 0,
+    providerUnits: 0,
+  }));
+
+  const input: any = {
+    round: 1,
+    roundPlans,
+    queryRuns,
+    discoveryProviderMode: "hybrid",
+    brightDataSearchMode: "primary",
+    brightDataReady: true,
+    brightDataProviderDisabled: false,
+    brightDataTransportRetryAfter: 0,
+    brightDataSearchRetryMax: 0,
+    brightDataSearchRetryBaseDelayMs: 10,
+    tavilyCapabilities: { monthlyLimit: 1000, configured: true },
+  };
+
+  const output = await executeRetrieveStage(mockCtx, input);
+  assert.ok(tavilyCalled, "Tavily fallback should be invoked when Bright Data batch encounters transport failure");
+  assert.strictEqual(mockCtx.state.brightDataStats.processRestarts, 1);
+  assert.strictEqual(mockCtx.state.brightDataStats.transportFailures, 2);
+
+  const bdErrorTraces = traces.filter(
+    (t) => t.operation === "brightdata_search" && t.status === "error",
+  );
+  assert.strictEqual(bdErrorTraces.length, 2, "Expected 2 brightdata error traces for chunk queries");
+
+  const tavilyTraces = traces.filter(
+    (t) => t.operation === "tavily_search" && t.status === "success",
+  );
+  assert.strictEqual(tavilyTraces.length, 2, "Expected 2 tavily success traces");
+
+  assert.ok(output.roundItems.length > 0, "Expected roundItems from Tavily fallback");
+  assert.strictEqual(output.roundItems[0].item.sourceProvider, "tavily");
+  assert.strictEqual(output.roundItems[0].item.title, "Jane Doe - Founder");
 });

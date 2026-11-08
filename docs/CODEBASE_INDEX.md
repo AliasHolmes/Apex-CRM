@@ -67,7 +67,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
   `@tanstack/react-table` + `react-virtual` · TypeScript
 - **Backend**: Express 5 · `node:sqlite` (schema-versioned, migrated in-transaction with
   pre-migration backups pruned to 3) · TypeScript, run by `node`
-- **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP (scrape/search),
+- **Retrieval/LLM**: Tavily (search + extract), Bright Data MCP v4.6 (scrape/search/batch/datasets),
   cross-round query retrieval cache, OpenAI-compatible LLM with OmniRoute primary (Gemini 3.8 Flash High ·
   8 runtime slots, unconstrained 65k output tokens), Byesu secondary fallback (GPT-6.1 ·
   8 runtime slots), Groq/OpenRouter failsafe tier, Langfuse telemetry
@@ -83,7 +83,7 @@ server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/w
 server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,659)
 server/services/             llm.ts (3,250, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
-                             brightdata.ts (2,161) · keyRotator.ts (390) · sessionStreamHub.ts (221, SSE) ·
+                             brightdata.ts (2,485) · keyRotator.ts (390) · sessionStreamHub.ts (221, SSE) ·
                              linkedinEvidence.ts (305, owns canonicalLinkedInIdentity) · privateHosts.ts (163, SSRF) ·
                              outboundPrompt.ts (168) · langfuse.ts (123) · sleepUtils.ts (40, shared sleep)
 server/leadSearch/           the discovery engine
@@ -288,7 +288,7 @@ historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval te
   caches, saturation response), `engineRemediationWiring` + `engineRemediationWiring2`
   (retrieval streaming, coalesced judge submissions, delta hydration), `schemaV27QueueWait`
   (queue-wait telemetry column), `liveRollingPool`, `planCache`
-- **Provider/resilience**: `brightDataUpgrade` (44), `llmFallback` (29), `byesuConcurrency`,
+- **Provider/resilience**: `brightDataUpgrade` (53), `llmFallback` (29), `byesuConcurrency`,
   `byesuProvider`, `llmRoutingPolicy`, `llmRoutingTier`, `keyRotator`,
   `tavilyRotation`, `kalmanStability`, `serverResilience`, `sessionStreamHubPruning`
 - **Persistence**: `leadPersistence` (incl. G15 CRM workflow preservation), `leadDedupe`,
@@ -1010,6 +1010,29 @@ Resolution of all findings identified in the Outstanding Defect Report on HEAD `
 - **Error Observability & Route Parameter Validation**:
   - Added explicit `console.error` diagnostic logging in `server/db.ts` write failure catch blocks (identity migration and ungrounded write demotion).
   - Added strict parameter format guards (`isSafeSessionId`, `isSafeLeadId`) to `GET /search-logs/:id`, `DELETE /saved-searches/:id`, and `GET /mining-sessions/:sessionId/trace` in `server/routes/api.ts`.
+
+### 9.36 Bright Data MCP v4.6.0 Upgrade & Engine Capability Expansion - (2026-11-08)
+
+Full modernization and architectural hardening of the Bright Data integration, upgrading `@brightdata/mcp` from `2.11.1` to `4.6.0`:
+
+- **Production Hardening & Trap Remediation**:
+  - Implemented `unwrapBrightDataUntrustedContent` with exact cryptographic boundary backreferences (`\1`) in `server/services/brightdata.ts` to unwrap FastMCP untrusted nonce envelopes (`=====UNTRUSTED_<nonce>_BEGIN=====`) before deserialization.
+  - Set `CONTENT_GATE: process.env.CONTENT_GATE || "off"` in `connectLocalClient` child process overrides, eliminating the 2-second silent web data withholding refusal.
+  - Aligned search argument building in `buildBrightDataSearchArguments` with FastMCP `.strict()` Zod schemas: mapped `country` (ISO-2), clamped `page = Math.max(0, page)`, clamped Bing `time_range` (`hour`/`month` -> `day`), and stripped obsolete parameters (`start`, `cursor`, `geo_location`).
+  - Extended `classifyBrightDataError` with pattern matches for v4.6.0 error strings (`the search engine answer was not json`, `Search failed: Google search failed`), unblocking the sticky Bing failover threshold in `brightDataSearch`.
+  - Migrated legacy endpoints (`web_data_linkedin_*`, `scrape_as_html`) to Web Scraper API (`run_scraper` on datasets `gd_l1viktl72bvl7bjuj0` and `gd_l1vikfnt1wgvvqz95w`) with status polling and an error guard that returns `null` on failed profile records to prevent cache poisoning.
+  - Elevated `agentBrainRunner.ts` profile enrichment timeout to 60s, preventing premature 40s aborts before the 45s internal scraper wait completes.
+- **5-Query Batch Search Parallelization (`search_engine_batch`)**:
+  - Added `brightDataSearchBatch` mapping queries to `search_schema` objects, unpacking results from `entry.result.organic`, and preserving sticky Bing failover and tool listing caching.
+  - Wired 5-query chunking into `retrieveStage.ts` with batch credit reservations, Page 2 offset support (`page: 1`), and `onQuerySettled` callbacks per query to unblock early-extraction waves immediately (ADR-0013).
+  - Wired full trace recording, credit reservations, and provider units accounting into the batch Tavily fallback path.
+- **Zero-Cost Schema.org JSON-LD Extraction**:
+  - Implemented `extractSchemaOrgSignals` in `siteProbe.ts` to parse Schema.org `Organization`, `Corporation`, and `LocalBusiness` JSON-LD from HTML already retrieved via `brightDataScrapeAsHtml`.
+  - Extracted `legalName`, `founders` (singular and plural), `headcount`, `location`, and social links without additional paid API calls, and appended them to `evidenceLines` in `applySiteProbeSignals` while preserving `lead.evidence` object integrity.
+- **Test Suite & Tooling Alignment**:
+  - Added 7 new tests in `test/brightDataUpgrade.test.ts` (53 tests total), updated `test/brightdataProTransport.test.ts` to reflect v4.6.0 capabilities, and added pipe-delimited evidence block and `lead.evidence` preservation tests in `test/siteProbe.test.ts` (15 tests total).
+  - Exported `resetBrightDataModuleState()` from `brightdata.ts` to eliminate dynamic query-param import failures under esbuild bundling.
+  - Verified 322+ tests passing with 0 failures across all relevant suites.
 
 ## 10. Recommended next actions
 

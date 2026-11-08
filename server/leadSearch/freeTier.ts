@@ -31,8 +31,16 @@ export const tavilyFreeTierCapabilities = (): FreeTierCapabilities => ({
 export const brightDataFreeTierCapabilities = (): FreeTierCapabilities => ({
   plan: 'free',
   monthlyLimit: boundedNumber(process.env.BRIGHTDATA_MONTHLY_REQUEST_BUDGET, 5000, 1, 1_000_000),
-  supported: ['search_engine', 'scrape_as_markdown', 'scrape_batch', 'linkedin_post_intent_search'],
-  unavailable: ['structured_linkedin', 'browser_automation'],
+  supported: [
+    'search_engine',
+    'search_engine_batch',
+    'scrape_as_markdown',
+    'scrape_batch',
+    'run_scraper',
+    'structured_linkedin',
+    'linkedin_post_intent_search'
+  ],
+  unavailable: ['browser_automation'],
   creditReservation: isProviderCreditReservationEnabled() ? 'enabled' : 'disabled'
 });
 
@@ -108,14 +116,15 @@ export class ScoutFreeTierBudget {
     return accepted;
   }
 
-  reserveBrightDataSearch() {
+  reserveBrightDataSearch(count = 1) {
+    const requested = Math.max(1, Math.floor(count));
     if (!this.reservationEnabled) {
-      this.brightDataRequestsReserved += 1;
+      this.brightDataRequestsReserved += requested;
       return true;
     }
-    if (this.brightDataRequestsRemaining < 1) return false;
-    this.brightDataRequestsRemaining--;
-    this.brightDataRequestsReserved++;
+    if (this.brightDataRequestsRemaining < requested) return false;
+    this.brightDataRequestsRemaining -= requested;
+    this.brightDataRequestsReserved += requested;
     return true;
   }
 

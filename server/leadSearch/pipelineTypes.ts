@@ -53,6 +53,11 @@ export type PipelinePorts = {
     options?: BrightDataSearchOptions,
     phaseLabel?: string,
   ) => Promise<BrightDataSearchResult[]>;
+  brightDataSearchBatch?: (
+    queries: string[],
+    options?: BrightDataSearchOptions,
+    phaseLabel?: string,
+  ) => Promise<Map<string, BrightDataSearchResult[]>>;
   brightDataSearchDataset?: (
     datasetId: string,
     filter: any,
@@ -69,7 +74,7 @@ export type PipelinePorts = {
     sources: { title: string; uri: string }[];
     items: any[];
   }>;
-  scrapeMarkdown: (url: string) => Promise<string | null>;
+  scrapeMarkdown: (url: string, format?: "markdown" | "html" | "ld_json" | "text") => Promise<string | null>;
   scrapeBatchMarkdown: (urls: string[]) => Promise<any>;
 };
 

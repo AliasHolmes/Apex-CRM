@@ -43,6 +43,7 @@ import {
   scrapeAsMarkdown,
   scrapeBatchAsMarkdown,
   brightDataSearch,
+  brightDataSearchBatch,
   brightDataSearchDataset,
   type BrightDataSearchOptions,
   type BrightDataSearchResult,
@@ -544,6 +545,48 @@ export async function executeDiscoverySession(
     }
 
     return results;
+  };
+
+  const trackableBrightDataSearchBatch = async (
+    queries: string[],
+    options: BrightDataSearchOptions = {},
+    phaseLabel: string = "search",
+  ): Promise<Map<string, BrightDataSearchResult[]>> => {
+    brightDataStats.searchAttempted += queries.length;
+    const resultsMap = await brightDataSearchBatch(queries, {
+      ...options,
+      onEngineAttempt: (engine) => {
+        if (engine === "google") brightDataStats.searchGoogleAttempted += queries.length;
+        else if (engine === "bing") brightDataStats.searchBingAttempted += queries.length;
+        options.onEngineAttempt?.(engine);
+      },
+      onBingFallback: (evt) => {
+        brightDataStats.searchBingRecovered++;
+        if (options.onBingFallback) {
+          options.onBingFallback(evt);
+        } else {
+          logEvent(
+            `[Search Fallback] [${phaseLabel}] Google SERP batch challenged; Bing fallback rescued ${evt.resultsCount} result(s).`,
+          );
+        }
+      },
+    });
+
+    let totalSucceeded = 0;
+    for (const [, results] of resultsMap) {
+      if (results && results.length > 0) {
+        totalSucceeded++;
+        const isBing = results.some((r) => r.sourceEngine === "bing");
+        if (isBing) {
+          brightDataStats.searchBingSucceeded++;
+        } else {
+          brightDataStats.searchGoogleSucceeded++;
+        }
+      }
+    }
+    brightDataStats.searchSucceeded += totalSucceeded;
+
+    return resultsMap;
   };
 
   const stats = {
@@ -1186,13 +1229,15 @@ export async function executeDiscoverySession(
     const pipelinePorts: PipelinePorts = {
       brightDataSearch: (q, opts, label) =>
         trackableBrightDataSearch(q, opts, label),
+      brightDataSearchBatch: (queries, opts, label) =>
+        trackableBrightDataSearchBatch(queries, opts, label),
       brightDataSearchDataset: (datasetId, filter, size, sort, searchAfter, timeoutMs) =>
         brightDataSearchDataset(datasetId, filter, size, sort, searchAfter, timeoutMs),
       tavilySearch: (q, opts) => tavilySearch(q, opts),
       // Thread the session abort signal through so cancelling stops paid Bright Data work
       // instead of letting in-flight and queued scrapes run to completion.
-      scrapeMarkdown: (url) =>
-        scrapeAsMarkdown(url, undefined, sessionState.abortController.signal),
+      scrapeMarkdown: (url, format) =>
+        scrapeAsMarkdown(url, undefined, sessionState.abortController.signal, format),
       scrapeBatchMarkdown: (urls) =>
         scrapeBatchAsMarkdown(
           urls,

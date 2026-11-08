@@ -397,7 +397,7 @@ export async function executeAgentBrainDiscovery(
   if (useBrightDataPro && qualifiedLeads.length > 0) {
     options.onProgress?.({
       phase: "brightdata_enrich",
-      message: `Enriching ${qualifiedLeads.length} qualified leads with BrightData Pro MCP tools (web_data_linkedin_person_profile)...`
+      message: `Enriching ${qualifiedLeads.length} qualified leads with BrightData Pro MCP tools (run_scraper)...`
     });
 
     const concurrency = Math.min(Math.max(options.brightDataConcurrency || 2, 1), 4);
@@ -409,8 +409,8 @@ export async function executeAgentBrainDiscovery(
         if (!lead || !lead.url) continue;
 
         try {
-          const profile = await brightDataGetPersonProfile(lead.url, 40_000);
-          if (profile) {
+          const profile = await brightDataGetPersonProfile(lead.url, 60_000);
+          if (profile && !profile.error && (profile.name || profile.position || profile.current_company_name)) {
             brightDataEnrichedCount++;
             lead.enrichedViaBrightData = true;
 

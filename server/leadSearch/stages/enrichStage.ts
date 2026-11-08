@@ -445,8 +445,9 @@ export async function executeEnrichStage(
       target: EnrichmentTarget,
       dossier: any,
     ) => {
-      if (!dossier) return false;
-      const hit = dossier;
+      if (!dossier || dossier.error) return false;
+      const hit = Array.isArray(dossier.data) ? dossier.data[0] : dossier;
+      if (!hit || hit.error) return false;
       const fullName =
         hit.name ||
         `${hit.first_name || ""} ${hit.last_name || ""}`.trim();
@@ -462,6 +463,10 @@ export async function executeEnrichStage(
         ? hit.experience
         : [];
       const aboutText = hit.about || "";
+
+      if (!fullName && !currentTitle && !currentCompany && experienceArray.length === 0 && !aboutText) {
+        return false;
+      }
 
       const evidenceBlock = [
         `LINK: ${target.url}`,
@@ -654,12 +659,13 @@ export async function executeEnrichStage(
             10_000,
           );
           if (hit) {
-            applyDatasetDossierToTarget(target, hit);
-            enriched = true;
-            recordProviderUsage("brightdata", 1);
-            logEvent(
-              `Round ${round}: Bright Data Pro Tier 2 dataset lookup enriched ${target.username || target.url}.`,
-            );
+            if (applyDatasetDossierToTarget(target, hit)) {
+              enriched = true;
+              recordProviderUsage("brightdata", 1);
+              logEvent(
+                `Round ${round}: Bright Data Pro Tier 2 dataset lookup enriched ${target.username || target.url}.`,
+              );
+            }
           }
         } catch (err) {
           console.warn(
@@ -679,14 +685,19 @@ export async function executeEnrichStage(
               120_000,
             );
             if (snapshotResult) {
-              applyDatasetDossierToTarget(target, snapshotResult);
-              enriched = true;
-              recordProviderUsage("brightdata", 1);
-              logEvent(
-                `Round ${round}: Bright Data Pro Tier 3 snapshot enriched ${target.username || target.url}.`,
-              );
+              if (applyDatasetDossierToTarget(target, snapshotResult)) {
+                enriched = true;
+                recordProviderUsage("brightdata", 1);
+                logEvent(
+                  `Round ${round}: Bright Data Pro Tier 3 snapshot enriched ${target.username || target.url}.`,
+                );
+              }
             }
           } catch (err) {
+            const classified = classifyBrightDataError(err);
+            if (classified.providerDisabled) {
+              brightDataProviderDisabled = true;
+            }
             console.warn(
               `[brightdata] Tier 3 snapshot failed for ${target.url}:`,
               err,

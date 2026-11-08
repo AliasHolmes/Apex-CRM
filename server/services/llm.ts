@@ -463,8 +463,11 @@ async function fetchWithRetry(
       timer = setTimeout(() => controller?.abort(), effectiveTimeoutMs);
 
       // Early headers stall detection: abort if initial response headers don't arrive within stall threshold
+      // For Byesu (non-streaming reasoning endpoint), headers do not arrive until full completion;
+      // allow Byesu its full dynamic timeout (75s - 115s/210s) without premature 45s header abort.
+      const isByesuProvider = _providerId === "byesu" || /byesu/i.test(url);
       const stallHeaderTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
-      if (stallHeaderTimeoutMs < effectiveTimeoutMs) {
+      if (!isByesuProvider && stallHeaderTimeoutMs < effectiveTimeoutMs) {
         headerStallTimer = setTimeout(() => {
           isHeaderStalled = true;
           controller?.abort(new Error(`LLM_STALL: No response headers received within ${Math.round(stallHeaderTimeoutMs / 1000)}s.`));
@@ -2006,7 +2009,7 @@ async function sendChatCompletion(
             resetStreamInactivity();
             return;
           }
-          if (parsed.model && !streamModel) streamModel = parsed.model;
+          if (parsed.model && parsed.model !== "keepalive" && !streamModel) streamModel = parsed.model;
           if (parsed.usage) streamUsage = parsed.usage;
           const choice = parsed.choices?.[0];
           if (choice) {

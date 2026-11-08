@@ -87,6 +87,10 @@ export type SiteSignals = {
   sourceUrl?: string;
   provenance?: DomainProvenance;
   rawExcerpt?: string;
+  companyName?: string;
+  legalName?: string;
+  founders?: string | string[];
+  socials?: string;
 };
 
 const clean = (val: unknown) => String(val || '').replace(/\s+/g, ' ').trim();
@@ -285,21 +289,155 @@ export function parseSiteSignalsFromEvidenceBlock(block?: string): SiteSignals {
   if (!block) return signals;
   const [structuredPart, rawExcerptPart] = block.split(/\r?\n---\r?\n/);
   const lines = (structuredPart || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  for (const line of lines) {
-    const locMatch = line.match(/^Location:\s*(.+)$/i);
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/^\[COMPANY SITE \([^)]+\):[^\]]+\]\s*/i, '').trim();
+    const locMatch = line.match(/(?:^|\s*\|\s*)Location:\s*([^|\r\n]+)/i);
     if (locMatch?.[1]) signals.location = locMatch[1].trim();
-    const teamMatch = line.match(/^Team:\s*(.+)$/i);
+
+    const teamMatch = line.match(/(?:^|\s*\|\s*)Team:\s*([^|\r\n]+)/i);
     if (teamMatch?.[1]) signals.headcount = teamMatch[1].trim();
-    const srvMatch = line.match(/^Services:\s*(.+)$/i);
-    if (srvMatch?.[1]) signals.services = srvMatch[1].trim();
+
+    const srvMatch = line.match(/(?:^|\s*\|\s*)Services:\s*(.+)$/i);
+    if (srvMatch?.[1]) {
+      const srvClean = srvMatch[1].split(/\s+\|\s+(?:\[site-probe\]|Location:|Team:|Founders:|Legal Name:)/i)[0];
+      signals.services = srvClean.trim();
+    }
+
+    const legalMatch = line.match(/(?:^|\s*\|\s*)(?:\[site-probe\]\s*)?Legal Name:\s*([^|\r\n]+)/i);
+    if (legalMatch?.[1]) signals.legalName = legalMatch[1].trim();
+
+    const foundersMatch = line.match(/(?:^|\s*\|\s*)(?:\[site-probe\]\s*)?Founders:\s*([^|\r\n]+)/i);
+    if (foundersMatch?.[1]) signals.founders = foundersMatch[1].trim();
   }
-  if (!signals.location && !signals.headcount && !signals.services && lines.length > 0) {
+  if (!signals.location && !signals.headcount && !signals.services && !signals.legalName && !signals.founders && lines.length > 0) {
     signals.services = lines.join(' | ').slice(0, 380);
   }
   if (rawExcerptPart && rawExcerptPart.trim()) {
     signals.rawExcerpt = rawExcerptPart.trim();
   }
   return signals;
+}
+
+/**
+ * Extracts structured Schema.org signals (Organization, Corporation, LocalBusiness)
+ * from HTML <script type="application/ld+json"> or parsed JSON-LD.
+ */
+export function extractSchemaOrgSignals(htmlOrJson: string): Partial<SiteSignals> {
+  if (!htmlOrJson || typeof htmlOrJson !== "string") return {};
+  const extracted: Partial<SiteSignals> = {};
+
+  const jsonBlocks: any[] = [];
+
+  // 1. Look for <script type="application/ld+json"> tags
+  const scriptRegex = /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = scriptRegex.exec(htmlOrJson)) !== null) {
+    const rawContent = match[1]?.trim();
+    if (rawContent) {
+      try {
+        jsonBlocks.push(JSON.parse(rawContent));
+      } catch {}
+    }
+  }
+
+  // 2. If no script tags found, see if the input itself is JSON
+  if (jsonBlocks.length === 0) {
+    const trimmed = htmlOrJson.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        jsonBlocks.push(JSON.parse(trimmed));
+      } catch {}
+    }
+  }
+
+  const orgTypes = new Set(["organization", "corporation", "localbusiness"]);
+
+  const processEntity = (entity: any) => {
+    if (!entity || typeof entity !== "object") return;
+    const rawType = entity["@type"];
+    const types = (Array.isArray(rawType) ? rawType : [rawType])
+      .filter((t) => typeof t === "string")
+      .map((t: string) => t.toLowerCase());
+
+    const isOrg = types.some((t) => orgTypes.has(t) || t.endsWith("organization") || t.endsWith("business"));
+    if (!isOrg) return;
+
+    if (entity.name && !extracted.companyName) {
+      extracted.companyName = clean(entity.name).slice(0, 100);
+    }
+    const rawLegal = typeof entity.legalName === "object" && entity.legalName !== null
+      ? entity.legalName["@value"] || entity.legalName.name || ""
+      : entity.legalName;
+    if (rawLegal && !extracted.legalName) {
+      extracted.legalName = clean(rawLegal).slice(0, 100);
+    } else if (entity.alternateName && !extracted.legalName) {
+      const rawAlt = typeof entity.alternateName === "object" && entity.alternateName !== null
+        ? entity.alternateName["@value"] || entity.alternateName.name || ""
+        : entity.alternateName;
+      if (rawAlt) extracted.legalName = clean(rawAlt).slice(0, 100);
+    }
+
+    if (entity.address && !extracted.location) {
+      if (typeof entity.address === "string") {
+        extracted.location = clean(entity.address).slice(0, 100);
+      } else if (typeof entity.address === "object") {
+        const parts = [
+          entity.address.streetAddress,
+          entity.address.addressLocality,
+          entity.address.addressRegion,
+          entity.address.addressCountry,
+        ].filter(Boolean);
+        if (parts.length > 0) {
+          extracted.location = clean(parts.join(", ")).slice(0, 100);
+        }
+      }
+    }
+
+    if (entity.numberOfEmployees && !extracted.headcount) {
+      const emp = typeof entity.numberOfEmployees === "object"
+        ? (entity.numberOfEmployees.value || entity.numberOfEmployees.name)
+        : entity.numberOfEmployees;
+      if (emp) extracted.headcount = clean(String(emp)).slice(0, 50);
+    }
+
+    const rawFounders = entity.founder || entity.founders;
+    if (rawFounders && !extracted.founders) {
+      const foundersList = Array.isArray(rawFounders) ? rawFounders : [rawFounders];
+      const names = foundersList
+        .map((f: any) => (typeof f === "object" ? f.name : String(f || "")))
+        .filter(Boolean);
+      if (names.length > 0) {
+        extracted.founders = clean(names.join(", ")).slice(0, 150);
+      }
+    }
+
+    if (entity.sameAs && !extracted.socials) {
+      const socialsList = Array.isArray(entity.sameAs) ? entity.sameAs : [entity.sameAs];
+      const validSocials = socialsList
+        .filter((s: any) => typeof s === "string" && /linkedin\.com|twitter\.com|x\.com|facebook\.com/i.test(s));
+      if (validSocials.length > 0) {
+        extracted.socials = validSocials.slice(0, 3).join(" | ");
+      }
+    }
+  };
+
+  const walk = (item: any) => {
+    if (!item || typeof item !== "object") return;
+    if (Array.isArray(item)) {
+      for (const el of item) walk(el);
+      return;
+    }
+    if (item["@graph"] && Array.isArray(item["@graph"])) {
+      for (const el of item["@graph"]) walk(el);
+    }
+    processEntity(item);
+  };
+
+  for (const block of jsonBlocks) {
+    walk(block);
+  }
+
+  return extracted;
 }
 
 export function extractSiteSignals(markdown: string): SiteSignals | null {
@@ -311,6 +449,15 @@ export function extractSiteSignals(markdown: string): SiteSignals | null {
   }
 
   const signals: SiteSignals = {};
+
+  // Extract Schema.org signals if JSON-LD exists in HTML/JSON content
+  const schemaSignals = extractSchemaOrgSignals(markdown);
+  if (schemaSignals.location && !signals.location) signals.location = schemaSignals.location;
+  if (schemaSignals.headcount && !signals.headcount) signals.headcount = schemaSignals.headcount;
+  if (schemaSignals.companyName) signals.companyName = schemaSignals.companyName;
+  if (schemaSignals.legalName) signals.legalName = schemaSignals.legalName;
+  if (schemaSignals.founders) signals.founders = schemaSignals.founders;
+  if (schemaSignals.socials) signals.socials = schemaSignals.socials;
 
   // 1. Location extraction
   const locationMatch = markdown.match(/\b(?:based|located|headquartered|offices?)\s+(?:in|at|across)\s+([A-Za-z0-9 ,.'-]{3,70})/i);
@@ -798,12 +945,26 @@ export function applySiteProbeSignals(
     const coName = String(lead.currentCompany || lead.profile?.currentCompany || lead.company || '').trim();
     if (coName) lead.companyAccount.name = coName;
   }
+  const legalNameStr = String(signals.legalName || '').trim();
+  if (legalNameStr && !lead.companyAccount.legalName) {
+    lead.companyAccount.legalName = legalNameStr;
+  }
+  const foundersStr = (
+    Array.isArray(signals.founders)
+      ? (signals.founders as string[]).join(', ')
+      : String(signals.founders || '')
+  ).trim();
+  if (foundersStr && !lead.companyAccount.founders) {
+    lead.companyAccount.founders = foundersStr;
+  }
 
   // 4. Append site evidence line with provenance tag
   const evidenceLines: string[] = [];
   if (signals.location) evidenceLines.push(`Location: ${signals.location}`);
   if (signals.headcount) evidenceLines.push(`Team: ${signals.headcount}`);
   if (signals.services) evidenceLines.push(`Services: ${signals.services}`);
+  if (legalNameStr) evidenceLines.push(`[site-probe] Legal Name: ${legalNameStr}`);
+  if (foundersStr) evidenceLines.push(`[site-probe] Founders: ${foundersStr}`);
 
   if (evidenceLines.length > 0 || signals.rawExcerpt) {
     const provenanceTag = signals.provenance === 'slug_guess'
@@ -819,10 +980,14 @@ export function applySiteProbeSignals(
     if (target.evidenceMeta) {
       target.evidenceMeta.evidenceBlock = [target.evidenceMeta.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
     }
-    if (lead.evidence) {
+    if (typeof lead.evidence === 'string') {
+      lead.evidence = [lead.evidence, siteEvidence].filter(Boolean).join('\n');
+    } else if (lead.evidence && typeof lead.evidence === 'object') {
       lead.evidence.evidenceBlock = [lead.evidence.evidenceBlock, siteEvidence].filter(Boolean).join('\n');
       lead.evidence.snippets = lead.evidence.snippets || [];
-      lead.evidence.snippets.push(siteEvidence);
+      if (!lead.evidence.snippets.includes(siteEvidence)) {
+        lead.evidence.snippets.push(siteEvidence);
+      }
     }
   }
 

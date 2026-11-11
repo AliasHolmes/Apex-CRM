@@ -2524,10 +2524,14 @@ export function applyContractDelta(
     }
   }
 
+  const hardReqs = mergedRequirements.filter(r => r.importance === 'hard').slice(0, 4);
+  const softReqs = mergedRequirements.filter(r => r.importance === 'soft').slice(0, 7);
+  const cappedRequirements = [...hardReqs, ...softReqs];
+
   const mergedContract: ProspectContract = {
     ...parentContract,
     brief: combinedBrief,
-    requirements: mergedRequirements,
+    requirements: cappedRequirements,
     exclusions: unique([
       ...(parentContract.exclusions || []),
       ...(deltaContract?.exclusions || []),

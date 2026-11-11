@@ -148,6 +148,8 @@ import {
   buildCheckpointEvidence,
   computeEarlyStopThreshold,
   clampEnvFloat,
+  clampEnvInt,
+  boundedNumber,
   qualifiedLeadKeys,
   shouldRunExtraIntentRound,
   requestContextFromOptions,
@@ -166,6 +168,7 @@ export interface DiscoveryRequest {
   savedSearchId?: string;
   parentSessionId?: string;
   deltaBrief?: string;
+  profileEnrichmentStage?: string;
 }
 
 export interface DiscoveryEventListener {
@@ -300,6 +303,7 @@ export type ExecuteDiscoveryOptions = {
   /** Phase 5: multi-turn follow-ups. When set, deltaBrief is applied on top of the parent contract. */
   parentSessionId?: string;
   deltaBrief?: string;
+  profileEnrichmentStage?: string;
   /**
    * Invoked once after the run releases its live buffers. The engine keeps them briefly so
    * SSE subscribers can drain logs/traces emitted after the last poll (normally the terminal
@@ -858,12 +862,16 @@ export async function executeDiscoverySession(
     }
     if (parentContract) {
       const effectiveDelta = options.deltaBrief || query;
-      contract = applyContractDelta(parentContract, effectiveDelta, searchSpec);
+      const unvalidated = applyContractDelta(parentContract, effectiveDelta, searchSpec);
+      const coherence = validateAndHealContractCoherence(unvalidated, query);
+      contract = coherence.contract;
       logEvent(
         `Applied multi-turn contract delta from parent session ${options.parentSessionId} (${contract.requirements.length} requirements).`,
       );
     } else if (options.deltaBrief) {
-      contract = applyContractDelta(contract, options.deltaBrief, searchSpec);
+      const unvalidated = applyContractDelta(contract, options.deltaBrief, searchSpec);
+      const coherence = validateAndHealContractCoherence(unvalidated, query);
+      contract = coherence.contract;
     }
     stats.scout.contract = contract;
 
@@ -928,20 +936,12 @@ export async function executeDiscoverySession(
       );
     }
 
-    const minScore = Math.min(
-      Math.max(Number(process.env.LEAD_SEARCH_MIN_SCORE || 6), 1),
-      10,
-    );
-    const ttlDays = Math.min(
-      Math.max(Number(process.env.BRIGHTDATA_CACHE_TTL_DAYS || 7), 1),
-      30,
-    );
-    const enrichmentCap = Math.min(
-      Math.max(
-        Number(process.env.BRIGHTDATA_ENRICHMENT_CAP || 0) ||
-          Math.max(targetLimit * 3, 20),
-        1,
-      ),
+    const minScore = clampEnvInt("LEAD_SEARCH_MIN_SCORE", 6, 1, 10);
+    const ttlDays = clampEnvInt("BRIGHTDATA_CACHE_TTL_DAYS", 7, 1, 30);
+    const enrichmentCap = clampEnvInt(
+      "BRIGHTDATA_ENRICHMENT_CAP",
+      Math.max(targetLimit * 3, 20),
+      1,
       500,
     );
     // Default 15-minute safety timeout for synchronous sessions; set
@@ -949,7 +949,7 @@ export async function executeDiscoverySession(
     const safetyTimeoutMs =
       process.env.LEAD_SEARCH_TIMEOUT_MS !== undefined &&
       process.env.LEAD_SEARCH_TIMEOUT_MS !== ""
-        ? Number(process.env.LEAD_SEARCH_TIMEOUT_MS) || 0
+        ? boundedNumber(process.env.LEAD_SEARCH_TIMEOUT_MS, 15 * 60 * 1000, 0, 86400000)
         : 15 * 60 * 1000;
 
     const discoveryProviderMode = resolveDiscoveryProviderMode({
@@ -959,58 +959,43 @@ export async function executeDiscoverySession(
     const brightDataSearchMode = resolveBrightDataSearchMode({
       discoveryMode: discoveryProviderMode,
     });
-    const configuredBrightDataSearchRetryMax = Number(
-      process.env.BRIGHTDATA_SEARCH_RETRY_MAX ?? 1,
-    );
-    const brightDataSearchRetryMax = Number.isFinite(
-      configuredBrightDataSearchRetryMax,
-    )
-      ? Math.min(Math.max(Math.floor(configuredBrightDataSearchRetryMax), 0), 2)
-      : 1;
-    const configuredBrightDataSearchRetryDelay = Number(
-      process.env.BRIGHTDATA_SEARCH_RETRY_BASE_DELAY_MS ?? 750,
-    );
-    const brightDataSearchRetryBaseDelayMs = Number.isFinite(
-      configuredBrightDataSearchRetryDelay,
-    )
-      ? Math.min(
-          Math.max(Math.floor(configuredBrightDataSearchRetryDelay), 0),
-          10_000,
-        )
-      : 750;
-    const profileConcurrency = Math.max(
-      Number(process.env.BRIGHTDATA_PROFILE_CONCURRENCY || 1),
-      1,
-    );
-    const profileMaxPerSearch = Math.max(
-      Number(process.env.BRIGHTDATA_PROFILE_MAX_PER_SEARCH || 0) ||
-        Math.max(targetLimit * 2, 10),
+    const brightDataSearchRetryMax = clampEnvInt("BRIGHTDATA_SEARCH_RETRY_MAX", 1, 0, 2);
+    const brightDataSearchRetryBaseDelayMs = clampEnvInt(
+      "BRIGHTDATA_SEARCH_RETRY_BASE_DELAY_MS",
+      750,
       0,
+      10_000,
+    );
+    const profileConcurrency = clampEnvInt("BRIGHTDATA_PROFILE_CONCURRENCY", 1, 1, 10);
+    const profileMaxPerSearch = clampEnvInt(
+      "BRIGHTDATA_PROFILE_MAX_PER_SEARCH",
+      Math.max(targetLimit * 2, 10),
+      0,
+      1000,
     );
     const companyIntentEnabled =
       process.env.BRIGHTDATA_COMPANY_INTENT_ENABLED === "true";
-    const companyIntentMinScore = Math.min(
-      Math.max(Number(process.env.BRIGHTDATA_COMPANY_INTENT_MIN_SCORE || 8), 1),
-      10,
-    );
-    const companyIntentMaxPerSearch = Math.max(
-      Number(process.env.BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH || 0),
+    const companyIntentMinScore = clampEnvInt("BRIGHTDATA_COMPANY_INTENT_MIN_SCORE", 8, 1, 10);
+    const companyIntentMaxPerSearch = clampEnvInt(
+      "BRIGHTDATA_COMPANY_INTENT_MAX_PER_SEARCH",
       0,
+      0,
+      1000,
     );
-    const companyIntentConcurrency = Math.max(
-      Number(
-        process.env.BRIGHTDATA_COMPANY_INTENT_CONCURRENCY ||
-          process.env.COMPANY_INTENT_CONCURRENCY ||
-          3,
-      ),
+    const companyIntentConcurrency = clampEnvInt(
+      "BRIGHTDATA_COMPANY_INTENT_CONCURRENCY",
+      clampEnvInt("COMPANY_INTENT_CONCURRENCY", 3, 1, 10),
       1,
+      10,
     );
     const linkedinPostIntentEnabled =
       String(process.env.LINKEDIN_POST_INTENT_ENABLED || "").toLowerCase() !==
       "false";
     // Default to post_filter profile enrichment (search snippet grounding + public company site probing)
     const profileEnrichmentStage =
-      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE || "post_filter";
+      options.profileEnrichmentStage ||
+      process.env.BRIGHTDATA_PROFILE_ENRICHMENT_STAGE ||
+      "post_filter";
 
     const freeTierBudget = new ScoutFreeTierBudget();
     const tavilyCapabilities = tavilyFreeTierCapabilities();
@@ -3343,6 +3328,7 @@ export class DiscoverySessionEngine {
         savedSearchId: request.savedSearchId,
         parentSessionId: request.parentSessionId,
         deltaBrief: request.deltaBrief,
+        profileEnrichmentStage: request.profileEnrichmentStage,
         listener,
         retainSessionBuffers: (buffers) => this.retainSessionBuffers(buffers),
       });

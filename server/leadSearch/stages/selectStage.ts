@@ -9,7 +9,7 @@ import {
   centroidScopeKey,
   buildScopeKey,
 } from '../adaptiveScheduler.js';
-import { effectiveScore as sharedEffectiveScore } from '../sessionHelpers.js';
+import { effectiveScore as sharedEffectiveScore, boundedNumber } from '../sessionHelpers.js';
 import type { SessionContext, LeadQueryRunTracker } from '../pipelineTypes.js';
 import type { ProspectContract } from '../prospectContract.js';
 import type { SearchSpec } from '../searchSpec.js';
@@ -130,17 +130,14 @@ export async function executeSelectStage(
   if (linkedinPostIntentEnabled && shouldRunIntent && intentPool.length > 0) {
     logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${intentPool.length} finalist candidates.`);
     const qualifiedMap = new Map<string, any>(intentPool.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
-    const postIntentConcurrency = Math.max(
-      1,
-      Math.min(8, Number(process.env.LINKEDIN_POST_INTENT_CONCURRENCY || 4)),
-    );
+    const postIntentConcurrency = boundedNumber(process.env.LINKEDIN_POST_INTENT_CONCURRENCY, 4, 1, 8);
     const postIntentStats = await runLinkedInPostIntentEnrichment({
       qualifiedLeads: qualifiedMap,
       contract,
       brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
-      maxLeads: Math.min(Number(process.env.LINKEDIN_POST_INTENT_MAX_LEADS || 20), intentPool.length),
+      maxLeads: Math.min(boundedNumber(process.env.LINKEDIN_POST_INTENT_MAX_LEADS, 20, 1, 200), intentPool.length),
       concurrency: postIntentConcurrency, // concurrent SERP retrieval; Phase B LLM batching remains sequential
       ttlDays,
       sessionAbortSignal: state.abortController.signal,

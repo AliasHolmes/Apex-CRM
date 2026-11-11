@@ -73,6 +73,7 @@ import {
   getProviderActiveSlots,
   getProviderConcurrencyLimit,
   getTavilyKeyStatus,
+  truncateProviderError,
 } from "../services/llm.js";
 import { buildOutboundPrompt } from "../services/outboundPrompt.js";
 import {
@@ -134,6 +135,7 @@ const paidRouteLimit = (routeKey: string, maxPerMinute = 120) => {
       const retryAfter = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
       res.setHeader("Retry-After", String(retryAfter));
       return res.status(429).json({
+        apiVersion: 1,
         error: `Rate limit exceeded for ${routeKey} (${limit}/min). Retry in ${retryAfter}s.`,
         retryAfter,
       });
@@ -314,10 +316,20 @@ router.get("/leads", (req, res): any => {
         (db.prepare("SELECT MAX(updated_at) as m FROM leads").get() as any)?.m ||
         deltaSince ||
         "";
+      const validPayloads: string[] = [];
+      for (const r of rows) {
+        const payloadStr = typeof r.payload === "string" ? r.payload.trim() : "";
+        if (payloadStr.startsWith("{") && payloadStr.endsWith("}")) {
+          validPayloads.push(payloadStr);
+        } else if (payloadStr) {
+          try {
+            validPayloads.push(JSON.stringify(JSON.parse(payloadStr)));
+          } catch {}
+        }
+      }
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       return res.send(
-        `{${deltaSince ? '"delta":true,' : ""}"apiVersion":1,"leads":[${rows
-          .map((r) => r.payload)
+        `{${deltaSince ? '"delta":true,' : ""}"apiVersion":1,"leads":[${validPayloads
           .join(",")}],"total":${total},"latestUpdatedAt":${JSON.stringify(
           latestUpdatedAt,
         )},"stats":${JSON.stringify(stats)},"initialized":${initialized}}`,
@@ -471,15 +483,15 @@ router.patch("/leads/:id", (req, res): any => {
     if (!isSafeLeadId(req.params.id)) {
       return res.status(400).json({ error: "Invalid lead id." });
     }
+    const previousLead = readStoredLeadById(req.params.id);
+    const previousStage = previousLead?.stage;
     const lead = { ...(req.body?.lead || {}), id: req.params.id };
     if (!lead.createdAt) {
-      lead.createdAt = new Date().toISOString();
+      lead.createdAt = previousLead?.createdAt || new Date().toISOString();
     }
     if (!isPersistableLead(lead)) {
       return res.status(400).json({ error: "Expected a valid lead object." });
     }
-    const previousLead = readStoredLeadById(req.params.id);
-    const previousStage = previousLead?.stage;
 
     const allowCreate = req.body?.allowCreate === true;
     // allowCreate only relaxes the "must already exist" rule. An existing lead always needs
@@ -841,6 +853,9 @@ router.post("/leads/:id/merge", (req, res): any => {
       throw innerError;
     }
   } catch (error: any) {
+    if (error instanceof LeadNotFoundError) {
+      return res.status(404).json({ apiVersion: 1, error: error.message, code: "LEAD_NOT_FOUND" });
+    }
     console.error("Failed to merge leads:", error);
     res.status(500).json({ error: "Lead merge failed." });
   }
@@ -867,6 +882,7 @@ router.delete("/leads", (req, res): any => {
         deleteLeadInExistingTransaction(db, id);
       }
       db.exec("COMMIT");
+      invalidateLeadsStatsCache();
     } catch (err) {
       try {
         db.exec("ROLLBACK");
@@ -1013,7 +1029,7 @@ router.get("/key-rotation-status", (_req, res) => {
   });
 });
 
-router.get("/llm-health", async (req, res) => {
+router.get("/llm-health", paidRouteLimit("llm-health", 10), async (req, res) => {
   const configuredProviders = getLLMProviderSummaries();
   // Slot utilization makes provider saturation observable: a session whose
   // queue sums grow is starved of Byesu slots, not throttled by the provider.
@@ -1101,7 +1117,7 @@ router.get("/llm-health", async (req, res) => {
           healthSummaries,
           ok: false,
           cached: false,
-          error: message,
+          error: truncateProviderError(message),
         });
   }
 });
@@ -1492,6 +1508,12 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
     if (unsubscribed) return;
     unsubscribed = true;
     writeBuffer.length = 0;
+    (req.socket || res.socket)?.off("error", suppressDisconnectError);
+    req.off("error", suppressDisconnectError);
+    res.off("error", suppressDisconnectError);
+    res.off("drain", flushBuffer);
+    req.off("close", doUnsubscribe);
+    res.off("close", doUnsubscribe);
     if (unsubscribe) unsubscribe();
   };
 
@@ -1557,8 +1579,9 @@ router.delete("/mining-sessions/resumable", (req, res): any => {
         )
       : [];
     if (sessionIds.length > 0) {
-      const activeIds = sessionIds.filter((id: string) =>
-        discoveryEngine.isActive(id),
+      const activeIds = sessionIds.filter(
+        (id: string) =>
+          discoveryEngine.isActive(id) || activeAgentBrainSessions.has(id),
       );
       if (activeIds.length > 0) {
         return res.status(409).json({
@@ -1629,7 +1652,7 @@ router.delete("/mining-sessions/:sessionId", (req, res): any => {
   if (!isSafeSessionId(sessionId))
     return res.status(400).json({ error: "Invalid sessionId." });
 
-  if (discoveryEngine.isActive(sessionId)) {
+  if (discoveryEngine.isActive(sessionId) || activeAgentBrainSessions.has(sessionId)) {
     return res.status(409).json({
       error: `Cannot delete active mining session: ${sessionId}. Cancel it first before deleting.`,
       sessionId,
@@ -1652,12 +1675,19 @@ router.post("/mining-sessions/:sessionId/cancel", (req, res): any => {
   const { sessionId } = req.params;
   if (!isSafeSessionId(sessionId))
     return res.status(400).json({ error: "Invalid sessionId." });
-  if (!discoveryEngine.isActive(sessionId))
+  const isEngineActive = discoveryEngine.isActive(sessionId);
+  const isAgentBrainActive = activeAgentBrainSessions.has(sessionId);
+  if (!isEngineActive && !isAgentBrainActive)
     return res
       .status(404)
       .json({ error: "Mining session is not active.", sessionId });
 
-  discoveryEngine.cancel(sessionId);
+  if (isEngineActive) {
+    discoveryEngine.cancel(sessionId);
+  }
+  if (isAgentBrainActive) {
+    activeAgentBrainSessions.delete(sessionId);
+  }
   const cancellationRequestedAt = new Date().toISOString();
   discoveryEngine.addLog(
     sessionId,
@@ -1681,6 +1711,7 @@ router.post("/mining-sessions/:sessionId/cancel", (req, res): any => {
 
 router.post(
   "/mining-sessions/:sessionId/resume",
+  paidRouteLimit("resume-session", 20),
   async (req, res): Promise<any> => {
     const { sessionId } = req.params;
     if (!isSafeSessionId(sessionId))
@@ -1712,9 +1743,12 @@ router.post(
 
     const maxConcurrent = resolveMaxConcurrentSessions();
     if (countActiveDiscoverySessions() >= maxConcurrent) {
-      return res
-        .status(429)
-        .json({ error: "Maximum concurrent mining sessions reached." });
+      res.setHeader("Retry-After", "30");
+      return res.status(503).json({
+        apiVersion: 1,
+        error: "Maximum concurrent mining sessions reached. Try again in 30 seconds.",
+        retryAfter: 30,
+      });
     }
 
     const checkpoint = readMiningSessionCheckpoint(sessionId);
@@ -1739,12 +1773,12 @@ router.post(
       });
 
       // The engine's atomic claim decides; a lost race returns 409
-      if (discoveryEngine.isActive(sessionId)) {
+      if (discoveryEngine.isActive(sessionId) || activeAgentBrainSessions.has(sessionId)) {
         return res.status(202).json({
           apiVersion: 1,
           status: "running",
           sessionId,
-          streamUrl: `/api/mining-sessions/${sessionId}/stream`,
+          streamUrl: `${req.baseUrl || "/api"}/mining-sessions/${sessionId}/stream`,
           resumedFromRound: checkpoint.round,
           message: `Resuming mining session from round ${checkpoint.round}.`,
         });
@@ -1855,10 +1889,14 @@ router.get("/saved-searches", (req, res): any => {
 
 router.post("/saved-searches", (req, res): any => {
   try {
+    const rawId = req.body?.id;
+    if (rawId !== undefined && rawId !== null && (typeof rawId !== "string" || !isSafeLeadId(rawId))) {
+      return res.status(400).json({ apiVersion: 1, error: "Invalid saved search ID format." });
+    }
     const query = String(req.body?.query || "").trim();
     const spec = normalizeSearchSpec(req.body?.spec, query);
     const record = upsertSavedSearch({
-      id: typeof req.body?.id === "string" ? req.body.id : undefined,
+      id: typeof rawId === "string" ? rawId : undefined,
       name: String(req.body?.name || "").trim(),
       query,
       spec,
@@ -1867,7 +1905,8 @@ router.post("/saved-searches", (req, res): any => {
     });
     res.status(201).json({ apiVersion: 1, search: record });
   } catch (error: any) {
-    res.status(400).json({ error: error.message || "Could not save search." });
+    console.error("Could not save search:", error);
+    res.status(500).json({ apiVersion: 1, error: "Could not save search." });
   }
 });
 
@@ -1974,11 +2013,20 @@ router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
       return res.status(400).json({ error: "Invalid sessionId." });
     }
     const tokenStats = readMiningSessionTokenStats(sessionId);
-    const langfuseHost =
+    let langfuseHost =
       process.env.LANGFUSE_HOST ||
       process.env.LANGFUSE_BASE_URL ||
       process.env.LANGFUSE_BASEURL ||
       (process.env.LANGFUSE_PUBLIC_KEY ? "https://cloud.langfuse.com" : null);
+
+    if (langfuseHost) {
+      try {
+        const parsedUrl = new URL(langfuseHost);
+        parsedUrl.username = "";
+        parsedUrl.password = "";
+        langfuseHost = parsedUrl.toString().replace(/\/$/, "");
+      } catch {}
+    }
 
     const projectId = process.env.LANGFUSE_PROJECT_ID?.trim() || null;
     const langfuseDeepLink = langfuseHost && projectId
@@ -2210,6 +2258,10 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
           typeof req.body?.deltaBrief === "string"
             ? req.body.deltaBrief.trim() || undefined
             : undefined,
+        profileEnrichmentStage:
+          typeof req.body?.profileEnrichmentStage === "string"
+            ? req.body.profileEnrichmentStage.trim() || undefined
+            : undefined,
       })
       .catch((err) => {
         if (err instanceof SessionAlreadyActiveError) return;
@@ -2223,7 +2275,7 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         apiVersion: 1,
         status: "running",
         sessionId: targetSessionId,
-        streamUrl: `/api/mining-sessions/${targetSessionId}/stream`,
+        streamUrl: `${req.baseUrl || "/api"}/mining-sessions/${targetSessionId}/stream`,
         message: "Discovery session accepted and executing in background.",
       });
     }
@@ -2437,7 +2489,7 @@ router.post("/outreach-drafts", (req, res): any => {
       medium: String(medium || "email").trim(),
       sequenceStep: String(sequenceStep || "Step 1").trim(),
       wordCount: Number(wordCount || 0),
-      body: String(body).trim(),
+      body: String(body).trim().slice(0, 50_000),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -2491,6 +2543,12 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
       return res
         .status(400)
         .json({ error: "Profile data is required for personalization." });
+    }
+
+    if (leadId !== undefined && leadId !== null && leadId !== "") {
+      if (typeof leadId !== "string" || !isSafeLeadId(leadId)) {
+        return res.status(400).json({ error: "Invalid leadId format." });
+      }
     }
 
     if (!hasOpenAIKey()) {

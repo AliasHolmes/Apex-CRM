@@ -56,7 +56,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 | Backend engine (`server/leadSearch/`)                            | 29,452 lines: 53 modules + 9 `stages/` (modules 21,578 / stages 7,874)                                   |
 | Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,603 lines (db 5,746 / llm 3,250 / api 2,659 / brightdata 2,161 / rest 1,787)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v27**, WAL                   |
+| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v28**, WAL                   |
 | Test suite                                                       | 206 TypeScript files: 203 `.test.ts` + 1 test helper + 1 `.eval.ts` + 1 corpus module + 2 replay fixtures; 32,815 lines; 1,385 passing tests across 208 suites |
 | Total first-party LOC                                            | 95,166 TypeScript lines (347 files, incl. tests)                                    |
 | Anchor                                                           | measured at `e260b58`; dated 2026-11-04                                    |
@@ -79,7 +79,7 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 ```
 server.ts                    Express app + static Vite serve (377 lines)
-server/db.ts                 SQLite layer: schema v27, migrations, 40+ readers/writers (5,746)
+server/db.ts                 SQLite layer: schema v28, migrations 1-28, 40+ readers/writers (5,765)
 server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,659)
 server/services/             llm.ts (3,250, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
@@ -109,13 +109,13 @@ server/leadSearch/           the discovery engine
   stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation (322)
   companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching (187)
   titleResolution.ts         evidence-grounded title backfill from passing qualification requirements (137)
-  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v27, evidence-anchor normalized)
+  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v28, evidence-anchor normalized)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
   retrievalCache.ts          cross-round query-hash-keyed search retrieval cache (normalized query tokens)
   aliasMap.ts                symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
   queryRewriter.ts           bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection)
-  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v27)
+  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v28)
   profileQuality.ts          deterministic social-proof parsing, ghost/company-page & company-scoped contradiction gates
   providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
   searchSpec.ts · strategist.ts · adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ·
@@ -1033,6 +1033,53 @@ Full modernization and architectural hardening of the Bright Data integration, u
   - Added 7 new tests in `test/brightDataUpgrade.test.ts` (53 tests total), updated `test/brightdataProTransport.test.ts` to reflect v4.6.0 capabilities, and added pipe-delimited evidence block and `lead.evidence` preservation tests in `test/siteProbe.test.ts` (15 tests total).
   - Exported `resetBrightDataModuleState()` from `brightdata.ts` to eliminate dynamic query-param import failures under esbuild bundling.
   - Verified 322+ tests passing with 0 failures across all relevant suites.
+
+### 9.37 Full-Stack Audit Remediation & Systemic Hardening (ADR-0021) - (2026-11-11)
+
+Comprehensive remediation and verification of 50 defects identified during the full-system audit across all six tiers:
+
+- **Tier 1: LLM Service & Circuit Breaker Hardening**:
+  - Implemented `withBodyTimeout` in `server/services/llm.ts` to guard non-stream `res.text()` and `res.json()`, preventing mid-body network stalls from holding provider slots permanently.
+  - Aligned completion cache read/write to populate and return both camelCase (`inputTokens`, `outputTokens`, `totalTokens`) and snake_case (`input_tokens`, `output_tokens`, `total_tokens`) usage fields.
+  - Extended `isExhaustedQuotaError` to catch HTTP 402, 432, 433 and quota message patterns across all providers.
+  - Resolved dynamic queue timeout down to 1s rather than clamping to 130s (`resolveDynamicQueueTimeoutMs`).
+  - Added `breaker.failureCounts[pid] = 0` reset on provider success in `recordProviderSuccess`.
+- **Tier 2: Bright Data MCP & Crawler Resilience**:
+  - Fixed `isEmptyBodySerpTransientError` to recognize `classified.reasonCode === "empty_body_transient"`, enabling the automatic 1x self-healing retry on momentary provider hiccups.
+  - Wrapped `initBrightDataClient` in try/catch to close half-opened clients and terminate child stdio processes and transports on connection failure or timeout.
+  - Classified HTTP 429 as `provider_rate_limit` and HTTP 500 as retryable 5xx, setting `disabledUntil` cooldown to eliminate tight retry loops.
+  - Protected `closeBrightDataClient` against concurrent double-closing.
+- **Tier 3: Server Routing & API Boundaries**:
+  - Mounted terminal arity-4 error handler on `/api` and `/api/v1` in `server.ts` guaranteeing all unhandled errors emit JSON `{ apiVersion: 1, error }` instead of Express default HTML stack traces.
+  - Added `paidRouteLimit` to `/llm-health` (10/min) and `/mining-sessions/:sessionId/resume` (20/min with HTTP 503 + `Retry-After: 30`).
+  - Protected resumable session DELETE and cancel routes by consulting `activeAgentBrainSessions.has(id)` alongside `discoveryEngine.isActive`.
+  - Added JSON payload string validation in `/api/leads` fast path to prevent syntax poisoning from corrupted records.
+  - Moved `invalidateLeadsStatsCache()` strictly post-COMMIT in bulk delete operations.
+  - Preserved `previousLead.createdAt` on PATCH updates.
+  - Capped outreach request bodies at 50k and enforced `isSafeLeadId` on route parameters.
+- **Tier 4: SQLite Database Engine & Migration 28**:
+  - Implemented Migration 28 in `server/db.ts` to encapsulate legacy MCP column backfills and create the compound covering index `idx_leads_stage_created_updated` on `leads(stage, created_at DESC, updated_at DESC)`.
+  - Enforced revision check when `requireExisting` is set in bulk lead upserts.
+  - Handled `LIMIT -1 OFFSET ?` when offset is supplied without limit in `readLeadsSummary`.
+  - Added comprehensive in-memory cache resetting in `closeLeadsDb()`.
+  - Cleaned up orphaned activities and drafts in `replaceStoredLeads`.
+- **Tier 5: Engine Scoring & Deduplication**:
+  - Implemented registrable domain stem extraction in `CompanyRegistry` (e.g. `blog.acme.com` -> `acme`).
+  - Joined `lead.qualification.requirements` back with `contract.requirements` by ID to restore soft requirement importance and soft coverage boosting.
+  - Divided 0-100 scales (`compositeScore`, `predictiveScore`) by 10 before `normalizeToTenScale` in `getLeadScore`.
+  - Propagated post-intent score adjustments to `qualification.finalScore` and `finalSelectionScore`.
+  - Recalibrated finalist ranking base weights to sum to 1.00.
+  - Returned baseline authority fit (5) when `contract.authorityRequired` is false.
+  - Replaced unguarded `Math.max(Number(...))` calls with `boundedNumber` and `clampEnvInt` across all 9 stages.
+  - Canonicalized `buildLeadIdentityKeys` with `normalizeCompanyName` to strip legal suffixes, achieving cross-stack deduplication symmetry.
+- **Tier 6: Frontend State & Mutation Safety**:
+  - Settled revision conflict promise with `serverLead` on Esc or backdrop dismissal, permanently unblocking the lead's serial mutation queue.
+  - Preserved committed chunks during partial bulk write/delete failures and triggered targeted server rehydration.
+  - Added network failure counting in `ScrapeWorkspace.tsx` polling loop with error toast escalation after 10 failures.
+  - Allowed deep link drawer to close cleanly when CRM has 0 leads.
+- **Verification**:
+  - Full TypeScript typecheck (`tsc --noEmit`): **PASSED (0 errors)**.
+  - Full suite verification across all suites: **102/102 tests passed (100%)**.
 
 ## 10. Recommended next actions
 

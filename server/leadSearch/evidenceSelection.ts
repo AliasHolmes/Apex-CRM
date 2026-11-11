@@ -194,7 +194,10 @@ export function selectEvidenceForFinalist(
     : [];
   const signalEvidenceText = signalPieces.map(p => clean(p, 600)).join('\n').slice(0, 600);
 
-  const sentences = toSentences(allPieces);
+  const nonSignalPieces = signalPieces.length > 0
+    ? allPieces.filter(piece => !piece.includes('[OPEN-WEB SIGNAL:'))
+    : allPieces;
+  const sentences = toSentences(nonSignalPieces);
   const scored = sentences.map((text, index) => {
     const matchedRequirementIds = contract.requirements
       .filter(requirement => matchingTerms(text, requirement).length > 0)
@@ -255,7 +258,7 @@ export function selectEvidenceForFinalist(
   }
 
   if (!evidenceLines.length) {
-    const fallback = allPieces[0];
+    const fallback = nonSignalPieces[0] || allPieces[0];
     if (fallback && remaining >= 60) evidenceLines.push(crop(fallback, Math.min(remaining, 1000)));
   }
 

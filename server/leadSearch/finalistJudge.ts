@@ -1111,7 +1111,7 @@ export function partitionCandidatesByStrictEvidence(
             5,
           5,
         )
-      : 0;
+      : 5;
     const evidenceConfidence = normalizeScoreTo10(
       candidate.lead.scout?.evidenceCoverageScore ??
         candidate.lead.scoreBreakdown?.evidenceQualityScore ??
@@ -1557,7 +1557,7 @@ export function triPartitionCandidatesByEvidence(
             5,
           5,
         )
-      : 0;
+      : 5;
     const evidenceConfidence = normalizeScoreTo10(
       lead.scout?.evidenceCoverageScore ??
         lead.scoreBreakdown?.evidenceQualityScore ??

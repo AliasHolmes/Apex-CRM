@@ -57,7 +57,7 @@ test('insertSearchLog stores telemetry fields and culls by SEARCH_LOG_RETENTION_
   process.env.APEX_DB_PATH = path.join(tmpDir, 'apex.sqlite');
   process.env.SEARCH_LOG_RETENTION_LIMIT = '10';
 
-  const dbModule = await import(`../server/db.ts?telemetry=${Date.now()}`);
+  const dbModule = await import('../server/db.js');
   for (let i = 0; i < 12; i++) {
     dbModule.insertSearchLog({
       id: `session-${i}`,

@@ -345,7 +345,7 @@ function accumulateProviderEvent(
   const item =
     summary[event.provider] ||
     (summary[event.provider] = blankProviderSummary()[event.provider]);
-  if (event.status === "started") return;
+  if (event.status === "started" || event.status === "info") return;
   item.calls++;
   if (event.status === "success") item.successes++;
   else if (event.status === "error") item.failures++;

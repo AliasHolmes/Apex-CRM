@@ -84,12 +84,27 @@ export type CompanyEntity = {
 export class CompanyRegistry {
   private static extractDomainStem(urlOrDomain: string): string | undefined {
     if (!urlOrDomain) return undefined;
-    const clean = urlOrDomain.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
+    const clean = urlOrDomain
+      .replace(/^https?:\/\//i, '')
+      .replace(/^www\./i, '')
+      .split('/')[0]
+      .split('?')[0]
+      .split(':')[0]
+      .toLowerCase();
     const parts = clean.split('.');
-    if (parts.length >= 2) {
-      return parts[0].toLowerCase();
+    if (parts.length < 2) return undefined;
+
+    // Check for common second-level domains like .co.uk, .com.au, .com.br
+    const isMultiPartTld =
+      parts.length >= 3 &&
+      /^(co|com|org|net|gov|edu|ac)\.[a-z]{2}$/.test(
+        `${parts[parts.length - 2]}.${parts[parts.length - 1]}`,
+      );
+    const stemIndex = isMultiPartTld ? parts.length - 3 : parts.length - 2;
+    if (stemIndex >= 0 && parts[stemIndex]) {
+      return parts[stemIndex];
     }
-    return undefined;
+    return parts[0];
   }
 
   static resolve(nameOrUrl: string): CompanyEntity {

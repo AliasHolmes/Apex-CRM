@@ -213,7 +213,7 @@ export const BRIGHTDATA_SCRAPE_BATCH_MAX_URLS = boundedNumber(
 );
 const baseTimeoutMs = () => baseTimeoutSeconds() * 1000;
 const failureCooldownMs = () =>
-  Number(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS || 5_000);
+  boundedNumber(process.env.BRIGHTDATA_FAILURE_COOLDOWN_MS, 5_000, 1_000, 300_000);
 
 export function normalizeBrightDataUrl(url: string) {
   const value = String(url || "").trim();
@@ -301,9 +301,15 @@ const cooldownMsForFailure = () => {
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
-const statusFromMessage = (message: string) => {
+const statusFromMessage = (message: string, error?: unknown) => {
+  if (error && typeof error === "object") {
+    const rawStatus = (error as any).status ?? (error as any).statusCode ?? (error as any).code;
+    if (typeof rawStatus === "number" && rawStatus >= 400 && rawStatus <= 599) {
+      return rawStatus;
+    }
+  }
   const match =
-    message.match(/\b(?:HTTP|status)\s*:?\s*(\d{3})\b/i) ||
+    message.match(/\b(?:HTTP|status|code)\s*:?\s*(\d{3})\b/i) ||
     message.match(/\b(4\d{2}|5\d{2})\b/);
   return match ? Number(match[1]) : undefined;
 };
@@ -312,7 +318,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   if (error instanceof BrightDataError) return error;
   const message = errorMessage(error);
   const lower = message.toLowerCase();
-  const statusCode = statusFromMessage(message);
+  const statusCode = statusFromMessage(message, error);
 
   if (
     statusCode === 401 ||
@@ -398,6 +404,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     });
   }
   if (
+    statusCode === 500 ||
     statusCode === 502 ||
     statusCode === 503 ||
     statusCode === 504 ||
@@ -422,7 +429,8 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     });
   }
   if (
-    /your system is sending too many|sending too many of this type|contact your account manager|exceeded the allowed rate limits|reduce requests rate|site rate limited|call limit reached|rate_limit is/.test(
+    statusCode === 429 ||
+    /too many requests|rate limit|rate_limit|your system is sending too many|sending too many of this type|contact your account manager|exceeded the allowed rate limits|reduce requests rate|site rate limited|call limit reached|rate_limit is/.test(
       lower,
     )
   ) {
@@ -531,7 +539,8 @@ const EMPTY_BODY_SERP_PATTERN =
 export function isEmptyBodySerpTransientError(error: unknown): boolean {
   const classified = classifyBrightDataError(error);
   return (
-    classified.reasonCode === "target_transient" &&
+    (classified.reasonCode === "target_transient" ||
+      classified.reasonCode === "empty_body_transient") &&
     EMPTY_BODY_SERP_PATTERN.test(classified.message) &&
     !/response snippet/i.test(classified.message)
   );
@@ -690,14 +699,25 @@ const markProviderFailure = (
   }
 };
 
-const markToolFailure = (
+export const markToolFailure = (
   message: string,
   classified = classifyBrightDataError(message),
 ) => {
   lastError = message;
   lastReasonCode = classified.reasonCode;
   lastRetryable = classified.retryable;
-  if (classified.retryable) healthOverride = "degraded";
+  if (classified.reasonCode === "provider_rate_limit") {
+    const cooldownMs = classified.rateLimitPerMinute
+      ? Math.max(15_000, Math.ceil(60_000 / classified.rateLimitPerMinute))
+      : cooldownMsForFailure();
+    disabledUntil = Math.max(disabledUntil, Date.now() + cooldownMs);
+    disabledReason = `rate_limited: ${message}`;
+    healthOverride = "degraded";
+    markActiveTokenFailure(classified);
+    console.warn(`[brightdata] Rate limited; cooling down for ${Math.round(cooldownMs / 1000)}s: ${message}`);
+  } else if (classified.retryable) {
+    healthOverride = "degraded";
+  }
 };
 
 const markProviderSuccess = () => {
@@ -847,7 +867,7 @@ export async function probeBrightDataRecovery(): Promise<boolean> {
       brightDataSearch("brightdata recovery probe", { timeoutMs: 8_000 }),
       timeoutPromise,
     ]);
-    if (Array.isArray(results)) {
+    if (Array.isArray(results) && results.length > 0) {
       markProviderSuccess();
       return true;
     }
@@ -887,12 +907,12 @@ export function getBrightDataStatus() {
     transport: activeTransport,
     activeTokenFingerprint: activeApiTokenFingerprint,
     keyPool,
-    disabledReason,
+    disabledReason: disabledReason ? disabledReason.slice(0, 300) : "",
     disabledUntil,
     cooldownMsRemaining,
     inFlight,
     consecutiveFailures,
-    lastError,
+    lastError: lastError ? lastError.slice(0, 300) : "",
     lastReasonCode,
     retryable: lastRetryable,
     baseTimeoutSeconds: baseTimeoutSeconds(),
@@ -928,12 +948,20 @@ async function connectHostedClient(apiToken: string, generation: number) {
       }),
     );
   };
-  await withHardTimeout(
-    client.connect(transport, { timeout: baseTimeoutMs() }),
-    baseTimeoutMs(),
-    "Bright Data hosted MCP connect",
-  );
-  return client;
+  try {
+    await withHardTimeout(
+      client.connect(transport, { timeout: baseTimeoutMs() }),
+      baseTimeoutMs(),
+      "Bright Data hosted MCP connect",
+    );
+    return client;
+  } catch (err) {
+    void closeClientQuietly(client);
+    try {
+      await (transport as any).close?.();
+    } catch {}
+    throw err;
+  }
 }
 
 async function connectLocalClient(apiToken: string, generation: number) {
@@ -1029,12 +1057,20 @@ async function connectLocalClient(apiToken: string, generation: number) {
     );
   };
 
-  await withHardTimeout(
-    client.connect(transport, { timeout: baseTimeoutMs() }),
-    baseTimeoutMs(),
-    "Bright Data local MCP connect",
-  );
-  return client;
+  try {
+    await withHardTimeout(
+      client.connect(transport, { timeout: baseTimeoutMs() }),
+      baseTimeoutMs(),
+      "Bright Data local MCP connect",
+    );
+    return client;
+  } catch (err) {
+    void closeClientQuietly(client);
+    try {
+      await (transport as any).close?.();
+    } catch {}
+    throw err;
+  }
 }
 
 async function initBrightDataClient() {
@@ -1159,7 +1195,6 @@ export async function closeBrightDataClient(options?: {
   const client = brightDataClient;
   clearCurrentClient(client);
   if (!client) return false;
-  await closeClientQuietly(client);
   if (!options?.onlyIfUnhealthy) {
     disabledReason = options?.reason || "";
     disabledUntil = 0;
@@ -1790,8 +1825,14 @@ export async function scrapeBatchAsMarkdown(
         })
         .filter((url) => Boolean(url) && !isAuthwalledUrl(url)),
     ),
-  ).slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
-  if (cleanUrls.length === 0) return [];
+  );
+  if (cleanUrls.length > BRIGHTDATA_SCRAPE_BATCH_MAX_URLS) {
+    console.warn(
+      `[brightdata] Scrape batch requested ${cleanUrls.length} URLs; clamping to max batch limit (${BRIGHTDATA_SCRAPE_BATCH_MAX_URLS}).`,
+    );
+  }
+  const batchUrls = cleanUrls.slice(0, BRIGHTDATA_SCRAPE_BATCH_MAX_URLS);
+  if (batchUrls.length === 0) return [];
 
   // `scrape_batch` is not exposed by Bright Data's Rapid/free MCP. Keep the
   // explicit deep-enrichment stage functional without probing an unavailable
@@ -1817,7 +1858,7 @@ export async function scrapeBatchAsMarkdown(
         );
         const fallbackResults: BrightDataBatchResult[] = (
           await Promise.all(
-            cleanUrls.map(async (url): Promise<BrightDataBatchResult | null> => {
+            batchUrls.map(async (url): Promise<BrightDataBatchResult | null> => {
               try {
                 // Each scrape checks the signal itself, so a cancelled batch stops issuing
                 // further paid calls as soon as cancellation is observed.
@@ -1834,7 +1875,7 @@ export async function scrapeBatchAsMarkdown(
         return fallbackResults;
       }
 
-      const batchArgs: Record<string, any> = { urls: cleanUrls };
+      const batchArgs: Record<string, any> = { urls: batchUrls };
       if (format && format !== "markdown") {
         batchArgs.format = format;
       }
@@ -2173,7 +2214,12 @@ export function buildBrightDataSearchArguments(
     process.env.BRIGHTDATA_SEARCH_GEO_LOCATION ||
     "us";
   const country = normalizeBrightDataGeoLocation(configuredGeo);
-  const engine = options.engine === "bing" ? "bing" : "google";
+  const engine =
+    options.engine === "bing"
+      ? "bing"
+      : options.engine === "yandex"
+        ? "yandex"
+        : "google";
   const rawPage =
     typeof options.page === "number"
       ? options.page
@@ -2190,7 +2236,7 @@ export function buildBrightDataSearchArguments(
       : undefined;
 
   let timeRange = options.timeRange;
-  if (engine === "bing" && (timeRange === "hour" || timeRange === "month")) {
+  if ((engine === "bing" || engine === "yandex") && (timeRange === "hour" || timeRange === "month")) {
     timeRange = "day";
   }
 

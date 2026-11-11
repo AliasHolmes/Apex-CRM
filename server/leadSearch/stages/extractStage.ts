@@ -44,7 +44,7 @@ import {
   isValidLinkedInHandle,
   checkHandleNameMismatch,
 } from "../../../src/utils/leadDedupe.js";
-import { runWithTransientRetry } from "../sessionHelpers.js";
+import { runWithTransientRetry, boundedNumber } from "../sessionHelpers.js";
 import {
   looksLikeCompanyHint,
   companyEqualsLocation,
@@ -1023,25 +1023,10 @@ export async function executeExtractStage(
   }
 
   // 4. Token budget calculation and chunking
-  const rawChunkChars = Math.max(
-    Number(process.env.LEAD_EXTRACTION_CHUNK_CHARS || 8000),
-    1800,
-  );
-  const extractionChunkChars = Math.min(rawChunkChars, 16000);
-  const rawMaxTokens = Math.max(
-    Number(process.env.LEAD_EXTRACTION_MAX_TOKENS || 8000),
-    800,
-  );
-  const configuredExtractionMaxTokens = Math.min(rawMaxTokens, 16000);
-  const rawProviderBudget = Math.max(
-    Number(process.env.LLM_PROVIDER_TOKEN_BUDGET || 64000),
-    4000,
-  );
-  const providerTokenBudget = Math.min(rawProviderBudget, 250_000);
-  const tokenSafetyMargin = Math.min(
-    Math.max(Number(process.env.LLM_TOKEN_SAFETY_MARGIN || 400), 200),
-    2000,
-  );
+  const extractionChunkChars = boundedNumber(process.env.LEAD_EXTRACTION_CHUNK_CHARS, 8000, 1800, 16000);
+  const configuredExtractionMaxTokens = boundedNumber(process.env.LEAD_EXTRACTION_MAX_TOKENS, 8000, 800, 16000);
+  const providerTokenBudget = boundedNumber(process.env.LLM_PROVIDER_TOKEN_BUDGET, 64000, 4000, 250_000);
+  const tokenSafetyMargin = boundedNumber(process.env.LLM_TOKEN_SAFETY_MARGIN, 400, 200, 2000);
   const extractionPromptPrefix = `Extract all distinct individuals and their professional profiles from the source-labeled evidence blocks below.
 
 Rules:
@@ -1070,10 +1055,7 @@ Evidence:
         structuredPromptOverheadTokens,
     ),
   );
-  const maxBlocksPerChunk = Math.max(
-    2,
-    Math.min(6, Number(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK || 3)),
-  );
+  const maxBlocksPerChunk = boundedNumber(process.env.LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK, 3, 2, 6);
   const chunks = chunkEvidenceBlocksByTokenBudget(
     evidenceBlocks,
     evidenceTokenBudget,
@@ -1098,9 +1080,11 @@ Evidence:
 
   let extractionFailuresThisRound = 0;
   let roundExtractedOutputTokens = 0;
-  const roundExtractionMaxOutputTokens = Math.max(
+  const roundExtractionMaxOutputTokens = boundedNumber(
+    process.env.LEAD_EXTRACTION_ROUND_MAX_TOKENS,
+    250_000,
     8000,
-    Number(process.env.LEAD_EXTRACTION_ROUND_MAX_TOKENS || 250_000),
+    1_000_000,
   );
   const extractionTasks = chunks.map((chunk, idx) => async () => {
     const chunkIndex = idx + 1;

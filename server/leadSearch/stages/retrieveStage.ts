@@ -16,7 +16,7 @@ import {
   type BrightDataSearchOptions,
 } from "../../services/brightdata.js";
 import { hasTavilyKey } from "../../services/llm.js";
-import { incrementCounter } from "../sessionHelpers.js";
+import { incrementCounter, boundedNumber } from "../sessionHelpers.js";
 import type { SessionContext } from "../pipelineTypes.js";
 import type { ExecutableQueryPlan } from "./planStage.js";
 import type { QueryRunStats } from "../strategist.js";
@@ -99,11 +99,15 @@ export async function executeRetrieveStage(
   let usingBrightDataSearch = false;
   const ablationTracker = createAblationTracker(2);
 
+  const roundRawCandidates =
+    typeof stats.roundRawCandidates === "number"
+      ? stats.roundRawCandidates
+      : (stats.rawCandidates || 0);
   const duplicateCollisionRate =
-    (stats.rawCandidates || 0) > 0
+    roundRawCandidates > 0
       ? ((stats.rejectionReasons?.duplicate_existing_lead || 0) +
           (stats.rejectionReasons?.duplicate_person || 0)) /
-        stats.rawCandidates
+        roundRawCandidates
       : 0;
   const isHighDuplication =
     duplicateCollisionRate >= 0.2 ||
@@ -116,10 +120,7 @@ export async function executeRetrieveStage(
       return 'standard' as const;
     }
   })();
-  const baseMaxResults = Math.min(
-    Math.max(Number(process.env.TAVILY_MAX_RESULTS || 10), 1),
-    20,
-  );
+  const baseMaxResults = boundedNumber(process.env.TAVILY_MAX_RESULTS, 12, 1, 20);
   const dynamicTavilyMaxResults =
     briefTier === 'vague' ? 20
       : briefTier === 'rich' ? Math.min(baseMaxResults, 12)
@@ -415,7 +416,7 @@ export async function executeRetrieveStage(
               counts: { rawCandidates: resultsCount },
               tavily: {
                 searchDepth: tavilyOptions.searchDepth,
-                maxResults: tavilyOptions.maxResults,
+                maxResults: dynamicTavilyMaxResults,
                 includeDomains: tavilyOptions.includeDomains,
               },
             });
@@ -486,9 +487,9 @@ export async function executeRetrieveStage(
         },
       })),
       {
-        concurrency: Number(process.env.TAVILY_SEARCH_CONCURRENCY || 3),
-        intervalCap: Number(process.env.TAVILY_SEARCH_INTERVAL_CAP || 0),
-        intervalMs: Number(process.env.TAVILY_SEARCH_INTERVAL_MS || 1_000),
+        concurrency: boundedNumber(process.env.TAVILY_SEARCH_CONCURRENCY, 3, 1, 10),
+        intervalCap: boundedNumber(process.env.TAVILY_SEARCH_INTERVAL_CAP, 0, 0, 100),
+        intervalMs: boundedNumber(process.env.TAVILY_SEARCH_INTERVAL_MS, 1_000, 100, 10_000),
         signal: state.abortController.signal,
       },
     );

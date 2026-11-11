@@ -548,8 +548,15 @@ export default function ScrapeWorkspace() {
             cleanupDiscoveryUi();
             void refreshScoutWorkspace().catch(() => {});
           }
-        } catch {
-          // Transient network errors: keep polling until the hard cap.
+        } catch (err: any) {
+          if (requestController.signal.aborted || settled) return;
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 10) {
+            cleanupDiscoveryUi();
+            if (taskId) updateTaskStatus(taskId, 'failed');
+            setErrorCode('Lost connection to the mining server. Check network connection or Mining history.');
+            triggerToast('Lost connection to mining session after repeated network failures.', 'error');
+          }
         }
       })();
     }, 3000);

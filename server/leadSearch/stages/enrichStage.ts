@@ -51,6 +51,7 @@ import {
   incrementCounter,
   sleepWithAbort,
   evidenceQualityRank,
+  boundedNumber,
 } from "../sessionHelpers.js";
 import { normalizeCompanyName } from "../signalStore.js";
 import type { SessionContext, LeadQueryRunTracker, PipelinePorts } from "../pipelineTypes.js";
@@ -870,10 +871,7 @@ export async function executeEnrichStage(
       });
     }
 
-    const retryMax = Math.min(
-      Math.max(Number(process.env.BRIGHTDATA_PROFILE_RETRY_MAX || 2), 0),
-      3,
-    );
+    const retryMax = boundedNumber(process.env.BRIGHTDATA_PROFILE_RETRY_MAX, 2, 0, 3);
     const retryDelays = [3_000, 10_000, 20_000];
     // Evict already-enriched or authwalled URLs before creating retry tasks to prevent queue leaking
     for (const target of uncachedTargets) {
@@ -1009,10 +1007,7 @@ export async function executeEnrichStage(
 
     // 1b. Company Site Probe Fallback for candidates missing rich profile data
     const siteProbeEnabled = process.env.LEAD_SITE_PROBE_ENABLED !== "false";
-    const siteProbeMax = Math.min(
-      Math.max(Number(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND) || 12, 1),
-      30,
-    );
+    const siteProbeMax = boundedNumber(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND, 12, 1, 30);
     stats.siteProbe = stats.siteProbe || {
       attempted: 0,
       succeeded: 0,
@@ -1432,10 +1427,7 @@ export async function processParkedCandidates(
   const state = sessionCtx.state;
   if (!state.parkedCandidates || state.parkedCandidates.length === 0) return [];
 
-  const maxReinjectedPerRound = Math.max(
-    1,
-    Math.min(12, Number(process.env.LEAD_MAX_REINJECTED_PER_ROUND) || 6),
-  );
+  const maxReinjectedPerRound = boundedNumber(process.env.LEAD_MAX_REINJECTED_PER_ROUND, 6, 1, 12);
   let probeBudgetRemaining = Math.max(0, siteProbeMaxRemaining);
   const reInjected: FinalistCandidate[] = [];
   const survivingParked: typeof state.parkedCandidates = [];

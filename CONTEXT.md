@@ -131,10 +131,10 @@ The generalized discovery architecture (`prospectContract.ts`, `defaultRoles.ts`
 The standardized geographic coordinate system utilizing ECMAScript's native `Intl.DisplayNames`. It automatically recognizes and normalizes all 249 ISO 3166-1 alpha-2 countries and regions while guarding against English two-letter pronoun collisions (`us`, `in`, `me`, `am`, `at`), ensuring global brief coverage without synthetic US anchor invention.
 
 ### Candidate Verdict Cache (`candidate_verdicts`)
-The persistent SQLite Schema v27 cache storing LLM pass and hard-fail evaluations indexed by canonical LinkedIn identity key (`identity_key`), requirement hash (`requirement_hash`), and evidence hash (`evidence_hash`). When a prospect candidate is re-encountered in subsequent rounds with identical qualification evidence, previous judge determinations are reused in 0ms without re-invoking the judge LLM.
+The persistent SQLite Schema v28 cache storing LLM pass and hard-fail evaluations indexed by canonical LinkedIn identity key (`identity_key`), requirement hash (`requirement_hash`), and evidence hash (`evidence_hash`). When a prospect candidate is re-encountered in subsequent rounds with identical qualification evidence, previous judge determinations are reused in 0ms without re-invoking the judge LLM.
 
 ### Company Profile & Attribution Persistence (`company_profiles`, `company_attribution_verdicts`)
-The persistent company taxonomy tables in SQLite Schema v27. `company_profiles` stores verified business models, industry classifications, offerings, and verified evidence quotes for scraped company domains. `company_attribution_verdicts` stores per-brief qualification verdicts, eliminating duplicate LLM company-fit evaluations across multiple candidates from the same organization.
+The persistent company taxonomy tables in SQLite Schema v28. `company_profiles` stores verified business models, industry classifications, offerings, and verified evidence quotes for scraped company domains. `company_attribution_verdicts` stores per-brief qualification verdicts, eliminating duplicate LLM company-fit evaluations across multiple candidates from the same organization.
 
 ### Cross-Round Retrieval Cache (`retrievalCache.ts`)
 A query-hash-keyed cache layer built on the `enrichment_cache` table (`getSearchCacheEntry` / `upsertSearchCacheEntry` in `server/db.ts`, keyed `serp:<normalized-query>` with a fixed SERP fingerprint) with configurable TTL (`LEAD_RETRIEVAL_CACHE_TTL_DAYS`, default 3 days). Identical search queries (e.g. initial persona or location searches) are retrieved in 0ms from SQLite rather than consuming external search provider credits or network latency.
@@ -243,4 +243,28 @@ The security sanitization boundary in `server/services/brightdata.ts` (`unwrapBr
 
 ### Zero-Cost Schema.org Extraction (`siteProbe.ts`)
 The non-LLM structured data extractor in `server/leadSearch/siteProbe.ts` (`extractSchemaOrgSignals`) that parses `<script type="application/ld+json">` payloads from HTML already retrieved during company site probing. Extracts verified `legalName`, `founders`, `headcount`, `location`, and social URLs without marginal API or token expense, appending them to candidate evidence while preserving `lead.evidence` object integrity.
+
+### LLM Mid-Body Read Timeout Guard (`withBodyTimeout`)
+The read-concurrency safety invariant in `server/services/llm.ts`. While standard fetch timeouts protect until initial HTTP response headers resolve, unchunked and streamed response body reads (`res.text()` and `res.json()`) can stall indefinitely if an upstream provider hangs mid-stream. `withBodyTimeout` races the body read promise against an explicit timeout timer and signal listener, throwing an `LLMStallError` and ensuring provider concurrency slots are released in the `finally` block of `runOn` without slot starvation.
+
+### Empty-200 SERP Self-Healing (`isEmptyBodySerpTransientError`)
+The automated retry classifier in `server/services/brightdata.ts`. When Bright Data's SERP proxy answers HTTP 200 with an empty body or unparseable JSON without a challenge snippet, the error is classified as `empty_body_transient`. `executeBrightDataSearchWithEmptyBodyRecovery` recognizes this transient condition and automatically executes a single retry after a short pause, transparently self-healing momentary provider hiccups.
+
+### Terminal JSON Error Boundary
+The server-wide error handling invariant mounted on `/api` and `/api/v1` in `server.ts`. An arity-4 middleware `(err, req, res, next)` intercepts all unhandled synchronous or asynchronous exceptions across API routes and guarantees structured JSON `{ apiVersion: 1, error: ... }` responses with appropriate HTTP status codes, completely preventing Express's default HTML error pages and raw stack traces from reaching clients.
+
+### SQLite Migration 28 & Compound Covering Index
+The transactional schema migration in `server/db.ts` that safely encapsulates legacy MCP column backfills and creates a compound covering index `idx_leads_stage_created_updated` on `leads(stage, created_at DESC, updated_at DESC)`. This provides 0ms sorted pagination for stage-filtered CRM queries and clean schema lifecycle tracking.
+
+### Dedupe Identity Normalization Symmetry
+The cross-stack identity consistency invariant aligning CRM database identity keys (`buildLeadIdentityKeys` in `server/db.ts`) with pipeline fusion (`fuseStage.ts`) and client-side deduplication (`src/utils/leadDedupe.ts`). All three layers use `normalizeCompanyName` to strip legal and regional corporate suffixes (`LLC`, `Inc`, `Corp`, `Ltd`, `GmbH`), ensuring prospects matching by name and company resolve to identical deduplication keys regardless of corporate suffix variations.
+
+### NaN-Safe Numeric Parsing & Bounded Environment Clamps
+The defensive numeric parsing standard across `discoveryEngine.ts`, `sessionHelpers.ts`, `scoring.ts`, and all stage modules. Replaces unguarded `Math.max(Number(...))` and `parseInt` expressions with `boundedNumber` and `clampEnvInt`. Non-numeric or invalid environment inputs (e.g. `NaN`, `null`, `undefined`) gracefully fall back to safe architectural defaults instead of zeroing out candidate scoring or aborting slices.
+
+### Conflict Resolution Settle Invariant
+The frontend optimistic concurrency guarantee in `src/context/LeadContext.tsx`. When a lead update encounters an HTTP 409 revision conflict, an interactive diff dialog opens. If the user dismisses the dialog via Escape key, close button, or backdrop click, the pending resolution promise automatically resolves with the current server lead state (`keep_server` / rollback). This permanently unblocks the lead's serial mutation queue, ensuring leads are never left uneditable or undeletable after an uncommitted conflict modal.
+
+### Partial Bulk Chunk Preservation
+The fault-tolerant bulk write protocol in `src/context/LeadContext.tsx`. During chunked batch operations (`handleBulkLeadsAdded`, `handleUpdateLeadsStage`, `handleDeleteLeads`), earlier chunks that successfully committed to the SQLite database are preserved in local React state even if a later chunk fails. The client triggers a targeted delta rehydration from the server on partial failure, eliminating ghost leads and client-server state drift.
 

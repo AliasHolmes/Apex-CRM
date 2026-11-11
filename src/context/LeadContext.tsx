@@ -59,7 +59,14 @@ function computeStatsFromLeads(leadsList: Lead[]): LeadContextStats {
     if (l.stage && stageCounts[l.stage] !== undefined) {
       stageCounts[l.stage]++;
     }
-    const score = l.qualificationScore ?? l.predictiveScore ?? l.compositeScore;
+    const score =
+      l.qualificationScore ??
+      l.predictiveScore ??
+      l.compositeScore ??
+      (l as any).score ??
+      (l.profile as any)?.qualificationScore ??
+      (l.profile as any)?.predictiveScore ??
+      (l.profile as any)?.compositeScore;
     if (typeof score === 'number' && Number.isFinite(score) && score > 0) {
       // These three fields are always written on a 0-100 scale, so the previous
       // `score <= 10 ? score * 10` rescale only inflated genuinely weak leads
@@ -912,6 +919,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     }
 
     const insertedIds = new Set(leadsToSaveBackend.map(lead => lead.id));
+    const committedChunkIds = new Set<string>();
     let bulkError: unknown;
     let persistedCreatedCount = leadsToSaveBackend.length;
     let serverDuplicateCount = 0;
@@ -933,6 +941,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
             throw new Error(chunkData.error || `Failed to save bulk leads: ${response.status}`);
           }
           chunkPayloads.push(chunkData);
+          for (const lead of chunk) committedChunkIds.add(lead.id);
         }
         persistedCreatedCount = chunkPayloads.every(
           payload => Number.isFinite(Number(payload.createdCount)),
@@ -995,7 +1004,9 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         bulkError = error;
         console.error('Failed to save bulk leads to backend:', error);
-        restoreLeadSubset(insertedIds, []);
+        // Only rollback leads from chunks that failed; preserve successfully committed chunks
+        const uncommittedIds = new Set([...insertedIds].filter(id => !committedChunkIds.has(id)));
+        restoreLeadSubset(uncommittedIds, []);
         return false;
       }
     })();
@@ -1267,6 +1278,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       leadPatchQueuesRef.current.set(id, deletePromise);
     }
 
+    const committedDeletedIds = new Set<string>();
     try {
       saveLeadsToStorage(currentLeads => {
         return currentLeads.filter(l => !idSet.has(l.id));
@@ -1284,13 +1296,16 @@ export function LeadProvider({ children }: { children: ReactNode }) {
         if (!response.ok) {
           throw new Error(data.error || `Failed to delete bulk leads: ${response.status}`);
         }
+        for (const id of chunk) committedDeletedIds.add(id);
       }
       deleteResolve!(true);
       void refreshStats();
     } catch (e) {
       deleteResolve!(false);
       console.error(`[App] Error during bulk lead deletion:`, e);
-      restoreLeadSubset(idSet, rollbackLeads);
+      // Only restore leads from chunks that failed deletion on the server
+      const uncommittedIds = new Set(leadIds.filter(id => !committedDeletedIds.has(id)));
+      restoreLeadSubset(uncommittedIds, rollbackLeads.filter(l => uncommittedIds.has(l.id)));
       throw e;
     } finally {
       for (const id of leadIds) {
@@ -1537,7 +1552,17 @@ export function LeadProvider({ children }: { children: ReactNode }) {
       {children}
       <ConflictDialog
         open={conflictModal.open}
-        onOpenChange={(open) => setConflictModal(prev => ({ ...prev, open }))}
+        onOpenChange={(open) => {
+          if (!open && conflictModal.onResolve && conflictModal.serverLead) {
+            try {
+              // Unblock awaiting patch queue if dialog is dismissed (Esc / backdrop)
+              conflictModal.onResolve(conflictModal.serverLead);
+            } catch (err) {
+              console.warn('[LeadContext] Error settling conflict on dismiss:', err);
+            }
+          }
+          setConflictModal(prev => ({ ...prev, open, onResolve: open ? prev.onResolve : undefined }));
+        }}
         localLead={conflictModal.localLead}
         serverLead={conflictModal.serverLead}
         baseLead={conflictModal.baseLead}
@@ -1545,6 +1570,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
           if (conflictModal.onResolve) {
             conflictModal.onResolve(resolved);
           }
+          setConflictModal(prev => ({ ...prev, open: false, onResolve: undefined }));
         }}
       />
     </LeadContext.Provider>

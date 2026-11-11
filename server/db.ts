@@ -17,6 +17,7 @@ import {
 import {
   canonicalLinkedInIdentity,
   normalizeDedupeValue,
+  normalizeCompanyName,
   getLeadLinkedInUrl,
 } from "../src/utils/leadDedupe.js";
 
@@ -30,7 +31,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-export const LATEST_SCHEMA_VERSION = 27;
+export const LATEST_SCHEMA_VERSION = 28;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1325,6 +1326,30 @@ function runMigrations(db: DatabaseSync) {
       );
     }
 
+    if (currentVersion < 28) {
+      if (tableExists(db, "mcp_profile_cache") && tableExists(db, "enrichment_cache")) {
+        db.exec(`
+          INSERT OR IGNORE INTO enrichment_cache (
+            id, normalized_url, linkedin_username, person_name, company_name,
+            evidence_block, scrape_quality, source_provider, created_at, expires_at
+          )
+          SELECT
+            'legacy-mcp-' || username, NULL, lower(username), NULL, NULL,
+            enriched_data, 'partial', 'brightdata', timestamp, datetime(timestamp, '+7 days')
+          FROM mcp_profile_cache
+          WHERE username IS NOT NULL AND enriched_data IS NOT NULL;
+        `);
+      }
+      if (getTableColumns(db, "leads").has("stage")) {
+        db.exec(`
+          DROP INDEX IF EXISTS idx_leads_stage_updated;
+          DROP INDEX IF EXISTS idx_leads_stage_created;
+          CREATE INDEX IF NOT EXISTS idx_leads_stage_created
+            ON leads(stage, created_at DESC, updated_at DESC);
+        `);
+      }
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1545,32 +1570,6 @@ export function getLeadsDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_llm_cache_expires ON llm_completion_cache(expires_at);
 
-      INSERT OR IGNORE INTO enrichment_cache (
-        id,
-        normalized_url,
-        linkedin_username,
-        person_name,
-        company_name,
-        evidence_block,
-        scrape_quality,
-        source_provider,
-        created_at,
-        expires_at
-      )
-      SELECT
-        'legacy-mcp-' || username,
-        NULL,
-        lower(username),
-        NULL,
-        NULL,
-        enriched_data,
-        'partial',
-        'brightdata',
-        timestamp,
-        datetime(timestamp, '+7 days')
-      FROM mcp_profile_cache
-      WHERE username IS NOT NULL AND enriched_data IS NOT NULL;
-
       CREATE TABLE IF NOT EXISTS search_logs (
         id TEXT PRIMARY KEY,
         timestamp TEXT NOT NULL,
@@ -1671,7 +1670,7 @@ export function getLeadsDb() {
     pruneOldBackups(path.join(path.dirname(LEADS_DB_PATH), "backups"));
     if (getTableColumns(leadsDb, "leads").has("stage")) {
       leadsDb.exec(
-        "CREATE INDEX IF NOT EXISTS idx_leads_stage_created ON leads(stage, created_at DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_leads_stage_created ON leads(stage, created_at DESC, updated_at DESC);",
       );
     }
     setLlmStageLogger(insertLlmStageLog);
@@ -1687,6 +1686,13 @@ export function closeLeadsDb() {
     } catch {}
     leadsDb = null;
   }
+  invalidateLeadsStatsCache();
+  cachedExistingIdentityKeys = null;
+  cachedIdentityKeysMutationCounter = -1;
+  cachedStoredCompanyNames = null;
+  cachedStoredCompanyDomains = null;
+  cachedStoredMetroSaturation = null;
+  dbMutationCounter = 0;
 }
 
 export function normalizeIncomingLeads(input: unknown) {
@@ -1835,6 +1841,9 @@ export function readLeadsSummary(options: ReadLeadsOptions = {}): {
       query += " OFFSET ?";
       queryParams.push(safeOffset);
     }
+  } else if (safeOffset !== undefined) {
+    query += " LIMIT -1 OFFSET ?";
+    queryParams.push(safeOffset);
   }
 
   const rows = db.prepare(query).all(...queryParams) as any[];
@@ -2099,6 +2108,8 @@ export function replaceStoredLeads(leads: Record<string, any>[]) {
     db.prepare("DELETE FROM leads").run();
     db.prepare("DELETE FROM lead_identities").run();
     db.prepare("DELETE FROM lead_identity_conflicts").run();
+    db.prepare("DELETE FROM lead_activities").run();
+    db.prepare("DELETE FROM outreach_drafts").run();
 
     const claimIdentity = db.prepare(`
       INSERT OR IGNORE INTO lead_identities (identity_key, lead_id, created_at)
@@ -2221,7 +2232,7 @@ export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
   if (email) keys.add(`email:${email}`);
 
   const name = normalizeDedupeValue(lead?.profile?.fullName || lead?.fullName);
-  const company = normalizeDedupeValue(
+  const company = normalizeCompanyName(
     lead?.profile?.currentCompany || lead?.currentCompany || lead?.company
   );
   if (name && company) {
@@ -2340,8 +2351,10 @@ export function upsertLeadInExistingTransaction(
     : undefined;
   if (
     existing &&
-    expectedRevision !== undefined &&
-    expectedRevision !== Number(existing.revision || 1)
+    !options?.forceOverwrite &&
+    ((expectedRevision !== undefined &&
+      expectedRevision !== Number(existing.revision || 1)) ||
+      (options?.requireExisting && expectedRevision === undefined))
   ) {
     throw new LeadRevisionConflictError(
       readLeadFromRow(existing) || {
@@ -2570,7 +2583,6 @@ export function deleteLeadInExistingTransaction(
     db,
     "DELETE FROM leads WHERE id = ?",
   ).run(id);
-  invalidateLeadsStatsCache();
 }
 
 export function deleteLead(id: string) {
@@ -3414,7 +3426,21 @@ export function getLlmCacheEntry(
     let usage: any = undefined;
     if (row.usage_json) {
       try {
-        usage = JSON.parse(row.usage_json);
+        const raw = JSON.parse(row.usage_json);
+        if (raw && typeof raw === "object") {
+          const inputTokens = Number(raw.inputTokens ?? raw.input_tokens ?? 0);
+          const outputTokens = Number(raw.outputTokens ?? raw.output_tokens ?? 0);
+          const totalTokens = Number(raw.totalTokens ?? raw.total_tokens ?? (inputTokens + outputTokens));
+          usage = {
+            ...raw,
+            inputTokens,
+            outputTokens,
+            totalTokens,
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            total_tokens: totalTokens,
+          };
+        }
       } catch {}
     }
     return { response: row.response, usage };
@@ -3766,7 +3792,7 @@ export function insertSearchLog(log: any) {
       db,
       `
       DELETE FROM llm_stage_logs
-      WHERE search_log_id NOT IN (
+      WHERE search_log_id IS NULL OR search_log_id NOT IN (
         SELECT id FROM search_logs
         ORDER BY timestamp DESC
         LIMIT ?
@@ -4280,20 +4306,23 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     ).get(scopeKey) as { requirement_fail_digest?: string | null } | undefined;
     const existingRaw = existingRow?.requirement_fail_digest;
     const merged: Record<string, any> = {};
-    const segments = existingRaw
-      ? [...existingRaw.split(";"), effectiveDigest]
-      : [effectiveDigest];
-    for (const seg of segments) {
-      const trimmed = seg.trim();
-      if (!trimmed) continue;
+    if (existingRaw) {
       try {
-        const parsed = JSON.parse(trimmed);
+        const parsed = JSON.parse(existingRaw);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           Object.assign(merged, parsed);
         }
-      } catch {
-        // ignore non-JSON segment
-      }
+      } catch {}
+    }
+    if (effectiveDigest) {
+      try {
+        const parsed = JSON.parse(effectiveDigest);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          for (const [k, v] of Object.entries(parsed)) {
+            merged[k] = (merged[k] || 0) + Number(v || 0);
+          }
+        }
+      } catch {}
     }
     if (Object.keys(merged).length > 0) {
       let serialized = JSON.stringify(merged);

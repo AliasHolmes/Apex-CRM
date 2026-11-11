@@ -160,23 +160,26 @@ export function computeKalmanFusedScore(
 
 export function getLeadScore(lead: Record<string, any> | null | undefined, fallback = 5): number {
   if (!lead || typeof lead !== 'object') return fallback;
-  const candidates = [
-    lead.qualification?.finalScore,
-    lead.profile?.qualification?.finalScore,
-    lead.finalSelectionScore,
-    lead.profile?.finalSelectionScore,
-    lead.scoreBreakdown?.finalScore,
-    lead.profile?.scoreBreakdown?.finalScore,
-    lead.scoreOverride,
-    lead.effectiveScore,
-    lead.fitScore,
-    lead.audit?.functionalRelevance,
-    lead.compositeScore,
-    lead.predictiveScore,
+  const candidates: Array<{ val: unknown; isHundredScale?: boolean }> = [
+    { val: lead.qualification?.finalScore },
+    { val: lead.profile?.qualification?.finalScore },
+    { val: lead.finalSelectionScore },
+    { val: lead.profile?.finalSelectionScore },
+    { val: lead.scoreBreakdown?.finalScore },
+    { val: lead.profile?.scoreBreakdown?.finalScore },
+    { val: lead.scoreOverride },
+    { val: lead.effectiveScore },
+    { val: lead.fitScore },
+    { val: lead.audit?.functionalRelevance },
+    { val: lead.compositeScore, isHundredScale: true },
+    { val: lead.predictiveScore, isHundredScale: true },
   ];
-  for (const val of candidates) {
-    const num = Number(val);
+  for (const item of candidates) {
+    const num = Number(item.val);
     if (Number.isFinite(num) && num > 0) {
+      if (item.isHundredScale) {
+        return normalizeToTenScale(num / 10, fallback);
+      }
       return normalizeToTenScale(num, fallback);
     }
   }
@@ -226,6 +229,10 @@ export function applyPostIntentDelta(lead: Record<string, any>): number {
     lead.scoreBreakdown.postIntentScore = Number((confidence * 10 * freshnessFactor).toFixed(1));
     lead.scoreBreakdown.finalScore = newFinal;
   }
+  if (lead.qualification) {
+    lead.qualification.finalScore = newFinal;
+  }
+  lead.finalSelectionScore = newFinal;
   return newFinal;
 }
 
@@ -408,8 +415,22 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   let hardCoverage = 0.5;
   let softCoverage = 0.5;
   try {
+    const contractReqMap = new Map<string, any>();
+    if (Array.isArray(contract?.requirements)) {
+      for (const r of contract.requirements) {
+        if (r?.id) contractReqMap.set(r.id, r);
+      }
+    }
+
     const reqs = Array.isArray(lead.qualification?.requirements)
-      ? lead.qualification.requirements
+      ? lead.qualification.requirements.map((r: any) => {
+          const reqId = r.requirementId || r.id;
+          const matchedContractReq = contractReqMap.get(reqId);
+          return {
+            status: r.status,
+            importance: matchedContractReq?.importance || r.importance || 'hard',
+          };
+        })
       : Array.isArray(contract?.requirements) && Array.isArray(lead.scout?.matchedCriteria)
         ? contract!.requirements!.map((r: any) => ({
             status: lead.scout.matchedCriteria.includes(r.id) ? 'pass' : 'unknown',
@@ -429,14 +450,14 @@ export function rankLeadForFinalSelection(lead: Record<string, any>, corpusStats
   const coverageBonus = (hardCoverage - 0.5) * 1.2 + (softCoverage - 0.5) * 0.4;
 
   const rank = (
-    authorityScore * 0.28 +
-    companyScore * 0.14 +
-    evidenceScore * 0.14 +
-    corroborationScore * 0.14 +
-    criteriaCoverageScore * 0.09 +
+    authorityScore * 0.30 +
+    companyScore * 0.15 +
+    evidenceScore * 0.15 +
+    corroborationScore * 0.15 +
+    criteriaCoverageScore * 0.10 +
     sourceScore * 0.03 +
     baseScore * 0.02 +
-    postScore * 0.09 +
+    postScore * 0.10 +
     bm25Bonus +
     paretoBonus +
     coverageBonus

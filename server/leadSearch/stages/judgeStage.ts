@@ -24,6 +24,7 @@ import { rankLeadForFinalSelection } from "../scoring.js";
 import {
   effectiveScore as sharedEffectiveScore,
   isTransientLLMError,
+  boundedNumber,
 } from "../sessionHelpers.js";
 import {
   readPastUserDecisions,
@@ -231,17 +232,23 @@ export function isParkWithheldEnabled(): boolean {
   return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
 }
 
-export const MAX_PARKED_REINJECTIONS = Math.max(
+export const MAX_PARKED_REINJECTIONS = boundedNumber(
+  process.env.LEAD_MAX_PARKED_REINJECTIONS,
   1,
-  Number(process.env.LEAD_MAX_PARKED_REINJECTIONS || 1),
+  1,
+  100,
 );
-export const MAX_PARKED_RECHECK_ATTEMPTS = Math.max(
+export const MAX_PARKED_RECHECK_ATTEMPTS = boundedNumber(
+  process.env.LEAD_MAX_PARKED_RECHECK_ATTEMPTS,
+  3,
   1,
-  Number(process.env.LEAD_MAX_PARKED_RECHECK_ATTEMPTS || 3),
+  100,
 );
-export const MAX_PARKED_CANDIDATES = Math.max(
+export const MAX_PARKED_CANDIDATES = boundedNumber(
+  process.env.LEAD_MAX_PARKED_CANDIDATES,
+  200,
   1,
-  Number(process.env.LEAD_MAX_PARKED_CANDIDATES || 200),
+  1000,
 );
 
 export function parkCandidate(
@@ -494,10 +501,7 @@ export async function evaluateIncrementalJudgeBatches(
 
   const reqFingerprint = computeRequirementsFingerprint(contract?.requirements);
 
-  const passVerdictTtlDays = Math.min(
-    Math.max(Number(process.env.LEAD_PASS_VERDICT_TTL_DAYS ?? 14) || 14, 1),
-    60,
-  );
+  const passVerdictTtlDays = boundedNumber(process.env.LEAD_PASS_VERDICT_TTL_DAYS, 14, 1, 60);
   const applyQualification = (
     lead: any,
     qualification: Qualification,
@@ -661,13 +665,11 @@ export async function evaluateIncrementalJudgeBatches(
       firstPassRoute.reasoning,
     ),
   );
-  const targetBatchTokens = Number(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET || 7000);
+  const targetBatchTokens = boundedNumber(process.env.FINALIST_JUDGE_BATCH_TOKEN_TARGET, 7000, 1000, 50000);
   const explicitJudgeConcurrency = process.env.FINALIST_JUDGE_CONCURRENCY
-    ? Number(process.env.FINALIST_JUDGE_CONCURRENCY)
+    ? boundedNumber(process.env.FINALIST_JUDGE_CONCURRENCY, 8, 1, 20)
     : undefined;
-  const configuredJudgeConcurrency = Number(
-    explicitJudgeConcurrency ?? config.judgeConcurrency ?? 8,
-  );
+  const configuredJudgeConcurrency = explicitJudgeConcurrency ?? boundedNumber(config.judgeConcurrency, 8, 1, 20);
   const freePrimarySlots = Math.max(
     0,
     getProviderConcurrencyLimit("primary") - getProviderActiveSlots("primary"),

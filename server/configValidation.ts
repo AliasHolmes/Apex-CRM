@@ -57,11 +57,10 @@ export function validateEngineConfig(): string[] {
   const minScore = num("LEAD_SEARCH_MIN_SCORE");
   if (
     minScore !== undefined &&
-    !Number.isNaN(minScore) &&
-    (minScore < 1 || minScore > 10)
+    (Number.isNaN(minScore) || minScore < 1 || minScore > 10)
   ) {
     warnings.push(
-      `LEAD_SEARCH_MIN_SCORE=${minScore} is outside the valid 1-10 range and will be clamped.`,
+      `LEAD_SEARCH_MIN_SCORE=${process.env.LEAD_SEARCH_MIN_SCORE} is outside the valid 1-10 range and will be clamped to 1-10.`,
     );
   }
 

@@ -117,11 +117,11 @@ export function isExhaustedQuotaError(
   bodyOrMessage?: string,
   parsedCode?: string | number,
 ): boolean {
-  if (status !== 429) return false;
+  if (status === 402 || status === 432 || status === 433) return true;
+  if (!bodyOrMessage) return false;
   if (parsedCode !== undefined && String(parsedCode).trim() === "1300") {
     return true;
   }
-  if (!bodyOrMessage) return false;
   try {
     const parsed = JSON.parse(bodyOrMessage);
     const code = parsed?.error?.code ?? parsed?.code;
@@ -131,9 +131,10 @@ export function isExhaustedQuotaError(
   } catch {
     // Non-JSON or prefixed string
   }
-  return /(?:"code"\s*:\s*"?1300"?\b|\bcode["':\s]+1300\b|\berror[_\s-]?code["':\s]+1300\b)/i.test(
-    bodyOrMessage,
-  );
+  return /\b(insufficient[_ -]?(?:credits?|quota|balance)|out of credits?|quota[_ -]?exceeded|exceeded your quota|payment required|usage limit exceeded)\b/i.test(bodyOrMessage) ||
+    /(?:"code"\s*:\s*"?1300"?\b|\bcode["':\s]+1300\b|\berror[_\s-]?code["':\s]+1300\b|\binsufficient[_ -]?quota\b|\bquota[_ -]?exceeded\b)/i.test(
+      bodyOrMessage,
+    );
 }
 
 const DEFAULT_PRIMARY_BASE = "https://byesu.com/v1";
@@ -376,18 +377,53 @@ export function sleepWithSignal(waitMs: number, signal?: AbortSignal | null): Pr
   return abortableSleep(waitMs, signal, "LLM request was aborted by caller.");
 }
 
+export function boundedNumber(value: unknown, fallback: number, min = 0, max = Infinity): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(Math.max(num, min), max);
+}
+
+export async function withBodyTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal | null,
+  description = "LLM body read stalled",
+  provider?: LLMProvider,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const p: LLMProvider = provider || { id: "primary", name: "LLM", baseUrl: "", model: "", apiKey: "" };
+        const err = new LLMStallError(p, `LLM_STALL: ${description} exceeded ${Math.round(timeoutMs / 1000)}s.`, timeoutMs);
+        reject(err);
+      }, timeoutMs);
+      if (signal) {
+        onAbort = () => {
+          const cancelError = new Error("LLM request was aborted by caller.");
+          cancelError.name = "AbortError";
+          reject(cancelError);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export const CLOUDFLARE_MAX_TIMEOUT_MS = 115_000;
 
-function resolveDynamicQueueTimeoutMs(): number {
+export function resolveDynamicQueueTimeoutMs(): number {
   const configured = Number(process.env.LLM_QUEUE_TIMEOUT_MS);
-  if (Number.isFinite(configured) && configured > 0 && configured < 5_000) {
-    return configured;
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1_000, Math.min(configured, 300_000));
   }
-  const providerCeiling = CLOUDFLARE_MAX_TIMEOUT_MS;
-  return Math.max(
-    Number.isFinite(configured) && configured > 0 ? configured : 60_000,
-    providerCeiling + 15_000,
-  );
+  return CLOUDFLARE_MAX_TIMEOUT_MS + 15_000;
 }
 
 /**
@@ -466,7 +502,7 @@ async function fetchWithRetry(
       // For Byesu (non-streaming reasoning endpoint), headers do not arrive until full completion;
       // allow Byesu its full dynamic timeout (75s - 115s/210s) without premature 45s header abort.
       const isByesuProvider = _providerId === "byesu" || /byesu/i.test(url);
-      const stallHeaderTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
+      const stallHeaderTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, 45_000, 50);
       if (!isByesuProvider && stallHeaderTimeoutMs < effectiveTimeoutMs) {
         headerStallTimer = setTimeout(() => {
           isHeaderStalled = true;
@@ -504,7 +540,7 @@ async function fetchWithRetry(
       let isExhaustedQuota = false;
       if (is429) {
         try {
-          const bodyPeek = await res.clone().text();
+          const bodyPeek = await withBodyTimeout(res.clone().text(), 10_000, callerSignal, "429 body peek");
           if (isExhaustedQuotaError(429, bodyPeek)) {
             isExhaustedQuota = true;
           }
@@ -556,7 +592,7 @@ async function fetchWithRetry(
       lastResponse = undefined;
       const isCallerAbort = Boolean(callerSignal?.aborted);
       if (isHeaderStalled) {
-        const stallHeaderTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
+        const stallHeaderTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, 45_000, 50);
         const stallErr = new LLMStallError(
           { id: (_providerId as LLMProvider["id"]) || "primary", name: _providerId || "LLM", baseUrl: url, model: "", apiKey: "" },
           `LLM request stalled after ${Math.round(stallHeaderTimeoutMs / 1000)}s (no response headers received).`,
@@ -701,7 +737,7 @@ function buildParseFailureError(
   return markUntrustedMessage(error);
 }
 
-function truncateProviderError(message: string): string {
+export function truncateProviderError(message: string): string {
   return message.length > 500
     ? `${message.slice(0, 500)}... [truncated]`
     : message;
@@ -1053,8 +1089,7 @@ export function recordProviderSuccess(providerId: string, breaker?: LLMSessionCi
     const pid = providerId as LLMProvider["id"];
     breaker.disabledProviderIds.delete(pid);
     breaker.healthDisabledProviderIds?.delete(pid);
-    const prev = Number(breaker.failureCounts[pid] || 0);
-    breaker.failureCounts[pid] = Math.max(0, prev - 1);
+    breaker.failureCounts[pid] = 0;
   }
 }
 
@@ -1123,7 +1158,7 @@ export function recordProviderFailure(providerId: string, error: Error, breaker?
     const pid = providerId as LLMProvider["id"];
     if (breaker) breaker.failureCounts[pid] = (breaker.failureCounts[pid] || 0) + 1;
     record.consecutiveFatalFailures++;
-    const threshold = breaker?.failureThreshold || 3;
+    const threshold = breaker?.failureThreshold || 4;
     if (record.status === "half_open" || record.consecutiveFatalFailures >= threshold) {
       const wasProbe = record.status === "half_open";
       record.status = "out";
@@ -1770,7 +1805,7 @@ async function sendChatCompletion(
     const waitMs = Math.min(backoffUntil - Date.now(), 60000);
     if (waitMs > 100) {
       console.warn(`[llm] ${provider.name} rate limited: pausing slot dispatch for ${Math.round(waitMs / 1000)}s.`);
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      await sleepWithSignal(waitMs, options?.signal);
     }
   }
 
@@ -1948,8 +1983,8 @@ async function sendChatCompletion(
     let streamFinishReason: string | undefined;
     let streamUsage: any = undefined;
 
-    const stallTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_TIMEOUT_MS || 45_000));
-    const inactivityTimeoutMs = Math.max(50, Number(process.env.LLM_STALL_INACTIVITY_MS || 25_000));
+    const stallTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, 45_000, 50);
+    const inactivityTimeoutMs = boundedNumber(process.env.LLM_STALL_INACTIVITY_MS, 25_000, 50);
 
     let streamStallTimer: NodeJS.Timeout | undefined;
     let streamInactivityTimer: NodeJS.Timeout | undefined;
@@ -2134,8 +2169,21 @@ async function sendChatCompletion(
     return accumulatedContent;
   }
 
+  const bodyReadTimeoutMs = boundedNumber(
+    process.env.LLM_READ_TIMEOUT_MS,
+    Number(timeoutForCall) || 45_000,
+    5_000,
+    300_000,
+  );
+
   if (!res.ok) {
-    const rawText = await res.text();
+    const rawText = await withBodyTimeout(
+      res.text(),
+      bodyReadTimeoutMs,
+      options?.signal,
+      "error body read",
+      provider,
+    );
     let errorCode: string | number | undefined;
     let resetSeconds: number | undefined;
     try {
@@ -2172,7 +2220,13 @@ async function sendChatCompletion(
     );
   }
 
-    const data = await res.json();
+    const data = await withBodyTimeout(
+      res.json(),
+      bodyReadTimeoutMs,
+      options?.signal,
+      "JSON response body read",
+      provider,
+    );
     const choice = data?.choices?.[0];
     const finishReason =
       typeof choice?.finish_reason === "string"
@@ -2996,7 +3050,17 @@ export async function openAIStructured<T>(
           try {
             const parsed = parseStructuredText(cached.response);
             if (parsed !== null) {
-              if (cached.usage) effectiveOptions.onUsage?.(cached.usage as LLMUsage);
+              if (cached.usage) {
+                const rawUsage: any = cached.usage;
+                const normUsage: LLMUsage = {
+                  inputTokens: Number(rawUsage.inputTokens ?? rawUsage.input_tokens ?? 0),
+                  outputTokens: Number(rawUsage.outputTokens ?? rawUsage.output_tokens ?? 0),
+                  totalTokens: Number(rawUsage.totalTokens ?? rawUsage.total_tokens ?? 0),
+                  provider: rawUsage.provider,
+                  model: rawUsage.model,
+                };
+                effectiveOptions.onUsage?.(normUsage);
+              }
               return parsed;
             }
           } catch {

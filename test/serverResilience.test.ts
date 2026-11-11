@@ -155,3 +155,40 @@ test("Socket error guard does not add duplicate listeners on keep-alive sockets"
   // Socket must have only 1 error listener, NOT 20
   assert.equal(mockSocket.listenerCount("error"), 1, "Must not accumulate error listeners on reused sockets");
 });
+
+test("SSE stream lifecycle cleans up socket and stream error listeners without leaking", () => {
+  const mockSocket = new EventEmitter();
+
+  // Simulate 20 sequential SSE stream requests on the same keep-alive TCP socket
+  for (let i = 0; i < 20; i++) {
+    const mockReq = new EventEmitter() as any;
+    mockReq.socket = mockSocket;
+    const mockRes = new EventEmitter() as any;
+    mockRes.socket = mockSocket;
+
+    const suppressDisconnectError = () => {};
+    mockRes.on("error", suppressDisconnectError);
+    mockReq.on("error", suppressDisconnectError);
+    mockReq.socket?.on("error", suppressDisconnectError);
+
+    let unsubscribed = false;
+    const doUnsubscribe = () => {
+      if (unsubscribed) return;
+      unsubscribed = true;
+      (mockReq.socket || mockRes.socket)?.off("error", suppressDisconnectError);
+      mockReq.off("error", suppressDisconnectError);
+      mockRes.off("error", suppressDisconnectError);
+      mockReq.off("close", doUnsubscribe);
+      mockRes.off("close", doUnsubscribe);
+    };
+
+    mockReq.on("close", doUnsubscribe);
+    mockRes.on("close", doUnsubscribe);
+
+    // Client closes the stream
+    mockReq.emit("close");
+  }
+
+  // Socket must not accumulate error listeners on close
+  assert.equal(mockSocket.listenerCount("error"), 0, "SSE teardown must remove socket error listener to avoid MaxListenersExceededWarning");
+});

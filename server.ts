@@ -177,6 +177,27 @@ app.use(
   },
 );
 
+const apiErrorHandler = (
+  error: any,
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) => {
+  if (res.headersSent) return next(error);
+  const status = typeof error?.status === 'number' ? error.status : typeof error?.statusCode === 'number' ? error.statusCode : 500;
+  const message = error?.message || 'Internal server error';
+  const code = error?.code || 'INTERNAL_ERROR';
+  console.error("[API Unhandled Error]", req.method, req.originalUrl, error);
+  res.status(status).json({
+    apiVersion: 1,
+    error: message,
+    code,
+  });
+};
+
+app.use('/api', apiErrorHandler);
+app.use('/api/v1', apiErrorHandler);
+
 // -----------------------------------------------------------------------------
 // Dev & Build Routing Setup
 // -----------------------------------------------------------------------------

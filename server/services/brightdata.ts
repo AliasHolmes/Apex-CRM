@@ -2375,7 +2375,9 @@ export async function brightDataSearch(
             if (mdResults.length > 0) return mdResults;
           }
           throw new BrightDataError(
-            `Unexpected non-JSON response from Bright Data search_engine (${activeEngine}): ${textResult.slice(0, 200)}`,
+            // Never embed page-controlled bytes in the message: they flow into
+            // classifiers, logs and /health. The tool diagnostic is enough to act on.
+            `Unexpected non-JSON response from Bright Data search_engine (${activeEngine})`,
             { reasonCode: "empty_body_transient", retryable: false },
           );
         }
@@ -2408,9 +2410,9 @@ export async function brightDataSearch(
       } catch (error) {
         const classified = classifyBrightDataError(error);
         const isBotChallenge =
-          classified.reasonCode === "target_transient" ||
           classified.reasonCode === "target_blocked" ||
-          /unexpected non-json response|captcha|challenge|bot|blocked/i.test(classified.message);
+          (classified.reasonCode === "target_transient" &&
+            classified.retryable === false);
 
         if (engine === "google" && isBotChallenge) {
           googleSerpChallengeCount++;
@@ -2600,11 +2602,9 @@ export async function brightDataSearchBatch(
   } catch (error) {
     const classified = classifyBrightDataError(error);
     const isBotChallenge =
-      classified.reasonCode === "target_transient" ||
       classified.reasonCode === "target_blocked" ||
-      /unexpected non-json response|captcha|challenge|bot|blocked/i.test(
-        classified.message,
-      );
+      (classified.reasonCode === "target_transient" &&
+        classified.retryable === false);
 
     if (activeEngine === "google" && isBotChallenge) {
       googleSerpChallengeCount++;

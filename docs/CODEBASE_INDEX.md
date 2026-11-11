@@ -52,14 +52,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 16,874 lines across 63 TypeScript files (`components/` alone: 36 files / 11,319 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 29,452 lines: 53 modules + 9 `stages/` (modules 21,578 / stages 7,874)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 15,603 lines (db 5,746 / llm 3,250 / api 2,659 / brightdata 2,161 / rest 1,787)                                                             |
+| Frontend (`src/`)                                                | 16,998 lines across 63 TypeScript files (`components/` alone: 36 files / 11,357 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 30,117 lines: 54 modules + 9 `stages/` (modules 21,896 / stages 8,221)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 17,394 lines (db 5,877 / llm 3,706 / api 2,741 / brightdata 3,365 / rest 1,705)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v28**, WAL                   |
-| Test suite                                                       | 206 TypeScript files: 203 `.test.ts` + 1 test helper + 1 `.eval.ts` + 1 corpus module + 2 replay fixtures; 32,815 lines; 1,385 passing tests across 208 suites |
-| Total first-party LOC                                            | 95,166 TypeScript lines (347 files, incl. tests)                                    |
-| Anchor                                                           | measured at `e260b58`; dated 2026-11-04                                    |
+| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v29**, WAL                   |
+| Test suite                                                       | 209 files: 204 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/helpers/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 33,844 lines; executes via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail) |
+| Total first-party LOC                                            | 99,120 TypeScript lines (351 files, incl. tests)                                    |
+| Anchor                                                           | measured at working tree (post-v29 remediation); dated 2026-11-11                                    |
 
 ## 3. Tech stack
 
@@ -78,17 +78,17 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (377 lines)
-server/db.ts                 SQLite layer: schema v28, migrations 1-28, 40+ readers/writers (5,765)
-server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,659)
-server/services/             llm.ts (3,250, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+server.ts                    Express app + static Vite serve (380 lines) · socketGuard.ts — extracted socket-error handling & SSE disconnect cleanup used by server.ts and server/routes/api.ts (106 lines)
+server/db.ts                 SQLite layer: schema v29, migrations 1-29, 40+ readers/writers (5,877)
+server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,741)
+server/services/             llm.ts (3,706, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
-                             brightdata.ts (2,485) · keyRotator.ts (390) · sessionStreamHub.ts (221, SSE) ·
+                             brightdata.ts (3,365) · keyRotator.ts (390) · sessionStreamHub.ts (221, SSE) ·
                              linkedinEvidence.ts (305, owns canonicalLinkedInIdentity) · privateHosts.ts (163, SSRF) ·
                              outboundPrompt.ts (168) · langfuse.ts (123) · sleepUtils.ts (40, shared sleep)
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming
-                             seams (now unconditional) (3,391)
+                             seams (now unconditional) (3,426)
   leadDomain.ts              EngineLead domain type bridging pipeline state/checkpoints to the
                              `Lead` contract (56)
   liveRollingPool.ts         bounded live rolling-window pool for streaming judge execution across
@@ -101,21 +101,21 @@ server/leadSearch/           the discovery engine
   domainBlocklists.ts        canonical social/search/directory/email-domain blocklists, single source
                              of truth shared by siteProbe, companyDomainLookup, companyIntent,
                              observations and db (142)
-  prospectContract.ts        brief -> contract compilation + validation, clausal intent tail isolation, roleOfMatches prepositional disambiguation, known-metro registry (2,545)
+  prospectContract.ts        brief -> contract compilation + validation, clausal intent tail isolation, roleOfMatches prepositional disambiguation, known-metro registry (2,549)
   finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,588)
-  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (790)
+  scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (811)
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
   querySignature.ts          role/org/topic/geo signatures for near-duplicate and exhausted-query detection (305)
   stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation (322)
   companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching (187)
   titleResolution.ts         evidence-grounded title backfill from passing qualification requirements (137)
-  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v28, evidence-anchor normalized)
+  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v29, evidence-anchor normalized)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
   retrievalCache.ts          cross-round query-hash-keyed search retrieval cache (normalized query tokens)
   aliasMap.ts                symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
   queryRewriter.ts           bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection)
-  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v28)
+  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v29)
   profileQuality.ts          deterministic social-proof parsing, ghost/company-page & company-scoped contradiction gates
   providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
   searchSpec.ts · strategist.ts · adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ·
@@ -146,7 +146,7 @@ src/                         App.tsx (tab shell + error boundaries) · context/ 
                              leadDedupe, leadScore)
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        206 files: 203 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers.ts` + `prospectContractCorpus.ts` + 2 replay fixtures; 32,815 lines; 1,385 passing tests across 208 suites
+test/                        209 files: 204 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/helpers/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 33,899 lines; runs via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail)
 scripts/dev.ts               spawns Vite + Express (149 lines)
 scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22) (167 lines)
 ```
@@ -272,9 +272,8 @@ invariants.
 
 ## 7. Test suite
 
-203 `.test.ts` files, 1 eval file, `test/helpers.ts`, `test/fixtures/prospectContractCorpus.ts`,
-and 2 replay fixtures are present (206 `.ts` files in `test/`, 32,815 lines). Current measured state (2026-11-04):
-**1,385 pass / 0 fail**, exit 0 across all 208 suites. The 1,287/0, 1,370/0, and 1,381/0 figures below are historical and predate the current
+204 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (209 files in `test/`, 33,899 lines as of 2026-11-11). Last attested state (2026-11-04):
+**1,385 pass / 0 fail**, exit 0 across all 208 suites; pass/fail totals have not been re-attested since — the suite executes only via `npm test` (tsx with query-suffix import cache-busting) and was not runnable in the 2026-11-11 audit environment. The 1,287/0, 1,370/0, and 1,381/0 figures below are historical and predate the current
 suite. A
 historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval tests. Composition:
 
@@ -1050,7 +1049,7 @@ Comprehensive remediation and verification of 50 defects identified during the f
   - Classified HTTP 429 as `provider_rate_limit` and HTTP 500 as retryable 5xx, setting `disabledUntil` cooldown to eliminate tight retry loops.
   - Protected `closeBrightDataClient` against concurrent double-closing.
 - **Tier 3: Server Routing & API Boundaries**:
-  - Mounted terminal arity-4 error handler on `/api` and `/api/v1` in `server.ts` guaranteeing all unhandled errors emit JSON `{ apiVersion: 1, error }` instead of Express default HTML stack traces.
+  - Mounted terminal arity-4 error handler on `/api` and `/api/v1` in `server.ts` emitting JSON `{ apiVersion: 1, error }` for errors thrown by mounted `/api` routes. (At 1f9cfb4, unmatched `/api` paths still fell through to the SPA catch-all and 500 responses echoed the internal message; both fixed in the post-v29 follow-up — see 9.38.)
   - Added `paidRouteLimit` to `/llm-health` (10/min) and `/mining-sessions/:sessionId/resume` (20/min with HTTP 503 + `Retry-After: 30`).
   - Protected resumable session DELETE and cancel routes by consulting `activeAgentBrainSessions.has(id)` alongside `discoveryEngine.isActive`.
   - Added JSON payload string validation in `/api/leads` fast path to prevent syntax poisoning from corrupted records.
@@ -1058,8 +1057,8 @@ Comprehensive remediation and verification of 50 defects identified during the f
   - Preserved `previousLead.createdAt` on PATCH updates.
   - Capped outreach request bodies at 50k and enforced `isSafeLeadId` on route parameters.
 - **Tier 4: SQLite Database Engine & Migration 28**:
-  - Implemented Migration 28 in `server/db.ts` to encapsulate legacy MCP column backfills and create the compound covering index `idx_leads_stage_created_updated` on `leads(stage, created_at DESC, updated_at DESC)`.
-  - Enforced revision check when `requireExisting` is set in bulk lead upserts.
+  - Implemented Migration 28 in `server/db.ts` to encapsulate legacy MCP column backfills and create the compound covering index `idx_leads_stage_created` on `leads(stage, created_at DESC, updated_at DESC)` (always-run boot DDL updated to match; v28 drops/recreates the index for pre-v28 databases).
+  - Enforced revision check when `requireExisting` is set in bulk lead upserts. (Note: at 1f9cfb4, bulk blind overwrite remained the default — missing revision on an existing lead sailed through. Post-v29 follow-up: `requireRevisionIfExists` is now enforced by default on bulk writes; see 9.38.)
   - Handled `LIMIT -1 OFFSET ?` when offset is supplied without limit in `readLeadsSummary`.
   - Added comprehensive in-memory cache resetting in `closeLeadsDb()`.
   - Cleaned up orphaned activities and drafts in `replaceStoredLeads`.
@@ -1071,19 +1070,41 @@ Comprehensive remediation and verification of 50 defects identified during the f
   - Recalibrated finalist ranking base weights to sum to 1.00.
   - Returned baseline authority fit (5) when `contract.authorityRequired` is false.
   - Replaced unguarded `Math.max(Number(...))` calls with `boundedNumber` and `clampEnvInt` across all 9 stages.
-  - Canonicalized `buildLeadIdentityKeys` with `normalizeCompanyName` to strip legal suffixes, achieving cross-stack deduplication symmetry.
+  - Canonicalized `buildLeadIdentityKeys` (the DB identity-key writer) with `normalizeCompanyName` to strip legal suffixes, aligning it with `fuseStage`. (Note: at 1f9cfb4, symmetry was incomplete — `readExistingIdentityKeys`'s rebuilt-keys path, `candidateStableId`, `normalizeCandidateKey`, `agentBrainRunner.ts`, and pre-v28 `lead_identities` rows still used old spellings. All remediated in the post-v29 follow-up — see 9.38.)
 - **Tier 6: Frontend State & Mutation Safety**:
   - Settled revision conflict promise with `serverLead` on Esc or backdrop dismissal, permanently unblocking the lead's serial mutation queue.
-  - Preserved committed chunks during partial bulk write/delete failures and triggered targeted server rehydration.
+  - Preserved already-committed chunks in local state during partial bulk write/delete failures and rolled back only uncommitted ids (no automatic server rehydration is triggered).
   - Added network failure counting in `ScrapeWorkspace.tsx` polling loop with error toast escalation after 10 failures.
   - Allowed deep link drawer to close cleanly when CRM has 0 leads.
 - **Verification**:
-  - Full TypeScript typecheck (`tsc --noEmit`): **PASSED (0 errors)**.
-  - Full suite verification across all suites: **102/102 tests passed (100%)**.
+  - Full TypeScript typecheck (`tsc --noEmit`): **PASSED (0 errors)** (verified 2026-11-11).
+  - The full test suite executes only via `npm test` (tsx with query-suffix import cache-busting) and cannot be executed by agent tooling; it contains **204 `.test.ts` files (209 entries total)**. The "102/102 tests passed" figure recorded during remediation is unattested — the last attested run is **1,385 pass / 0 fail on 2026-11-04** (§9.36). Treat current pass/fail counts as unknown until the suite is run.
+
+### 9.38 Post-v28 Follow-up Remediation & Schema v29 (2026-11-11)
+
+Follow-up to 9.37 (ADR-0021): docs vs. code reconciliation, then remediation of the defects left open (including two remediation-introduced regressions). Landed on the working tree on top of `1f9cfb4`:
+
+- **Revision guard regression (introduced by 9.37)**: Migration 9.37 added `!options?.forceOverwrite` to the optimistic-concurrency guard in `upsertLeadInExistingTransaction`, silently re-enabling blind overwrite for PATCH `/leads/:id` when a stale revision was submitted. Removed the exemption; `patchRevision.test.ts` (409 stale) passes again.
+- **Legacy digest migration dropped by 9.37**: the `;`-delimited legacy `requirement_fail_digest` parser was removed instead of preserved, so `leadPersistence.test.ts`'s legacy seed lost its counts. Restored the split-merge as a *fallback only* (whole-JSON parse takes precedence; legacy segments merge first, additive digest then applies). Test updated to the additive semantics (`req-shared = 2 + 5 = 7`).
+- **Cross-path dedup harmonized**: `readExistingIdentityKeys`'s rebuilt-keys path, `candidateStableId`, `normalizeCandidateKey` (now normalizes both segments), and `agentBrainRunner.ts`'s `name_company` builder all emit `normalizeCompanyName`-canonical spellings; **Schema v29** re-keys pre-v29 `lead_identities`/`lead_identity_conflicts` rows to the same form, dropping legacy duplicates whose canonical key is already owned. See CONTEXT.md "Dedupe Identity Normalization".
+- **`roundRawCandidates` dead field**: retrieveStage now computes the duplicate-collision signal from the last completed round's `state.queryRuns` rejection counters and `previousRoundSummary.rawCandidates`, instead of a field no code wrote. The `stats.roundRawCandidates` fallback was removed.
+- **/api JSON 404 handler** mounted after the routers (unmatched `/api` paths no longer fall through to the SPA catch-all with HTTP 200).
+- **`apiErrorHandler`** no longer echoes internal messages for 5xx (generic `Internal server error` / `INTERNAL_ERROR`; 4xx messages are preserved).
+- **`/leads/bulk` enforces `requireRevisionIfExists`** for existing leads by default (omitting revision on an existing lead yields a per-item conflict); frontend surfaces `conflictCount` in the result and toasts when non-zero; conflict ids are excluded from committed chunks so a partial failure rolls them back too.
+- **Untrusted tool text**: the empty-200 SERP error no longer embeds the page body in its message (snippet dropped), and the sticky-Bing bot-challenge counters (single + batch) now classify on structured `reasonCode`/`target_transient && !retryable` rather than regexing message text.
+- **Provider queue bound**: `LLM_MAX_QUEUE_WAITERS` (default 250) caps the slot wait queue with a `ProviderQueueFullError`; `LLM_QUEUE_AGING_PROMOTION_MS` (default 30s) promotes long-waiting background waiters into the interactive section so unbounded interactive traffic cannot live-lock them.
+- **`coerceParsed`** logs a warning with dropped/total counts when required-key-invalid array items are filtered out (previously silent data loss).
+- **`isExhaustedQuotaError`** re-tightened: quota-shaped messages count as exhausted quota only for 429/402/432/433 (the 9.37 widened any-status matching is reverted; 402/432/433 free pass retained).
+- **Socket guard extraction**: `server/socketGuard.ts` exports `createSocketErrorGuard`/`handleHttpClientError`/`isClientSocketAbortError`/`attachDisconnectCleanup`; `server.ts` and the SSE stream route import it; `test/serverResilience.test.ts` now exercises these production exports instead of inline re-implementations.
+- **Startup robustness**: `getLeadsDb()` resets the `leadsDb` handle and rethrows when DDL/migrations fail (previously a transient failure permanently wedged the process); `closeLeadsDb()` resets `leadsInitializedCached`.
+- **`stats.roundRawCandidates` / threshold constants**: shared `server/leadSearch/pipelineThresholds.ts` (`DUPLICATE_DAMPEN_RATE` 0.2, `DUPLICATE_PAGE2_RATE` 0.3, `STALL_DUPLICATE_RATE` 0.4, `PLAN_NOVELTY_RATE` 0.2) with a documented ladder; `stallLadder` re-exports `STALL_DUPLICATE_RATE_THRESHOLD`.
+- **Stale schema-version assertions fixed**: `engineRemediationWiring`/`schemaV26` now expect v29; `identityKeysHarmonization` expectations updated to canonical (suffix-stripped) spellings.
+- **Maintenance**: typecheck clean; targeted test bundles for the twelve suites most relevant to these changes all pass (85 tests: identityKeysHarmonization 5, schemaV26 4, ftsIntegrity 4, engineRemediationWiring 8, leadPersistence 18, patchRevision 9, routeAuditFixes 17, serverResilience 5, leadIdentityMigration 1, engineAuditFixes 5, leadDedupe 6, leadMutationContracts 3); migration v29 verified re-keying a seeded pre-v29 database. Broader suite remains tsx-only and unattested (see section 7). Docs/ADR-0021 updated: current schema **v29**, `LATEST_SCHEMA_VERSION = 29`.
 
 ## 10. Recommended next actions
 
 Updated 2026-11-04.
+
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
 2. ~~**Candidate & Company Attribution Persistence.**~~ Done - Schema v26 `candidate_verdicts`, `company_profiles`, `company_attribution_verdicts`.

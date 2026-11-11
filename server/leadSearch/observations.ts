@@ -120,6 +120,10 @@ const COMPANY_HINT_BLOCKLIST = new Set([
   'chatgpt', 'claude', 'gemini', 'copilot'
 ]);
 
+// NOTE: deliberately a different (looser, corporate-form-of-address) strip list than
+// src/utils/leadDedupe.ts normalizeCompanyName (the canonical identity-key normalizer).
+// This one exists to recognize corporate forms of address in requirement/context
+// matching; identity keys must not be normalized through it. Keep in sync manually.
 const LEGAL_SUFFIX_RE = /\b(?:pty\s+ltd|ltd|limited|inc|incorporated|llc|llp|corp|corporation|gmbh|plc|group|holdings)\.?$/i;
 
 const PAGE_TYPE_PHRASE_RE =

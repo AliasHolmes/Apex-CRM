@@ -31,7 +31,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-export const LATEST_SCHEMA_VERSION = 28;
+export const LATEST_SCHEMA_VERSION = 29;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1350,6 +1350,64 @@ function runMigrations(db: DatabaseSync) {
       }
     }
 
+    if (currentVersion < 29) {
+      // Re-key pre-v29 `name_company:` identity rows to the canonical spelling
+      // produced by normalizeCompanyName() (legal suffixes stripped), matching the
+      // current identity-key writers. Rows whose canonical key is already owned by
+      // another identity row are dropped as legacy duplicates. lead_identity_conflicts
+      // is re-keyed identically.
+      const identityRows = db
+        .prepare(
+          "SELECT identity_key, lead_id, created_at FROM lead_identities WHERE identity_key LIKE 'name_company:%'",
+        )
+        .all() as { identity_key: string; lead_id: string; created_at: string }[];
+      const findKey = db.prepare(
+        "SELECT lead_id FROM lead_identities WHERE identity_key = ?",
+      );
+      const updateKey = db.prepare(
+        "UPDATE lead_identities SET identity_key = ? WHERE identity_key = ?",
+      );
+      const deleteKey = db.prepare(
+        "DELETE FROM lead_identities WHERE identity_key = ?",
+      );
+      const rekeyPart = (key: string): string | null => {
+        const sep = key.indexOf("::", "name_company:".length);
+        if (sep === -1) return null;
+        const name = normalizeDedupeValue(key.slice("name_company:".length, sep));
+        const company = normalizeCompanyName(key.slice(sep + 2));
+        if (!name || !company) return null;
+        return `name_company:${name}::${company}`;
+      };
+      for (const row of identityRows) {
+        const newKey = rekeyPart(row.identity_key);
+        if (!newKey || newKey === row.identity_key) continue;
+        const holder = findKey.get(newKey) as { lead_id?: string } | undefined;
+        if (holder) deleteKey.run(row.identity_key);
+        else updateKey.run(newKey, row.identity_key);
+      }
+      const conflictRows = db
+        .prepare(
+          "SELECT identity_key, duplicate_lead_id FROM lead_identity_conflicts WHERE identity_key LIKE 'name_company:%'",
+        )
+        .all() as { identity_key: string; duplicate_lead_id: string }[];
+      const findConflict = db.prepare(
+        "SELECT 1 FROM lead_identity_conflicts WHERE identity_key = ? AND duplicate_lead_id = ?",
+      );
+      const updateConflict = db.prepare(
+        "UPDATE lead_identity_conflicts SET identity_key = ? WHERE identity_key = ? AND duplicate_lead_id = ?",
+      );
+      const deleteConflict = db.prepare(
+        "DELETE FROM lead_identity_conflicts WHERE identity_key = ? AND duplicate_lead_id = ?",
+      );
+      for (const row of conflictRows) {
+        const newKey = rekeyPart(row.identity_key);
+        if (!newKey || newKey === row.identity_key) continue;
+        const holder = findConflict.get(newKey, row.duplicate_lead_id);
+        if (holder) deleteConflict.run(row.identity_key, row.duplicate_lead_id);
+        else updateConflict.run(newKey, row.identity_key, row.duplicate_lead_id);
+      }
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1501,6 +1559,7 @@ export function getLeadsDb() {
       }
     }
     leadsDb = new DatabaseSync(LEADS_DB_PATH);
+    try {
     leadsDb.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
@@ -1674,6 +1733,15 @@ export function getLeadsDb() {
       );
     }
     setLlmStageLogger(insertLlmStageLog);
+    } catch (error) {
+      // A partially-initialised database must not wedge the process: reset the
+      // module-level handle so the next getLeadsDb() retries from scratch.
+      try {
+        leadsDb.close();
+      } catch {}
+      leadsDb = null;
+      throw error;
+    }
   }
 
   return leadsDb;
@@ -1692,6 +1760,7 @@ export function closeLeadsDb() {
   cachedStoredCompanyNames = null;
   cachedStoredCompanyDomains = null;
   cachedStoredMetroSaturation = null;
+  leadsInitializedCached = false;
   dbMutationCounter = 0;
 }
 
@@ -2043,7 +2112,9 @@ export function readExistingIdentityKeys(): Set<string> {
       if (normEmail) keys.add(`email:${normEmail}`);
     }
     const name = normalizeDedupeValue(row.full_name || undefined);
-    const comp = normalizeDedupeValue(row.company || undefined);
+    // Match the identity-key writer's normalization (legal-suffix-stripped), so the
+    // rebuilt set agrees with lead_identities rows written via buildLeadIdentityKeys.
+    const comp = normalizeCompanyName(row.company || undefined);
     if (name && comp) {
       keys.add(`name_company:${name}::${comp}`);
     }
@@ -2216,6 +2287,14 @@ export type LeadWriteOptions = {
   perItemConflict?: boolean;
   forceOverwrite?: boolean;
   isEngineWrite?: boolean;
+  /**
+   * When set, an update to an EXISTING lead without an integer `revision` is rejected
+   * as a per-item conflict (mirrors PATCH /leads/:id, which hard-requires revision).
+   * Creates are unaffected. Used by client-writable bulk endpoints so stale or
+   * revision-less payloads cannot silently overwrite server state. Bypassed by
+   * `forceOverwrite`.
+   */
+  requireRevisionIfExists?: boolean;
 };
 
 export function buildLeadIdentityKeys(lead: Record<string, any>): Set<string> {
@@ -2351,10 +2430,10 @@ export function upsertLeadInExistingTransaction(
     : undefined;
   if (
     existing &&
-    !options?.forceOverwrite &&
     ((expectedRevision !== undefined &&
       expectedRevision !== Number(existing.revision || 1)) ||
-      (options?.requireExisting && expectedRevision === undefined))
+      (options?.requireExisting && expectedRevision === undefined) ||
+      (options?.requireRevisionIfExists && expectedRevision === undefined))
   ) {
     throw new LeadRevisionConflictError(
       readLeadFromRow(existing) || {
@@ -4307,12 +4386,35 @@ export function recordQueryPerformance(update: QueryPerformanceUpdate) {
     const existingRaw = existingRow?.requirement_fail_digest;
     const merged: Record<string, any> = {};
     if (existingRaw) {
+      let parsedWhole: unknown = null;
       try {
-        const parsed = JSON.parse(existingRaw);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          Object.assign(merged, parsed);
+        parsedWhole = JSON.parse(existingRaw);
+      } catch {
+        parsedWhole = null;
+      }
+      if (
+        parsedWhole &&
+        typeof parsedWhole === "object" &&
+        !Array.isArray(parsedWhole)
+      ) {
+        Object.assign(merged, parsedWhole);
+      } else {
+        // Legacy: '; '-delimited concatenated JSON objects written by early
+        // recordQueryPerformance versions. Preserve every segment (later
+        // segments override earlier keys) before applying the additive digest.
+        for (const seg of existingRaw.split(";")) {
+          const trimmed = seg.trim();
+          if (!trimmed) continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              Object.assign(merged, parsed);
+            }
+          } catch {
+            /* ignore non-JSON segment */
+          }
         }
-      } catch {}
+      }
     }
     if (effectiveDigest) {
       try {

@@ -7,7 +7,9 @@ import path from 'node:path';
 // covered by liveRollingPool/planCache/engineBottleneckRemediation tests; this file pins
 // the integration points so a refactor cannot silently detach them.
 
-const repoRoot = path.resolve(import.meta.dirname, '..');
+const repoRoot = typeof import.meta.dirname === 'string' && import.meta.dirname.endsWith('test')
+  ? path.resolve(import.meta.dirname, '..')
+  : process.cwd();
 const read = (rel: string) => readFileSync(path.join(repoRoot, rel), 'utf8');
 
 test('streaming judge seam wires enrichment completion into the live judge pool', () => {
@@ -113,7 +115,7 @@ test('saturation response injects account queries and tightens the metro thresho
 
 test('queue wait is persisted through the v27 column', () => {
   const db = read('server/db.ts');
-  assert.match(db, /LATEST_SCHEMA_VERSION = 27/);
+  assert.match(db, /LATEST_SCHEMA_VERSION = 29/);
   assert.match(db, /"queue_wait_ms",\s*"queue_wait_ms INTEGER NOT NULL DEFAULT 0"/);
   assert.match(db, /queue_wait_ms INTEGER NOT NULL DEFAULT 0,\s*model_name TEXT,/, 'fresh DBs must create the column');
 

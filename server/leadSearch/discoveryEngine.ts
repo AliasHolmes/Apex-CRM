@@ -2,6 +2,7 @@ import crypto from "crypto";
 import {
   buildProfileDedupeKeys,
   normalizeDedupeValue,
+  normalizeCompanyName,
   getLeadLinkedInUrl,
 } from "../../src/utils/leadDedupe.js";
 
@@ -200,7 +201,9 @@ export interface DiscoveryResult {
 
 export function normalizeCandidateKey(key: string): string {
   if (key.startsWith("text:") && key.includes("@")) {
-    const [name, comp] = key.slice(5).split("@");
+    const at = key.indexOf("@");
+    const name = normalizeDedupeValue(key.slice(5, at));
+    const comp = normalizeCompanyName(key.slice(at + 1));
     if (name && comp) return `name_company:${name}::${comp}`;
   }
   return key;
@@ -221,7 +224,7 @@ export function candidateStableId(
   );
   if (email) return `email:${email}`;
   const name = normalizeDedupeValue(lead.fullName || lead.profile?.fullName);
-  const company = normalizeDedupeValue(
+  const company = normalizeCompanyName(
     lead.currentCompany || lead.company || lead.profile?.currentCompany,
   );
   if (name && company) return `name_company:${name}::${company}`;

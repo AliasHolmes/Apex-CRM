@@ -586,7 +586,9 @@ test('Fix 3A: recordQueryPerformance merges JSON requirement_fail_digest via jso
   assert.ok(row, 'Should find query_performance row');
   const parsed = JSON.parse(row.requirement_fail_digest);
   assert.equal(parsed['req-legacy'], 4, 'Should preserve legacy key');
-  assert.equal(parsed['req-shared'], 5, 'Should update shared key');
+  // Legacy semicolon segments are preserved first; the new digest is then added
+  // on top of the merged totals (additive counter semantics).
+  assert.equal(parsed['req-shared'], 2 + 5, 'Legacy count is preserved and the new digest is added');
   assert.equal(parsed['req-new'], 3, 'Should include first update key');
   assert.equal(parsed['req-final'], 7, 'Should json_patch second update key');
 });

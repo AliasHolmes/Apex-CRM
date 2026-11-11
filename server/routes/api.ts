@@ -1,5 +1,6 @@
 import { Router } from "express";
 import crypto from "crypto";
+import { attachDisconnectCleanup } from "../socketGuard.js";
 import {
   LEAD_STAGE_SET as leadStages,
   REVIEW_STATUS_SET as reviewStatuses,
@@ -916,8 +917,12 @@ router.post("/leads/bulk", (req, res): any => {
     for (const lead of leads) {
       previousById.set(String(lead.id), readStoredLeadById(String(lead.id)));
     }
+    // Bulk endpoints are client-writable; an existing lead without an integer
+    // revision would silently overwrite server state. Enforce revision-if-exists
+    // (conflicts flow into the perItemConflict bucket) unless the caller explicitly
+    // opts out with forceOverwrite: true.
     const writeResults = upsertLeadsWithIdentity(leads, {
-      requireExisting: req.body?.requireExisting === true,
+      requireRevisionIfExists: true,
       perItemConflict,
       forceOverwrite,
     });
@@ -1443,14 +1448,6 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  // Guard against unhandled socket/stream errors (e.g. EPIPE, ECONNRESET)
-  const suppressDisconnectError = () => {
-    // Ignore expected client disconnect errors
-  };
-  res.on("error", suppressDisconnectError);
-  req.on("error", suppressDisconnectError);
-  req.socket?.on("error", suppressDisconnectError);
-
   const writeBuffer: string[] = [];
   let isDraining = false;
 
@@ -1502,20 +1499,18 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
     `data: ${JSON.stringify({ logs, traceEvents, session: readMiningSessionSummaryById(sessionId) })}\n\n`,
   );
 
-  let unsubscribed = false;
   let unsubscribe: (() => void) | null = null;
-  const doUnsubscribe = () => {
-    if (unsubscribed) return;
-    unsubscribed = true;
-    writeBuffer.length = 0;
-    (req.socket || res.socket)?.off("error", suppressDisconnectError);
-    req.off("error", suppressDisconnectError);
-    res.off("error", suppressDisconnectError);
-    res.off("drain", flushBuffer);
-    req.off("close", doUnsubscribe);
-    res.off("close", doUnsubscribe);
-    if (unsubscribe) unsubscribe();
-  };
+  const { doUnsubscribe } = attachDisconnectCleanup({
+    req,
+    res,
+    onDrain: flushBuffer,
+    onEmpty: () => {
+      writeBuffer.length = 0;
+    },
+    onUnsubscribe: () => {
+      if (unsubscribe) unsubscribe();
+    },
+  });
 
   // Hub fans out one poll interval + one DB read per session to all
   // subscribers, instead of each connection polling independently.
@@ -1543,9 +1538,6 @@ router.get("/mining-sessions/:sessionId/stream", (req, res): any => {
       }
     }
   });
-
-  req.on("close", doUnsubscribe);
-  res.on("close", doUnsubscribe);
 });
 
 router.get("/mining-sessions", (req, res): any => {

@@ -30,6 +30,7 @@ import {
   writeCachedSearch,
 } from "../retrievalCache.js";
 import { canonicalLinkedInIdentity } from "../../services/linkedinEvidence.js";
+import { DUPLICATE_DAMPEN_RATE, DUPLICATE_PAGE2_RATE } from "../pipelineThresholds.js";
 
 export type RetrieveStageInput = {
   round: number;
@@ -99,19 +100,36 @@ export async function executeRetrieveStage(
   let usingBrightDataSearch = false;
   const ablationTracker = createAblationTracker(2);
 
-  const roundRawCandidates =
-    typeof stats.roundRawCandidates === "number"
-      ? stats.roundRawCandidates
-      : (stats.rawCandidates || 0);
+  // Per-round collision signal: the last COMPLETED round is the relevant basis for
+  // this round's recall clamp. Session-cumulative counters dilute monotonically
+  // toward 0, so slope the decision instead of re-using a session average.
+  let lastRound = -1;
+  const lastRoundRejections: Record<string, number> = {};
+  for (const run of state.queryRuns || []) {
+    const r = Number(run?.round || 0);
+    if (!Number.isFinite(r) || r < 1) continue;
+    if (r > lastRound) {
+      lastRound = r;
+      for (const key of Object.keys(lastRoundRejections))
+        delete lastRoundRejections[key];
+      for (const [reason, count] of Object.entries(run.rejectionReasons || {}))
+        lastRoundRejections[reason] = Number(count || 0);
+    } else if (r === lastRound) {
+      for (const [reason, count] of Object.entries(run.rejectionReasons || {}))
+        lastRoundRejections[reason] =
+          (lastRoundRejections[reason] || 0) + Number(count || 0);
+    }
+  }
+  const lastRoundDupCount =
+    (lastRoundRejections.duplicate_existing_lead || 0) +
+    (lastRoundRejections.duplicate_person || 0);
+  const lastRoundRawCandidates = Number((state as any)?.previousRoundSummary?.rawCandidates);
   const duplicateCollisionRate =
-    roundRawCandidates > 0
-      ? ((stats.rejectionReasons?.duplicate_existing_lead || 0) +
-          (stats.rejectionReasons?.duplicate_person || 0)) /
-        roundRawCandidates
+    lastRound >= 1 && Number.isFinite(lastRoundRawCandidates) && lastRoundRawCandidates > 0
+      ? lastRoundDupCount / lastRoundRawCandidates
       : 0;
   const isHighDuplication =
-    duplicateCollisionRate >= 0.2 ||
-    (stats.rejectionReasons?.duplicate_existing_lead || 0) >= 3;
+    duplicateCollisionRate >= DUPLICATE_DAMPEN_RATE || lastRoundDupCount >= 3;
   // Complexity-aware recall policy: vague needs recall (20), rich needs precision (10).
   const briefTier = (() => {
     try {
@@ -518,7 +536,7 @@ export async function executeRetrieveStage(
         chunks.push(plans.slice(i, i + 5));
       }
 
-      const shouldFetchPage2 = duplicateCollisionRate > 0.3;
+      const shouldFetchPage2 = duplicateCollisionRate > DUPLICATE_PAGE2_RATE;
       const bdSearchOptions: BrightDataSearchOptions = {
         page: shouldFetchPage2 ? 1 : 0,
         signal: state.abortController.signal,
@@ -912,7 +930,7 @@ export async function executeRetrieveStage(
                   physicalAttempts++;
                   queryRuns[index].providerUnits += 1;
                   const linkedInQuery = toLinkedInSearchQuery(plan.item);
-                  const shouldFetchPage2 = duplicateCollisionRate > 0.3;
+                  const shouldFetchPage2 = duplicateCollisionRate > DUPLICATE_PAGE2_RATE;
                   const bdSearchOptions: BrightDataSearchOptions = {
                     ...(shouldFetchPage2 ? { start: 10 } : {}),
                     // Without this, a cancelled session keeps issuing paid SERP calls (and

@@ -47,8 +47,8 @@ test("Stream 2: Identity Keys Harmonization & Parity", async (t) => {
     assert.ok(keys.has("linkedin:jane-founder-123"), "Must contain LinkedIn key");
     assert.ok(keys.has("email:jane@quantumai.com"), "Must contain email key");
     assert.ok(
-      keys.has("name_company:jane founder::quantum ai inc"),
-      "Must contain name_company key even when LinkedIn is present",
+      keys.has("name_company:jane founder::quantum ai"),
+      "Must contain the canonical (legal-suffix-stripped) name_company key even when LinkedIn is present",
     );
   });
 
@@ -103,7 +103,7 @@ test("Stream 2: Identity Keys Harmonization & Parity", async (t) => {
     // Legacy checkpoint backward compatibility translation
     const legacyKey = "text:charlie brown@peanuts inc";
     const normalized = normalizeCandidateKey(legacyKey);
-    assert.equal(normalized, "name_company:charlie brown::peanuts inc");
+    assert.equal(normalized, "name_company:charlie brown::peanuts");
   });
 
   await t.test("deleteLead removes all identities from lead_identities", () => {

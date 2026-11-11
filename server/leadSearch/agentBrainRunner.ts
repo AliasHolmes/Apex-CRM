@@ -14,6 +14,10 @@ import {
   canonicalLinkedInIdentity,
 } from "../services/linkedinEvidence.js";
 import {
+  normalizeDedupeValue,
+  normalizeCompanyName,
+} from "../../src/utils/leadDedupe.js";
+import {
   brightDataGetPersonProfile,
   isBrightDataPro,
   closeBrightDataClient
@@ -345,8 +349,8 @@ export async function executeAgentBrainDiscovery(
       company = `${name}'s Outbound Practice`;
     }
 
-    // Check name + company deduplication
-    const nameCompKey = `name_company:${name.toLowerCase().trim()}::${company.toLowerCase().trim()}`;
+    // Check name + company deduplication (same normalization as db.ts buildLeadIdentityKeys)
+    const nameCompKey = `name_company:${normalizeDedupeValue(name)}::${normalizeCompanyName(company)}`;
     if (existingIdentities.has(nameCompKey)) {
       duplicatesSkipped++;
       continue;
@@ -475,7 +479,7 @@ export async function executeAgentBrainDiscovery(
     message: `Agent Brain finalized ${qualifiedLeads.length} leads matching all criteria (${brightDataEnrichedCount} enriched via BrightData Pro).`
   });
 
-  // 5. Atomic Schema v27 SQLite Persistence
+  // 5. Atomic Schema v29 SQLite Persistence
   const nowIso = new Date().toISOString();
   const leadsToInsert: Record<string, any>[] = qualifiedLeads.map((item) => {
     return {
@@ -604,7 +608,7 @@ export async function executeAgentBrainDiscovery(
       brightDataEnrichedCount > 0
         ? `[AgentBrain] BrightData Pro enriched ${brightDataEnrichedCount} leads with verified LinkedIn profiles, career histories, and company websites.`
         : `[AgentBrain] Processed candidate profiles via fast heuristic extraction.`,
-      `[AgentBrain] Ingested ${writeResults.length} leads into Schema v27 SQLite.`
+      `[AgentBrain] Ingested ${writeResults.length} leads into Schema v29 SQLite.`
     ]),
     debug_logs: JSON.stringify([]),
     trace_events: JSON.stringify([]),

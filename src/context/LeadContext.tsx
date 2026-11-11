@@ -923,6 +923,7 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     let bulkError: unknown;
     let persistedCreatedCount = leadsToSaveBackend.length;
     let serverDuplicateCount = 0;
+    let serverConflictCount = 0;
     let bulkOperation!: Promise<boolean>;
     bulkOperation = (async () => {
       try {
@@ -962,7 +963,28 @@ export function LeadProvider({ children }: { children: ReactNode }) {
               ? payload.duplicates as Array<{ incomingId?: string; lead?: Lead }>
               : []),
           ),
+          conflicts: chunkPayloads.flatMap(
+            payload => (Array.isArray(payload.conflicts)
+              ? payload.conflicts as Array<{ incomingId?: string; lead?: Lead }>
+              : []),
+          ),
         };
+        const conflicts = data.conflicts;
+        const conflictIncomingIds = new Set(
+          conflicts
+            .map((conflict) => conflict?.incomingId)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0),
+        );
+        // Conflicted leads were NOT written server-side (revision guard); do not
+        // count them as committed so a failure rolls them back as well.
+        for (const id of conflictIncomingIds) committedChunkIds.delete(id);
+        serverConflictCount += conflictIncomingIds.size;
+        if (conflictIncomingIds.size > 0) {
+          triggerToast(
+            `${conflictIncomingIds.size} prospect(s) were not updated because they changed on the server. Refresh the CRM and retry.`,
+            'info',
+          );
+        }
 
         const returnedLeads = Array.isArray(data.leads) ? data.leads as Lead[] : [];
         const returnedById = new Map(returnedLeads.map(lead => [lead.id, lead]));
@@ -1033,9 +1055,9 @@ export function LeadProvider({ children }: { children: ReactNode }) {
     void refreshStats();
     return {
       addedCount: persistedCreatedCount,
-      skippedCount: skippedCount + serverDuplicateCount,
+      skippedCount: skippedCount + serverDuplicateCount + serverConflictCount,
     };
-  }, [restoreLeadSubset, saveLeadsToStorage]);
+  }, [restoreLeadSubset, saveLeadsToStorage, triggerToast]);
 
   // 5. Update pipeline stage for CRM Lead
   const handleUpdateLeadStage = useCallback(async (leadId: string, stage: Lead['stage']) => {

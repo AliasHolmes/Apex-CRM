@@ -56,6 +56,7 @@ import {
   buildScopeKey,
 } from "../adaptiveScheduler.js";
 import { clampEnvInt } from "../sessionHelpers.js";
+import { PLAN_NOVELTY_RATE } from "../pipelineThresholds.js";
 import { resolveGeo } from "../queryUnderstanding.js";
 import { summarizeLLM } from "../telemetry.js";
 
@@ -343,7 +344,7 @@ export async function executePlanStage(
     const raw = Number(qr.rawCandidates ?? 0);
     const unique = Number(qr.uniqueCandidates ?? 0);
     const novelty = unique / Math.max(raw, 1);
-    if (raw >= 5 && novelty < 0.20 && qr.query) {
+    if (raw >= 5 && novelty < PLAN_NOVELTY_RATE && qr.query) {
       exhaustedSigs.push(buildQuerySignature(qr.query, { contract: config.contract }));
     }
   }

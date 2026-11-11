@@ -118,6 +118,7 @@ export function isExhaustedQuotaError(
   parsedCode?: string | number,
 ): boolean {
   if (status === 402 || status === 432 || status === 433) return true;
+  if (status !== 429) return false;
   if (!bodyOrMessage) return false;
   if (parsedCode !== undefined && String(parsedCode).trim() === "1300") {
     return true;
@@ -424,6 +425,32 @@ export function resolveDynamicQueueTimeoutMs(): number {
     return Math.max(1_000, Math.min(configured, 300_000));
   }
   return CLOUDFLARE_MAX_TIMEOUT_MS + 15_000;
+}
+
+/**
+ * Hard bound on the slot wait queue. Without it an unbounded burst of waiters
+ * (e.g. mining retries) grows memory and starvation pressure without limit.
+ * Callers get a fast `ProviderQueueFullError` instead of an unbounded wait.
+ */
+export function resolveMaxQueueWaiters(): number {
+  const configured = Number(process.env.LLM_MAX_QUEUE_WAITERS);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.floor(Math.min(configured, 10_000));
+  }
+  return 250;
+}
+
+/**
+ * Fairness valve: a background waiter that has been queued longer than this is
+ * promoted into the interactive section so an unbounded stream of interactive
+ * requests cannot live-lock it indefinitely.
+ */
+export function resolveQueueAgingPromotionMs(): number {
+  const configured = Number(process.env.LLM_QUEUE_AGING_PROMOTION_MS);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.min(configured, 300_000);
+  }
+  return 30_000;
 }
 
 /**
@@ -862,6 +889,26 @@ export function pumpProviderSlotWaitQueue(): void {
   if (isPumpingSlots) return;
   isPumpingSlots = true;
   try {
+    // Aging promotion: background waiters that have waited too long are moved
+    // ahead of any younger interactive inserts so they cannot be starved forever.
+    const agingMs = resolveQueueAgingPromotionMs();
+    if (agingMs > 0) {
+      const now = Date.now();
+      const aged: ProviderSlotWaiter[] = [];
+      for (let i = providerSlotWaitQueue.length - 1; i >= 0; i--) {
+        const waiter = providerSlotWaitQueue[i];
+        if (!waiter.isInteractive && now - waiter.enqueuedAt >= agingMs) {
+          waiter.isInteractive = true;
+          aged.unshift(waiter);
+          providerSlotWaitQueue.splice(i, 1);
+        }
+      }
+      if (aged.length) {
+        let insertAt = providerSlotWaitQueue.findIndex((w) => !w.isInteractive);
+        if (insertAt === -1) insertAt = providerSlotWaitQueue.length;
+        providerSlotWaitQueue.splice(insertAt, 0, ...aged);
+      }
+    }
     for (let i = 0; i < providerSlotWaitQueue.length; i++) {
       const waiter = providerSlotWaitQueue[i];
       if (waiter.signal?.aborted) continue;
@@ -926,6 +973,16 @@ export function waitForProviderSlot(
 
     if (signal?.aborted) {
       onAbort();
+      return;
+    }
+
+    // Bound the wait queue: fail fast instead of accepting an unbounded backlog.
+    if (providerSlotWaitQueue.length >= resolveMaxQueueWaiters()) {
+      const fullErr = new Error(
+        "LLM provider concurrency queue is full; request rejected to avoid an unbounded wait.",
+      );
+      fullErr.name = "ProviderQueueFullError";
+      reject(fullErr);
       return;
     }
 
@@ -2965,6 +3022,12 @@ export async function openAIStructured<T>(
               itemRequired.every((key: string) => key in item),
           );
           if (validItems.length === 0) return null;
+          // Never lose items silently: surface dropped counts on every attempt.
+          if (validItems.length !== value.length) {
+            console.warn(
+              `[llm] coerceParsed dropped ${value.length - validItems.length}/${value.length} invalid items (missing required keys).`,
+            );
+          }
           return validItems as T;
         }
       }

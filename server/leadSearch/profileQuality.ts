@@ -81,6 +81,11 @@ export function isGhostProfile(proof: SocialProof, maxConnections = 50): boolean
   return proof.followers === 0 && (proof.connections ?? 0) < maxConnections && !proof.influencer;
 }
 
+// NOTE: distinct from src/utils/leadDedupe.ts normalizeCompanyName (the canonical
+// identity-key normalizer used for dedup keys). This variant ALSO strips
+// `solutions|services|company|co|pllc|pc|sas|spa|srl|pty|pvt` because it exists to
+// DETECT company-shaped garbage in lead profiles, not to build dedup keys.
+// Do not merge the two patterns; identity keys must not learn from here.
 const LEGAL_SUFFIX_PATTERN = /\b(inc|llc|ltd|limited|corp|corporation|company|co|pllc|pc|group|holdings|solutions|services|sas|spa|srl|gmbh|pty|pvt)\.?$/i;
 
 export const normalizeCompanyNameForCompare = (value: unknown): string =>

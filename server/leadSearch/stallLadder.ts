@@ -8,7 +8,8 @@ import {
 import type { ProspectContract } from "./prospectContract.js";
 import type { SearchQueryPlanItem } from "./searchSpec.js";
 
-export const STALL_DUPLICATE_RATE_THRESHOLD = 0.40;
+import { STALL_DUPLICATE_RATE } from './pipelineThresholds.js';
+export const STALL_DUPLICATE_RATE_THRESHOLD = STALL_DUPLICATE_RATE;
 
 export type StallLevel = 0 | 1 | 2 | 3;
 

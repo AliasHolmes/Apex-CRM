@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=black" alt="React" />
     <img src="https://img.shields.io/badge/Vite-8.2-646CFF?logo=vite&logoColor=white" alt="Vite" />
     <img src="https://img.shields.io/badge/TailwindCSS-4.3-38B2AC?logo=tailwind-css&logoColor=white" alt="Tailwind CSS" />
-    <img src="https://img.shields.io/badge/SQLite-Schema_v28-003B57?logo=sqlite&logoColor=white" alt="SQLite schema v28" />
+    <img src="https://img.shields.io/badge/SQLite-Schema_v29-003B57?logo=sqlite&logoColor=white" alt="SQLite Schema v29" />
     <img src="https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
     <img src="https://img.shields.io/badge/Lead_Engine-Passing-10B981" alt="Lead Engine Tests" />
   </p>
@@ -30,7 +30,7 @@ Its primary workflow is intentionally practical:
    - Executes **Two-Wave Parallel Retrieval** across Tavily and Bright Data simultaneously, with vagueness-aware depth (`vague: 20 + advanced recall`, `rich: precision-tuned`), cross-round **Retrieval Cache** (`retrievalCache.ts`), and a bounded **complexity-aware query rewriter** (`queryRewriter.ts`) as second-chance zero-yield recovery.
    - Applies **Fast Deterministic Pre-Filter Gate** to discard CRM duplicates and non-compliant profiles in 0ms without invoking extraction LLMs.
    - Enforces **Provider Slot Concurrency & Unconstrained Reasoning** (`withProviderFallback`): establishes OmniRoute (`gemini-3.8-flash-high`) as the Tier 1 primary engine provider with 8 concurrent slots, unconstrained 65k output tokens, and high reasoning effort, backed by Byesu (`gpt-6.1-sol`) as secondary fallback (8 slots) and Groq/Mistral as failsafe tier, achieving safe high-throughput execution without rate limits or timeouts.
-   - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v28.
+   - Reuses verified evaluations via **Candidate Verdict Cache** (`candidateVerdicts.ts`) and **Company Attribution Persistence** (`companyAttribution.ts`) in SQLite Schema v29.
    - Matches with **alias-first normalization** (`aliasMap.ts`): `MD`, `VP`, `US`/`USA`, ISO regions resolve in 0ms with no network calls.
 4. **Signal-to-Company Reverse Flywheel**: Discovered hiring/tooling triggers on the open web immediately feed prioritized executive search queries.
 5. **Multi-Source Intent Enrichment**: Analyzes company websites (**TF-IDF Intent**) and public prospect activity (**LinkedIn Post SERP Intent with Temporal Freshness Decay**).
@@ -70,7 +70,7 @@ flowchart TD
     StreamA --> Plan
     StreamB --> Plan
 
-    Persist --> Checkpoint[("Durable SQLite Checkpoint (Schema v28)")]
+    Persist --> Checkpoint[("Durable SQLite Checkpoint (Schema v29)")]
     Persist --> Inventory["Local Prospect Inventory"]
 ```
 
@@ -165,7 +165,7 @@ flowchart TD
 - **OmniRoute Primary Architecture**: Configures primary concurrency slots (`OPENAI_CONCURRENT_SLOTS=8`) with Gemini 3.8 Flash High (`gemini-3.8-flash-high`) and unconstrained 65k output tokens, backed by Byesu GPT-6.1 (`gpt-6.1-sol`, 8 slots) as secondary fallback.
 - **Dynamic Timeout Scaling & Cloudflare Decoupling**: Uses `computeByesuDynamicTimeoutMs` with Cloudflare proxy limits (`115,000ms`) applied strictly to Byesu targets, while local OmniRoute and direct endpoints scale dynamically up to a generous 300,000ms ceiling with 75s planner hard timeouts and 20s health check probes.
 
-#### 13. Persistent Candidate Verdicts & Company Attribution (Schema v27)
+#### 13. Persistent Candidate Verdicts & Company Attribution (Schema v29)
 
 - **Candidate Verdict Cache** (`candidate_verdicts`): Persists candidate pass and hard-fail evaluations indexed by canonical LinkedIn identity key and contract requirement hash, enabling 0ms evaluation reuse across discovery rounds.
 - **Company Taxonomy & Attribution Persistence** (`company_profiles`, `company_attribution_verdicts`): Stores verified company business models, offerings, and per-brief attribution verdicts, cutting redundant company-level LLM calls by up to 85%.
@@ -230,13 +230,18 @@ flowchart TD
 - **Dynamic Queue Timeout Scaling**: Configured queue timeouts are respected down to 1s rather than being clamped to 130s.
 - **Completion Cache Normalization**: Harmonized completion cache read/write to populate both camelCase (`inputTokens`) and snake_case (`input_tokens`) usage fields.
 - **Bright Data MCP Resilience**: Repaired empty-200 SERP self-healing (`isEmptyBodySerpTransientError` recognizing `empty_body_transient`), prevented MCP child stdio client/transport leaks on connect timeout, and routed HTTP 429 to provider cooldown.
-- **Terminal Arity-4 JSON Error Boundary**: Mounted terminal error handlers on `/api` and `/api/v1` guaranteeing all unhandled errors emit JSON `{ apiVersion: 1, error }` instead of Express default HTML stack traces.
+- **Terminal Arity-4 JSON Error Boundary**: Mounted terminal error handlers on `/api` and `/api/v1` so errors thrown by `/api` routes emit JSON `{ apiVersion: 1, error }` instead of Express default HTML stack traces. Unmatched `/api` paths receive a JSON `404 { apiVersion: 1, error: "Not found." }`, and 5xx responses return a generic `Internal server error` (internal messages are not echoed).
 - **Paid Diagnostic Rate Limiting**: Added `paidRouteLimit` to `/llm-health` (10/min) and `/mining-sessions/:sessionId/resume` (20/min with HTTP 503 + `Retry-After: 30`).
 - **Resumable Session Protection**: Protected DELETE and cancel routes by consulting `activeAgentBrainSessions` alongside `discoveryEngine.isActive`.
-- **SQLite Migration 28**: Created Migration 28 encapsulating legacy MCP backfills and compound index `(stage, created_at DESC, updated_at DESC)`, and enforced revision checks on existing leads.
+- **SQLite Migration 28 & 29**: Created Migration 28 encapsulating legacy MCP backfills and compound index `idx_leads_stage_created` `(stage, created_at DESC, updated_at DESC)`, enforcing revision checks on bulk upserts via `requireRevisionIfExists` (default on), and re-keying pre-v29 `name_company:` identity rows to the canonical `normalizeCompanyName` spelling.
 - **NaN-Safe Numeric Parsing**: Routed all environment and stage numeric options through `boundedNumber` and `clampEnvInt` across all 9 discovery stages.
-- **Deduplication Symmetry**: Normalized company names with `normalizeCompanyName` in `buildLeadIdentityKeys`, aligning DB deduplication with pipeline fusion.
-- **Frontend Mutation Safety**: Resolved conflict dialog promise with `serverLead` on Esc or backdrop dismissal, unblocking the lead mutation queue, and preserved committed chunks during partial bulk write failures.
+- **Deduplication Symmetry**: `normalizeCompanyName` now strips legal suffixes in `buildLeadIdentityKeys` (DB) in alignment with `fuseStage`; Migration 29 re-keyed pre-v29 `lead_identities`/`lead_identity_conflicts` rows, and `candidateStableId`, `normalizeCandidateKey`, the agent-brain key builder, and `readExistingIdentityKeys`'s rebuilt-keys path all emit the canonical spellings. Cross-path symmetry is complete.
+- **Frontend Mutation Safety**: Resolved conflict dialog promise with `serverLead` on Esc or backdrop dismissal, unblocking the lead mutation queue, and preserved already-committed chunks during partial bulk write failures (failed chunks rolled back; revision-guard conflicts counted, toasted, and excluded from committed chunks).
+- **Revision Guard on Bulk Writes**: Bulk upserts route through `requireRevisionIfExists` by default (missing revision on an existing row yields a per-item conflict); PATCH `/leads/:id` hard-requires integer revision and returns 409 `LEAD_REVISION_CONFLICT` on mismatch. The 1f9cfb4 revision-guard exemption that silently re-enabled stale overwrites was removed.
+- **Per-Round Duplicate-Collision Signal**: `retrieveStage` computes the CRM-duplicate collision rate from the last completed round's `state.queryRuns` rejection counters and `previousRoundSummary.rawCandidates` (the never-written `stats.roundRawCandidates` read was removed), feeding the Tavily recall clamp, page-2 SERP fetch, and high-duplication decisions.
+- **Provider Slot Queue Bound**: `LLM_MAX_QUEUE_WAITERS` (default 250) caps the provider slot wait queue with a fast `ProviderQueueFullError`; `LLM_QUEUE_AGING_PROMOTION_MS` (default 30s) promotes long-waiting background waiters into the interactive section so they cannot be live-locked behind interactive traffic.
+- **API Hardening**: Unmatched `/api` paths receive JSON `404 { apiVersion: 1 }`; 5xx responses return generic `Internal server error` (no internals echoed); untrusted tool/page bytes no longer reach error classifiers/logs/`/health` (empty-200 SERP errors no longer embed page bodies; sticky-Bing accounting keys off structured `reasonCode`).
+- **Robustness & Hygiene**: `getLeadsDb()` resets the handle and rethrows on migration failure (no more wedged process); `closeLeadsDb()` resets `leadsInitializedCached`; `isExhaustedQuotaError` re-tightened to 429/402/432/433; the legacy `;`-delimited `requirement_fail_digest` migration is restored as a fallback; the suite's stale schema-version assertions now match **v29**; `test/serverResilience.test.ts` tests the real production socket-guard wiring extracted to `server/socketGuard.ts`.
 
 ---
 
@@ -245,7 +250,7 @@ flowchart TD
 ```mermaid
 graph TD
     UI["React Client (127.0.0.1:3000)"] --> API["Express 5 REST API"]
-    API --> DB[("SQLite Database (node:sqlite, Schema v28, WAL mode)")]
+    API --> DB[("SQLite Database (node:sqlite, Schema v29, WAL mode)")]
 
     API --> Direct["Direct OpenAI-Compatible Provider Chain"]
     Direct --> Primary["OmniRoute Primary Provider (Gemini 3.8 Flash High)"]
@@ -266,7 +271,7 @@ graph TD
 
 - **Frontend**: React 19, Vite 8, Tailwind CSS 4, Motion, Radix UI, Lucide React, `useSyncExternalStore`.
 - **Backend**: Node.js 24+, TypeScript 7, Express 5, `p-queue` rate limiting.
-- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v28**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
+- **Persistence**: Built-in `node:sqlite` in WAL mode with transactional schema migrations (schema **v29**), optimistic revision locking, durable checkpoints, and automatic WAL-safe backups.
 - **LLM Routing**: Direct OpenAI-compatible provider chain with OmniRoute primary (Gemini 3.8 Flash High), Byesu secondary fallback (GPT-6.1), automatic failsafe (OpenRouter -> Groq), session circuit breaker, and retry logic.
 - **Retrieval**: Multi-key rotating Tavily Search/Extract, cross-round retrieval cache, and Bright Data MCP v4.6 (`search_engine`, `search_engine_batch`, `scrape_as_markdown`, `run_scraper`, Schema.org extraction).
 
@@ -402,7 +407,7 @@ All API routes are mounted under `/api`:
 
 ---
 
-## Database & Schema (v28)
+## Database & Schema (v29)
 
 The default database is `.apex-data/apex-crm.sqlite`. SQLite runs in WAL mode with foreign keys enabled and busy timeouts configured.
 
@@ -432,6 +437,7 @@ Apex CRM stores CRM state, lead attributes, and provider settings locally in SQL
 - **`saved_searches`**: Reusable prospecting configurations.
 - **`lead_activities` & `outreach_drafts`**: Audit trails and draft messaging.
 - **Migration 28**: Encapsulates legacy MCP column migrations and introduces the compound covering index `(stage, created_at DESC, updated_at DESC)` on `leads`.
+- **Migration 29**: Re-keys pre-v29 `name_company:` identity rows (and `lead_identity_conflicts`) to the canonical `normalizeCompanyName` spelling used by the identity-key writers; legacy duplicates are dropped when the canonical key is already owned.
 
 Automated backups are created under `.apex-data/backups/` before schema migrations run.
 
@@ -439,13 +445,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 206 TypeScript files in `test/` (203 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 209 files in `test/` (204 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (1,385 pass / 0 fail)
+# Full test suite (204 .test.ts files as of 2026-11-11; tsx runner - attested 2026-11-04 run: 1,385 pass / 0 fail)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -512,7 +518,7 @@ server/
     discoveryEngine.ts       Discovery Session Engine orchestrator & stage pipelining (parentSessionId/deltaBrief/interactive)
     prospectContract.ts      Contract schema, prompt intelligence & decomposition (plural-persona, alias-aware grounding, no geo invention)
     queryUnderstanding.ts    Complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
-    candidateVerdicts.ts     Candidate qualification and hard-fail verdict cache (Schema v28)
+    candidateVerdicts.ts     Candidate qualification and hard-fail verdict cache (Schema v29)
     defaultRoles.ts          Dynamic role and business function extraction for any domain
     geo.ts                   Universal ISO 3166-1 country code resolution via Intl
     retrievalCache.ts        Query-hash-keyed search retrieval cache
@@ -520,15 +526,15 @@ server/
     queryRewriter.ts         Bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection, max 3)
     intentSignals.ts         Dynamic signal compiler, categories & freshness decay (abbreviated units, 45d neutral undated age)
     companyIntent.ts         Phase 4 company website TF-IDF intent scoring
-    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating (Schema v28)
+    companyAttribution.ts    Gated company-to-prospect LLM attribution & business-model contradiction gating (Schema v29)
     profileQuality.ts        Deterministic social-proof parsing, ghost/company-page & company-scoped contradiction detection
     linkedinPostIntent.ts    Phase 5 annotate-only LinkedIn post SERP intent research
     providerQueue.ts         Bounded-concurrency provider task queue (`runProviderQueue`)
     collectionCapacity.ts    Candidate batch sizing and target-scaled ceilings
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
-  db.ts                      SQLite v28 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts, migration 28)
-test/                        Automated unit, integration, replay, and eval test suites (206 files, 203 .test.ts + helpers)
+  db.ts                      SQLite v29 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts, migrations 28-29)
+test/                        Automated unit, integration, replay, and eval test suites (209 files: 204 .test.ts + 1 .eval.ts + helpers/fixtures)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

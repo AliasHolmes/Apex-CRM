@@ -179,8 +179,7 @@ Goal: close the trust hole that lets bypass paths persist heuristic leads as `KE
    writes), rule, demotion behavior, test pin. Update `CONTEXT.md` + this index per
    `docs_sync` rule. (Numbering note: ADR-0014 was taken by the Byesu-primary decommissioning;
    the grounded invariant landed as ADR-0015.)
-6. Optional later (NOT in scope): schema v28 `qualification_provenance` column if operators
-   ever need to query provenance — the JSON gate suffices for now.
+6. Optional later (NOT in scope): a `qualification_provenance` schema column (next schema version after the one then current, now v29) if operators ever need to query provenance — the JSON gate suffices for now.
 
 Validation: persistence suites (`leadPersistence`, `leadMutationContracts`, `groundedWriteInvariant`)
 + full suite.

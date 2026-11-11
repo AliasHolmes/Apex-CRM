@@ -25,40 +25,16 @@ import {
 import { closeBrightDataClient } from "./server/services/brightdata.js";
 import { validateEngineConfig } from "./server/configValidation.js";
 import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
+import {
+  isClientSocketAbortError,
+  createSocketErrorGuard,
+  handleHttpClientError,
+} from "./server/socketGuard.js";
 
 const app = express();
 
-const guardedSockets = new WeakSet<object>();
-
-export function isClientSocketAbortError(err: any): boolean {
-  if (!err) return false;
-  const code = err.code;
-  const message = err.message || (typeof err === "string" ? err : "");
-  return (
-    code === "ECONNRESET" ||
-    code === "EPIPE" ||
-    code === "ERR_STREAM_PREMATURE_CLOSE" ||
-    message.includes("ECONNRESET") ||
-    message.includes("EPIPE")
-  );
-}
-
 // Guard against unhandled client disconnect errors (e.g. ECONNRESET/EPIPE when closing browser tab)
-app.use((req, res, next) => {
-  const handleSocketError = (err: any) => {
-    if (isClientSocketAbortError(err)) {
-      return;
-    }
-    console.warn("[Server] Socket warning:", err?.message || err);
-  };
-  req.on("error", handleSocketError);
-  res.on("error", handleSocketError);
-  if (req.socket && !guardedSockets.has(req.socket)) {
-    guardedSockets.add(req.socket);
-    req.socket.on("error", handleSocketError);
-  }
-  next();
-});
+app.use(createSocketErrorGuard());
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = "127.0.0.1";
 const isProduction =
@@ -151,6 +127,14 @@ app.use(express.json({ limit: "10mb" }));
 // breaking changes can land at /api/v2 without disturbing existing clients.
 app.use("/api", apiRouter);
 app.use("/api/v1", apiRouter);
+
+// JSON 404 for unmatched API paths (must precede the SPA catch-all, otherwise
+// unknown /api routes are served index.html with HTTP 200).
+for (const scope of ["/api", "/api/v1"]) {
+  app.use(scope, (_req, res) => {
+    res.status(404).json({ apiVersion: 1, error: "Not found." });
+  });
+}
 app.use(
   (
     error: unknown,
@@ -185,8 +169,11 @@ const apiErrorHandler = (
 ) => {
   if (res.headersSent) return next(error);
   const status = typeof error?.status === 'number' ? error.status : typeof error?.statusCode === 'number' ? error.statusCode : 500;
-  const message = error?.message || 'Internal server error';
-  const code = error?.code || 'INTERNAL_ERROR';
+  // 4xx messages are client-facing validation text; 5xx must never leak internals
+  // (SQL/provider messages, file paths) to the caller.
+  const isServerError = status >= 500;
+  const message = isServerError ? 'Internal server error' : (error?.message || 'Request failed');
+  const code = isServerError ? 'INTERNAL_ERROR' : (error?.code || 'BAD_REQUEST');
   console.error("[API Unhandled Error]", req.method, req.originalUrl, error);
   res.status(status).json({
     apiVersion: 1,
@@ -234,11 +221,7 @@ async function startServer() {
 
   // Safely close and destroy abruptly aborted client sockets (e.g. closing browser tab)
   server.on("clientError", (err: any, socket) => {
-    if (isClientSocketAbortError(err) || !socket.writable) {
-      socket.destroy();
-      return;
-    }
-    socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+    handleHttpClientError(err, socket);
   });
 
   // Global guards to prevent client socket resets from terminating the Node process

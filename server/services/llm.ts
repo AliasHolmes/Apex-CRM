@@ -2056,7 +2056,7 @@ async function sendChatCompletion(
     const maxStreamDurationMs =
       Number(options?.hardTimeoutMs) > 0
         ? Number(options?.hardTimeoutMs)
-        : (isReasoningStall ? 120_000 : 75_000);
+        : Math.max(Number(timeoutForCall || 0), isReasoningStall ? 240_000 : 90_000);
 
     let streamStallTimer: NodeJS.Timeout | undefined;
     let streamInactivityTimer: NodeJS.Timeout | undefined;

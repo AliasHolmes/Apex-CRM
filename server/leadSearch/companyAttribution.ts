@@ -476,7 +476,7 @@ export async function runGatedCompanyAttribution(
     ].join("\n");
 
     try {
-      const dynamicAttributionTokens = Math.max(1200, batch.length * 400);
+      const dynamicAttributionTokens = Math.max(4096, batch.length * 600);
       const response = (await structuredFn(
         promptText,
         bulkCompanyAttributionSchema,

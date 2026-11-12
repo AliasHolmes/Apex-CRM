@@ -1954,7 +1954,9 @@ async function sendChatCompletion(
   };
   if (isLocalOmniRoute) {
     requestHeaders["X-OmniRoute-Progress"] = "true";
-    requestHeaders["X-OmniRoute-Strip-Reasoning"] = "true";
+    if (!allowStreaming) {
+      requestHeaders["X-OmniRoute-Strip-Reasoning"] = "true";
+    }
     requestHeaders["X-OmniRoute-No-Memory"] = "true";
   }
 
@@ -2040,11 +2042,21 @@ async function sendChatCompletion(
     let streamFinishReason: string | undefined;
     let streamUsage: any = undefined;
 
-    const stallTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, 45_000, 50);
+    const isReasoningStall = isLocalOmniRoute && isReasoningCapable;
+    const stallTimeoutMs = boundedNumber(
+      process.env.LLM_STALL_TIMEOUT_MS,
+      isReasoningStall ? 90_000 : 45_000,
+      50,
+    );
     const inactivityTimeoutMs = boundedNumber(process.env.LLM_STALL_INACTIVITY_MS, 25_000, 50);
+    const maxStreamDurationMs =
+      Number(options?.hardTimeoutMs) > 0
+        ? Number(options?.hardTimeoutMs)
+        : (isReasoningStall ? 120_000 : 75_000);
 
     let streamStallTimer: NodeJS.Timeout | undefined;
     let streamInactivityTimer: NodeJS.Timeout | undefined;
+    let streamDurationTimer: NodeJS.Timeout | undefined;
     let isStreamStalled = false;
     let stallReasonMsg = "";
 
@@ -2056,6 +2068,10 @@ async function sendChatCompletion(
       if (streamInactivityTimer) {
         clearTimeout(streamInactivityTimer);
         streamInactivityTimer = undefined;
+      }
+      if (streamDurationTimer) {
+        clearTimeout(streamDurationTimer);
+        streamDurationTimer = undefined;
       }
     };
 
@@ -2072,6 +2088,10 @@ async function sendChatCompletion(
       triggerStreamStall(`No forward token progress received within ${Math.round(stallTimeoutMs / 1000)}s.`);
     }, stallTimeoutMs);
 
+    streamDurationTimer = setTimeout(() => {
+      triggerStreamStall(`Stream exceeded total duration ceiling of ${Math.round(maxStreamDurationMs / 1000)}s.`);
+    }, maxStreamDurationMs);
+
     const resetStreamInactivity = () => {
       if (streamStallTimer) {
         clearTimeout(streamStallTimer);
@@ -2086,7 +2106,12 @@ async function sendChatCompletion(
     let streamDone = false;
     const processStreamLine = (line: string) => {
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith(":")) return;
+      if (!trimmed) return;
+      if (trimmed.startsWith(":")) {
+        // SSE comment - may be OmniRoute keepalive (`: keepalive <ISO>`)
+        resetStreamInactivity();
+        return;
+      }
       if (trimmed.startsWith("event: progress")) return;
       if (trimmed.startsWith("data:")) {
         const dataStr = trimmed.slice(5).trim();
@@ -2098,6 +2123,14 @@ async function sendChatCompletion(
         try {
           const parsed = JSON.parse(dataStr);
           if (typeof parsed.tokens_generated === "number" && parsed.tokens_generated > 0) {
+            resetStreamInactivity();
+            return;
+          }
+          if (
+            parsed.model === "keepalive" ||
+            parsed.type === "ping" ||
+            (Array.isArray(parsed.choices) && parsed.choices.length === 0)
+          ) {
             resetStreamInactivity();
             return;
           }

@@ -228,3 +228,172 @@ test('Repeated stall on Gemini delegates to Byesu (gpt-6.1-sol) in failsafeTier'
     if (savedStallEnv !== undefined) process.env.LLM_STALL_TIMEOUT_MS = savedStallEnv; else delete process.env.LLM_STALL_TIMEOUT_MS;
   }
 });
+
+test('OmniRoute keepalive chunks (choices: []) reset stream inactivity and prevent stalls', async () => {
+  const savedBase = process.env.OPENAI_BASE;
+  const savedKey = process.env.OPENAI_API_KEY;
+  const savedName = process.env.OPENAI_PROVIDER_NAME;
+  const savedModel = process.env.OPENAI_MODEL;
+  const savedStallEnv = process.env.LLM_STALL_TIMEOUT_MS;
+  const savedInactivityEnv = process.env.LLM_STALL_INACTIVITY_MS;
+
+  try {
+    process.env.OPENAI_BASE = 'http://localhost:20128/v1';
+    process.env.OPENAI_API_KEY = 'test-omniroute-key';
+    process.env.OPENAI_PROVIDER_NAME = 'OmniRoute';
+    process.env.OPENAI_MODEL = 'gemini-3.8-flash-high';
+    process.env.LLM_STALL_TIMEOUT_MS = '200';
+    process.env.LLM_STALL_INACTIVITY_MS = '200';
+
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          // Send keepalive chunk at 80ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(
+            encoder.encode('data: {"id":"chatcmpl-keepalive","object":"chat.completion.chunk","model":"keepalive","choices":[]}\n\n'),
+          );
+          // Send second keepalive chunk at 160ms (past original 200ms without keepalives)
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(encoder.encode('data: {"model":"keepalive","choices":[]}\n\n'));
+          // Send final answer at 240ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"keepalive success"}}]}\n\ndata: [DONE]\n\n'),
+          );
+          controller.close();
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      });
+    };
+
+    const res = await openAIText('test keepalive chunks', undefined, { stream: true, maxRetries: 0 });
+    assert.equal(res.text, 'keepalive success');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedBase !== undefined) process.env.OPENAI_BASE = savedBase; else delete process.env.OPENAI_BASE;
+    if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey; else delete process.env.OPENAI_API_KEY;
+    if (savedName !== undefined) process.env.OPENAI_PROVIDER_NAME = savedName; else delete process.env.OPENAI_PROVIDER_NAME;
+    if (savedModel !== undefined) process.env.OPENAI_MODEL = savedModel; else delete process.env.OPENAI_MODEL;
+    if (savedStallEnv !== undefined) process.env.LLM_STALL_TIMEOUT_MS = savedStallEnv; else delete process.env.LLM_STALL_TIMEOUT_MS;
+    if (savedInactivityEnv !== undefined) process.env.LLM_STALL_INACTIVITY_MS = savedInactivityEnv; else delete process.env.LLM_STALL_INACTIVITY_MS;
+  }
+});
+
+test('OmniRoute SSE comment keepalives (: keepalive) reset stream inactivity', async () => {
+  const savedBase = process.env.OPENAI_BASE;
+  const savedKey = process.env.OPENAI_API_KEY;
+  const savedName = process.env.OPENAI_PROVIDER_NAME;
+  const savedModel = process.env.OPENAI_MODEL;
+  const savedStallEnv = process.env.LLM_STALL_TIMEOUT_MS;
+  const savedInactivityEnv = process.env.LLM_STALL_INACTIVITY_MS;
+
+  try {
+    process.env.OPENAI_BASE = 'http://localhost:20128/v1';
+    process.env.OPENAI_API_KEY = 'test-omniroute-key';
+    process.env.OPENAI_PROVIDER_NAME = 'OmniRoute';
+    process.env.OPENAI_MODEL = 'gemini-3.8-flash-high';
+    process.env.LLM_STALL_TIMEOUT_MS = '200';
+    process.env.LLM_STALL_INACTIVITY_MS = '200';
+
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          // Send comment keepalive at 80ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(encoder.encode(': keepalive 2026-11-12T16:00:00.000Z\n\n'));
+          // Send second comment keepalive at 160ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(encoder.encode(': keepalive 2026-11-12T16:00:00.100Z\n\n'));
+          // Send final answer at 240ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"comment keepalive success"}}]}\n\ndata: [DONE]\n\n'),
+          );
+          controller.close();
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      });
+    };
+
+    const res = await openAIText('test comment keepalives', undefined, { stream: true, maxRetries: 0 });
+    assert.equal(res.text, 'comment keepalive success');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedBase !== undefined) process.env.OPENAI_BASE = savedBase; else delete process.env.OPENAI_BASE;
+    if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey; else delete process.env.OPENAI_API_KEY;
+    if (savedName !== undefined) process.env.OPENAI_PROVIDER_NAME = savedName; else delete process.env.OPENAI_PROVIDER_NAME;
+    if (savedModel !== undefined) process.env.OPENAI_MODEL = savedModel; else delete process.env.OPENAI_MODEL;
+    if (savedStallEnv !== undefined) process.env.LLM_STALL_TIMEOUT_MS = savedStallEnv; else delete process.env.LLM_STALL_TIMEOUT_MS;
+    if (savedInactivityEnv !== undefined) process.env.LLM_STALL_INACTIVITY_MS = savedInactivityEnv; else delete process.env.LLM_STALL_INACTIVITY_MS;
+  }
+});
+
+test('Reasoning deltas reset inactivity and do not pollute accumulated text output', async () => {
+  const savedBase = process.env.OPENAI_BASE;
+  const savedKey = process.env.OPENAI_API_KEY;
+  const savedName = process.env.OPENAI_PROVIDER_NAME;
+  const savedModel = process.env.OPENAI_MODEL;
+  const savedStallEnv = process.env.LLM_STALL_TIMEOUT_MS;
+  const savedInactivityEnv = process.env.LLM_STALL_INACTIVITY_MS;
+
+  try {
+    process.env.OPENAI_BASE = 'http://localhost:20128/v1';
+    process.env.OPENAI_API_KEY = 'test-omniroute-key';
+    process.env.OPENAI_PROVIDER_NAME = 'OmniRoute';
+    process.env.OPENAI_MODEL = 'gemini-3.8-flash-high';
+    process.env.LLM_STALL_TIMEOUT_MS = '200';
+    process.env.LLM_STALL_INACTIVITY_MS = '200';
+
+    globalThis.fetch = async () => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          // Send reasoning delta at 80ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"Thinking about step 1..."}}]}\n\n'),
+          );
+          // Send second reasoning delta at 160ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"Thinking about step 2..."}}]}\n\n'),
+          );
+          // Send final content at 240ms
+          await new Promise((r) => setTimeout(r, 80));
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"Clean response content"}}]}\n\ndata: [DONE]\n\n'),
+          );
+          controller.close();
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      });
+    };
+
+    const res = await openAIText('test reasoning deltas', undefined, { stream: true, maxRetries: 0 });
+    assert.equal(res.text, 'Clean response content');
+    assert.equal(res.text.includes('Thinking'), false, 'Reasoning content must not leak into text');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedBase !== undefined) process.env.OPENAI_BASE = savedBase; else delete process.env.OPENAI_BASE;
+    if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey; else delete process.env.OPENAI_API_KEY;
+    if (savedName !== undefined) process.env.OPENAI_PROVIDER_NAME = savedName; else delete process.env.OPENAI_PROVIDER_NAME;
+    if (savedModel !== undefined) process.env.OPENAI_MODEL = savedModel; else delete process.env.OPENAI_MODEL;
+    if (savedStallEnv !== undefined) process.env.LLM_STALL_TIMEOUT_MS = savedStallEnv; else delete process.env.LLM_STALL_TIMEOUT_MS;
+    if (savedInactivityEnv !== undefined) process.env.LLM_STALL_INACTIVITY_MS = savedInactivityEnv; else delete process.env.LLM_STALL_INACTIVITY_MS;
+  }
+});

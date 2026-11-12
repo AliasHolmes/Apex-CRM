@@ -13,6 +13,7 @@ import {
   searchQueriesSchema,
   STRATEGIST_SYSTEM_PROMPT,
   DEFAULT_PRIMARY_MODEL,
+  sanitizeModelName,
   type LLMProviderAttempt,
   type LLMUsage,
 } from "../../services/llm.js";
@@ -482,8 +483,8 @@ export async function executePlanStage(
     let strategyUsage: LLMUsage | undefined;
     const label = isRecoveryMode ? `recovery_round_${round}` : `strategist_round_${round}`;
     const strategistMaxTokens = Math.max(
-      2500,
-      maxTasks * 400 + (isRecoveryMode ? 800 : 0),
+      8192,
+      maxTasks * 800 + (isRecoveryMode ? 4000 : 0),
     );
 
     try {
@@ -524,12 +525,13 @@ export async function executePlanStage(
       const successfulAttempt = strategyProviderAttempts.find(
         (attempt) => attempt.status === "success",
       );
-      const resolvedModel =
+      const resolvedModel = sanitizeModelName(
         strategyUsage?.model ||
         successfulAttempt?.actualModel ||
         successfulAttempt?.model ||
         process.env.OPENAI_MODEL ||
-        DEFAULT_PRIMARY_MODEL;
+        DEFAULT_PRIMARY_MODEL,
+      );
       const latency = Date.now() - strategyStarted;
       const tokens = strategyUsage?.totalTokens;
       logEvent(
@@ -586,7 +588,12 @@ export async function executePlanStage(
         return { roundPlans: [], queryRuns: [], proposedQueries: [], generation: input.generation };
       }
       const failedAttempt = strategyProviderAttempts[strategyProviderAttempts.length - 1];
-      const failedModel = failedAttempt?.actualModel || failedAttempt?.model;
+      const failedModel = sanitizeModelName(
+        failedAttempt?.actualModel ||
+        failedAttempt?.model ||
+        process.env.OPENAI_MODEL ||
+        DEFAULT_PRIMARY_MODEL,
+      );
       recordTrace({
         phase: "strategy",
         operation: isRecoveryMode ? "recovery_planning" : "strategist_planning",

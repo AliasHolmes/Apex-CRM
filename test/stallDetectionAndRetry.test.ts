@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   LLMStallError,
   isStallError,
+  sanitizeModelName,
   openAIText,
   openAIStructured,
 } from '../server/services/llm.js';
@@ -396,4 +397,12 @@ test('Reasoning deltas reset inactivity and do not pollute accumulated text outp
     if (savedStallEnv !== undefined) process.env.LLM_STALL_TIMEOUT_MS = savedStallEnv; else delete process.env.LLM_STALL_TIMEOUT_MS;
     if (savedInactivityEnv !== undefined) process.env.LLM_STALL_INACTIVITY_MS = savedInactivityEnv; else delete process.env.LLM_STALL_INACTIVITY_MS;
   }
+});
+
+test('sanitizeModelName cleanly aliases gemini-3.8-flash-n to gemini-3.8-flash-high', () => {
+  assert.equal(sanitizeModelName('gemini-3.8-flash-n'), 'gemini-3.8-flash-high');
+  assert.equal(sanitizeModelName('antigravity/gemini-3.8-flash-n'), 'gemini-3.8-flash-high');
+  assert.equal(sanitizeModelName('antigravity/gemini-3.8-flash-high'), 'gemini-3.8-flash-high');
+  assert.equal(sanitizeModelName('gemini-3.8-flash-high'), 'gemini-3.8-flash-high');
+  assert.equal(sanitizeModelName('gpt-6.1-sol'), 'gpt-6.1-sol');
 });

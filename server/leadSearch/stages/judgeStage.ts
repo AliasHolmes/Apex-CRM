@@ -11,6 +11,7 @@ import {
 import {
   openAIStructured,
   DEFAULT_PRIMARY_MODEL,
+  sanitizeModelName,
   describeLLMRoute,
   getProviderConcurrencyLimit,
   getProviderActiveSlots,
@@ -1044,12 +1045,13 @@ export async function evaluateIncrementalJudgeBatches(
       }
 
       const successfulAttempt = judgeAttempts.find((a) => a.status === "success");
-      const resolvedModel =
+      const resolvedModel = sanitizeModelName(
         judgeUsage?.model ||
         successfulAttempt?.actualModel ||
         successfulAttempt?.model ||
         process.env.OPENAI_MODEL ||
-        DEFAULT_PRIMARY_MODEL;
+        DEFAULT_PRIMARY_MODEL,
+      );
       const latency = Date.now() - judgeStarted;
       const tokens = judgeUsage?.totalTokens;
       logEvent(

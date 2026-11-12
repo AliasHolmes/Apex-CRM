@@ -180,12 +180,16 @@ export function isAtriaPrimary(): boolean {
 /**
  * Strips the failing 'antigravity/' routing prefix to ensure direct provider routing.
  * OmniRoute and Gemini handlers route directly with 'gemini-3.8-flash-high'.
+ * Also safely aliases Google's internal 'gemini-3.8-flash-n' response tag to the routable 'gemini-3.8-flash-high'.
  */
 export function sanitizeModelName(model: string): string {
   if (!model) return model;
   const trimmed = model.trim();
   if (trimmed.startsWith("antigravity/")) {
-    return trimmed.slice("antigravity/".length);
+    return sanitizeModelName(trimmed.slice("antigravity/".length));
+  }
+  if (trimmed === "gemini-3.8-flash-n") {
+    return "gemini-3.8-flash-high";
   }
   return trimmed;
 }

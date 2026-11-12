@@ -486,7 +486,8 @@ export async function runGatedCompanyAttribution(
           maxTokens: dynamicAttributionTokens,
           signal: options.signal,
           circuitBreaker: options.circuitBreaker,
-          timeoutMs: options.timeoutMs ?? 45_000,
+          // 60s baseline allows Gemini reasoning overhead for batch company fit evaluation
+          timeoutMs: options.timeoutMs ?? 60_000,
           metadata: {
             stage: "company_attribution",
             sessionId: options.sessionId,

@@ -1201,7 +1201,9 @@ export async function evaluateIncrementalJudgeBatches(
           signal: state.abortController?.signal,
           logEvent,
           circuitBreaker: llmCircuitBreaker,
-          timeoutMs: 45_000,
+          // Attribution timeout: 60s baseline allows Gemini reasoning overhead
+          // without stalling the judge pipeline.
+          timeoutMs: 60_000,
           batchSize: Math.max(6, maxBatchCandidates),
           sessionId: config.sessionId,
           round,

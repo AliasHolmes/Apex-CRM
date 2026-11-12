@@ -468,6 +468,7 @@ async function fetchWithRetry(
   maxRetries?: number,
   _isAtria = false,
   _providerId?: string,
+  _isReasoning = false,
 ): Promise<Response> {
 
   // Precedence: explicit per-call value, then LLM_MAX_RETRIES, then 1. An empty env var is
@@ -533,7 +534,9 @@ async function fetchWithRetry(
       // For Byesu (non-streaming reasoning endpoint), headers do not arrive until full completion;
       // allow Byesu its full dynamic timeout (75s - 115s/210s) without premature 45s header abort.
       const isByesuProvider = _providerId === "byesu" || /byesu/i.test(url);
-      const stallHeaderTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, 45_000, 50);
+      const isLocalOmni = /omniroute|localhost|127\.0\.0\.1|20128/i.test(url);
+      const defaultHeaderStallMs = (_isReasoning || isLocalOmni) ? 90_000 : 45_000;
+      const stallHeaderTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, defaultHeaderStallMs, 50);
       if (!isByesuProvider && stallHeaderTimeoutMs < effectiveTimeoutMs) {
         headerStallTimer = setTimeout(() => {
           isHeaderStalled = true;
@@ -623,7 +626,9 @@ async function fetchWithRetry(
       lastResponse = undefined;
       const isCallerAbort = Boolean(callerSignal?.aborted);
       if (isHeaderStalled) {
-        const stallHeaderTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, 45_000, 50);
+        const isLocalOmni = /omniroute|localhost|127\.0\.0\.1|20128/i.test(url);
+        const defaultHeaderStallMs = (_isReasoning || isLocalOmni) ? 90_000 : 45_000;
+        const stallHeaderTimeoutMs = boundedNumber(process.env.LLM_STALL_TIMEOUT_MS, defaultHeaderStallMs, 50);
         const stallErr = new LLMStallError(
           { id: (_providerId as LLMProvider["id"]) || "primary", name: _providerId || "LLM", baseUrl: url, model: "", apiKey: "" },
           `LLM request stalled after ${Math.round(stallHeaderTimeoutMs / 1000)}s (no response headers received).`,
@@ -1987,10 +1992,17 @@ async function sendChatCompletion(
         }),
         signal: options?.signal,
       },
-      timeoutForCall,
+      // For streaming OmniRoute reasoning calls without a hard cap, the HTTP connection
+      // must stay open at least as long as maxStreamDurationMs (min 240s floor).
+      // Without this, fetchWithRetry aborts at timeoutForCall (~189s) while the stream
+      // duration timer is armed at 240s: the connection dies 51s before the timer fires.
+      allowStreaming && isLocalOmniRoute && isReasoningCapable && Number(options?.hardTimeoutMs) <= 0
+        ? Math.max(Number(timeoutForCall || 0), 240_000)
+        : timeoutForCall,
       maxRetriesForCall,
       false,
       provider.id,
+      isReasoningCapable,
     );
   } catch (error: any) {
     if (isStallError(error)) {

@@ -15,7 +15,8 @@ export function resolvePlannerProviderOrder(): string[] {
 
 /** Hard per-provider timeouts for planning-family calls: bounded, latency-sensitive work. */
 export const PLANNER_PROVIDER_HARD_TIMEOUT_MS: Record<string, number> = {
-  primary: 75_000,
+  // 90s aligns with reasoning model TTFT stall threshold (90s); 75s caused premature cutoff
+  primary: Number(process.env.PLANNER_PRIMARY_TIMEOUT_MS || 90_000),
   byesu: 25_000,
   openrouter: 25_000,
   groq: 15_000,

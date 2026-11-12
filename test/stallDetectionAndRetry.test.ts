@@ -8,6 +8,7 @@ import {
   openAIStructured,
 } from '../server/services/llm.js';
 import { isTransientLLMError } from '../server/leadSearch/sessionHelpers.js';
+import { PLANNER_PROVIDER_HARD_TIMEOUT_MS } from '../server/leadSearch/plannerRouting.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -405,4 +406,11 @@ test('sanitizeModelName cleanly aliases gemini-3.8-flash-n to gemini-3.8-flash-h
   assert.equal(sanitizeModelName('antigravity/gemini-3.8-flash-high'), 'gemini-3.8-flash-high');
   assert.equal(sanitizeModelName('gemini-3.8-flash-high'), 'gemini-3.8-flash-high');
   assert.equal(sanitizeModelName('gpt-6.1-sol'), 'gpt-6.1-sol');
+});
+
+test('PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary is aligned with reasoning model stall threshold (>= 90s)', () => {
+  assert.ok(
+    PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary >= 90_000,
+    `Planner primary hard timeout (${PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary}ms) must be at least 90,000ms to allow reasoning TTFT`,
+  );
 });

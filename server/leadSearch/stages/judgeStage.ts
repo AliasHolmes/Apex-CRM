@@ -1168,11 +1168,15 @@ export async function evaluateIncrementalJudgeBatches(
         ]);
         return [...left, ...right];
       }
+      const isTokenTruncation =
+        /chat completion truncated|finish_reason\s*"?length"?|token headroom/i.test(
+          error?.message || "",
+        );
       const isRetryable =
-        error?.name === "AbortError" || isTransientLLMError(error);
+        error?.name === "AbortError" || isTransientLLMError(error) || isTokenTruncation;
       if (retries < 1 && isRetryable) {
         logEvent(
-          `Incremental judge batch ${batchIndex + 1} failed with transient error (${error.message || String(error)}); retrying once with cross-provider escalation...`,
+          `Incremental judge batch ${batchIndex + 1} failed (${error.message || String(error)}); retrying once with cross-provider escalation...`,
         );
         return evaluateSingleBatch(batch, batchIndex, depth, retries + 1);
       }

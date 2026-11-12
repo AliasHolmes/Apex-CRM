@@ -1900,19 +1900,20 @@ async function sendChatCompletion(
   // Reasoning models (Gemini Flash High, GPT-6, o-series) bill internal reasoning tokens
   // against max_tokens. Calibrate reasoning headroom by effort tier so low-reasoning
   // parsing tasks never allocate excessive empty headroom, while high-reasoning judge
-  // tasks have ample headroom.
+  // tasks have ample headroom (dense evaluations can generate 15k-25k thinking tokens).
   const reasoningAllowance = !isReasoningCapable
     ? 0
     : effectiveReasoningEffort === "high"
-      ? 10_000
+      ? (stage === "judge" ? 36_000 : 28_000)
       : effectiveReasoningEffort === "medium"
-        ? 4_000
+        ? 6_000
         : 1_200;
   const maxAllowedOutputTokens = isReasoningCapable ? 65_536 : 16_384;
+  const judgeFloor = (stage === "judge" && isReasoningCapable) ? 40_000 : 0;
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, getGroqMaxOutputTokens())
-      : Math.min(baseMaxTokens + reasoningAllowance, maxAllowedOutputTokens);
+      : Math.min(Math.max(baseMaxTokens + reasoningAllowance, judgeFloor), maxAllowedOutputTokens);
 
   // Health probes are status checks: they honor the caller timeout exactly (no Byesu
   // workload floor) and never retry, so a probe cannot hold a provider slot for minutes.
@@ -3251,7 +3252,7 @@ export async function openAIStructured<T>(
         provider.id === "groq"
           ? Math.min(options?.maxTokens || 400, getGroqMaxOutputTokens())
           : isReasoning
-            ? 32_768
+            ? 48_000
             : Math.max(
                 Number(process.env.LLM_STRUCTURED_RETRY_MAX_TOKENS || 5000),
                 Math.min((options?.maxTokens || 4000) * 2, 8000),

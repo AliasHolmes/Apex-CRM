@@ -414,3 +414,55 @@ test('PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary is aligned with reasoning model s
     `Planner primary hard timeout (${PLANNER_PROVIDER_HARD_TIMEOUT_MS.primary}ms) must be at least 90,000ms to allow reasoning TTFT`,
   );
 });
+
+test('Judge stage on reasoning models allocates at least 40k max_tokens headroom', async () => {
+  const savedBase = process.env.OPENAI_BASE;
+  const savedKey = process.env.OPENAI_API_KEY;
+  const savedName = process.env.OPENAI_PROVIDER_NAME;
+  const savedModel = process.env.OPENAI_MODEL;
+
+  try {
+    process.env.OPENAI_BASE = 'http://localhost:20128/v1';
+    process.env.OPENAI_API_KEY = 'test-omniroute-key';
+    process.env.OPENAI_PROVIDER_NAME = 'OmniRoute';
+    process.env.OPENAI_MODEL = 'gemini-3.8-flash-high';
+
+    let capturedMaxTokens: number | undefined;
+    globalThis.fetch = async (_url, init) => {
+      if (typeof init?.body === 'string') {
+        const parsed = JSON.parse(init.body);
+        capturedMaxTokens = parsed.max_tokens;
+      }
+      return new Response(JSON.stringify({
+        id: 'test',
+        choices: [{ message: { content: '{"result":"ok"}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+
+    await openAIStructured(
+      'evaluate this candidate',
+      { type: 'object', properties: { result: { type: 'string' } } },
+      'You are a judge.',
+      {
+        maxTokens: 10620,
+        metadata: { stage: 'judge' },
+        stream: false,
+      },
+    );
+
+    assert.ok(
+      capturedMaxTokens !== undefined && capturedMaxTokens >= 40000,
+      `Expected max_tokens for judge to be >= 40000, got ${capturedMaxTokens}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedBase !== undefined) process.env.OPENAI_BASE = savedBase; else delete process.env.OPENAI_BASE;
+    if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey; else delete process.env.OPENAI_API_KEY;
+    if (savedName !== undefined) process.env.OPENAI_PROVIDER_NAME = savedName; else delete process.env.OPENAI_PROVIDER_NAME;
+    if (savedModel !== undefined) process.env.OPENAI_MODEL = savedModel; else delete process.env.OPENAI_MODEL;
+  }
+});

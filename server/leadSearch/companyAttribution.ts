@@ -209,8 +209,9 @@ export function sanitizeDomainGuess(companyName: string): string {
   const cleaned = cleanCompanyForDomainSearch(companyName)
     .toLowerCase()
     .replace(/\s+/g, "")
-    .replace(/[^a-z0-9-]/g, "");
-  return cleaned ? `${cleaned}.com` : "";
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/^-+|-+$/g, "");
+  return cleaned && cleaned.length >= 2 ? `${cleaned}.com` : "";
 }
 
 export type GatedCompanyAttributionOptions = {
@@ -503,12 +504,18 @@ export async function runGatedCompanyAttribution(
         : [];
 
       for (const [key, groupTargets] of batch) {
-        const attr = rawAttributions.find(
-          (a) =>
-            a &&
-            (String(a.companyKey).toLowerCase() === key.toLowerCase() ||
-              (firstDomain(key) && String(a.companyKey).toLowerCase().includes(firstDomain(key)))),
-        );
+        const keyDomain = firstDomain(key);
+        const attr = rawAttributions.find((a) => {
+          if (!a?.companyKey) return false;
+          const aKey = String(a.companyKey).toLowerCase().trim();
+          const targetKey = key.toLowerCase().trim();
+          if (aKey === targetKey) return true;
+          if (keyDomain) {
+            const aDomain = firstDomain(aKey);
+            return aDomain ? aDomain === keyDomain : aKey === keyDomain;
+          }
+          return false;
+        });
         if (!attr) continue;
 
         const first = groupTargets[0];
@@ -529,6 +536,11 @@ export async function runGatedCompanyAttribution(
 
         // If verdict claims verified fit but fabricated the quote, downgrade to unverified
         if (verdict === "verified_fit" && !quoteValid && citedQuote.length > 0) {
+          verdict = "unverified";
+        }
+
+        // If verdict claims disqualifying contradiction without valid cited evidence or with fabricated quote, downgrade to unverified
+        if (verdict === "disqualifying_contradiction" && (!quoteValid || citedQuote.length === 0)) {
           verdict = "unverified";
         }
 
@@ -605,9 +617,10 @@ export async function runGatedCompanyAttribution(
   return result;
 }
 
-function firstDomain(key: string): string {
+export function firstDomain(key: string): string {
   try {
-    return new URL(`https://${key}`).hostname.replace(/^www\./, "").toLowerCase();
+    const host = new URL(`https://${key}`).hostname.replace(/^www\./, "").toLowerCase();
+    return host.includes(".") ? host : "";
   } catch {
     return "";
   }

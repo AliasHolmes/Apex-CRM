@@ -518,7 +518,10 @@ export class MiningTelemetryRecorder {
   }
 
   record(
-    event: Omit<MiningTraceEvent, "id" | "timestamp"> & { timestamp?: string },
+    event: Omit<MiningTraceEvent, "id" | "timestamp" | "error"> & {
+      timestamp?: string;
+      error?: string | { message?: string; code?: string } | null;
+    },
   ) {
     const promptVer =
       event.promptVersion ||
@@ -529,12 +532,19 @@ export class MiningTelemetryRecorder {
       promptVersion: promptVer,
       id: `${this.sessionId}-${++this.sequence}`,
       timestamp: event.timestamp || nowIso(),
-      error: event.error
-        ? {
-            ...event.error,
-            message: sanitizeTelemetryString(event.error.message),
-          }
-        : undefined,
+      error:
+        typeof event.error === "string"
+          ? { message: sanitizeTelemetryString(event.error) }
+          : event.error && typeof event.error === "object"
+            ? {
+                ...event.error,
+                message: sanitizeTelemetryString(
+                  typeof event.error.message === "string"
+                    ? event.error.message
+                    : String(event.error.message || ""),
+                ),
+              }
+            : undefined,
       metadata: event.metadata ? sanitizeMetadata(event.metadata) : undefined,
     };
 

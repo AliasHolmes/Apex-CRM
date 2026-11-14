@@ -39,6 +39,25 @@ export function determineSelectionShortfall(
   return qualifiedCount < targetLimit;
 }
 
+export function shouldRunIntentEnrichment(isShortfall: boolean, forceShortfallEnrichment: boolean, qualifiedLeadsCount: number): boolean;
+export function shouldRunIntentEnrichment(isShortfall: boolean, qualifiedLeadsCount: number, forceShortfallEnrichment?: boolean): boolean;
+export function shouldRunIntentEnrichment(
+  isShortfall: boolean,
+  param2: boolean | number,
+  param3: boolean | number = false,
+): boolean {
+  let forceShortfallEnrichment = false;
+  let qualifiedLeadsCount = 0;
+  if (typeof param2 === "boolean") {
+    forceShortfallEnrichment = param2;
+    qualifiedLeadsCount = typeof param3 === "number" ? param3 : 0;
+  } else {
+    qualifiedLeadsCount = typeof param2 === "number" ? param2 : 0;
+    forceShortfallEnrichment = typeof param3 === "boolean" ? param3 : false;
+  }
+  return !isShortfall || forceShortfallEnrichment || qualifiedLeadsCount > 0;
+}
+
 export async function executeSelectStage(
   ctx: SessionContext,
   input: SelectStageInput
@@ -60,11 +79,11 @@ export async function executeSelectStage(
 
   const isShortfall = determineSelectionShortfall(qualifiedLeads.length, targetLimit);
   const forceShortfallEnrichment = process.env.ENRICH_SHORTFALL_LEADS === "true";
-  const shouldRunIntent = !isShortfall || forceShortfallEnrichment;
+  const shouldRunIntent = shouldRunIntentEnrichment(isShortfall, forceShortfallEnrichment, qualifiedLeads.length);
 
-  if (isShortfall && !forceShortfallEnrichment) {
+  if (isShortfall) {
     logEvent(
-      `Shortfall detected (${qualifiedLeads.length} < ${targetLimit}): all candidates guaranteed selection; bypassing external post-intent scraping.`,
+      `Shortfall detected (${qualifiedLeads.length} < ${targetLimit}): all candidates guaranteed selection; proceeding with intent enrichment on available qualified leads.`,
     );
   }
 

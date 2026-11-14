@@ -106,7 +106,7 @@ export type ProspectContract = {
 
 const clean = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
 const lower = (value: unknown) => clean(value).toLowerCase();
-const unique = (items: string[], max = 25) => Array.from(new Set(items.map(clean).filter(Boolean))).slice(0, max);
+const unique = (items: string[], max = 60) => Array.from(new Set(items.map(clean).filter(Boolean))).slice(0, max);
 
 const permittedScopes = new Set<RequirementScope>([
   'person_role', 'person_location', 'company_type', 'company_industry', 'company_size', 'signal'
@@ -485,7 +485,7 @@ export function metroWithCountry(metro: string, countryCanonical?: string | null
   return `${metro} ${countryCanonical}`.trim();
 }
 
-const expandAcceptableTerms = (
+export const expandAcceptableTerms = (
   scope: RequirementScope,
   terms: string[],
   options: { agencyBrief?: boolean } = {}
@@ -615,6 +615,21 @@ const expandAcceptableTerms = (
       terms.some(t => /\b(agenc(?:y|ies)|consultanc(?:y|ies)|studios?|integrators?)\b/i.test(t))
     );
     if (agencyTerms && terms.some(t => /\b(agenc|firm|consult|service|solution|advisory|studio|partner|integrat|business|provider)/i.test(t))) {
+      // Prioritize base nouns first so core entity types are never truncated by budget caps
+      expanded.push(
+        'agency',
+        'integrator',
+        'solutions provider',
+        'solutions firm',
+        'studio',
+        'services firm',
+        'agencies',
+        'firm',
+        'partner',
+        'consultancy',
+        'consulting firm',
+        'advisory firm'
+      );
       const isAI = terms.some(t => /\b(ai|artificial intelligence|machine learning|ml)\b/i.test(t));
       if (isAI) {
         expanded.push(
@@ -633,21 +648,6 @@ const expandAcceptableTerms = (
           'AI advisory firm',
           'artificial intelligence agency',
           'AI-powered agency'
-        );
-      } else {
-        expanded.push(
-          'agency',
-          'integrator',
-          'solutions provider',
-          'solutions firm',
-          'studio',
-          'services firm',
-          'agencies',
-          'firm',
-          'partner',
-          'consultancy',
-          'consulting firm',
-          'advisory firm'
         );
       }
     }
@@ -674,7 +674,7 @@ const expandAcceptableTerms = (
     }
   }
 
-  return unique(expanded);
+  return unique(expanded, 60);
 };
 
 const INTENT_TRIGGER_PATTERN = /\b(hiring|recruiting|looking\s+for|seeking|using|evaluating|migrating|switching|scaling\s+past|manual\s+process|bottleneck|open\s+role|partner\s+program|white\s*label|subcontract)\b/i;
@@ -1331,10 +1331,12 @@ export function buildAtsLaneQueries(
   requirements: ProspectRequirement[],
   identitySpec?: IdentitySpec
 ): SearchQueryPlanItem[] {
-  const roleTerms = identitySpec?.roles?.slice(0, 2) ||
+  const candidateRoles = (
+    identitySpec?.roles ||
     requirements
       .filter(r => r.scope === 'person_role')
-      .flatMap(r => r.acceptableTerms.slice(0, 2));
+      .flatMap(r => r.acceptableTerms)
+  ).filter(r => !/\b(owners?|firm owner|agency owner|founders?|co-?founders?|cofounders?|ceo|chief executive|proprietors?|partners?|managing partners?|managing directors?|presidents?|principals?)\b/i.test(r));
 
   const contextTerms = identitySpec?.companyTypes?.slice(0, 1) ||
     identitySpec?.industries?.slice(0, 1) ||
@@ -1342,7 +1344,7 @@ export function buildAtsLaneQueries(
       .filter(r => r.scope === 'company_type' || r.scope === 'company_industry')
       .flatMap(r => r.acceptableTerms.slice(0, 1));
 
-  const role = roleTerms[0] || 'Software Engineer';
+  const role = candidateRoles[0] || 'Software Engineer';
   const context = contextTerms[0] || '';
 
   const atsSiteUnion = '(' + ATS_SEARCH_DOMAINS.map(d => `site:${d}`).join(' OR ') + ')';

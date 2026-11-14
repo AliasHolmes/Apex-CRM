@@ -92,6 +92,9 @@ const STOPWORDS = new Set([
   "profiles",
   "profile",
   "linkedin",
+  "linkedincom",
+  "sitelinkedincom",
+  "com",
   "site",
   "top",
   "best",
@@ -131,7 +134,7 @@ export function buildQuerySignature(
   options?: { contract?: ProspectContract },
 ): QuerySignature {
   const raw = String(query || "").toLowerCase();
-  const cleaned = raw.replace(/[()",/\\|]/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = raw.replace(/[()",/\\|:]/g, " ").replace(/\s+/g, " ").trim();
 
   // 1. Detect Geo Anchor (Metro first, then Country)
   let geoAnchor = "";

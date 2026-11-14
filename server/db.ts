@@ -187,21 +187,37 @@ export function extractPromotedLeadColumns(storedLead: Record<string, any>) {
   const company =
     typeof profile.currentCompany === "string" && profile.currentCompany.trim()
       ? profile.currentCompany.trim()
-      : typeof storedLead.company === "string" && storedLead.company.trim()
-        ? storedLead.company.trim()
-        : typeof storedLead.currentCompany === "string" &&
-            storedLead.currentCompany.trim()
-          ? storedLead.currentCompany.trim()
-          : null;
+      : typeof profile.company === "string" && profile.company.trim()
+        ? profile.company.trim()
+        : typeof profile.companyName === "string" && profile.companyName.trim()
+          ? profile.companyName.trim()
+          : typeof storedLead.company === "string" && storedLead.company.trim()
+            ? storedLead.company.trim()
+            : typeof storedLead.currentCompany === "string" &&
+                storedLead.currentCompany.trim()
+              ? storedLead.currentCompany.trim()
+              : typeof storedLead.companyName === "string" &&
+                  storedLead.companyName.trim()
+                ? storedLead.companyName.trim()
+                : null;
   const title =
     typeof profile.currentTitle === "string" && profile.currentTitle.trim()
       ? profile.currentTitle.trim()
-      : typeof storedLead.title === "string" && storedLead.title.trim()
-        ? storedLead.title.trim()
-        : typeof storedLead.currentTitle === "string" &&
-            storedLead.currentTitle.trim()
-          ? storedLead.currentTitle.trim()
-          : null;
+      : typeof profile.title === "string" && profile.title.trim()
+        ? profile.title.trim()
+        : typeof profile.headline === "string" && profile.headline.trim()
+          ? profile.headline.trim()
+          : typeof profile.jobTitle === "string" && profile.jobTitle.trim()
+            ? profile.jobTitle.trim()
+            : typeof storedLead.title === "string" && storedLead.title.trim()
+              ? storedLead.title.trim()
+              : typeof storedLead.currentTitle === "string" &&
+                  storedLead.currentTitle.trim()
+                ? storedLead.currentTitle.trim()
+                : typeof storedLead.headline === "string" &&
+                    storedLead.headline.trim()
+                  ? storedLead.headline.trim()
+                  : null;
   const stage =
     typeof storedLead.stage === "string" && storedLead.stage.trim()
       ? storedLead.stage.trim()

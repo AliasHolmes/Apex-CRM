@@ -241,7 +241,9 @@ export async function executeFuseStage(
     const obsName = normalizeDedupeValue(observation.raw?.fullName || observation.raw?.name);
     const obsComp = normalizeCompanyName(observation.raw?.currentCompany || observation.raw?.company);
 
-    const linkedinKey = canonicalLinkedInIdentity(username || normalizedUrl);
+    const linkedinKey = canonicalLinkedInIdentity(
+      normalizedUrl || (username ? `https://www.linkedin.com/in/${username}` : "")
+    );
     const candidateKeys = [
       observation.identityKey,
       linkedinKey,

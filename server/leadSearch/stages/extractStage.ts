@@ -258,6 +258,111 @@ export function parseDeterministicLinkedInProfile(
   };
 }
 
+// --- Corporate and Personal Identity Disambiguation Helpers ---
+
+export const CORPORATE_ENTITY_WORDS_RE =
+  /\b(?:corp|corporation|inc|incorporated|llc|llp|ltd|limited|gmbh|plc|group|holdings|co|company|technologies|solutions|agency|studios?|partners?|associates|consulting|ventures|enterprises)\b/i;
+
+export const ORG_PAGE_HEADLINE_RE =
+  /\b(?:official\s+linkedin\s+page|company\s+page|organization|overview|about\s+us|headquarters)\b/i;
+
+export const PERSONAL_ROLE_RE =
+  /\b(owner|founder|co-founder|cofounder|consultant|proprietor|principal|freelance|freelancer|coach|advisor|practitioner)\b/i;
+
+/**
+ * Determines whether a lead has authentic personal identity evidence to protect
+ * a LinkedIn profile handle from being cleared when handleClean === companyClean.
+ */
+export function isPersonalIdentityLead(
+  lead: {
+    fullName?: string;
+    headline?: string;
+    currentTitle?: string;
+    currentCompany?: string;
+    company?: string;
+  } | Record<string, any>,
+  handleClean: string,
+  companyClean: string
+): boolean {
+  if (!lead || !handleClean) return false;
+
+  const rawName = String(lead.fullName || "").trim();
+  const nameClean = rawName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!nameClean) return false;
+
+  const roleText = String(lead.headline || lead.currentTitle || "").trim();
+  const hasPersonalRole = PERSONAL_ROLE_RE.test(roleText);
+  const hasOrgHeadline = ORG_PAGE_HEADLINE_RE.test(roleText);
+  const hasCorporateEntitySuffix = CORPORATE_ENTITY_WORDS_RE.test(rawName);
+
+  // If the extracted name contains corporate suffixes (e.g. "Acme Corp")
+  // or headline explicitly indicates an organization page, it is not a personal identity.
+  if (hasCorporateEntitySuffix || hasOrgHeadline) {
+    return false;
+  }
+
+  const nameWords = rawName.split(/\s+/).filter(Boolean);
+  const isMultiWordName = nameWords.length >= 2;
+  const handleMatchesName = handleClean.includes(nameClean) || nameClean.includes(handleClean);
+
+  // When handle matches company name (handleClean === companyClean):
+  // It can only be a personal identity if the entity is a sole proprietor / solo founder
+  // whose personal name matches the handle.
+  if (handleClean === companyClean) {
+    if (handleMatchesName) {
+      return hasPersonalRole || isMultiWordName;
+    }
+    // Company handle attached to an employee (e.g. John Doe with handle "acmecorp")
+    return false;
+  }
+
+  // When handleClean !== companyClean:
+  if (handleMatchesName || hasPersonalRole) {
+    return true;
+  }
+
+  if (nameClean !== companyClean && isMultiWordName) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Evaluates whether a lead's effective LinkedIn handle represents a corporate organization
+ * profile (or an attached company handle) rather than a genuine personal profile.
+ */
+export function isCompanyProfileLead(
+  lead: {
+    fullName?: string;
+    headline?: string;
+    currentTitle?: string;
+    currentCompany?: string;
+    company?: string;
+    contactDetails?: { linkedinUrl?: string; website?: string };
+  } | Record<string, any>,
+  effectiveHandle?: string,
+  rawComp?: string
+): boolean {
+  if (!lead) return false;
+  const handle = effectiveHandle || (lead.contactDetails?.linkedinUrl ? getLinkedInHandle(lead.contactDetails.linkedinUrl) : "");
+  if (!handle) return false;
+
+  const resolvedComp = rawComp !== undefined
+    ? rawComp
+    : (lead.currentCompany ? cleanCompanyNameFromUrlOrTitle(lead.currentCompany, lead.headline || lead.currentTitle) : "");
+
+  const companyClean = resolvedComp.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const handleClean = handle.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  if (companyClean.length < 3 || handleClean !== companyClean) {
+    return false;
+  }
+
+  const isPersonal = isPersonalIdentityLead(lead, handleClean, companyClean);
+  return !isPersonal;
+}
+
 export type ExtractStageInput = {
   round: number;
   candidateItems: any[];
@@ -1423,10 +1528,8 @@ Evidence:
       const rawSegment = rawMatch?.[1] ? decodeURIComponent(rawMatch[1]).replace(/[.,;:)\]]+$/, "").trim().toLowerCase() : "";
       const effectiveHandle = handle || rawSegment;
       const rawComp = lead.currentCompany ? cleanCompanyNameFromUrlOrTitle(lead.currentCompany, lead.headline || lead.currentTitle) : "";
-      const companyClean = rawComp.toLowerCase().replace(/[^a-z0-9]/g, "");
-      const handleClean = effectiveHandle.toLowerCase().replace(/[^a-z0-9]/g, "");
       const isDomainHandle = !isValidLinkedInHandle(effectiveHandle) || /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle);
-      const isCompanyHandle = companyClean.length >= 3 && handleClean === companyClean;
+      const isCompanyHandle = isCompanyProfileLead(lead, effectiveHandle, rawComp);
 
       if (isDomainHandle || isCompanyHandle) {
         if (isDomainHandle && !lead.contactDetails.website && /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle)) {
@@ -1462,10 +1565,8 @@ Evidence:
       const rawSegment = rawMatch?.[1] ? decodeURIComponent(rawMatch[1]).replace(/[.,;:)\]]+$/, "").trim().toLowerCase() : "";
       const effectiveHandle = handle || rawSegment;
       const rawComp = lead.currentCompany ? cleanCompanyNameFromUrlOrTitle(lead.currentCompany, lead.headline || lead.currentTitle) : "";
-      const companyClean = rawComp.toLowerCase().replace(/[^a-z0-9]/g, "");
-      const handleClean = effectiveHandle.toLowerCase().replace(/[^a-z0-9]/g, "");
       const isDomainHandle = !isValidLinkedInHandle(effectiveHandle) || /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle);
-      const isCompanyHandle = companyClean.length >= 3 && handleClean === companyClean;
+      const isCompanyHandle = isCompanyProfileLead(lead, effectiveHandle, rawComp);
 
       if (isDomainHandle || isCompanyHandle) {
         if (isDomainHandle && !lead.contactDetails.website && /\.(?:com|org|net|io|ai|co|app|tech|dev|edu|gov|xyz|biz|info|de|uk|ca|fr|in|me|online|site)$/i.test(effectiveHandle)) {

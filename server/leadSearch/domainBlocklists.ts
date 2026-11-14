@@ -25,6 +25,9 @@ export const SOCIAL_AND_SEARCH_DOMAINS = [
   'reddit.com',
   't.co',
   'bit.ly',
+  'brightdata.com',
+  'brightdata.io',
+  'tavily.com',
 ] as const;
 
 export const PUBLIC_EMAIL_DOMAINS = [

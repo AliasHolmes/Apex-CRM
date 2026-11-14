@@ -265,8 +265,8 @@ const REASONING_MODEL_REGEX = /\b(gpt-5|gpt-6|o[134]|deepseek-r1|reasoning|gemin
 
 const TASK_REASONING_EFFORT: Record<string, "low" | "medium" | "high"> = {
   judge: "high",
-  contract: "medium",
-  strategist: "medium",
+  contract: "high",
+  strategist: "high",
   extraction: "low",
   company_attribution: "low",
   intent_signals: "low",
@@ -1909,11 +1909,15 @@ async function sendChatCompletion(
         ? 6_000
         : 1_200;
   const maxAllowedOutputTokens = isReasoningCapable ? 65_536 : 16_384;
-  const judgeFloor = (stage === "judge" && isReasoningCapable) ? 40_000 : 0;
+  const stageFloor = (stage === "judge" && isReasoningCapable)
+    ? 40_000
+    : ((stage === "contract" || stage === "strategist") && isReasoningCapable)
+      ? 36_000
+      : 0;
   const effectiveMaxTokens =
     provider.id === "groq"
       ? Math.min(options?.maxTokens || 400, getGroqMaxOutputTokens())
-      : Math.min(Math.max(baseMaxTokens + reasoningAllowance, judgeFloor), maxAllowedOutputTokens);
+      : Math.min(Math.max(baseMaxTokens + reasoningAllowance, stageFloor), maxAllowedOutputTokens);
 
   // Health probes are status checks: they honor the caller timeout exactly (no Byesu
   // workload floor) and never retry, so a probe cannot hold a provider slot for minutes.

@@ -32,6 +32,8 @@ import { extractSchemaOrgSignals } from "../server/leadSearch/siteProbe.js";
 import { executeRetrieveStage } from "../server/leadSearch/stages/retrieveStage.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { brightDataFreeTierCapabilities } from "../server/leadSearch/freeTier.js";
+import { unwrapRedirectUrl } from "../src/utils/leadDedupe.js";
+import { ALL_OBSERVATION_BLOCKED_DOMAINS } from "../server/leadSearch/domainBlocklists.js";
 
 test("verifyDecisionMakerFromEvidence accepts founder", () => {
   const result = verifyDecisionMakerFromEvidence({
@@ -1756,4 +1758,35 @@ test("getBrightDataCapabilities surfaces all 30 Pro tools and integrates runtime
     assert.ok(discoveredCaps.unavailableTools.includes("scraping_browser_fill_form"));
   }
 });
+
+test("unwrapRedirectUrl rejects opaque Bright Data /goto ad redirect tokens", () => {
+  const opaque = "https://brightdata.com/goto?url=CAESbAHEIkXXLOs55c00BULR9xf_Dz9QdjTyjtQLbBPQ";
+  assert.strictEqual(unwrapRedirectUrl(opaque), "");
+});
+
+test("domainBlocklists blocks brightdata.com and brightdata.io", () => {
+  assert.ok(ALL_OBSERVATION_BLOCKED_DOMAINS.includes("brightdata.com"));
+  assert.ok(ALL_OBSERVATION_BLOCKED_DOMAINS.includes("brightdata.io"));
+});
+
+test("classifyBrightDataError classifies FastMCP v4.6.0 empty_page and not_found error phrases", () => {
+  const emptyErr = classifyBrightDataError(
+    new Error("Empty page: https://example.com returned no text. It probably needs JavaScript or blocked the request.")
+  );
+  assert.strictEqual(emptyErr.reasonCode, "target_transient");
+  assert.strictEqual(emptyErr.retryable, true);
+
+  const notFoundErr = classifyBrightDataError(
+    new Error("Page not found: https://example.com/missing does not exist (404). Check the URL; retrying won't help.")
+  );
+  assert.strictEqual(notFoundErr.reasonCode, "request_invalid");
+  assert.strictEqual(notFoundErr.retryable, false);
+
+  const siteNotFoundErr = classifyBrightDataError(
+    new Error("Site not found: nonexistent.example.com doesn't resolve. Check the URL spelling; retrying won't help.")
+  );
+  assert.strictEqual(siteNotFoundErr.reasonCode, "request_invalid");
+  assert.strictEqual(siteNotFoundErr.retryable, false);
+});
+
 

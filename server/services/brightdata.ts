@@ -353,13 +353,25 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
   }
   if (
     statusCode === 400 ||
-    /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most|invalid argument|was renamed to|unknown argument|scraper input rejected|unrecognized_keys/.test(
+    /mcp error -32602|parameter validation failed|request validation failed|must be a valid uri|string\.uri|array must contain at most|invalid argument|was renamed to|unknown argument|scraper input rejected|unrecognized_keys|url rejected|url not allowed|not a web page|binary/.test(
       lower,
     )
   ) {
     return new BrightDataError(message, {
       reasonCode: "request_invalid",
       statusCode,
+    });
+  }
+  if (
+    statusCode === 404 ||
+    /site not found|page not found|does not exist \(404\)|could not resolve host|dead_page/.test(
+      lower,
+    )
+  ) {
+    return new BrightDataError(message, {
+      reasonCode: "request_invalid",
+      statusCode: statusCode || 404,
+      retryable: false,
     });
   }
   if (
@@ -408,7 +420,7 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
     statusCode === 502 ||
     statusCode === 503 ||
     statusCode === 504 ||
-    /timed out|request timed out|fetch failed|empty response|empty body|returned no content/.test(
+    /timed out|request timed out|fetch failed|empty response|empty body|empty page|returned no content|returned no text|aborted_page|uncrawled_page/.test(
       lower,
     )
   ) {
@@ -1377,7 +1389,9 @@ async function nativeHttpScrape(
           ...jsonLdMatches.map((j) => `\`\`\`json\n${j}\n\`\`\``),
         ].filter(Boolean);
         const result = parts.join("\n\n");
-        if (result.length > 50) return result;
+        // If the page is an empty SPA shell (only title/meta tags or <div id="root"></div>),
+        // do not return empty shell. Let tavilyExtractFallback execute JS-rendered extraction.
+        if (textContent.length > 50 || jsonLdMatches.length > 0) return result;
       }
       break;
     }
@@ -2076,7 +2090,12 @@ export function extractLinkedInProfileUrlFromResult(result: unknown): string {
 
 function normalizeBrightDataSearchResult(item: any): BrightDataSearchResult {
   const rawDirect = item?.link || item?.url || item?.source_url || "";
-  const directUrl = unwrapRedirectUrl(rawDirect) || rawDirect;
+  const unwrapped = unwrapRedirectUrl(rawDirect);
+  const isOpaqueRedirect =
+    /^https?:\/\/(?:[a-z0-9-]+\.)*brightdata\.(?:com|io)\/goto(?:\?|$)/i.test(rawDirect) ||
+    /^\/goto(?:\?|$)/i.test(rawDirect) ||
+    /^https?:\/\/(?:[a-z0-9-]+\.)*google\.[a-z.]+\/url\?(?:.*&)?(?:url|q)=/i.test(rawDirect);
+  const directUrl = unwrapped || (isOpaqueRedirect ? "" : rawDirect);
   const profileUrl = extractLinkedInProfileUrlFromResult(item);
   return {
     title: item?.title || "",

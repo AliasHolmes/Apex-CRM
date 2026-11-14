@@ -117,6 +117,7 @@ const COMPANY_HINT_BLOCKLIST = new Set([
   'linkedin', 'glassdoor', 'seek', 'indeed', 'bing', 'yahoo', 'duckduckgo',
   'ziprecruiter', 'wellfound', 'monster', 'simplyhired', 'workable', 'greenhouse',
   'lever', 'ashby', 'upwork', 'fiverr', 'make',
+  'brightdata', 'bright data', 'tavily', 'merriam webster', 'dictionary', 'cambridge dictionary',
   'chatgpt', 'claude', 'gemini', 'copilot'
 ]);
 

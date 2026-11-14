@@ -76,6 +76,15 @@ export function unwrapRedirectUrl(rawUrl?: string): string {
     break;
   }
 
+  // Reject unresolvable redirect wrappers (e.g. BrightData/Google opaque ad tokens like /goto?url=CAES...)
+  if (
+    /^https?:\/\/(?:[a-z0-9-]+\.)*brightdata\.(?:com|io)\/goto(?:\?|$)/i.test(current) ||
+    /^\/goto(?:\?|$)/i.test(current) ||
+    /^https?:\/\/(?:[a-z0-9-]+\.)*google\.[a-z.]+\/url\?(?:.*&)?(?:url|q)=/i.test(current)
+  ) {
+    return '';
+  }
+
   return current;
 }
 

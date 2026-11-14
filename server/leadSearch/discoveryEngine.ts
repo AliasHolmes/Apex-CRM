@@ -770,8 +770,8 @@ export async function executeDiscoverySession(
         let contractUsage: LLMUsage | undefined;
         try {
           const contractMaxTokens = Math.max(
-            8192,
-            Math.ceil(contractPrompt.length * 0.75),
+            16384,
+            Math.ceil(contractPrompt.length * 1.5),
           );
           const compiled = await openAIStructured<any>(
             contractPrompt,

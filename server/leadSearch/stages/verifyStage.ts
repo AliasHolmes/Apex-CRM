@@ -208,21 +208,42 @@ export async function executeVerifyStage(
       if (lead?.companyEntityResolution?.companyName) {
         resolvedCompany = String(lead.companyEntityResolution.companyName).trim();
       } else {
-        const headlineText = String(lead?.headline || lead?.currentTitle || "").trim();
-        if (headlineText) {
-          const atMatch = headlineText.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|\u2022|\n|,|$))/i);
+        const textsToInspect = [
+          String(lead?.headline || "").trim(),
+          String(lead?.currentTitle || "").trim(),
+          String(lead?.title || "").trim(),
+        ].filter(Boolean);
+
+        for (const headlineText of textsToInspect) {
+          if (resolvedCompany) break;
+          const atMatch = headlineText.match(/(?:\b(?:at|of)\b|@)\s+([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|\u2022|\u00b7|\s-\s|\s\/\s|\n|,|$))/i);
           if (atMatch && atMatch[1]) {
             const candidate = cleanCompanyHint(atMatch[1]);
             if (looksLikeCompanyHint(candidate)) {
               resolvedCompany = candidate;
+              break;
             }
           }
-          if (!resolvedCompany) {
-            const parts = headlineText.split(/\s*(?:\||\u2013|\u2014|\u2022)\s*/).map(p => p.trim()).filter(Boolean);
-            if (parts.length > 1) {
-              const last = cleanCompanyHint(parts[parts.length - 1]);
-              if (looksLikeCompanyHint(last) && !/\b(founder|owner|ceo|executive|leader|director|manager)\b/i.test(last)) {
-                resolvedCompany = last;
+
+          const commaMatch = headlineText.match(/\b(?:founder|co-founder|cofounder|ceo|owner|partner|president|director|principal)\b\s*,\s*([A-Za-z0-9][A-Za-z0-9&.' -]{1,60}?)(?=\s*(?:\||\u2013|\u2014|\u2022|\u00b7|\s-\s|\s\/\s|\n|$))/i);
+          if (commaMatch && commaMatch[1]) {
+            const candidate = cleanCompanyHint(commaMatch[1]);
+            if (looksLikeCompanyHint(candidate)) {
+              resolvedCompany = candidate;
+              break;
+            }
+          }
+
+          const parts = headlineText.split(/\s*(?:\||\u2013|\u2014|\u2022|\u00b7|\s-\s|\s\/\s)\s*/).map(p => p.trim()).filter(Boolean);
+          if (parts.length > 1) {
+            for (const p of parts) {
+              const candidate = cleanCompanyHint(p);
+              if (
+                looksLikeCompanyHint(candidate) &&
+                !/\b(?:founder|owner|ceo|executive|leader|director|manager|partner|president|chief)\b/i.test(candidate)
+              ) {
+                resolvedCompany = candidate;
+                break;
               }
             }
           }
@@ -267,7 +288,7 @@ export async function executeVerifyStage(
         // Captures verified agency owners/principals with value-prop headlines rather than hard-dropping them
         if (!resolvedCompany) {
           const headlineText = String(lead?.headline || lead?.currentTitle || "");
-          const isVerifiedOwner = /\b(founder|owner|ceo|principal|managing partner|co-founder|proprietor)\b/i.test(lead?.currentTitle || headlineText);
+          const isVerifiedOwner = /\b(founder|owner|ceo|principal|managing partner|co-founder|proprietor|partner|director|fractional\s+(?:ceo|cto|cmo|cso|coo|executive)|independent\s+consultant)\b/i.test(lead?.currentTitle || headlineText);
           const hasServiceKeywords = /\b(agency|consulting|consultancy|services|solutions|studio|partners|lab|advisory|digital)\b/i.test(headlineText);
           const fullName = String(lead?.fullName || "").trim();
 

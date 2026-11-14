@@ -154,6 +154,29 @@ export function evaluatePrimaryAdmission(
       if (isEnterpriseGroup && lead?.currentCompany) {
         continue;
       }
+      // Headline / title / company grace: If no member explicitly failed, but candidate's headline, title, or company contains acceptable terms of the defining requirement
+      const hasHeadlineProof = members.some((m: any) => {
+        if (statusOf(m.id) === "fail") return false;
+        const terms: string[] = (m.acceptableTerms || []).map((t: string) => String(t).toLowerCase().trim()).filter(Boolean);
+        if (terms.length === 0) return false;
+        const candidateText = [
+          lead?.headline,
+          lead?.currentTitle,
+          lead?.title,
+          lead?.currentCompany,
+          lead?.company,
+        ].filter(Boolean).join(" ").toLowerCase();
+
+        return terms.some((term: string) => {
+          const escaped = term.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+          return new RegExp(`\\b${escaped}\\b`, "i").test(candidateText);
+        });
+      });
+
+      if (hasHeadlineProof) {
+        continue;
+      }
+
       return {
         admit: false,
         reason: `Company type is the defining requirement of this brief and was not proven (${members.map((m) => statusOf(m.id) || "missing").join("/")}).`,

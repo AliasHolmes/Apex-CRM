@@ -88,6 +88,14 @@ export const DIRECTORY_AND_MEDIA_DOMAINS = [
   'pitchbook.com',
   'dnb.com',
   'owler.com',
+  'builtin.com',
+  'revenuebase.net',
+  'emerald.com',
+  'emeraldinsight.com',
+  'ibm.com',
+  'lusha.com',
+  'cognism.com',
+  'seamless.ai',
 ] as const;
 
 /**

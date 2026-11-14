@@ -118,7 +118,10 @@ const COMPANY_HINT_BLOCKLIST = new Set([
   'ziprecruiter', 'wellfound', 'monster', 'simplyhired', 'workable', 'greenhouse',
   'lever', 'ashby', 'upwork', 'fiverr', 'make',
   'brightdata', 'bright data', 'tavily', 'merriam webster', 'dictionary', 'cambridge dictionary',
-  'chatgpt', 'claude', 'gemini', 'copilot'
+  'chatgpt', 'claude', 'gemini', 'copilot',
+  'builtin', 'built in', 'builtinboston', 'builtinseattle', 'built in boston', 'built in seattle',
+  'revenuebase', 'emerald', 'emerald insight', 'linkedin learning', 'linkedinlearning', 'ibm',
+  'zoominfo', 'lusha', 'cognism', 'seamless', 'seamless.ai'
 ]);
 
 // NOTE: deliberately a different (looser, corporate-form-of-address) strip list than

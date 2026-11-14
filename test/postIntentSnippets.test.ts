@@ -10,14 +10,14 @@ test('isLinkedInPostUrl accepts genuine LinkedIn post and activity URLs', () => 
   assert.ok(isLinkedInPostUrl('https://www.linkedin.com/posts/johndoe_automation-activity-12345'));
   assert.ok(isLinkedInPostUrl('https://linkedin.com/posts/johndoe_hiring-67890'));
   assert.ok(isLinkedInPostUrl('https://nz.linkedin.com/posts/johndoe_ai-consultancy-11111'));
-  assert.ok(isLinkedInPostUrl('https://www.linkedin.com/pulse/future-of-ai-automation-johndoe/'));
   assert.ok(isLinkedInPostUrl('https://www.linkedin.com/feed/update/urn:li:activity:99999/'));
   assert.ok(isLinkedInPostUrl('https://www.linkedin.com/activity/feed/'));
   assert.ok(isLinkedInPostUrl('https://www.linkedin.com/in/johndoe/recent-activity/'));
   assert.ok(isLinkedInPostUrl('https://www.linkedin.com/in/johndoe/recent-activity/all/'));
 });
 
-test('isLinkedInPostUrl rejects bare profile pages and non-LinkedIn URLs', () => {
+test('isLinkedInPostUrl rejects bare profile pages, pulse articles, and non-LinkedIn URLs', () => {
+  assert.strictEqual(isLinkedInPostUrl('https://www.linkedin.com/pulse/future-of-ai-automation-johndoe/'), false);
   assert.strictEqual(isLinkedInPostUrl('https://www.linkedin.com/in/johndoe'), false);
   assert.strictEqual(isLinkedInPostUrl('https://www.linkedin.com/in/johndoe/'), false);
   assert.strictEqual(isLinkedInPostUrl('https://michaels.com/crafts/knitting'), false);

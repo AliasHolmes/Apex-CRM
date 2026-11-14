@@ -49,6 +49,7 @@ import {
   looksLikeCompanyHint,
   companyEqualsLocation,
   cleanCompanyNameFromUrlOrTitle,
+  extractCompanyHintDeterministic,
 } from "../observations.js";
 import { formatLatencySeconds } from "../terminalLog.js";
 import type { SessionContext } from "../pipelineTypes.js";
@@ -365,8 +366,14 @@ export async function executeExtractStage(
     const isSignalLane = item._queryLane === "signal" || item.lane === "signal";
     if (!isExplicitLinkedInProfile && isSignalLane) {
       if (state.signalStore) {
-        const companyHint = item.title?.split(/[-|:]/)[0]?.trim();
-        if (companyHint) {
+        const obs = {
+          title: item.title || "",
+          content: String(item.content || item.raw_content || ""),
+          url: effectiveUrl,
+          raw: item,
+        };
+        const companyHint = extractCompanyHintDeterministic(obs as any);
+        if (companyHint && looksLikeCompanyHint(companyHint)) {
           state.signalStore.addCompanySignal(companyHint, {
             query: item._sourceQuery || "",
             url: effectiveUrl,
@@ -409,8 +416,14 @@ export async function executeExtractStage(
       } else {
         // Dual-Channel Ingestion: Capture company evidence from non-person search results rather than losing the intelligence
         if (state.signalStore) {
-          const companyHint = item.title?.split(/[-|:\u2022\u00b7]/)[0]?.trim();
-          if (companyHint && companyHint.length >= 3 && !/linkedin|google|login|search|jobs|directory/i.test(companyHint)) {
+          const obs = {
+            title: item.title || "",
+            content: snippet,
+            url: effectiveUrl,
+            raw: item,
+          };
+          const companyHint = extractCompanyHintDeterministic(obs as any);
+          if (companyHint && looksLikeCompanyHint(companyHint)) {
             state.signalStore.addCompanySignal(companyHint, {
               query: item._sourceQuery || "",
               url: effectiveUrl,

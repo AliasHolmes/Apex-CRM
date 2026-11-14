@@ -1007,7 +1007,7 @@ export async function executeEnrichStage(
 
     // 1b. Company Site Probe Fallback for candidates missing rich profile data
     const siteProbeEnabled = process.env.LEAD_SITE_PROBE_ENABLED !== "false";
-    const siteProbeMax = boundedNumber(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND, 12, 1, 30);
+    const siteProbeMax = boundedNumber(process.env.LEAD_SITE_PROBE_MAX_PER_ROUND, 25, 1, 50);
     stats.siteProbe = stats.siteProbe || {
       attempted: 0,
       succeeded: 0,
@@ -1039,7 +1039,7 @@ export async function executeEnrichStage(
 
       const maxDomainLookups = Math.max(
         0,
-        Number(process.env.LEAD_COMPANY_DOMAIN_LOOKUP_MAX_PER_ROUND ?? 6),
+        Number(process.env.LEAD_COMPANY_DOMAIN_LOOKUP_MAX_PER_ROUND ?? 25),
       );
       let domainLookupsAttempted = 0;
 
@@ -1051,7 +1051,7 @@ export async function executeEnrichStage(
         let domain = deriveCompanyDomain(target.lead);
         if (!domain && maxDomainLookups > 0 && domainLookupsAttempted < maxDomainLookups) {
           const pStrength = computePersonaStrength(target.lead, contract);
-          if (pStrength >= 2) {
+          if (pStrength >= 1) {
             const companyName = String(
               target.lead.currentCompany ||
                 target.lead.company ||

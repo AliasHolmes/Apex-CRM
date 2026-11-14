@@ -158,11 +158,13 @@ export function buildLinkedInPostSearchQuery(lead: Record<string, any>): string 
   return '';
 }
 
-export const LINKEDIN_POST_URL_REGEX = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/(?:posts\/|pulse\/|feed\/update\/|activity\/|in\/[^/]+\/recent-activity)/i;
+export const LINKEDIN_POST_URL_REGEX = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/(?:posts\/|feed\/update\/|activity\/|in\/[^/]+\/recent-activity)/i;
 
 export function isLinkedInPostUrl(url: string): boolean {
   if (!url || typeof url !== 'string') return false;
-  return LINKEDIN_POST_URL_REGEX.test(url.trim());
+  const trimmed = url.trim();
+  if (/\/pulse\//i.test(trimmed)) return false;
+  return LINKEDIN_POST_URL_REGEX.test(trimmed);
 }
 
 export const SERP_BOILERPLATE_PATTERNS: readonly (string | RegExp)[] = [

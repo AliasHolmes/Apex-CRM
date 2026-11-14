@@ -767,7 +767,7 @@ export async function executePlanStage(
   }
 
   const candidatePlans = adaptiveSchedule.tasks.map((item) => {
-    const isPerson = item.lane === "person" || !item.lane;
+    const isPerson = item.lane === "person" || !item.lane || item.lane === "account" || item.intent === "find_decision_makers";
     const taskItem =
       isPerson && personCrmNegativeTerms
         ? { ...item, query: `${item.query} ${personCrmNegativeTerms}`.trim() }
@@ -817,7 +817,7 @@ export async function executePlanStage(
     const gridTasks = buildRetrievalTasks(gridItems, searchSpec);
     for (const task of gridTasks) {
       if (roundPlans.length >= Math.min(4, maxTasks)) break;
-      const isPerson = task.lane === "person" || !task.lane;
+      const isPerson = task.lane === "person" || !task.lane || task.lane === "account" || task.intent === "find_decision_makers";
       const taskItem =
         isPerson && personCrmNegativeTerms
           ? { ...task, query: `${task.query} ${personCrmNegativeTerms}`.trim() }

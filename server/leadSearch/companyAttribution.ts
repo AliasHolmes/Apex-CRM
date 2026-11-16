@@ -143,6 +143,7 @@ export function extractCompanySourceText(candidate: FinalistCandidate): {
       lead.profile?.contactDetails?.website ||
       lead.companyAccount?.website ||
       lead.website ||
+      lead.companyDomain ||
       "",
   ).trim();
   const normalizedUrl = normalizeDomainUrl(rawUrl);
@@ -151,6 +152,9 @@ export function extractCompanySourceText(candidate: FinalistCandidate): {
     try {
       domain = new URL(normalizedUrl).hostname.replace(/^www\./, "").toLowerCase();
     } catch {}
+  }
+  if (!domain && lead.companyDomain) {
+    domain = String(lead.companyDomain).trim().toLowerCase().replace(/^www\./, "");
   }
 
   // 1. Check enrichment cache if domain is known

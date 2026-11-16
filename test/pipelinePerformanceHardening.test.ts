@@ -12,6 +12,7 @@ import {
 } from "../server/leadSearch/stages/planStage.js";
 import {
   runGatedCompanyAttribution,
+  extractCompanySourceText,
 } from "../server/leadSearch/companyAttribution.js";
 
 test("Contract Compiler Warm Cache: getRecentProspectContractByBrief retrieves contract without TTL restriction", () => {
@@ -227,5 +228,24 @@ test("Judge Stage Auto-fail Short Circuit: Disqualifying contradictions are reje
 
   assert.equal(contradictoryCandidate.lead._autoFailed, true);
   assert.ok(contradictoryCandidate.lead._contradictionReason.includes("B2C retail company"));
+});
+
+test("Domain Lookup Bridge in Company Attribution: Resolves domain from lead.companyDomain", () => {
+  const candidate = {
+    candidateId: "cand-domain-bridge",
+    lead: {
+      name: "John Doe",
+      company: "Reconciled Services",
+      companyDomain: "reconciled.com",
+    },
+    evidence: [
+      { text: "[COMPANY SITE] Official website of Reconciled Services: bookkeeping and accounting." },
+    ],
+  } as any;
+
+  const extracted = extractCompanySourceText(candidate);
+  assert.equal(extracted.domain, "reconciled.com", "Must resolve domain directly from lead.companyDomain");
+  assert.equal(extracted.companyName, "Reconciled Services");
+  assert.ok(extracted.sourceText.includes("Reconciled Services"));
 });
 

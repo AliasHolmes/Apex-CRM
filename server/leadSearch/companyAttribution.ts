@@ -425,7 +425,7 @@ export async function runGatedCompanyAttribution(
     1,
     Math.min(
       8,
-      Number(options.batchSize || process.env.COMPANY_ATTRIBUTION_BATCH_SIZE || 2),
+      Number(options.batchSize || process.env.COMPANY_ATTRIBUTION_BATCH_SIZE || 6),
     ),
   );
   const structuredFn = options.openAIStructured || openAIStructured;
@@ -477,7 +477,7 @@ export async function runGatedCompanyAttribution(
     ].join("\n");
 
     try {
-      const dynamicAttributionTokens = Math.max(4096, batch.length * 600);
+      const dynamicAttributionTokens = Math.max(4096, batch.length * 750);
       const response = (await structuredFn(
         promptText,
         bulkCompanyAttributionSchema,

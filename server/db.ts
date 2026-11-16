@@ -4164,6 +4164,20 @@ export function getProspectContractCache(
   }
 }
 
+export function getRecentProspectContractByBrief(rawBrief: string): any | null {
+  try {
+    const db = getLeadsDb();
+    const row = db
+      .prepare(
+        `SELECT contract_json FROM prospect_contract_cache WHERE raw_brief = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(rawBrief) as { contract_json?: string } | undefined;
+    return row?.contract_json ? JSON.parse(row.contract_json) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 export function upsertProspectContractCache(
   cacheKey: string,
   rawBrief: string,

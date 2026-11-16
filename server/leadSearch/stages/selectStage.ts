@@ -58,6 +58,24 @@ export function shouldRunIntentEnrichment(
   return !isShortfall || forceShortfallEnrichment || qualifiedLeadsCount > 0;
 }
 
+export const INTENT_PRESCREEN_REGEX =
+  /\b(?:hir(?:ing|ed|es)|recruit(?:ing|ment)|grow(?:ing|th)|expan(?:ding|sion)|open\s+roles?|vacanc(?:y|ies)|headcount|scaling|raised|funding|venture\s+backed|seed\s+round|series\s+[a-e]|subcontract(?:ing|or|ors)?|integrat(?:ion|ing)|migrat(?:ing|ion)|moderniz(?:ing|ation)|implement(?:ing|ation)|looking\s+for|seeking|rfp|procurement)\b/i;
+
+export function hasPlausibleIntentEvidence(lead: Record<string, any>): boolean {
+  if (!lead) return false;
+  const text = [
+    lead.headline,
+    lead.currentTitle,
+    lead.profile?.headline,
+    lead.evidence?.evidenceBlock,
+    lead.companyAttribution?.result?.evidenceQuote,
+    ...(Array.isArray(lead.evidence?.snippets) ? lead.evidence.snippets : []),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return INTENT_PRESCREEN_REGEX.test(text);
+}
+
 export async function executeSelectStage(
   ctx: SessionContext,
   input: SelectStageInput
@@ -93,9 +111,21 @@ export async function executeSelectStage(
     .sort((a, b) => sharedEffectiveScore(b) - sharedEffectiveScore(a))
     .slice(0, Math.min(qualifiedLeads.length, Math.ceil(targetLimit * 1.5)));
 
+  for (const candidate of intentPool) {
+    if (!hasPlausibleIntentEvidence(candidate)) {
+      candidate.intentEnrichmentState = "enriched_none";
+      candidate.intentQuality = "none";
+    }
+  }
+
   // Phase 4: Targeted Company Intent Probing on intent pool
   const leadsNeedingIntent = intentPool.filter((l) => {
     if (l.companyIntentEvidence || l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
+    if (!hasPlausibleIntentEvidence(l)) {
+      l.intentEnrichmentState = "enriched_none";
+      l.intentQuality = "none";
+      return false;
+    }
     const company = String(l.currentCompany || l.company || l.profile?.currentCompany || l.companyName || "").trim();
     if (!company || company.length < 2) return false;
     const title = String(l.currentTitle || l.headline || l.jobTitle || l.profile?.currentTitle || l.profile?.headline || "").trim();
@@ -113,42 +143,63 @@ export async function executeSelectStage(
   if (
     companyIntentEnabled &&
     shouldRunIntent &&
-    leadsNeedingIntent.length > 0 &&
     effectiveIntentCap > 0
   ) {
-    logEvent(`Phase 4: Targeted company intent probing starting. Pool: ${leadsNeedingIntent.length} finalist leads.`);
-    const qualifiedMap = new Map<string, any>(
-      leadsNeedingIntent.map((l, idx) => [l.id || `lead-${idx}`, l]),
-    );
-    const companyIntentStats = await runIntentEnrichment({
-      qualifiedLeads: qualifiedMap,
-      contract,
-      companyIntentMaxPerSearch: effectiveIntentCap,
-      companyIntentConcurrency: effectiveIntentConcurrency,
-      ttlDays,
-      brightDataSearch: (q) =>
-        trackableBrightDataSearch(q, {}, "phase_4_company_website"),
-      tavilySearchFallback: hasTavilyKey()
-        ? async (q) =>
-            (
-              await ports.tavilySearch(q, {
-                signal: state.abortController.signal,
-              })
-            ).items
-        : undefined,
-      sessionAbortSignal: state.abortController.signal,
-      logEvent,
-      recordTrace,
-    });
-    if (stats) {
-      (stats as any).companyIntent = companyIntentStats;
+    if (leadsNeedingIntent.length > 0) {
+      logEvent(`Phase 4: Targeted company intent probing starting. Pool: ${leadsNeedingIntent.length} finalist leads.`);
+      const qualifiedMap = new Map<string, any>(
+        leadsNeedingIntent.map((l, idx) => [l.id || `lead-${idx}`, l]),
+      );
+      const companyIntentStats = await runIntentEnrichment({
+        qualifiedLeads: qualifiedMap,
+        contract,
+        companyIntentMaxPerSearch: effectiveIntentCap,
+        companyIntentConcurrency: effectiveIntentConcurrency,
+        ttlDays,
+        brightDataSearch: (q) =>
+          trackableBrightDataSearch(q, {}, "phase_4_company_website"),
+        tavilySearchFallback: hasTavilyKey()
+          ? async (q) =>
+              (
+                await ports.tavilySearch(q, {
+                  signal: state.abortController.signal,
+                })
+              ).items
+          : undefined,
+        sessionAbortSignal: state.abortController.signal,
+        logEvent,
+        recordTrace,
+      });
+      if (stats) {
+        (stats as any).companyIntent = companyIntentStats;
+      }
+    } else if (stats) {
+      (stats as any).companyIntent = {
+        attempted: 0,
+        cacheHits: 0,
+        noSite: 0,
+        noSignal: 0,
+        succeeded: 0,
+        failed: 0,
+        companiesDeduped: 0,
+      };
     }
   }
 
   // Phase 5: Targeted LinkedIn Post Intent Enrichment on intent pool
-  if (linkedinPostIntentEnabled && shouldRunIntent && intentPool.length > 0) {
-    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${intentPool.length} finalist candidates.`);
-    const qualifiedMap = new Map<string, any>(intentPool.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
+  const leadsNeedingPostIntent = intentPool.filter((l) => {
+    if (l._autoFailed || l.judgmentInsight?.status === "hard_fail") return false;
+    if (!hasPlausibleIntentEvidence(l)) {
+      l.intentEnrichmentState = "enriched_none";
+      l.intentQuality = "none";
+      return false;
+    }
+    return true;
+  });
+
+  if (linkedinPostIntentEnabled && shouldRunIntent && leadsNeedingPostIntent.length > 0) {
+    logEvent(`Phase 5: Targeted LinkedIn post intent enrichment starting. Pool: ${leadsNeedingPostIntent.length} finalist candidates.`);
+    const qualifiedMap = new Map<string, any>(leadsNeedingPostIntent.map((l: any, idx: number) => [l.id || `lead-${idx}`, l]));
     const postIntentConcurrency = boundedNumber(process.env.LINKEDIN_POST_INTENT_CONCURRENCY, 4, 1, 8);
     const postIntentStats = await runLinkedInPostIntentEnrichment({
       qualifiedLeads: qualifiedMap,
@@ -156,7 +207,7 @@ export async function executeSelectStage(
       brightDataSearch: (q, opts) => trackableBrightDataSearch(q, opts, 'phase_5_post_intent'),
       tavilySearchFallback: hasTavilyKey() ? (q, opts) => ports.tavilySearch(q, opts) : undefined,
       targetLimit,
-      maxLeads: Math.min(boundedNumber(process.env.LINKEDIN_POST_INTENT_MAX_LEADS, 20, 1, 200), intentPool.length),
+      maxLeads: Math.min(boundedNumber(process.env.LINKEDIN_POST_INTENT_MAX_LEADS, 20, 1, 200), leadsNeedingPostIntent.length),
       concurrency: postIntentConcurrency, // concurrent SERP retrieval; Phase B LLM batching remains sequential
       ttlDays,
       sessionAbortSignal: state.abortController.signal,

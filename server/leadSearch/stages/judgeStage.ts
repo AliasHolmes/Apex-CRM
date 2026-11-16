@@ -44,7 +44,10 @@ import {
   classifyTitle,
   hasStudentSignal,
 } from "../titleTriage.js";
-import { runGatedCompanyAttribution } from "../companyAttribution.js";
+import {
+  runGatedCompanyAttribution,
+  type CompanyAttributionResult,
+} from "../companyAttribution.js";
 import { runRollingPool } from "../liveRollingPool.js";
 import { resolveTitleFromQualification } from "../titleResolution.js";
 import { resolveJudgeRetryProviderOrder } from "../plannerRouting.js";
@@ -814,6 +817,61 @@ export async function evaluateIncrementalJudgeBatches(
     );
   }
 
+  // Hoist company attribution: run once across all distinct companies upfront before micro-batch judging
+  const attributionMap = new Map<string, CompanyAttributionResult>();
+  if (companyAttributionEnabled && candidatesToJudge.length > 0) {
+    const attrSummary = await runGatedCompanyAttribution(
+      candidatesToJudge,
+      contract,
+      {
+        signal: state.abortController?.signal,
+        logEvent,
+        circuitBreaker: llmCircuitBreaker,
+        // Attribution timeout: 60s baseline allows Gemini reasoning overhead
+        // without stalling the judge pipeline.
+        timeoutMs: 60_000,
+        batchSize: Math.max(6, maxBatchCandidates),
+        sessionId: config.sessionId,
+        round,
+        recordTrace,
+        concurrency: Math.min(configuredJudgeConcurrency, 4),
+      },
+    );
+    if (attrSummary.attributedCount > 0) {
+      logEvent(
+        `Round ${round} Company Attribution: evaluated ${attrSummary.attributedCount} candidates (${attrSummary.verifiedCount} verified fit, ${attrSummary.contradictionCount} disqualifying contradictions).`,
+      );
+    }
+    for (const cand of candidatesToJudge) {
+      const attr = cand.lead.companyAttribution as CompanyAttributionResult | undefined;
+      if (attr) {
+        if (cand.candidateId) {
+          attributionMap.set(cand.candidateId, attr);
+        }
+        const compDomain = String(cand.lead.companyDomain || "").trim().toLowerCase();
+        if (compDomain) {
+          attributionMap.set(compDomain, attr);
+        }
+        const compName = String(cand.lead.company || cand.lead.companyName || "").trim().toLowerCase();
+        if (compName) {
+          attributionMap.set(compName, attr);
+        }
+      }
+    }
+    // Tag auto-fails for disqualifying contradictions
+    for (const cand of candidatesToJudge) {
+      const attr =
+        (cand.lead.companyAttribution as CompanyAttributionResult | undefined) ||
+        attributionMap.get(cand.candidateId);
+      if (attr?.verdict === "disqualifying_contradiction") {
+        cand.lead._autoFailed = true;
+        if (!cand.lead._contradictionReason) {
+          cand.lead._contradictionReason = `Company Attribution: ${attr.reason} (business model: ${attr.businessModel})`;
+        }
+      }
+    }
+  }
+
   const microBatches: FinalistCandidate[][] = [];
   let currentBatch: FinalistCandidate[] = [];
   let currentBatchTokens = 0;
@@ -1214,39 +1272,32 @@ export async function evaluateIncrementalJudgeBatches(
     }
   };
 
-  // Attribution and judging run per micro-batch inside a rolling pool, so a slow batch never
-  // holds back its siblings and attribution for one batch overlaps judging of the others.
+  // Micro-batch judge execution: attribution was hoisted and executed upfront across all candidates,
+  // so judgeMicroBatch evaluates precomputed attribution and routes active candidates directly to LLM judging.
   const judgeMicroBatch = async (
     batch: FinalistCandidate[],
     batchIndex: number,
+    batchAttributionMap?: Map<string, CompanyAttributionResult>,
   ): Promise<any[]> => {
-    if (companyAttributionEnabled && batch.length > 0) {
-      const attrSummary = await runGatedCompanyAttribution(
-        batch,
-        contract,
-        {
-          signal: state.abortController?.signal,
-          logEvent,
-          circuitBreaker: llmCircuitBreaker,
-          // Attribution timeout: 60s baseline allows Gemini reasoning overhead
-          // without stalling the judge pipeline.
-          timeoutMs: 60_000,
-          batchSize: Math.max(6, maxBatchCandidates),
-          sessionId: config.sessionId,
-          round,
-          recordTrace,
-          concurrency: Math.min(configuredJudgeConcurrency, 4),
-        },
-      );
-      if (attrSummary.attributedCount > 0) {
-        logEvent(
-          `Round ${round} Company Attribution: evaluated ${attrSummary.attributedCount} candidates (${attrSummary.verifiedCount} verified fit, ${attrSummary.contradictionCount} disqualifying contradictions).`,
-        );
-      }
-    }
-
     const activeCandidates: FinalistCandidate[] = [];
     for (const candidate of batch) {
+      const candidateAttr =
+        batchAttributionMap?.get(candidate.candidateId) ||
+        (candidate.lead.companyDomain
+          ? batchAttributionMap?.get(String(candidate.lead.companyDomain).trim().toLowerCase())
+          : undefined) ||
+        (candidate.lead.company
+          ? batchAttributionMap?.get(String(candidate.lead.company).trim().toLowerCase())
+          : undefined) ||
+        (candidate.lead.companyAttribution as CompanyAttributionResult | undefined);
+
+      if (candidateAttr?.verdict === "disqualifying_contradiction") {
+        candidate.lead._autoFailed = true;
+        if (!candidate.lead._contradictionReason) {
+          candidate.lead._contradictionReason = `Company Attribution: ${candidateAttr.reason} (business model: ${candidateAttr.businessModel})`;
+        }
+      }
+
       if (candidate.lead._autoFailed && candidate.lead._contradictionReason) {
         const contradictionInsight = {
           status: "hard_fail" as FinalistOutcomeStatus,
@@ -1292,7 +1343,7 @@ export async function evaluateIncrementalJudgeBatches(
   const { results: batchResults, startedCount } = await runRollingPool(
     microBatches,
     async (batch, batchIndex) => {
-      const newlyQualified = await judgeMicroBatch(batch, batchIndex);
+      const newlyQualified = await judgeMicroBatch(batch, batchIndex, attributionMap);
       cumulativeQualified += newlyQualified.length;
       completedBatches++;
       return newlyQualified;

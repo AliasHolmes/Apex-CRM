@@ -70,7 +70,7 @@ export type PlanStageInput = {
   remaining: number;
   generatedQueries: string[];
   seenQueryTexts: Set<string>;
-  searchSpec: SearchSpec;
+  searchSpec: SearchSpec & { requiresPerson?: boolean };
   discoveryProviderMode: any;
   stats: any;
   generation?: number;
@@ -665,15 +665,58 @@ export async function executePlanStage(
 
   planItems = enforceContractQueries(planItems, config.contract);
 
-  // Reverse flywheel (ADR-0012): when CRM duplicates dominated the previous round, query
-  // the decision-makers at the specific companies discovered with hiring signals instead
-  // of re-mining the same persona surface.
-  if (crmSaturationDominates) {
+  // Reverse flywheel (ADR-0012): allow flywheel items to be injected whenever discoveredCompanies
+  // (or signalCompanies) exist and flywheel slots are available, removing the strict
+  // crmSaturationDominates gate.
+  const hasFlywheelCompanies =
+    (discoveredCompanies && discoveredCompanies.length > 0) ||
+    (signalCompanies && signalCompanies.length > 0);
+  const flywheelSlotsAvailable = planItems.length < maxTasks || maxTasks > 0;
+  if (hasFlywheelCompanies && flywheelSlotsAvailable) {
+    if (discoveredCompanies.length > 0) {
+      for (const company of discoveredCompanies) {
+        if (!signalCompanies.includes(company)) {
+          signalCompanies.push(company);
+        }
+      }
+    }
     const accountItems = buildAccountFlywheelItems(signalCompanies, searchSpec, maxTasks);
     if (accountItems.length > 0) {
       planItems = [...planItems, ...accountItems];
       logEvent(
-        `Round ${round}: CRM saturation dominant (${(crmDuplicateShare * 100).toFixed(0)}% duplicate_existing_lead); injected ${accountItems.length} account-flywheel queries at signal companies.`,
+        `Round ${round}: injected ${accountItems.length} account-flywheel queries at discovered companies${crmSaturationDominates ? ` (CRM saturation dominant at ${(crmDuplicateShare * 100).toFixed(0)}% duplicate_existing_lead)` : ""}.`,
+      );
+    }
+  }
+
+  // Signal lane capping for person briefs:
+  // When searchSpec?.requiresPerson === true, cap the number of signal tasks to at most 1,
+  // so the engine does not burn ATS job-board queries that yield 0.198% conversion.
+  // Reallocate the remaining query slots to person or account lanes.
+  if (searchSpec?.requiresPerson === true) {
+    let signalCount = 0;
+    let reallocatedCount = 0;
+    for (const item of planItems) {
+      const isSignal =
+        item.lane === "signal" ||
+        (!item.lane &&
+          (item.family === "pain_signal" ||
+            item.family === "growth_signal" ||
+            item.family === "tooling_signal"));
+      if (isSignal) {
+        signalCount++;
+        if (signalCount > 1) {
+          item.lane = "person";
+          if (item.intent === "find_buying_signal" || !item.intent) {
+            item.intent = "find_decision_makers";
+          }
+          reallocatedCount++;
+        }
+      }
+    }
+    if (reallocatedCount > 0) {
+      logEvent(
+        `Round ${round}: capped signal lane queries to 1 for person brief (reallocated ${reallocatedCount} query slot(s) to person lane).`,
       );
     }
   }
@@ -683,6 +726,18 @@ export async function executePlanStage(
     domainCluster: t.domainCluster || domainCluster,
     centroid: centroidEnabled ? quantizeBriefToCentroid(config.contract || briefText) : undefined,
   }));
+
+  if (searchSpec?.requiresPerson === true) {
+    let signalTaskCount = 0;
+    for (const task of rawTasks) {
+      if (task.lane === "signal") {
+        signalTaskCount++;
+        if (signalTaskCount > 1) {
+          task.lane = "person";
+        }
+      }
+    }
+  }
 
   const adaptiveSchedule = scheduleAdaptiveRetrievalTasks(
     rawTasks,
@@ -736,6 +791,18 @@ export async function executePlanStage(
     localDebugLogs.push(scheduleLog);
     if (!input.isSpeculative) {
       pushStateDebugLog(state, scheduleLog);
+    }
+  }
+
+  if (searchSpec?.requiresPerson === true) {
+    let signalScheduledCount = 0;
+    for (const task of adaptiveSchedule.tasks) {
+      if (task.lane === "signal") {
+        signalScheduledCount++;
+        if (signalScheduledCount > 1) {
+          task.lane = "person";
+        }
+      }
     }
   }
 
@@ -1017,7 +1084,7 @@ export function isValidFlywheelCompany(company: string): boolean {
 
 export function buildAccountFlywheelItems(
   companies: string[],
-  searchSpec: SearchSpec,
+  searchSpec: SearchSpec & { requiresPerson?: boolean },
   maxTasks: number,
 ): SearchQueryPlanItem[] {
   const titles =
@@ -1026,16 +1093,19 @@ export function buildAccountFlywheelItems(
       : ["founder", "CEO", "owner"];
   const companyBudget = Math.max(1, Math.min(3, Math.floor(maxTasks / 4) || 1));
   const items: SearchQueryPlanItem[] = [];
+  const isPersonRequired = searchSpec?.requiresPerson !== false;
   for (const company of companies) {
     if (items.length >= companyBudget) break;
     const cleanCompany = String(company || "").trim();
     if (!isValidFlywheelCompany(cleanCompany)) continue;
     const roleClause = titles.map((title) => `"${title}"`).join(" OR ");
     items.push({
-      query: `"${cleanCompany}" (${roleClause})`,
+      query: isPersonRequired
+        ? `site:linkedin.com/in/ "${cleanCompany}" (${roleClause})`
+        : `"${cleanCompany}" (${roleClause})`,
       family: "company_type",
       intent: "find_decision_makers",
-      lane: "account",
+      lane: isPersonRequired ? "person" : "account",
       priority: 60,
     });
   }

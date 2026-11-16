@@ -24,6 +24,11 @@ import {
   getSearchCacheEntry,
   upsertSearchCacheEntry,
 } from "../db.js";
+import * as db from "../db.js";
+
+const getRecentProspectContractByBrief: ((rawBrief: string) => any | null) | undefined = (
+  db as { getRecentProspectContractByBrief?: (rawBrief: string) => any | null }
+).getRecentProspectContractByBrief;
 import {
   hasOpenAIKey,
   hasTavilyKey,
@@ -849,11 +854,29 @@ export async function executeDiscoverySession(
           logEvent(
             `[LLM ERROR] Prospect contract compiler failed (${formatLatencySeconds(Date.now() - contractStarted)}): ${err.message || String(err)}. Using un-cached deterministic contract for this session.`,
           );
-          const coherence = validateAndHealContractCoherence(fallbackContract, query);
-          contract = coherence.contract;
-          if (coherence.warnings.length) {
-            for (const warning of coherence.warnings) {
-              console.warn(`[prospectContract][coherence] ${warning}`);
+          let warmContractLoaded = false;
+          try {
+            // If warm contract exists, use it instead of falling back to degraded deterministic contract
+            const warmContract = typeof getRecentProspectContractByBrief === "function"
+              ? getRecentProspectContractByBrief(query)
+              : null;
+            if (warmContract && (warmContract.contractVersion || warmContract.policyVersion || warmContract.version)) {
+              if (!Array.isArray(warmContract.requirements)) {
+                warmContract.requirements = [];
+              }
+              contract = warmContract;
+              warmContractLoaded = true;
+            }
+          } catch {
+            // Ignore error and fall through
+          }
+          if (!warmContractLoaded) {
+            const coherence = validateAndHealContractCoherence(fallbackContract, query);
+            contract = coherence.contract;
+            if (coherence.warnings.length) {
+              for (const warning of coherence.warnings) {
+                console.warn(`[prospectContract][coherence] ${warning}`);
+              }
             }
           }
           // Deliberately NOT cached: persisting the fallback under the standard TTL
@@ -2146,9 +2169,9 @@ export async function executeDiscoverySession(
             requirementFailCounts: Record<string, number>;
           }
         >({
-          // Two groups may run at once; real parallelism is bounded by the primary provider slot
+          // Four groups may run at once; real parallelism is bounded by the primary provider slot
           // queue (8 slots), and each group parallelizes internally at judge concurrency.
-          concurrency: 2,
+          concurrency: 4,
           run: async (group) => {
             if (group.length === 0) return { qualifiedCandidates: [], requirementFailCounts: {} };
             const result = await evaluateIncrementalJudgeBatches(sessionCtx, {

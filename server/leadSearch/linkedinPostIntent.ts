@@ -16,7 +16,10 @@ import { runProviderQueue, type ProviderQueueTask } from './providerQueue.js';
 import { resolvePlannerProviderOrder, PLANNER_PROVIDER_HARD_TIMEOUT_MS } from './plannerRouting.js';
 import { applyPostIntentDelta } from './scoring.js';
 import { formatLatencySeconds } from './terminalLog.js';
+import { summarizeLLM } from './telemetry.js';
 import type { ProspectContract } from './prospectContract.js';
+
+export const POST_INTENT_PROMPT_VERSION = "v1.0.0";
 import type { BrightDataSearchResult, BrightDataSearchOptions } from '../services/brightdata.js';
 
 import type {
@@ -325,11 +328,19 @@ Analyze the snippets and classify the prospect's intent:`;
       status: "success",
       latencyMs: latency,
       model: resolvedModel,
-      llm: {
-        route: successfulAttempt?.provider || "llm",
-        model: resolvedModel,
-        inputTokens: usage?.inputTokens ?? 0,
-        outputTokens: usage?.outputTokens ?? 0,
+      promptVersion: POST_INTENT_PROMPT_VERSION,
+      llm: summarizeLLM(
+        "post_intent_classify",
+        userPrompt,
+        result,
+        latency,
+        0,
+        attempts,
+        usage,
+        POST_INTENT_PROMPT_VERSION,
+      ),
+      metadata: {
+        promptVersion: POST_INTENT_PROMPT_VERSION,
       },
     });
 
@@ -473,11 +484,20 @@ ${promptSections}`;
       status: "success",
       latencyMs: latency,
       model: resolvedModel,
-      llm: {
-        route: successfulAttempt?.provider || "llm",
-        model: resolvedModel,
-        inputTokens: usage?.inputTokens ?? 0,
-        outputTokens: usage?.outputTokens ?? 0,
+      promptVersion: POST_INTENT_PROMPT_VERSION,
+      llm: summarizeLLM(
+        "post_intent_classify_batch",
+        userPrompt,
+        response,
+        latency,
+        0,
+        attempts,
+        usage,
+        POST_INTENT_PROMPT_VERSION,
+      ),
+      metadata: {
+        candidateCount: candidates.length,
+        promptVersion: POST_INTENT_PROMPT_VERSION,
       },
     });
 
@@ -486,6 +506,20 @@ ${promptSections}`;
     logEvent?.(
       `[LLM WARN] LinkedIn Post Intent batch classification failed (${Date.now() - startedAt}ms), falling back to individual calls: ${err.message || String(err)}`,
     );
+    recordTrace?.({
+      phase: "select",
+      operation: "post_intent_classify_batch",
+      provider: "llm",
+      query: `post_intent_batch:${candidates.length}`,
+      status: "error",
+      latencyMs: Date.now() - startedAt,
+      promptVersion: POST_INTENT_PROMPT_VERSION,
+      error: { message: err?.message || String(err) },
+      metadata: {
+        candidateCount: candidates.length,
+        promptVersion: POST_INTENT_PROMPT_VERSION,
+      },
+    });
     for (const c of candidates) {
       const single = await classifyLinkedInPostIntent(c.postContext, brief, c.lead, logEvent, recordTrace, llmContext);
       resultMap.set(c.candidateId, single);

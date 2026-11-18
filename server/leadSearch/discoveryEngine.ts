@@ -77,6 +77,7 @@ import {
 import {
   MiningTelemetryRecorder,
   summarizeContractClassification,
+  summarizeLLM,
   type MiningTraceEvent,
 } from "./telemetry.js";
 import {
@@ -130,6 +131,7 @@ import {
   normalizeProspectContract,
   prospectContractSchema,
   PROSPECT_CONTRACT_POLICY_VERSION,
+  CONTRACT_COMPILER_PROMPT_VERSION,
   searchSpecFromProspectContract,
   validateAndHealContractCoherence,
   type ProspectContract,
@@ -824,7 +826,6 @@ export async function executeDiscoverySession(
             successfulAttempt?.model ||
             getPrimaryLLMModel();
           const latency = Date.now() - contractStarted;
-          const tokens = contractUsage?.totalTokens;
           const droppedCount = contract.droppedUngroundedRequirements?.length || 0;
           recordTrace({
             phase: "strategy",
@@ -833,13 +834,22 @@ export async function executeDiscoverySession(
             provider: "llm",
             model: resolvedModel,
             latencyMs: latency,
-            llm: {
-              totalTokens: tokens,
-              inputTokens: contractUsage?.inputTokens,
-              outputTokens: contractUsage?.outputTokens,
-            },
+            promptVersion: CONTRACT_COMPILER_PROMPT_VERSION,
+            llm: summarizeLLM(
+              "compile_contract",
+              contractPrompt,
+              compiled,
+              latency,
+              0,
+              contractAttempts,
+              contractUsage,
+              CONTRACT_COMPILER_PROMPT_VERSION,
+            ),
             counts: { hardRequirements: hardCount, droppedUngrounded: droppedCount },
-            metadata: { policyVersion: contract.policyVersion },
+            metadata: {
+              policyVersion: contract.policyVersion,
+              promptVersion: CONTRACT_COMPILER_PROMPT_VERSION,
+            },
           });
           upsertProspectContractCache(cacheKey, query, PROSPECT_CONTRACT_POLICY_VERSION, contract);
         } catch (err: any) {
@@ -849,7 +859,11 @@ export async function executeDiscoverySession(
             status: "error",
             provider: "llm",
             latencyMs: Date.now() - contractStarted,
-            error: err?.message || String(err),
+            promptVersion: CONTRACT_COMPILER_PROMPT_VERSION,
+            error: { message: err?.message || String(err) },
+            metadata: {
+              promptVersion: CONTRACT_COMPILER_PROMPT_VERSION,
+            },
           });
           logEvent(
             `[LLM ERROR] Prospect contract compiler failed (${formatLatencySeconds(Date.now() - contractStarted)}): ${err.message || String(err)}. Using un-cached deterministic contract for this session.`,

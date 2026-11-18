@@ -2,6 +2,7 @@ import {
   openAIStructured,
   Type,
 } from "../services/llm.js";
+import { summarizeLLM } from "./telemetry.js";
 import {
   verifyEvidencePassage,
   type FinalistCandidate,
@@ -48,6 +49,8 @@ export type CompanyAttributionResult = {
   quoteVerified?: boolean;
   fromStoredProfile?: boolean;
 };
+
+export const COMPANY_ATTRIBUTION_PROMPT_VERSION = "v1.0.0";
 
 export const bulkCompanyAttributionSchema = {
   type: Type.OBJECT,
@@ -480,9 +483,14 @@ export async function runGatedCompanyAttribution(
       "For each company, evaluate businessModel, queryAlignment, verdict, verbatimEvidenceQuote, and reason.",
     ].join("\n");
 
+    const batchStarted = Date.now();
+    const attributionAttempts: any[] = [];
+    let attributionUsage: any;
+    let response: { attributions?: any[] } | null | undefined;
+
     try {
       const dynamicAttributionTokens = Math.max(4096, batch.length * 750);
-      const response = (await structuredFn(
+      response = (await structuredFn(
         promptText,
         bulkCompanyAttributionSchema,
         COMPANY_ATTRIBUTION_SYSTEM_PROMPT,
@@ -499,6 +507,10 @@ export async function runGatedCompanyAttribution(
             round: options.round,
             itemCount: batch.length,
             promptSize: promptText.length,
+          },
+          onProviderAttempt: (a: any) => attributionAttempts.push(a),
+          onUsage: (u: any) => {
+            attributionUsage = u;
           },
         },
       )) as { attributions?: any[] } | null | undefined;
@@ -600,18 +612,50 @@ export async function runGatedCompanyAttribution(
           `WARN: Gated company attribution batch failed: ${err.message || String(err)}`,
         );
       }
+      if (options.recordTrace) {
+        options.recordTrace({
+          phase: "company_attribution",
+          operation: "batch_complete",
+          status: "error",
+          provider: "llm",
+          round: options.round,
+          latencyMs: Date.now() - batchStarted,
+          promptVersion: COMPANY_ATTRIBUTION_PROMPT_VERSION,
+          error: { message: err?.message || String(err) },
+          metadata: {
+            sessionId: options.sessionId,
+            batchSize: batch.length,
+            promptVersion: COMPANY_ATTRIBUTION_PROMPT_VERSION,
+          },
+        });
+      }
     }
     
-    if (options.recordTrace) {
+    if (options.recordTrace && attributionAttempts.length > 0) {
+      const latencyMs = Date.now() - batchStarted;
       options.recordTrace({
         phase: "company_attribution",
         operation: "batch_complete",
         status: "success",
+        provider: "llm",
         round: options.round,
+        latencyMs,
+        promptVersion: COMPANY_ATTRIBUTION_PROMPT_VERSION,
+        llm: summarizeLLM(
+          "company_attribution",
+          promptText,
+          response,
+          latencyMs,
+          0,
+          attributionAttempts,
+          attributionUsage,
+          COMPANY_ATTRIBUTION_PROMPT_VERSION,
+        ),
         metadata: {
           sessionId: options.sessionId,
           batchSize: batch.length,
-        }
+          promptVersion: COMPANY_ATTRIBUTION_PROMPT_VERSION,
+        },
       });
     }
     }

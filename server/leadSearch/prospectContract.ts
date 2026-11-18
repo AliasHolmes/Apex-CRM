@@ -13,6 +13,7 @@ export { COUNTRY_CANONICAL_MAP };
 // test/fixtures/prospectContractCorpus.ts) and enforce the metro-aware funnels
 // and coherence validation below. All contract cache lookups key on this value.
 export const PROSPECT_CONTRACT_POLICY_VERSION = 'evidence-contract-v11';
+export const CONTRACT_COMPILER_PROMPT_VERSION = 'v1.0.0';
 
 export type RequirementScope =
   | 'person_role'

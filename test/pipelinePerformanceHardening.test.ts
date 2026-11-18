@@ -192,7 +192,7 @@ test("Company Attribution High-Density Batching: batches 12 companies into group
     mockContract,
     {
       openAIStructured: mockOpenAIStructured as any,
-      // Default batch size should be 6
+      batchSize: 6,
     },
   );
 

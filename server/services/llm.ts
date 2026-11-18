@@ -1945,6 +1945,7 @@ async function sendChatCompletion(
   const sessionHeaders: Record<string, string> = {};
   if (options?.metadata?.sessionId) {
     sessionHeaders["x-langfuse-trace-id"] = String(options.metadata.sessionId);
+    sessionHeaders["x-langfuse-session-id"] = String(options.metadata.sessionId);
     sessionHeaders["x-langfuse-tags"] = "apex-crm,mining-session";
   }
   const isFailsafe = provider.id === "groq" || provider.id === "openrouter";

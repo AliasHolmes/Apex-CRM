@@ -30,7 +30,7 @@ Primary reference docs:
 
 - [`README.md`](../README.md) - product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) - domain glossary
-- [`docs/adr/0001`...`0019`](adr/) - nineteen ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`...`0021`](adr/) - twenty-one ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, primary quad concurrency with micro-batching,
   dev-server HMR forced-reload containment, the Byesu primary (GPT-6.1)
@@ -40,8 +40,11 @@ Primary reference docs:
   retrieval streaming, DB lifecycle, delta hydration), the grounded engine-write invariant (ADR-0015),
   OmniRoute primary architecture with unconstrained Gemini 3.8 Flash High reasoning (ADR-0016),
   High-Concurrency Micro-Splitting, Intent Isolation, and Cooldown Resilience (ADR-0017),
-  LLM Error Elimination, Nuance Preservation, and Dynamic Timeout Hardening (ADR-0018), and
-  Single-Candidate Timeout Headroom (210s) and Cross-Provider Judge Retry Escalation (ADR-0019)
+  LLM Error Elimination, Nuance Preservation, and Dynamic Timeout Hardening (ADR-0018),
+  Single-Candidate Timeout Headroom (210s) and Cross-Provider Judge Retry Escalation (ADR-0019),
+  Bright Data MCP v4.6.0 Upgrade, FastMCP Schema Alignment, and Search Batch Parallelization (ADR-0020),
+  Full-Stack Audit Remediation, Concurrency Safety, and Systemic Hardening (ADR-0021), and
+  Langfuse v4 OpenTelemetry Ingestion Migration and Legacy Endpoint Sunset Remediation (ADR-0022)
 
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
@@ -1010,7 +1013,7 @@ Resolution of all findings identified in the Outstanding Defect Report on HEAD `
   - Added explicit `console.error` diagnostic logging in `server/db.ts` write failure catch blocks (identity migration and ungrounded write demotion).
   - Added strict parameter format guards (`isSafeSessionId`, `isSafeLeadId`) to `GET /search-logs/:id`, `DELETE /saved-searches/:id`, and `GET /mining-sessions/:sessionId/trace` in `server/routes/api.ts`.
 
-### 9.36 Bright Data MCP v4.6.0 Upgrade & Engine Capability Expansion - (2026-11-08)
+### 9.36 Bright Data MCP v4.6.0 Upgrade & Engine Capability Expansion (ADR-0020) - (2026-11-08)
 
 Full modernization and architectural hardening of the Bright Data integration, upgrading `@brightdata/mcp` from `2.11.1` to `4.6.0`:
 
@@ -1100,6 +1103,34 @@ Follow-up to 9.37 (ADR-0021): docs vs. code reconciliation, then remediation of 
 - **`stats.roundRawCandidates` / threshold constants**: shared `server/leadSearch/pipelineThresholds.ts` (`DUPLICATE_DAMPEN_RATE` 0.2, `DUPLICATE_PAGE2_RATE` 0.3, `STALL_DUPLICATE_RATE` 0.4, `PLAN_NOVELTY_RATE` 0.2) with a documented ladder; `stallLadder` re-exports `STALL_DUPLICATE_RATE_THRESHOLD`.
 - **Stale schema-version assertions fixed**: `engineRemediationWiring`/`schemaV26` now expect v29; `identityKeysHarmonization` expectations updated to canonical (suffix-stripped) spellings.
 - **Maintenance**: typecheck clean; targeted test bundles for the twelve suites most relevant to these changes all pass (85 tests: identityKeysHarmonization 5, schemaV26 4, ftsIntegrity 4, engineRemediationWiring 8, leadPersistence 18, patchRevision 9, routeAuditFixes 17, serverResilience 5, leadIdentityMigration 1, engineAuditFixes 5, leadDedupe 6, leadMutationContracts 3); migration v29 verified re-keying a seeded pre-v29 database. Broader suite remains tsx-only and unattested (see section 7). Docs/ADR-0021 updated: current schema **v29**, `LATEST_SCHEMA_VERSION = 29`.
+
+### 9.39 Langfuse v4 OpenTelemetry Ingestion Migration (ADR-0022) - (2026-11-18)
+
+Comprehensive migration of LLM execution telemetry to the Langfuse v4 native OpenTelemetry (OTLP/HTTP) trace ingestion specification, resolving the November 16, 2026 sunset of legacy v3 batch ingestion (HTTP 410 `LANGFUSE_V3_API_REMOVED`):
+
+- **OTLP Ingestion Endpoint & Header Protocol**:
+  - Migrated ingestion endpoint from legacy `POST /api/public/ingestion` to `POST /api/public/otel/v1/traces` in `server/services/langfuse.ts`.
+  - Added required protocol header `x-langfuse-ingestion-version: 4` and edge gateway correlation header `x-langfuse-session-id` alongside HTTP Basic authentication (`Authorization: Basic <base64>`).
+  - Retained 5-second timeout guard via `AbortSignal.timeout(5_000)` ensuring telemetry egress never stalls active engine mining or search loops.
+- **OpenTelemetry Payload Engine (`buildLangfuseOtelPayload`)**:
+  - Implemented `buildLangfuseOtelPayload` producing standard OpenTelemetry `ExportTraceServiceRequest` JSON envelopes.
+  - Resource attributes: `service.name: "apex-crm"`, `service.version: "2.0.0"`.
+  - Instrumentation scope: `scopeSpans[0].scope` (`name: "apex-crm.langfuse"`, `version: "4.0.0"`).
+  - Derived deterministic 32-character lowercase hexadecimal trace IDs (`/^[0-9a-f]{32}$/`) from `payload.sessionId` via MD5 hashing (`crypto.createHash("md5").update(payload.sessionId).digest("hex")`), guaranteeing multi-round mining sessions correlate to a single unified trace tree in Langfuse UI.
+  - Generated unique 16-character hexadecimal span IDs (`/^[0-9a-f]{16}$/`) via `crypto.randomBytes(8).toString("hex")`.
+  - Computed Unix nanosecond timestamps (`startTimeUnixNano`, `endTimeUnixNano`) with JavaScript `BigInt` arithmetic, maintaining strict sub-millisecond precision and monotonic ordering (`endTimeUnixNano >= startTimeUnixNano`).
+- **GenAI Semantic Conventions & Langfuse Namespaces**:
+  - Mapped provider and model metadata to OpenTelemetry GenAI semantic conventions (`gen_ai.system`, `gen_ai.request.model`).
+  - Standardized token accounting to `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, and `gen_ai.usage.total_tokens` with non-negative integer bounds.
+  - Injected Langfuse observation attributes (`langfuse.trace.name`, `langfuse.session.id`, `langfuse.observation.type: "generation"`, `langfuse.observation.level`, `langfuse.observation.status_message`, `langfuse.observation.input`, `langfuse.observation.output`, `langfuse.trace.tags`).
+  - Dynamically serialized execution metadata (`round`, `stage`, `latencyMs`) into typed OTLP attributes (`stringValue`, `intValue`, `boolValue`).
+  - Mapped status codes to OpenTelemetry standards (`1` for `STATUS_CODE_OK`, `2` for `STATUS_CODE_ERROR`).
+- **Resilient Failover & Non-Blocking Safety**:
+  - Handled HTTP 410 sunset responses with single warning logging, avoiding retry loops.
+  - Supported transparent fallback to legacy v3 endpoint when encountering HTTP 404 from older self-hosted Langfuse installations.
+  - Retained non-blocking asynchronous dispatch (`void sendDirectLangfuseTrace(...)`) in `server/services/llm.ts`, ensuring telemetry exceptions never interrupt prospect discovery.
+- **Test Harness Coverage**:
+  - Added comprehensive test suite in `test/langfuseUpgrade.test.ts` covering host resolution, OTLP schema structure, trace/span ID hexadecimal formats, BigInt nanosecond ordering, GenAI attribute mappings, status codes, fetch header propagation, and network failure shielding.
 
 ## 10. Recommended next actions
 

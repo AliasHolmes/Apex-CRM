@@ -83,6 +83,7 @@ import {
   getBrightDataCapabilities,
   isBrightDataConfigured,
 } from "../services/brightdata.js";
+import { isLangfuseConfigured } from "../services/langfuse.js";
 import {
   buildFallbackQueryPlan as buildScoutFallbackQueryPlan,
   buildFallbackSearchSpec,
@@ -2024,16 +2025,16 @@ router.get("/mining-sessions/:sessionId/token-stats", (req, res): any => {
     const langfuseDeepLink = langfuseHost && projectId
       ? `${langfuseHost.replace(/\/$/, "")}/project/${projectId}/traces?search=${encodeURIComponent(sessionId)}`
       : null;
+    const langfuseSessionDeepLink = langfuseHost && projectId
+      ? `${langfuseHost.replace(/\/$/, "")}/project/${projectId}/sessions/${encodeURIComponent(sessionId)}`
+      : null;
 
     res.json({
       ...tokenStats,
       langfuseHost,
       langfuseDeepLink,
-      langfuseConfigured: Boolean(
-        process.env.LANGFUSE_PUBLIC_KEY ||
-        process.env.LANGFUSE_HOST ||
-        process.env.LANGFUSE_BASE_URL,
-      ),
+      langfuseSessionDeepLink,
+      langfuseConfigured: isLangfuseConfigured(),
     });
   } catch (error: any) {
     console.error("Failed to read token stats:", error);

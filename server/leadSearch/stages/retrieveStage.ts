@@ -226,7 +226,14 @@ export async function executeRetrieveStage(
                 query: plan.executableQuery,
                 latencyMs: Date.now() - searchStarted,
                 counts: { rawCandidates: filteredItems.length },
-                metadata: { cacheHit: true, signatureHit: signatureCacheHit },
+                metadata: {
+                  cacheHit: true,
+                  signatureHit: signatureCacheHit,
+                  savedLatencyMs: 1200,
+                  savedCredits: 1,
+                  lane: plan.item.lane,
+                  family: plan.item.family,
+                },
               });
               tavilyResultsByIndex.set(index, resultToUse);
               return;
@@ -239,6 +246,20 @@ export async function executeRetrieveStage(
               logEvent(
                 `Round ${round}: skipped Tavily task after local session reservation (PROVIDER_CREDIT_RESERVATION=true).`,
               );
+              recordTrace({
+                phase: "search",
+                operation: "tavily_search",
+                status: "skipped",
+                provider: "tavily",
+                round,
+                query: plan.executableQuery,
+                counts: { rawCandidates: 0 },
+                metadata: {
+                  reason: "credit_reservation_exhausted",
+                  lane: plan.item.lane,
+                  family: plan.item.family,
+                },
+              });
               tavilyResultsByIndex.set(index, {
                 text: "",
                 sources: [],
@@ -401,9 +422,23 @@ export async function executeRetrieveStage(
                       stats.ablationRescues = (stats.ablationRescues || 0) + newItems.length;
                       logEvent(`[QueryRewriter] Rescued ${newItems.length} via ${rewritten.strategy} rewrite "${rewritten.query}".`);
                       recordTrace({
-                        phase: 'search', operation: 'query_rewrite_rescue', status: 'started',
-                        provider: 'tavily', round, query: rewritten.query,
-                        metadata: { originalQuery: plan.executableQuery, ...rewritten },
+                        phase: 'search',
+                        operation: 'query_rewrite_rescue',
+                        status: newItems.length > 0 ? 'success' : 'info',
+                        provider: 'tavily',
+                        round,
+                        query: rewritten.query,
+                        counts: { newCandidates: newItems.length },
+                        metadata: {
+                          originalQuery: plan.executableQuery,
+                          rewrittenQuery: rewritten.query,
+                          demotedRequirementId: rewritten.demotedRequirementId,
+                          droppedTerm: rewritten.droppedTerm,
+                          strategy: rewritten.strategy,
+                          rescuedCount: newItems.length,
+                          lane: plan.item.lane,
+                          family: plan.item.family,
+                        },
                       });
                     }
                   };
@@ -436,6 +471,11 @@ export async function executeRetrieveStage(
                 searchDepth: tavilyOptions.searchDepth,
                 maxResults: dynamicTavilyMaxResults,
                 includeDomains: tavilyOptions.includeDomains,
+              },
+              metadata: {
+                cacheHit: false,
+                lane: plan.item.lane,
+                family: plan.item.family,
               },
             });
             state.debugLogs.push({
@@ -603,6 +643,9 @@ export async function executeRetrieveStage(
                 `round_${round}`,
               );
 
+              const batchDurationMs = Date.now() - chunkStarted;
+              const perQueryLatencyMs = Math.max(1, Math.round(batchDurationMs / chunk.length));
+
               const chunkResults = await Promise.all(
                 chunk.map(async ({ plan, index }, qIdx) => {
                   const qKey = chunkQueries[qIdx];
@@ -616,17 +659,19 @@ export async function executeRetrieveStage(
                     provider: "brightdata",
                     round,
                     query: plan.executableQuery,
-                    latencyMs: Date.now() - chunkStarted,
+                    latencyMs: perQueryLatencyMs,
                     counts: { rawCandidates: items.length },
                     brightData: getTraceBrightDataStatus(),
                     metadata: {
                       batch: true,
                       engine: isBing ? "bing" : "google",
+                      lane: plan.item.lane,
+                      family: plan.item.family,
                     },
                   });
 
                   if (queryRuns[index]) {
-                    queryRuns[index].searchLatencyMs += Date.now() - chunkStarted;
+                    queryRuns[index].searchLatencyMs += perQueryLatencyMs;
                   }
 
                   try {

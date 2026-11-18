@@ -190,7 +190,11 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
    via Tier 1 headline delimiters (`at`, `@`, `|`, `?`), Tier 2 domain stem, Tier 3 vanity handle
    brand tokens, and Tier 4 Independent Practice designation (`[FullName] (Independent Practice)`)
    with provisional entity tagging (`isProvisionalEntity: true`)
-6. **judge** ? pre-judge role triage (`MD`/`VP`/`CTO` expanded; clear ICs, students, interns,
+6. **enrich** - consolidated site probing on the shortlisted candidate pool ahead of finalist judging
+   (tagging `_locationProvenance = 'company_site'`, rejecting non-matching press URLs via
+   `urlHostSharesCompanyToken`, and firing `onTargetsReady` into the streaming judge seam)
+   (`enrichStage.ts`, `siteProbe.ts`)
+7. **judge** - pre-judge role triage (`MD`/`VP`/`CTO` expanded; clear ICs, students, interns,
    mayors, politicians, retired individuals, accountants, and customer support are discarded in 0ms;
    while nuanced roles like `founding member` and `practice lead` are protected), tri-partition by
    evidence, `EVIDENCE_GROUNDING_MODE=strict` quote enforcement with negation polarity guard,
@@ -198,12 +202,9 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
    and primary admission gate (`evaluatePrimaryAdmission`). Post-judging saves a segregated
    checkpoint with strictly qualified leads in `acceptedLeads` and segregated audit records in
    `disqualifiedCandidates` (`judgeStage.ts`, `titleTriage.ts`, `discoveryEngine.ts`, `server/db.ts`)
-7. **select** ? pre-selection intent probing on top qualified candidates (Phase 4 company
-   intent + Phase 5 LinkedIn post intent on top `ceil(targetLimit * 1.5)` pool) to activate
-   all 4 Pareto dimensions, followed by Pareto skyline + MMR diversification (`selectStage.ts`)
-8. **enrich** ? post-selection consolidated site probing (tagging `_locationProvenance = 'company_site'`
-   and rejecting non-matching press URLs via `urlHostSharesCompanyToken`) for selected finalists
-   (`enrichStage.ts`, `siteProbe.ts`)
+8. **select** - Phase 4 company website intent + Phase 5 LinkedIn post intent probing on top
+   qualified candidates (`ceil(targetLimit * 1.5)` pool) to activate all 4 Pareto dimensions,
+   followed by Pareto skyline + MMR diversification (`selectStage.ts`)
 9. **persist** ? identity-keyed upserts preserving CRM-owned workflow fields (`stage`,
    `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), FTS
    maintenance, exclude-list append, and session/log status (`success | partial_success | error`)
@@ -211,13 +212,17 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
 Cross-cutting invariants:
 
-- **Primary Provider Architecture** (`llm.ts`) routes LLM calls to Byesu (GPT-6.1,
-  `gpt-6.1-sol`) up to `BYESU_CONCURRENT_SLOTS` (runtime 8). Groq (950 output token cap) and
-  OpenRouter/Mistral form the resilient failsafe tier, invoked only when Byesu is out (fatal auth
-  failure, exhausted quota 429/1300, or consecutive circuit-breaker trips). The fast-tier
-  strategist routes to Byesu first, then OpenRouter and Groq. Dynamic reasoning effort: low for
-  extraction/retrieval/strategist/intent/attribution, medium for finalist judge and contract
-  extraction. Slot utilization is observable via `/api/llm-health` (`activeSlots`/`slotLimit`).
+- **Primary Provider Architecture** (`llm.ts`, ADR-0016/0019): the Tier 1 primary is configured from
+  `OPENAI_BASE`/`OPENAI_MODEL` (the shipped configuration is OmniRoute proxying `gemini-3.8-flash-high`)
+  with up to `OPENAI_CONCURRENT_SLOTS` slots (runtime 8, unconstrained 65k output tokens). Byesu
+  (`gpt-6.1-sol`, `BYESU_CONCURRENT_SLOTS=8`) is the Tier 2 secondary fallback; Groq (950 output token
+  cap) and OpenRouter/Mistral form the resilient failsafe tier, invoked only when both primary and
+  secondary are out (fatal auth failure, exhausted quota 429/1300, or consecutive circuit-breaker trips).
+  The fast-tier strategist resolves `["primary", "byesu", "openrouter", "groq"]` (`plannerRouting.ts`),
+  and a timed-out judge retry escalates with `tierProviderOrder: ["byesu", "primary", "openrouter",
+  "groq"]` (ADR-0019). Dynamic reasoning effort: `high` for finalist judging, `medium` for
+  contract/strategist, `low` for extraction and attribution. Slot utilization is observable via
+  `/api/llm-health` (`activeSlots`/`slotLimit`).
 - **Streaming pipeline seams (ADR-0012/0013)**: `retrieveStage` fires `onQuerySettled` per query
   (early fuse+extract pool; `LEAD_STREAMING_EXTRACTION`, default on) and `enrichStage` fires
   `onTargetsReady` into a live rolling pool (`liveRollingPool.ts`) judged in coalesced
@@ -233,9 +238,9 @@ Cross-cutting invariants:
   a round (and the brief is not metro-locked), the task boost rises to 2.0x, the saturated-metro
   threshold tightens 20 -> 10 CRM leads, a CRM-saturation directive enters the strategist prompt,
   and 1-3 account-lane flywheel queries (`buildAccountFlywheelItems`) target signal-store accounts.
-- **Adaptive judge concurrency**: `min(8, max(FINALIST_JUDGE_CONCURRENCY, freePrimarySlots))`; the
-  first judge wave packs 3-candidate micro-batches when provider capacity permits, later waves
-  keep 2 to preserve rolling-pool early-stop granularity.
+- **Adaptive judge concurrency**: `min(8, max(FINALIST_JUDGE_CONCURRENCY, freePrimarySlots))`;
+  finalist judging defaults to 1-candidate micro-splits (`FINALIST_JUDGE_MICRO_BATCH_SIZE=1`) so deep
+  reasoning stays isolated to ~30-45s per call and rolling-pool early stopping keeps fine granularity.
 - **Stage-boundary checkpoints** (`mining_sessions.checkpoint_json`, 512KB guard) power
   1-click resume; resume rebuilds `seenCandidateKeys` and _replaces_ checkpoint counters.
 - **Per-provider circuit breaker** with cooldown ladders, key rotation, and health probes.

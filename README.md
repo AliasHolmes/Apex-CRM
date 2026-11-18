@@ -445,13 +445,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 209 files in `test/` (204 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 212 files in `test/` (207 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (204 .test.ts files as of 2026-11-11; tsx runner - attested 2026-11-04 run: 1,385 pass / 0 fail)
+# Full test suite (207 .test.ts files as of 2026-11-18; tsx runner - last attested 2026-11-04 run: 1,385 pass / 0 fail)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -480,7 +480,7 @@ npm run test:dedupe
 ```text
 docs/
   CODEBASE_INDEX.md          Measured architecture, module inventory, and audit ledger
-  adr/                       Architecture Decision Records (ADR-0001 through ADR-0019)
+  adr/                       Architecture Decision Records (ADR-0001 through ADR-0022)
 src/
   components/                React UI components, modals, tables, badges
     ConflictDialog.tsx       Interactive B2 lead revision conflict resolution dialog
@@ -534,7 +534,7 @@ server/
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v29 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts, migrations 28-29)
-test/                        Automated unit, integration, replay, and eval test suites (209 files: 204 .test.ts + 1 .eval.ts + helpers/fixtures)
+test/                        Automated unit, integration, replay, and eval test suites (212 files: 207 .test.ts + 1 .eval.ts + helpers/fixtures)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

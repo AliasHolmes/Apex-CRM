@@ -4,15 +4,17 @@ Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `sc
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> current HEAD (`e260b58`) including ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
+> HEAD (`f93d009`) including ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
 > single-candidate timeout scaling, canonical isTransientLLMError retry unification, and nuance-preserving
 > multi-anchor evidence windowing across 24k chars without profile category deletions),
-> ADR-0019 (single-candidate 210s timeout headroom and cross-provider judge retry escalation), and
+> ADR-0019 (single-candidate 210s timeout headroom and cross-provider judge retry escalation),
+> ADR-0022 (Langfuse v4 OpenTelemetry ingestion migration; Section 9.39), and
 > the comprehensive defect remediation and spec canonicalization landed in Section 9.35.
-> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (verified 2026-11-04).
-> `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites.
+> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (verified 2026-11-18).
+> `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last attested run;
+> the suite now holds 207 `.test.ts` files and has not been re-attested since).
 > Line counts are physical lines (blank lines included).
-> Re-measured 2026-11-04: pinned to HEAD `e260b58`. See Section 9.35.
+> Re-measured 2026-11-18: pinned to HEAD `f93d009` plus the in-tree Langfuse v4 changes. See Sections 9.35 and 9.39.
 
 ---
 
@@ -30,7 +32,7 @@ Primary reference docs:
 
 - [`README.md`](../README.md) - product overview, architecture diagrams, API table
 - [`CONTEXT.md`](../CONTEXT.md) - domain glossary
-- [`docs/adr/0001`...`0021`](adr/) - twenty-one ADRs covering the engine, checkpointing, hardening,
+- [`docs/adr/0001`...`0022`](adr/) - twenty-two ADRs covering the engine, checkpointing, hardening,
   lean collection, deterministic pre-filtering, quality grounding, industry-agnostic dual concurrency,
   mining-feedback-driven bottleneck elimination, primary quad concurrency with micro-batching,
   dev-server HMR forced-reload containment, the Byesu primary (GPT-6.1)
@@ -55,14 +57,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 16,998 lines across 63 TypeScript files (`components/` alone: 36 files / 11,357 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 30,117 lines: 54 modules + 9 `stages/` (modules 21,896 / stages 8,221)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 17,394 lines (db 5,877 / llm 3,706 / api 2,741 / brightdata 3,365 / rest 1,705)                                                             |
+| Frontend (`src/`)                                                | 16,959 lines across 63 TypeScript files (`components/` alone: 36 files / 11,321 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 30,494 lines: 54 modules + 9 `stages/` (modules 21,916 / stages 8,578)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,136 lines (db 5,906 / llm 3,760 / api 2,741 / brightdata 3,383 / rest 2,346)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v29**, WAL                   |
-| Test suite                                                       | 209 files: 204 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/helpers/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 33,844 lines; executes via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail) |
-| Total first-party LOC                                            | 99,120 TypeScript lines (351 files, incl. tests)                                    |
-| Anchor                                                           | measured at working tree (post-v29 remediation); dated 2026-11-11                                    |
+| Test suite                                                       | 212 files: 207 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 35,390 lines; executes via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail) |
+| Total first-party LOC                                            | 100,856 TypeScript lines (353 files, incl. tests)                                    |
+| Anchor                                                           | measured at working tree (HEAD `f93d009` + ADR-0022 changes); dated 2026-11-18                                    |
 
 ## 3. Tech stack
 
@@ -81,14 +83,14 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 ## 4. Repository layout
 
 ```
-server.ts                    Express app + static Vite serve (380 lines) · socketGuard.ts — extracted socket-error handling & SSE disconnect cleanup used by server.ts and server/routes/api.ts (106 lines)
-server/db.ts                 SQLite layer: schema v29, migrations 1-29, 40+ readers/writers (5,877)
+server.ts                    Express app + static Vite serve (380 lines) · socketGuard.ts — extracted socket-error handling & SSE disconnect cleanup used by server.ts and server/routes/api.ts (105 lines)
+server/db.ts                 SQLite layer: schema v29, migrations 1-29, 40+ readers/writers (5,906)
 server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,741)
-server/services/             llm.ts (3,706, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+server/services/             llm.ts (3,760, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
-                             brightdata.ts (3,365) · keyRotator.ts (390) · sessionStreamHub.ts (221, SSE) ·
-                             linkedinEvidence.ts (305, owns canonicalLinkedInIdentity) · privateHosts.ts (163, SSRF) ·
-                             outboundPrompt.ts (168) · langfuse.ts (123) · sleepUtils.ts (40, shared sleep)
+                             brightdata.ts (3,383) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
+                             linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
+                             outboundPrompt.ts (167) · langfuse.ts (393) · sleepUtils.ts (39, shared sleep)
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming
                              seams (now unconditional) (3,426)

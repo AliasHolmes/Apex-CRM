@@ -245,7 +245,11 @@ export type MiningPhase =
   | 'filtering'
   | 'lead_explainer'
   | 'enrichment'
-  | 'persistence';
+  | 'persistence'
+  | 'fusion'
+  | 'company_attribution'
+  | 'selection'
+  | 'verification';
 export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'info';
 
 export interface MiningTraceEvent {

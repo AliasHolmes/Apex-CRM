@@ -160,7 +160,7 @@ scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; 
 
 Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 
-1. **plan** ? CRM negative-domain exclusion, JSON-aware metro-saturation avoidance
+1. **plan** - CRM negative-domain exclusion, JSON-aware metro-saturation avoidance
    (`$.profile.location` / `$.profile.city`), cross-session `discovered_companies` seeding
    (`readDiscoveredCompanyNames(25)`), fast planner provider order (`primary` -> `openrouter`)
    with capped timeouts (20s/25s) to eliminate strategist stall cascades, token-dieted
@@ -171,23 +171,23 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
    Replenishment metros are suffixed with their own canonical country rather than the
    session's `targetCountry`, and `namesKnownMetro` stops the context requirement from appending
    a second country to a query that already names a city (`prospectContract.ts`, `discoveryEngine.ts`)
-2. **retrieve** ? two-wave parallel Tavily + Bright Data lanes, intent-aware lane alignment
+2. **retrieve** - two-wave parallel Tavily + Bright Data lanes, intent-aware lane alignment
    (keeping `local_market`, `company_type`, and `industry_vertical` in the `person` lane on
    person briefs to prevent open-web profile starvation), conditional supplemental fallback
    when Tavily yield is low, vagueness-aware `maxResults`/depth (`vague: 20`, `rich: precision-tuned`),
    bounded `queryRewriter` rescue dispatched across both credit-reservation and standard paths with
    `demotedRequirementId` threading and Tier-1 immutable anchor protection (`retrieveStage.ts`, `searchSpec.ts`, `queryRewriter.ts`)
-3. **fuse** ? corroboration fusion, dedupe, ablation tagging, symmetrical bidirectional
+3. **fuse** - corroboration fusion, dedupe, ablation tagging, symmetrical bidirectional
    alias-aware term scoring (`MD` <-> `managing director`, `US` <-> `United States`)
    (`fuseStage.ts`, `aliasMap.ts`)
-4. **extract** ? Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked;
+4. **extract** - Stage 2.5 zero-LLM pre-filter gate + token-dieted LLM extraction, chunked;
    dual-channel extraction that routes non-person search results with organizational context
    directly into `signalStore.addCompanySignal(...)` instead of dropping them; deterministic
    LinkedIn parser splits pipe-delimited headlines and refuses company values that
    `looksLikeCompanyHint` flags as slogan, ellipsis, or marketing tagline (`extractStage.ts`, `observations.ts`)
-5. **verify** ? hard-requirement verification, borderline survival band, and **Multi-Tier
+5. **verify** - hard-requirement verification, borderline survival band, and **Multi-Tier
    Company Entity Resolution** (`verifyStage.ts`): resolves value-prop headlines (e.g. "Founder & CEO | Helping B2B firms...")
-   via Tier 1 headline delimiters (`at`, `@`, `|`, `?`), Tier 2 domain stem, Tier 3 vanity handle
+   via Tier 1 headline delimiters (`at`, `@`, `|`, `-`), Tier 2 domain stem, Tier 3 vanity handle
    brand tokens, and Tier 4 Independent Practice designation (`[FullName] (Independent Practice)`)
    with provisional entity tagging (`isProvisionalEntity: true`)
 6. **enrich** - consolidated site probing on the shortlisted candidate pool ahead of finalist judging
@@ -205,7 +205,7 @@ Order is defined by `StageName` in `server/leadSearch/pipelineTypes.ts`:
 8. **select** - Phase 4 company website intent + Phase 5 LinkedIn post intent probing on top
    qualified candidates (`ceil(targetLimit * 1.5)` pool) to activate all 4 Pareto dimensions,
    followed by Pareto skyline + MMR diversification (`selectStage.ts`)
-9. **persist** ? identity-keyed upserts preserving CRM-owned workflow fields (`stage`,
+9. **persist** - identity-keyed upserts preserving CRM-owned workflow fields (`stage`,
    `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), FTS
    maintenance, exclude-list append, and session/log status (`success | partial_success | error`)
    derived from actual `persistenceStatus` (`persistStage.ts`, `db.ts`)
@@ -253,10 +253,10 @@ Cross-cutting invariants:
 
 134 keys in `.env` (144 in `.env.example`). Notable:
 
-- `EVIDENCE_GROUNDING_MODE` (`.env.example` = `"strict"`) ? enforces verbatim, alias, or
+- `EVIDENCE_GROUNDING_MODE` (`.env.example` = `"strict"`) - enforces verbatim, alias, or
   polarity-guarded fuzzy quote citations on every `pass` verdict (`"legacy"`/`"permissive"`
   restores pre-G1 behavior).
-- `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) ? authoritative round budget; the in-loop
+- `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) - authoritative round budget; the in-loop
   extension ceiling now defers to it when set (was hard-coded 10, which is how a run
   configured for 6 reached 10).
 - **Runtime concurrency** (`.env`): `OPENAI_CONCURRENT_SLOTS="8"`, `BYESU_CONCURRENT_SLOTS="8"`,
@@ -269,12 +269,12 @@ Cross-cutting invariants:
   `LEAD_STREAMING_EXTRACTION` and `LEAD_PIPELINE_STREAMING_JUDGE` were hard-deleted; streaming
   is now unconditional. Remaining tunables: `LEAD_STREAMING_JUDGE_BATCH_TARGET` (default 3),
   `LEAD_STREAMING_JUDGE_FLUSH_MS` (default 120).
-- `LEAD_RETRIEVAL_CACHE_TTL_DAYS` (default 3; 0 disables, max 30) ? market-slice + exact-query
+- `LEAD_RETRIEVAL_CACHE_TTL_DAYS` (default 3; 0 disables, max 30) - market-slice + exact-query
   retrieval reuse.
 - `LLM_MAX_RETRIES=0` is now honoured; a 429 falls through immediately with a 5s cooldown.
 - `BRIGHTDATA_SCRAPE_BATCH_MAX_URLS` clamped 1-5 (default 5) satisfying @brightdata/mcp schema.
 - `LEAD_SEARCH_TIMEOUT_MS=0` disables the 15-minute safety timeout.
-- `APEX_LLM_BRAIN="agent"` (committed `10c384b`, ?9.22) reroutes `POST /find-leads` to the Agent Brain path.
+- `APEX_LLM_BRAIN="agent"` (committed `10c384b`, 9.22) reroutes `POST /find-leads` to the Agent Brain path.
 - `server/configValidation.ts` emits non-fatal boot warnings for misconfigurations.
 
 `featureFlags.ts` exposes 10 env-overridable flags (8 default-on; `LEAD_ADAPTIVE_REWARD_V2`
@@ -317,7 +317,7 @@ historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval te
 - **UI logic**: `prospectViews`, `overviewStats`, `leadHash`, `linkProspectNames`, `senderProfile`
 - Curated subsets are wired as named `npm run test:*` scripts (incl. `npm run test:eval`).
 
-## 8. Assessment ? what is strong
+## 8. Assessment - what is strong
 
 - **Verification discipline is real.** Every recent fix is pinned by a named regression
   test, and `deepAuditRegression.test.ts` was explicitly checked for non-vacuousness
@@ -334,27 +334,27 @@ historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval te
 - **Bounded everywhere.** session logs (1,500 lines), trace events (2MB), checkpoints
   (512KB), backups (3 newest), trace terminal buffers.
 
-## 9. Assessment ? open issues
+## 9. Assessment - open issues
 
 Ordered by leverage, not severity.
 
-### 9.1 Documentation drift ? RESOLVED (2026-09-16)
+### 9.1 Documentation drift - RESOLVED (2026-09-16)
 
 `CONTEXT.md:50` now states the derived caps (3 rounds up to target 30, 4 up to 50, 6 above),
 the `MAX_COLLECTION_ROUNDS = 24` ceiling, and the `LEAD_SEARCH_MAX_ROUNDS` override, instead
 of the incorrect "2-4 rounds". The README badge now reads `681_Tests_Passing`, matching the
 measured suite. Generating the badge from the test run remains an option but it is no longer
 wrong. *(2026-09-25 note: the badge has since been simplified to `Lead_Engine-Passing`;
-current counts live in ?2.)*
+current counts live in Section 2.)*
 
 *(2026-10-05 note: the README badge has been simplified to `Lead_Engine-Passing-10B981`
-so it does not drift; this index and ?2 carry the authoritative counts.)*
+so it does not drift; this index and Section 2 carry the authoritative counts.)*
 
-### 9.2 `executeJudgeStage` dead code ? RESOLVED (2026-09-16)
+### 9.2 `executeJudgeStage` dead code - RESOLVED (2026-09-16)
 
 Confirmed dead before removal: no production caller, and no stage registry or dynamic
 dispatch resolved to it. `discoveryEngine.ts` called `evaluateIncrementalJudgeBatches`
-only (lines 1754, 2064). The function spanned lines 115-795 ? ~680 lines, 56% of the file.
+only (lines 1754, 2064). The function spanned lines 115-795 - ~680 lines, 56% of the file.
 
 Three findings changed the remedy from the original "delete it and migrate its two test
 callers":
@@ -390,14 +390,14 @@ What was done:
 
 **Note for future readers:** `candidatePoolCap` and `judgeOutcomeTotals` no longer exist
 anywhere in the codebase. If pool capping or judge-outcome telemetry is wanted in
-production, it must be built in the live path ? the deleted tests were the only record of
+production, it must be built in the live path - the deleted tests were the only record of
 the intent.
 
-### 9.3 Residual `<= 1.0` score inversion ? RESOLVED (2026-09-16)
+### 9.3 Residual `<= 1.0` score inversion - RESOLVED (2026-09-16)
 
 The bug report fixed five of six sites and added `normalizeToTenScale`; the sixth was in the
 frontend. `src/context/LeadContext.tsx` no longer contains an executable `<= 1.0` comparison.
-Both call sites ? `handleLeadAdded` and the bulk-import path ? now use a shared
+Both call sites - `handleLeadAdded` and the bulk-import path - now use a shared
 `normalizeServerScore` (`src/utils/leadScore.ts`) that mirrors `normalizeToTenScale` in
 `server/leadSearch/scoring.ts`, so the client and server halves of the rule cannot drift
 apart again. It returns `undefined` for absent input so each caller keeps its own fallback
@@ -409,7 +409,7 @@ guard that fails if an executable `<= 1.0` comparison is reintroduced in `LeadCo
 Non-vacuousness was verified by reintroducing the original expression at the call site and
 confirming the guard fails.
 
-### 9.4 No LLM completion cache ? RESOLVED (2026-09-25)
+### 9.4 No LLM completion cache - RESOLVED (2026-09-25)
 
 `server/services/llm.ts` now consults a durable completion cache before dispatching:
 `getLlmCacheEntry(promptHash)` (llm.ts:2192) short-circuits repeat completions, and
@@ -418,30 +418,30 @@ is backed by the `llm_completion_cache` table (`prompt_hash` PK, provider/model/
 usage payload, `expires_at` TTL with `purgeLlmCacheExpired` sweeps). Pinned by
 `test/llmCompletionCache.test.ts`. This was the highest-leverage performance item
 (79% of session wall clock in LLM latency); whether it moved the needle still requires
-the re-measurement in ?10.6.
+the re-measurement in Section 10.6.
 
-### 9.5 Uncommitted work ? RESOLVED (2026-09-16)
+### 9.5 Uncommitted work - RESOLVED (2026-09-16)
 
 The working tree is clean. The engine fixes, the `deepAuditRegression` suite and the
 documentation are committed (`e3c851d`, `4ae2193`), so nothing is at risk from a stash or
 an accidental reset.
 
-### 9.6 Flag surface that no longer means anything ? RESOLVED (2026-09-17)
+### 9.6 Flag surface that no longer means anything - RESOLVED (2026-09-17)
 
 Six deprecated architecture flags in `server/leadSearch/featureFlags.ts` (`taxonomy`, `distributedQuery`, `semanticGrouping`, `enhancedDiagnostics`, `transientNegativeCache`, `proactiveTokenRegulator`) have been graduated into permanent architectural invariants that return `true` unconditionally, eliminating the risk of operators unintentionally degrading engine correctness via env vars.
 
-### 9.7 Test isolation hazard ? RESOLVED (2026-09-17)
+### 9.7 Test isolation hazard - RESOLVED (2026-09-17)
 
 Wholesale `delete process.env[key]` wipe loops in `test/llmUntrustedMessage.test.ts`, `test/llmFallback.test.ts`, `test/tavilyRotation.test.ts`, and `test/brightDataUpgrade.test.ts` have been replaced with scoped `MANAGED_KEYS` snapshots. This eliminates cross-suite test pollution during parallel `node:test` execution.
 
-### 9.8 Carried-forward audit leftovers ? RESOLVED (2026-09-17)
+### 9.8 Carried-forward audit leftovers - RESOLVED (2026-09-17)
 
 - `server/db.ts:recordQueryPerformance`: Protected `runs` decay behind `runs = CASE WHEN excluded.runs > 0 THEN CAST(ROUND(query_performance.runs * 0.95 + excluded.runs) AS INTEGER) ELSE query_performance.runs END`, preventing single-lead CRM reviews (`runs: 0`) from degrading historical query run counts.
 - `server/leadSearch/prospectContract.ts`: Dropped ungrounded hard requirements are now recorded in `contract.droppedUngroundedRequirements`, surfaced in compilation log diagnostics, and emitted as structured trace telemetry events (`contract_dropped_ungrounded`) in `discoveryEngine.ts`.
 - `server/leadSearch/stages/selectStage.ts`: All conversion funnel counts (`rawCandidates`, `uniqueCandidates`, `extractedCandidates`, `acceptedCandidates`, `duplicateCandidates`, `searchLatencyMs`, `providerUnits`) are now written to `recordQueryPerformance`.
 - `server/leadSearch/stages/planStage.ts`: `requirementFailDigest` is now populated in `historicalYield`, restoring the frequent failure prompt guidance.
 
-### 9.9 `LLM_MAX_RETRIES` is overridden on the 429 path ? RESOLVED (2026-09-17)
+### 9.9 `LLM_MAX_RETRIES` is overridden on the 429 path - RESOLVED (2026-09-17)
 
 `server/services/llm.ts` now strictly honors configured `LLM_MAX_RETRIES` on 429 and 5xx responses:
 ```ts
@@ -449,7 +449,7 @@ const statusMaxRetries = maxRetries;
 ```
 When `LLM_MAX_RETRIES=0` (or `1`), the engine cascades immediately after the configured retry count rather than forcing a 2-retry minimum. Furthermore, the request timeout timer is armed only once queued HTTP execution begins, preventing queue wait starvation.
 
-### 9.10 Intelligence Gap Remediation (G1?G24) ? RESOLVED (2026-09-23, `5a052c4`)
+### 9.10 Intelligence Gap Remediation (G1?G24) - RESOLVED (2026-09-23, `5a052c4`)
 
 All 24 findings from the 2026-09-22 intelligence gap audit have been resolved across 34 files and verified across 860 unit/integration tests + 13 eval tests:
 
@@ -457,7 +457,7 @@ All 24 findings from the 2026-09-22 intelligence gap audit have been resolved ac
 - **Retrieval Determinism & Planning (G5, G6, G7, G8, G10, G13, G16, G21, G22, G24)**: Added top-level `discoveryFamily`/`discoveryLane` persistence, cluster-keyed `historicalYield` (`domain_cluster|family|lane|provider`), `contract_guard` retention above `maxTasks+2`, seeded PRNG (`seedAdaptiveRandom`), non-reservation `queryRewriter` dispatch with `demotedRequirementId` and Tier-1 anchor protection, company-scoped `b2b_saas` contradiction checks, SQLite JSON `$.profile.location` saturation counting, derived persistence status (`success | partial_success | error`), 2-char pronoun-collision geo guards, plural-persona role matching, and city-only geo anchoring without vertical-equals-location collisions.
 - **Intent, Learning & Persistence (G11, G12, G14, G15, G17, G20)**: Added `UNKNOWN_AGE_DAYS = 45` neutral undated freshness and abbreviated recency units (`2d`, `1w`, `3mo`, `1y`, `2h`), annotate-only post-intent enrichment, cross-session `discovered_companies` seeding into `planStage`, CRM workflow field preservation (`stage`, `reviewStatus`, `nextAction`, `notes` protected unless `forceOverwrite: true`), schema v23 `lead_outcomes` binary feedback (`REPLIED`, `KEEP`, `CONVERTED` vs `REJECT`, `LOST`) wired into `scoreAdaptiveArm` alongside `hard_failed_candidates` penalties, and the `npm run test:eval` golden-brief harness.
 
-### 9.11 Industry-Agnostic Engine, Schema v24-v26, and Dual-Provider Concurrency ? RESOLVED (2026-10-02, `129173a`)
+### 9.11 Industry-Agnostic Engine, Schema v24-v26, and Dual-Provider Concurrency - RESOLVED (2026-10-02, `129173a`)
 
 Resolved across 50 files and verified across 976 unit & integration tests (176 suites) + 13 eval tests:
 
@@ -476,7 +476,7 @@ Resolved across 50 files and verified across 976 unit & integration tests (176 s
   - In `withProviderFallback` (`server/services/llm.ts`), dispatches to Atria as the prioritized primary model when idle, and immediately overflows to Byesu concurrently when Atria is in-flight, achieving safe parallel dual-model concurrency without triggering 429 rate limits or 524 gateway timeouts.
   - Elevated `ATRIA_MAX_TIMEOUT_MS` to `600_000ms` (10 minutes) with a `120_000ms` floor and token-scaling coefficients (`computeAtriaDynamicTimeoutMs`), preventing reasoning aborts on deep chain-of-thought models.
 
-### 9.12 Primary admission gate, triage/tagline hygiene, and contradictory-geo guard ? LANDED (2026-10-05, `35f29bd`, `767f65e`)
+### 9.12 Primary admission gate, triage/tagline hygiene, and contradictory-geo guard - LANDED (2026-10-05, `35f29bd`, `767f65e`)
 
 Two commits landed after the previous index generation; all four fixes are pinned by
 `test/primaryAdmission.test.ts` (new) and `test/titleTriage.test.ts` (extended), and the
@@ -492,7 +492,7 @@ whole suite passes 1047 tests:
   placeholders), ablated requirements are exempt, and cached verdict reuse runs the same
   gate so a cached `pass` cannot smuggle a lead past it. Withheld leads score `-1`.
 - **Student/intern founder denial** (`titleTriage.ts`): `STUDENT_INTERN_ROLE_REGEX`
-  demotes student, intern, trainee, and apprentice titles to IC with confidence 1 ?
+  demotes student, intern, trainee, and apprentice titles to IC with confidence 1 -
   before executive alias expansion, so "Founder & Student" is never triaged as a
   decision-maker. Lookbehind guards `former`/`ex-`.
 - **SERP company-tagline sanitization** (`extractStage.ts`, `observations.ts`): the
@@ -500,7 +500,7 @@ whole suite passes 1047 tests:
   company token through `looksLikeCompanyHint`, falls back to the `at`/`@` clause, and
   otherwise returns `null` so the LLM path takes over. `looksLikeCompanyHint` now rejects
   truncated `...`/`?` values, a wider set of marketing-verb openers (`helping`,
-  `empowering`, `transforming`, `automating`, ?), and `grow your` / `scale your` /
+  `empowering`, `transforming`, `automating`, -), and `grow your` / `scale your` /
   `help businesses` phrasings.
 - **Contradictory query geos** (`prospectContract.ts`, `discoveryEngine.ts`):
   `ALL_KNOWN_METROS` / `namesKnownMetro` gate the context-requirement suffix so a query
@@ -508,34 +508,34 @@ whole suite passes 1047 tests:
   now suffixes each metro with its *own* canonical country instead of the session
   `targetCountry`, decoupling multi-country briefs.
 
-### 9.13 LLM queue, dead-code, and flag-surface cleanup (A1?A9, B1?B8, C) ? LANDED (2026-10-05, `5a7b566`?`b60a6dc`)
+### 9.13 LLM queue, dead-code, and flag-surface cleanup (A1?A9, B1?B8, C) - LANDED (2026-10-05, `5a7b566`?`b60a6dc`)
 
 Eight commits that shrink the LLM/lead-search surface without changing behaviour, all
 measured here at `b60a6dc`:
 
-- **A1/A2 (`000f6d3`)** ? the legacy single-mutex queue in `llm.ts` is gone; provider
+- **A1/A2 (`000f6d3`)** - the legacy single-mutex queue in `llm.ts` is gone; provider
   affinity is now expressed solely by the independent Atria/Byesu slots. `test/llmBoundedConcurrency.test.ts`
   was deleted with it, so the suite dropped from 165 to 164 `.test.ts` files.
-- **A3/B8 (`fe0c021`)** ? Token Harbor leftovers and `ProviderTrafficController` removed
-  from `llm.ts`, `keyRotator.ts`, and `companyIntent.ts`; `llm.ts` shrank 3,427 ? 3,261.
-- **A4 (`4a4f6c5`)** ? the six graduated `() => true` flags were deleted outright rather
+- **A3/B8 (`fe0c021`)** - Token Harbor leftovers and `ProviderTrafficController` removed
+  from `llm.ts`, `keyRotator.ts`, and `companyIntent.ts`; `llm.ts` shrank 3,427 - 3,261.
+- **A4 (`4a4f6c5`)** - the six graduated `() => true` flags were deleted outright rather
   than left as no-ops; `featureFlags.ts` now exposes exactly 10 env-overridable flags.
-- **A6 (`4553486`)** ? write-only `stats.rerank.*` fields dropped from
-  `discoveryEngine.ts` / `selectStage.ts`, closing the loose end ?9.2 flagged when
+- **A6 (`4553486`)** - write-only `stats.rerank.*` fields dropped from
+  `discoveryEngine.ts` / `selectStage.ts`, closing the loose end 9.2 flagged when
   `executeJudgeStage` was removed.
-- **A7?A9 (`5a7b566`)** ? dead exports removed and module-local symbols scoped across
+- **A7?A9 (`5a7b566`)** - dead exports removed and module-local symbols scoped across
   `discoveryRouting`, `finalistJudge`, `rejections`, `scoring`, `searchSpec`,
   `titleTriage`, `brightdata`, `linkedinEvidence`, `llm`.
-- **Judge parallelism (`1743313`)** ? new `rollingPool.ts` runs judge micro-batches in a
+- **Judge parallelism (`1743313`)** - new `rollingPool.ts` runs judge micro-batches in a
   bounded rolling window (a finished item frees its slot instead of holding a
   `Promise.all` wave), with `telemetry.ts` gaining critical-path wall-clock attribution.
   Four new suites pin it: `rollingPool`, `judgeRollingQueue`, `compactJudgeGrounding`,
   `criticalPathTelemetry`.
-- **B1?B7 (`c22ea8e`)** ? `CONTEXT.md`, `README.md`, and this index re-synchronized;
+- **B1?B7 (`c22ea8e`)** - `CONTEXT.md`, `README.md`, and this index re-synchronized;
   the README test badge lost its hardcoded count.
-- **C (`b60a6dc`)** ? `.env.example` re-synced with active runtime keys.
+- **C (`b60a6dc`)** - `.env.example` re-synced with active runtime keys.
 
-### 9.14 Source guard is CRLF-sensitive ? OPEN (reproduced at `b60a6dc`, 2026-10-05)
+### 9.14 Source guard is CRLF-sensitive - OPEN (reproduced at `b60a6dc`, 2026-10-05)
 
 `test/verifiedBugfixes.test.ts:223` ("keeps no executable `<= 1.0` score comparison in the
 client") strips comments before matching:
@@ -554,16 +554,16 @@ comment that is followed by `\r` and the prose comment
 assertion. Reproduced in a detached worktree where `core.autocrlf=true` (there is no
 `.gitattributes`) and `src/context/LeadContext.tsx` checks out as CRLF: **1 failure out of
 1064**. Rewriting that one file to LF in place makes all 8 tests in the file pass, which
-isolates line endings as the sole cause ? the guard is correct and non-vacuous in the
+isolates line endings as the sole cause - the guard is correct and non-vacuous in the
 current dev tree, which happens to hold the file as LF.
 
 Impact: a fresh Windows clone can fail this source guard for a reason unrelated to the
 code. Fix either by normalizing before stripping (`code.split(/\r?\n/)`) or by pinning
 line endings in `.gitattributes`. Not yet applied. This is a historical, isolated
 reproduction at `b60a6dc`; the current observed `npm test` failure is separately recorded
-in ?9.15 and should not be conflated with this finding.
+in 9.15 and should not be conflated with this finding.
 
-### 9.15 Market-depth and yield optimization ? LANDED (`dc5ce3d`, `a237c91`, 2026-10-06)
+### 9.15 Market-depth and yield optimization - LANDED (`dc5ce3d`, `a237c91`, 2026-10-06)
 
 The two commits after `b60a6dc` add a broader recovery and prospect-quality path, plus a
 substantial CRM interface refresh:
@@ -587,7 +587,7 @@ substantial CRM interface refresh:
   primitives. PWA icons/manifest and CSP-safe theme initialization were added.
 - **Current verification**: `npm run typecheck` (`tsc --noEmit`) passes with 0 errors after pruning the unused import in `yieldOptimization.test.ts`. The targeted yield optimization test suite (`test/yieldOptimization.test.ts` + `test/titleTriage.test.ts`) is 100% green (45/45 assertions passed).
 
-### 9.16 Terminal Telemetry and Duration Formatting ? LANDED (2026-10-08)
+### 9.16 Terminal Telemetry and Duration Formatting - LANDED (2026-10-08)
 
 Refined time formatting and live telemetry display across both web terminal UI and backend logs:
 
@@ -595,7 +595,7 @@ Refined time formatting and live telemetry display across both web terminal UI a
 - **LLM Call Telemetry in Seconds (`TraceTerminal.tsx`, `terminalLog.ts`, engine stages)**: Added `formatLatencySeconds` to format raw millisecond latencies into clean seconds representations (e.g., `117.1s`, `45.0s`, `2.5s`). Updated terminal log parser (`LLM_200_STRUCTURED_RE`) to accept both `ms` and `s` tokens, and converted backend LLM 200 OK log emission to seconds across `discoveryEngine.ts`, `planStage.ts`, `extractStage.ts`, `judgeStage.ts`, `linkedinPostIntent.ts`, and `llm.ts`.
 - **Test Coverage**: Added test cases in `test/uiContracts.test.ts` (18/18 passing) and `test/terminalLog.test.ts` (8/8 passing).
 
-### 9.17 Lead Intelligence, Drawer Editing, Dedupe Merging & State Retention ? LANDED (2026-10-08)
+### 9.17 Lead Intelligence, Drawer Editing, Dedupe Merging & State Retention - LANDED (2026-10-08)
 
 Resolved critical data-loss vectors, UI mismatches, and surfaced dormant LLM intelligence across the CRM layer:
 
@@ -608,17 +608,17 @@ Resolved critical data-loss vectors, UI mismatches, and surfaced dormant LLM int
 - **UI Layout Rhythm & Design Consistency (`App.tsx`, `PageHeader.tsx`)**: Standardized `<PageHeader />` layout rhythm across the Prospects view to match the rest of the application, and replaced raw HTML `<select>` elements with Radix UI dropdown primitives.
 - **Test Coverage**: Added regression tests in `test/csvFieldMapping.test.ts`, verified `test/uiContracts.test.ts` (18/18 passing), `test/leadDedupe.test.ts` (24/24 passing), `test/encodingHygiene.test.ts`, and full typecheck (`npm run typecheck`, 0 errors).
 
-### 9.18 Dev-Server HMR Forced-Reload Containment (ADR-0010) ? LANDED (2026-10-09)
+### 9.18 Dev-Server HMR Forced-Reload Containment (ADR-0010) - LANDED (2026-10-09)
 
 Eliminated unprompted full-page browser reloads during active discovery sessions in development:
 
-- **HMR Kill Switch (`server.ts`)**: Gated both `ws` and `hmr` configurations on `DISABLE_HMR` (`ws: hmrDisabled ? false : { server }, hmr: hmrDisabled ? false : { server }`), fixing the issue where inline server configs overrode `vite.config.ts`.
+- **HMR Kill Switch (`server.ts`)**: Gated both `ws` and `hmr` configurations on `DISABLE_HMR` (`ws: hmrDisabled - false : { server }, hmr: hmrDisabled - false : { server }`), fixing the issue where inline server configs overrode `vite.config.ts`.
 - **Hardened Watcher Ignores (`vite.config.ts`)**: Expanded `server.watch.ignored` to cover runtime files (`**/*.sqlite*`, `**/*.log`, `**/*.tmp`, `**/*.bak`, `**/scratch/**`), preventing non-module files from triggering Vite's unconditional `full-reload` broadcast.
 - **WebSocket Upgrade Instrumentation (`server.ts`)**: Added logging for HMR websocket connection upgrades and close events on the shared HTTP listener for full observability.
 - **Lossless Recovery and Rehydration (`App.tsx`, `ScrapeWorkspace.tsx`)**: `ScrapeWorkspace` records running session IDs to `sessionStorage` (`apex-active-mining-session-id`), and `App.tsx` force-mounts the `workspace` tab across reloads (with persisted `apex-mounted-job-tabs`), automatically re-attaching the live SSE trace to ongoing sessions.
 - **Strict Regression Suite (`test/hmrReloadGuard.test.ts`)**: Added comprehensive tests verifying HMR gating, watcher ignores, session rehydration, pre-bundled dependencies, and 0 runtime-discovered dependencies. Entire test suite passing cleanly (1,244/1,244 tests).
 
-### 9.19 ADR-0011 Atria-Primary / Byesu Second-Priority Chain ? LANDED (`d15a19a`, 2026-10-09)
+### 9.19 ADR-0011 Atria-Primary / Byesu Second-Priority Chain - LANDED (`d15a19a`, 2026-10-09)
 
 The provider model moved from "dual affinity, one slot each" to an ordered chain:
 
@@ -633,7 +633,7 @@ The provider model moved from "dual affinity, one slot each" to an ordered chain
   `FINALIST_JUDGE_CONCURRENCY=6` (heaviest reasoning stage capped below the slot ceiling).
 - Slot observability: `/api/llm-health` exposes `activeSlots`/`slotLimit` per provider.
 
-### 9.20 ADR-0012 Engine Bottleneck Remediation ? LANDED (`2366792`, 2026-10-09)
+### 9.20 ADR-0012 Engine Bottleneck Remediation - LANDED (`2366792`, 2026-10-09)
 
 - **Streaming enrichment-judge seam**: `enrichStage` fires `onTargetsReady` at each enrichment
   completion point; `discoveryEngine` feeds a live rolling pool (`liveRollingPool.ts`) running
@@ -649,7 +649,7 @@ The provider model moved from "dual affinity, one slot each" to an ordered chain
 - **Queue-wait telemetry (schema v27)**: `llm_stage_logs.queue_wait_ms` plus adaptive judge
   concurrency `min(8, max(FINALIST_JUDGE_CONCURRENCY, freeAtriaSlots))`.
 
-### 9.21 ADR-0013 Post-Overhaul Engine Remediation ? LANDED (`8d4c4b8`, 2026-10-10)
+### 9.21 ADR-0013 Post-Overhaul Engine Remediation - LANDED (`8d4c4b8`, 2026-10-10)
 
 - **Retrieval-extraction streaming seam**: `retrieveStage` fires `onQuerySettled` per query;
   `discoveryEngine` fuses and extracts each settled wave early (`LEAD_STREAMING_EXTRACTION`,
@@ -666,12 +666,12 @@ The provider model moved from "dual affinity, one slot each" to an ordered chain
   `updatedAt|revision`.
 - **UI**: jump-to-page numeric input in `LeadTable` pagination (`ab87401`, 2026-10-12).
 
-### 9.22 Agent Brain path ? COMMITTED (`10c384b`, 2026-10-16)
+### 9.22 Agent Brain path - COMMITTED (`10c384b`, 2026-10-16)
 
 The alternative discovery route that bypasses the 9-stage engine is now committed:
 
 - `server/leadSearch/agentBrainRunner.ts` (441 lines): standalone `executeAgentBrainDiscovery`
-  ? direct `tavilySearch` retrieval over US metro hubs, regex decision-maker/IC filters
+  - direct `tavilySearch` retrieval over US metro hubs, regex decision-maker/IC filters
   (`DISQUALIFIED_TITLE_REGEX`, `DECISION_MAKER_REGEX`, `NON_AGENCY_ENTITY_REGEX`), then standard
   persistence (`upsertLeadsWithIdentity`, `insertLeadActivity`, `upsertMiningSession`,
   `insertSearchLog`). Identity keys route through `canonicalLinkedInIdentity`, and its
@@ -683,7 +683,7 @@ The alternative discovery route that bypasses the 9-stage engine is now committe
 - **Resolved**: the `encodingHygiene` failure against the old untracked overlay (non-ASCII
   glyphs) was cleared by the ASCII cleanup; the full suite is green (1,287 pass / 0 fail).
 
-### 9.23 Documentation drift ? README schema version ? RESOLVED (2026-10-16)
+### 9.23 Documentation drift - README schema version - RESOLVED (2026-10-16)
 
 `README.md` claimed **Schema v26** in current-state spots (badge, both mermaid diagram labels,
 the Persistence tech-stack bullet, the feature bullet at line 33, the `## Database & Schema`
@@ -694,7 +694,7 @@ All seven current-state claims were re-synced to v27 during this index refresh. 
 (lines 169, 455, 463) are introduction-version facts and stay as-is, matching
 `CONTEXT.md`.
 
-### 9.24 Byesu Primary (GPT-6.1) Architecture ? LANDED (2026-10-16)
+### 9.24 Byesu Primary (GPT-6.1) Architecture - LANDED (2026-10-16)
 
 Decommissioned Atria completely after exhausting tokens:
 - Byesu (`id: "primary"`, `https://byesu.com/v1`) established as the sole Tier 1 Primary Default LLM provider across all stages.
@@ -703,7 +703,7 @@ Decommissioned Atria completely after exhausting tokens:
 - Retained Groq (`id: "groq"`) and OpenRouter/Mistral (`id: "openrouter"`) as resilient Tier 2 failsafes.
 - Stage and planner routing defaults updated to `["primary", "openrouter", "groq"]`.
 
-### 9.25 Architecture hardening overlay ? UNCOMMITTED (2026-10-16/17)
+### 9.25 Architecture hardening overlay - UNCOMMITTED (2026-10-16/17)
 
 Implements the accepted hardening plan (`docs/superpowers/plans/
 2026-10-16-architecture-hardening-plan.md`) on top of `10c384b`; sits uncommitted in the

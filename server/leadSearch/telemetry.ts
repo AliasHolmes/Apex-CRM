@@ -56,7 +56,7 @@ export function summarizeLLM(
     inputTokens,
     outputTokens,
     totalTokens: usage?.totalTokens ?? (inputTokens + outputTokens),
-    estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens, resolvedProvider),
+    estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens, resolvedProvider, resolvedModel),
     parseRetries,
     promptVersion,
   };
@@ -176,8 +176,18 @@ export type CostSummary = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
   costPerAcceptedLead?: number;
   tokensPerAcceptedLead?: number;
+  searchCredits?: {
+    tavilySearch?: number;
+    tavilyExtract?: number;
+    brightDataSerp?: number;
+    brightDataScrape?: number;
+    totalCredits?: number;
+  };
+  searchCostUsd?: number;
 };
 
 export type TargetEffortStats = {
@@ -282,14 +292,29 @@ export const DEFAULT_PROVIDER_COST_PER_1M: Record<string, { input: number; outpu
   default: { input: 1.5, output: 6.0 },
 };
 
+export const DEFAULT_MODEL_COST_PER_1M: Record<string, { input: number; output: number }> = {
+  "gemini-2.5-flash": { input: 0.15, output: 0.6 },
+  "gemini-2.0-flash": { input: 0.1, output: 0.4 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6 },
+  "gpt-4o": { input: 2.5, output: 10.0 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
+  "gpt-6.1-sol": { input: 1.5, output: 6.0 },
+  "llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
+  "groq/llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
+};
+
 export function estimateLLMCostUsd(
   inputTokens = 0,
   outputTokens = 0,
   provider?: string,
+  model?: string,
 ): number {
+  const modelKey = (model || "").trim().toLowerCase();
   const providerKey = (provider || "").trim().toLowerCase();
   const defaultRate =
-    DEFAULT_PROVIDER_COST_PER_1M[providerKey] || DEFAULT_PROVIDER_COST_PER_1M.default;
+    DEFAULT_MODEL_COST_PER_1M[modelKey] ||
+    DEFAULT_PROVIDER_COST_PER_1M[providerKey] ||
+    DEFAULT_PROVIDER_COST_PER_1M.default;
 
   const envInput = process.env.LLM_OBSERVABILITY_INPUT_COST_PER_1M;
   const envOutput = process.env.LLM_OBSERVABILITY_OUTPUT_COST_PER_1M;
@@ -570,6 +595,13 @@ export class MiningTelemetryRecorder {
         const queueWaitMs = Array.isArray(attempts)
           ? attempts.reduce((sum, a) => sum + (Number(a?.queueWaitMs) || 0), 0)
           : 0;
+        const costUsd = Number(traceEvent.llm?.estimatedCostUsd || 0);
+        const reasoningTokens = Array.isArray(attempts)
+          ? attempts.reduce((sum, a) => sum + (Number((a as any)?.tokens?.reasoning) || 0), 0)
+          : 0;
+        const cachedTokens = Array.isArray(attempts)
+          ? attempts.reduce((sum, a) => sum + (Number((a as any)?.tokens?.cached) || 0), 0)
+          : 0;
         llmStageLogger({
           searchLogId: this.sessionId,
           stage: traceEvent.phase || traceEvent.operation || "unknown",
@@ -579,6 +611,9 @@ export class MiningTelemetryRecorder {
           outputTokens: traceEvent.llm?.outputTokens ?? 0,
           latencyMs: traceEvent.latencyMs ?? 0,
           queueWaitMs,
+          costUsd,
+          reasoningTokens,
+          cachedTokens,
           modelName: traceEvent.model || traceEvent.llm?.model || undefined,
           provider: traceEvent.llm?.route || "llm",
           promptVersion: traceEvent.promptVersion || traceEvent.llm?.promptVersion,
@@ -671,17 +706,32 @@ export class MiningTelemetryRecorder {
     );
     const llm = providerSummary.llm || blankProviderSummary().llm;
     const returned = Number(this.finalStats?.returned || 0);
+    const tavily = providerSummary.tavily || blankProviderSummary().tavily;
+    const brightdata = providerSummary.brightdata || blankProviderSummary().brightdata;
+    const tavilyCalls = Number(tavily.calls || 0);
+    const brightdataCalls = Number(brightdata.calls || 0);
+    const searchCredits = {
+      tavilySearch: tavilyCalls,
+      tavilyExtract: 0,
+      brightDataSerp: brightdataCalls,
+      brightDataScrape: 0,
+      totalCredits: tavilyCalls + brightdataCalls,
+    };
+    const searchCostUsd = Number(((tavilyCalls * 0.008) + (brightdataCalls * 0.0015)).toFixed(6));
+
     const costSummary: CostSummary = {
-      estimatedUsd: Number(llm.estimatedCostUsd.toFixed(6)),
+      estimatedUsd: Number((llm.estimatedCostUsd + searchCostUsd).toFixed(6)),
       inputTokens: llm.inputTokens,
       outputTokens: llm.outputTokens,
       totalTokens: llm.totalTokens,
       costPerAcceptedLead:
         returned > 0
-          ? Number((llm.estimatedCostUsd / returned).toFixed(6))
+          ? Number(((llm.estimatedCostUsd + searchCostUsd) / returned).toFixed(6))
           : undefined,
       tokensPerAcceptedLead:
         returned > 0 ? Math.round(llm.totalTokens / returned) : undefined,
+      searchCredits,
+      searchCostUsd,
     };
     const endedAt = this.endedAt;
     const startMs = Date.parse(this.startedAt);
@@ -752,6 +802,9 @@ export type LlmStageLogEntry = {
   latencyMs?: number;
   /** Sum of provider-slot wait across this call's attempts (0 when a slot was free). */
   queueWaitMs?: number;
+  costUsd?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
   modelName?: string;
   provider?: string;
   promptVersion?: string;

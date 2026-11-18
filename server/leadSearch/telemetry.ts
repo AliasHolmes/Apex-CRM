@@ -88,6 +88,7 @@ export function summarizeContractClassification(contract: ProspectContract) {
 
 export type MiningTraceEvent = {
   id: string;
+  seq?: number;
   timestamp: string;
   phase: MiningPhase;
   operation: string;
@@ -556,6 +557,7 @@ export class MiningTelemetryRecorder {
       ...event,
       promptVersion: promptVer,
       id: `${this.sessionId}-${++this.sequence}`,
+      seq: this.sequence,
       timestamp: event.timestamp || nowIso(),
       error:
         typeof event.error === "string"

@@ -1149,6 +1149,26 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
 - **Search-credit rollup (`telemetry.ts`)**: `CostSummary` adds `searchCredits` (Tavily/Bright Data call counts) and `searchCostUsd`; `estimatedUsd` and `costPerAcceptedLead` now include search spend. `LlmStageLogEntry` gains the matching cost/token fields.
 - **Schema v30 (`server/db.ts`)**: `LATEST_SCHEMA_VERSION = 30`; migration 30 adds `cost_usd`, `reasoning_tokens`, `cached_tokens`, and `prompt_version` to `llm_stage_logs`, and `queue_wait_ms` is promoted into the baseline DDL.
 
+### 9.41 Comprehensive Pipeline Telemetry & End-to-End Observability (2026-11-19)
+
+- **Illuminating Dark Stages & Candidate Drops**:
+  - `fuseStage.ts`: destructures `recordTrace`, emits `stage_start` and `stage_complete` with observation lane metrics (`personObservations`, `signalObservations`, `accountObservations`), and records structured `candidate_dropped` events for `missing_linkedin_url`, `crm_duplicate`, `seen_session_key`, and `candidate_budget_truncation`.
+  - `extractStage.ts`: emits `deterministic_profile_extract` trace events for Pro dataset and deterministic SERP profile extractions, plus pre-filter candidate drop events.
+  - `verifyStage.ts`: emits `stage_start`/`stage_complete` and candidate drop events for `missing_identity_anchor`, `missing_company_entity`, `crm_duplicate`, `not_decision_maker`, and `score_below_minimum`.
+  - `judgeStage.ts`: emits `stage_start`/`stage_complete` across incremental judging batches and records candidate drops for `prejudge_role_triage`, `attribution_contradiction`, `primary_admission_withheld`, and `target_cushion_batch_cut`.
+  - `selectStage.ts`: emits `stage_start`/`stage_complete` and records candidate drops for `per_company_cap_exceeded` and `pareto_skyline_cut`.
+- **Search Latency & Provider Event Streaming**:
+  - `retrieveStage.ts`: computes per-query average latency (`Math.round(batchDurationMs / chunk.length)`) for 5-query Bright Data batches instead of inflating each item with total chunk duration; threads `lane` and `family` metadata onto queries.
+  - `keyRotator.ts`: adds `ApiKeyPool.setOnPoolStateChange` emitting `key_rotated`, `key_cooldown`, `pool_exhausted`, and `key_recovered`.
+  - `brightdata.ts`: adds state transition listener emitting `provider_rate_limited`, `empty_serp_self_heal_retry`, `sticky_bing_activated`, and `sticky_bing_expired`.
+- **SSE Stream Resilience & Round-Boundary Checkpointing**:
+  - `sessionStreamHub.ts`: introduces monotonic sequence numbers (`seq: number`), per-subscriber cursor tracking (`lastLogTotal`, `lastTraceSeq`), and extends missingTicks idle threshold to 30s (120 ticks).
+  - `discoveryEngine.ts`: at each round boundary in `runRound`, writes incremental SQLite checkpoints to `mining_sessions` (`stats_json` and `trace_summary_json`) and `search_logs`; replaces destructive 2MB cutoff with windowed trace retention.
+  - `traceStore.ts`: fixes initial snapshot wipeout bug by setting `isInitialSnapshot = false` unconditionally after processing initial frame.
+- **Frontend Observability & Funnel Inspector**:
+  - `PipelineFunnelInspector.tsx`: visual 6-stage conversion funnel (`Retrieval -> Fusion -> Extraction -> Verification -> Finalist Judge -> Selection`) with drop count badges and interactive candidate inspection dialog.
+  - `TraceTerminal.tsx`: searchable and filterable timeline replacing 6-event limit with stage, status, and provider pills, plus an expandable `Sheet` event detail drawer with prompt version, token accounting, provider attempts, and JSON copying.
+
 ## 10. Recommended next actions
 
 Updated 2026-11-18.

@@ -9,18 +9,23 @@ import { discoveryEngine } from "../leadSearch/discoveryEngine.js";
  */
 
 export type SessionStreamFrame = {
+  seq?: number;
   logs: string[];
   traceEvents: any[];
   session: Record<string, any> | null;
 };
 
-type Subscriber = (frame: SessionStreamFrame) => void;
+export type Subscriber = (frame: SessionStreamFrame) => void;
+
+type SubscriberCursor = {
+  lastLogTotal: number;
+  lastTraceSeq: number;
+};
 
 type SessionBroadcast = {
-  subscribers: Set<Subscriber>;
+  subscribers: Map<Subscriber, SubscriberCursor>;
   interval: NodeJS.Timeout | null;
-  lastLogTotal: number;
-  lastTraceTotal: number;
+  sequence: number;
   missingTicks: number;
   lastDbReadAt: number;
   cachedSession: Record<string, any> | null;
@@ -33,14 +38,17 @@ const POLL_INTERVAL_MS = 250;
 class SessionStreamHub {
   private broadcasts = new Map<string, SessionBroadcast>();
 
-  subscribe(sessionId: string, subscriber: Subscriber): () => void {
+  subscribe(
+    sessionId: string,
+    subscriber: Subscriber,
+    cursor?: { lastLogTotal?: number; lastTraceSeq?: number },
+  ): () => void {
     let broadcast = this.broadcasts.get(sessionId);
     if (!broadcast) {
       broadcast = {
-        subscribers: new Set(),
+        subscribers: new Map(),
         interval: null,
-        lastLogTotal: 0,
-        lastTraceTotal: 0,
+        sequence: 0,
         missingTicks: 0,
         lastDbReadAt: 0,
         cachedSession: null,
@@ -49,12 +57,21 @@ class SessionStreamHub {
       this.broadcasts.set(sessionId, broadcast);
     }
 
-    broadcast.subscribers.add(subscriber);
+    const initialLogTotal =
+      typeof cursor?.lastLogTotal === "number"
+        ? cursor.lastLogTotal
+        : discoveryEngine.getLiveLogTotal(sessionId);
+    const initialTraceSeq =
+      typeof cursor?.lastTraceSeq === "number"
+        ? cursor.lastTraceSeq
+        : discoveryEngine.getLiveTraceTotal(sessionId);
+
+    broadcast.subscribers.set(subscriber, {
+      lastLogTotal: initialLogTotal,
+      lastTraceSeq: initialTraceSeq,
+    });
 
     if (!broadcast.interval) {
-      // Seed total counters so the first tick only sends genuinely-new deltas.
-      broadcast.lastLogTotal = discoveryEngine.getLiveLogTotal(sessionId);
-      broadcast.lastTraceTotal = discoveryEngine.getLiveTraceTotal(sessionId);
       broadcast.interval = setInterval(
         () => this.poll(sessionId),
         POLL_INTERVAL_MS,
@@ -83,9 +100,14 @@ class SessionStreamHub {
       const now = Date.now();
       const totalLogs = discoveryEngine.getLiveLogTotal(sessionId);
       const totalTraces = discoveryEngine.getLiveTraceTotal(sessionId);
-      const memoryCountersChanged =
-        totalLogs > broadcast.lastLogTotal ||
-        totalTraces > broadcast.lastTraceTotal;
+
+      let memoryCountersChanged = false;
+      for (const cursor of broadcast.subscribers.values()) {
+        if (totalLogs > cursor.lastLogTotal || totalTraces > cursor.lastTraceSeq) {
+          memoryCountersChanged = true;
+          break;
+        }
+      }
 
       const isEngineActive = discoveryEngine.isActive(sessionId);
       const wasActiveInCache =
@@ -115,19 +137,16 @@ class SessionStreamHub {
         broadcast.missingTicks = 0;
       }
 
-      // If session remains missing after a 5-second grace period (20 ticks * 250ms), close cleanly
-      if (broadcast.missingTicks >= 20) {
-        const newLogCount = Math.max(0, Math.min(totalLogs - broadcast.lastLogTotal, logs.length));
-        const newTraceCount = Math.max(0, Math.min(totalTraces - broadcast.lastTraceTotal, traceEvents.length));
-        const pendingLogs = newLogCount > 0 ? logs.slice(logs.length - newLogCount) : [];
-        const pendingTrace = newTraceCount > 0 ? traceEvents.slice(traceEvents.length - newTraceCount) : [];
-
+      // If session remains missing after a 30-second grace period (120 ticks * 250ms), close cleanly
+      if (broadcast.missingTicks >= 120) {
+        broadcast.sequence++;
         const frame: SessionStreamFrame = {
-          logs: [...pendingLogs, "Session not found or expired."],
-          traceEvents: pendingTrace,
+          seq: broadcast.sequence,
+          logs: ["Session not found or expired."],
+          traceEvents: [],
           session: null,
         };
-        for (const subscriber of Array.from(broadcast.subscribers)) {
+        for (const [subscriber] of Array.from(broadcast.subscribers.entries())) {
           try {
             subscriber(frame);
           } catch {
@@ -138,64 +157,63 @@ class SessionStreamHub {
         return;
       }
 
-      const newLogCount = Math.max(
-        0,
-        Math.min(totalLogs - broadcast.lastLogTotal, logs.length),
-      );
-      const newTraceCount = Math.max(
-        0,
-        Math.min(totalTraces - broadcast.lastTraceTotal, traceEvents.length),
-      );
-
-      const newLogs =
-        newLogCount > 0 ? logs.slice(logs.length - newLogCount) : [];
-      const newTrace =
-        newTraceCount > 0
-          ? traceEvents.slice(traceEvents.length - newTraceCount)
-          : [];
-
-      broadcast.lastLogTotal = totalLogs;
-      broadcast.lastTraceTotal = totalTraces;
-
-      const hasNewContent = newLogs.length > 0 || newTrace.length > 0;
       const isTerminal =
         Boolean(session) &&
         session!.status !== "running" &&
         session!.status !== "cancellation_requested";
 
-      if (hasNewContent || isTerminal) {
-        // Slim frames (ADR-0013): the session row (stats_json + trace_summary_json, ~20KB)
-        // is embedded only when it actually changed, not on every log/trace delta. The
-        // client keeps its last snapshot when `session` is null, and terminal frames always
-        // carry the final row.
-        const sessionUpdatedAt = session
-          ? String((session as any).updatedAt || (session as any).updated_at || "")
-          : "";
-        const sessionChanged =
-          Boolean(session) &&
-          (isTerminal ||
-            !sessionUpdatedAt ||
-            broadcast.lastEmittedSessionUpdatedAt !== sessionUpdatedAt);
-        if (sessionChanged) {
-          broadcast.lastEmittedSessionUpdatedAt = sessionUpdatedAt || null;
+      const sessionUpdatedAt = session
+        ? String((session as any).updatedAt || (session as any).updated_at || "")
+        : "";
+      const sessionChanged =
+        Boolean(session) &&
+        (isTerminal ||
+          !sessionUpdatedAt ||
+          broadcast.lastEmittedSessionUpdatedAt !== sessionUpdatedAt);
+      if (sessionChanged) {
+        broadcast.lastEmittedSessionUpdatedAt = sessionUpdatedAt || null;
+      }
+
+      for (const [subscriber, cursor] of Array.from(broadcast.subscribers.entries())) {
+        const newLogCount = Math.max(
+          0,
+          Math.min(totalLogs - cursor.lastLogTotal, logs.length),
+        );
+        const newLogs =
+          newLogCount > 0 ? logs.slice(logs.length - newLogCount) : [];
+
+        let newTrace: any[] = [];
+        if (totalTraces > cursor.lastTraceSeq) {
+          const deltaCount = Math.min(totalTraces - cursor.lastTraceSeq, traceEvents.length);
+          const candidateSlice = deltaCount > 0 ? traceEvents.slice(traceEvents.length - deltaCount) : [];
+          newTrace = candidateSlice.filter((e) => (e.seq ?? 0) > cursor.lastTraceSeq || !e.seq);
+          if (newTrace.length === 0 && candidateSlice.length > 0) {
+            newTrace = candidateSlice;
+          }
         }
-        const frame: SessionStreamFrame = {
-          logs: newLogs,
-          traceEvents: newTrace,
-          session: sessionChanged ? session : null,
-        };
-        for (const subscriber of Array.from(broadcast.subscribers)) {
+
+        cursor.lastLogTotal = totalLogs;
+        cursor.lastTraceSeq = totalTraces;
+
+        const hasNewContent = newLogs.length > 0 || newTrace.length > 0;
+        if (hasNewContent || isTerminal || sessionChanged) {
+          broadcast.sequence++;
+          const frame: SessionStreamFrame = {
+            seq: broadcast.sequence,
+            logs: newLogs,
+            traceEvents: newTrace,
+            session: sessionChanged ? session : null,
+          };
           try {
             subscriber(frame);
           } catch {
-            // A broken subscriber pipe must be pruned immediately to prevent leaks.
             this.unsubscribe(sessionId, subscriber);
           }
         }
       }
 
       if (isTerminal) {
-        for (const subscriber of Array.from(broadcast.subscribers)) {
+        for (const [subscriber] of Array.from(broadcast.subscribers.entries())) {
           this.unsubscribe(sessionId, subscriber);
         }
       }

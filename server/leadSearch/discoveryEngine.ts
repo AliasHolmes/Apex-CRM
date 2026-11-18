@@ -449,16 +449,17 @@ export async function executeDiscoverySession(
   const traceLogFields = () => {
     const trace = telemetry.getTrace();
     // Size guard: trace_events can reach megabytes on long sessions. If the
-    // serialized payload exceeds ~2MB, persist summary fields only - the
-    // summaries (provider/cost/phase) carry the aggregate signal anyway.
+    // serialized payload exceeds ~1.8MB, window to the most recent subset
+    // rather than zeroing out all events.
     let events = trace.events;
     try {
       const serialized = JSON.stringify(events);
-      if (Buffer.byteLength(serialized, 'utf8') > 2_000_000) {
-        console.warn(
-          `[find-leads] ${sessionId}: trace_events exceeded 2MB (${Buffer.byteLength(serialized, 'utf8')} bytes); persisting summary-only.`,
-        );
-        events = [];
+      if (Buffer.byteLength(serialized, 'utf8') > 1_800_000) {
+        let windowed = events.slice(-1000);
+        while (windowed.length > 50 && Buffer.byteLength(JSON.stringify(windowed), 'utf8') > 1_800_000) {
+          windowed = windowed.slice(Math.floor(windowed.length / 2));
+        }
+        events = windowed;
       }
     } catch {
       events = [];
@@ -2594,6 +2595,37 @@ export async function executeDiscoverySession(
           parkedRecheckHistory: sessionState.parkedRecheckHistory || {},
           updatedAt: new Date().toISOString(),
         });
+
+        const currentTraceSummary = telemetry.getSummary();
+        upsertMiningSession({
+          id: sessionId,
+          status: "running",
+          stats: {
+            ...stats,
+            round,
+            viableCandidates: accumulatedViableCount,
+            acceptedCount: acceptedLeads.length,
+          },
+          traceSummary: currentTraceSummary,
+        });
+
+        safeInsertSearchLog({
+          id: sessionId,
+          timestamp: new Date().toISOString(),
+          prompt: promptQuery,
+          generatedQueries,
+          status: "running",
+          errorMessage: "",
+          rawResultsCount,
+          leadsFound: acceptedLeads.length,
+          detailedLogs: sessionLogs.join("\n"),
+          debugLogs: JSON.stringify(debugLogs.slice(-25)),
+          providerSummary: currentTraceSummary.providerSummary,
+          costSummary: currentTraceSummary.costSummary,
+          phaseTimeline: currentTraceSummary.phaseTimeline,
+          schemaVersion: (currentTraceSummary as any).schemaVersion || 1,
+        });
+
         logEvent(telemetry.formatRoundCriticalPath(round, roundStageWallMs));
 
         // Early shortlist termination:

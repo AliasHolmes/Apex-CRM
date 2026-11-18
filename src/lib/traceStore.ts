@@ -176,7 +176,6 @@ class MiningTraceStore {
                 onPersistenceEvent?.();
               }
             }
-            isInitialSnapshot = false;
           } else if (Array.isArray(data.traceEvents) && data.traceEvents.length > 0) {
             const newEvents: MiningTraceEvent[] = [];
             for (const e of data.traceEvents) {
@@ -192,6 +191,7 @@ class MiningTraceStore {
               }
             }
           }
+          isInitialSnapshot = false;
 
           const status = data.session?.status || state.status;
           this.sessions.set(sessionId, {

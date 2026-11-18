@@ -254,6 +254,8 @@ export type MiningEventStatus = 'started' | 'success' | 'error' | 'skipped' | 'i
 
 export interface MiningTraceEvent {
   id: string;
+  seq?: number;
+  promptVersion?: string;
   timestamp: string;
   phase: MiningPhase;
   operation: string;

@@ -2,7 +2,20 @@ import { useMemo, useState, useEffect, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useMiningTraceStream } from '@/lib/traceStore';
 import { Badge } from '@/components/ui/badge';
-import { Clock, ExternalLink, ChartNoAxesColumn } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Clock,
+  ExternalLink,
+  ChartNoAxesColumn,
+  Search,
+  Copy,
+  Check,
+  UserX,
+  Layers,
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -10,6 +23,14 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from '@/components/ui/sheet';
+import { PipelineFunnelInspector } from './PipelineFunnelInspector';
 import type { MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '@/types';
 
 export const formatDuration = (ms?: number) => {
@@ -208,6 +229,79 @@ export const TraceSummaryViewer = ({
     return { totalTokens, estimatedUsd, providers, phases };
   }, [traceSummary, traceEvents]);
 
+  const [historicalEvents, setHistoricalEvents] = useState<MiningTraceEvent[]>([]);
+
+  useEffect(() => {
+    if (traceEvents.length > 0 || !sessionId) return;
+    let isMounted = true;
+    fetch(`/api/mining-sessions/${encodeURIComponent(sessionId)}/trace`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && Array.isArray(data?.traceEvents) && data.traceEvents.length > 0) {
+          setHistoricalEvents(data.traceEvents);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, [sessionId, traceEvents.length]);
+
+  const effectiveEvents = traceEvents.length > 0 ? traceEvents : historicalEvents;
+
+  const [selectedEvent, setSelectedEvent] = useState<MiningTraceEvent | null>(null);
+  const [filterStage, setFilterStage] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterProvider, setFilterProvider] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [visibleCount, setVisibleCount] = useState<number>(50);
+  const [copiedEventJson, setCopiedEventJson] = useState<boolean>(false);
+  const [showFunnel, setShowFunnel] = useState<boolean>(true);
+
+  const filteredEvents = useMemo(() => {
+    return effectiveEvents.filter((ev) => {
+      if (filterStage !== 'all' && ev.phase !== filterStage) return false;
+      if (filterStatus !== 'all' && ev.status !== filterStatus) return false;
+      if (filterProvider !== 'all') {
+        const prov = ev.provider || (ev.llm ? 'llm' : '');
+        if (prov !== filterProvider) return false;
+      }
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const op = ev.operation?.toLowerCase() || '';
+        const phase = ev.phase?.toLowerCase() || '';
+        const query = ev.query?.toLowerCase() || '';
+        const err = ev.error?.message?.toLowerCase() || '';
+        const meta = (ev.metadata || {}) as Record<string, any>;
+        const cand = String(meta.candidateName || meta.candidateId || '').toLowerCase();
+        const company = String(meta.company || '').toLowerCase();
+        const reason = String(meta.reasonCode || '').toLowerCase();
+        if (
+          !op.includes(q) &&
+          !phase.includes(q) &&
+          !query.includes(q) &&
+          !err.includes(q) &&
+          !cand.includes(q) &&
+          !company.includes(q) &&
+          !reason.includes(q)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [effectiveEvents, filterStage, filterStatus, filterProvider, searchQuery]);
+
+  const handleCopyEventJson = (ev: MiningTraceEvent) => {
+    try {
+      navigator.clipboard.writeText(JSON.stringify(ev, null, 2));
+      setCopiedEventJson(true);
+      setTimeout(() => setCopiedEventJson(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
   const providerSummary: ProviderSummary = traceSummary?.providerSummary || {};
   const providers = traceSummary
     ? Object.entries(providerSummary).filter(
@@ -220,10 +314,9 @@ export const TraceSummaryViewer = ({
   const estimatedUsd =
     traceSummary?.costSummary?.estimatedUsd ?? derivedSummary?.estimatedUsd ?? 0;
   const costPerLead = traceSummary?.costSummary?.costPerAcceptedLead;
-  const eventCount = traceSummary?.eventCount ?? traceEvents.length;
-  const recent = traceEvents.slice(-6).reverse();
+  const eventCount = traceSummary?.eventCount ?? effectiveEvents.length;
 
-  if (!traceSummary && traceEvents.length === 0) return null;
+  if (!traceSummary && effectiveEvents.length === 0) return null;
 
   return (
     <div className="p-4 border-t border-border bg-background/70 space-y-3 text-xs text-muted-foreground">
@@ -365,50 +458,410 @@ export const TraceSummaryViewer = ({
         </div>
       )}
 
-      {recent.length > 0 && (
-        <div className="space-y-1 pt-1">
-          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider mb-1">
-            Recent tool calls
-          </div>
-          {recent.map((event) => (
-            <div
-              key={event.id}
-              className="text-xs text-muted-foreground font-mono bg-card/40 border border-border/80 rounded px-2 py-1.5 flex items-center justify-between gap-2"
+      {/* Visual Pipeline Funnel Drop-off Inspector */}
+      {effectiveEvents.length > 0 && (
+        <div className="pt-2">
+          <div className="flex items-center justify-between mb-2">
+            <button
+              type="button"
+              onClick={() => setShowFunnel(!showFunnel)}
+              className="text-xs font-bold text-foreground/80 hover:text-primary flex items-center gap-1.5 transition-colors uppercase tracking-wider"
             >
-              <span className="truncate flex items-center gap-1.5 min-w-0">
-                <span className="text-muted-foreground font-semibold shrink-0">
-                  {event.provider ? `[${event.provider.toUpperCase()}] ` : ''}
-                </span>
-                <span className="text-foreground/80 shrink-0">
-                  {event.phase}/{event.operation}
-                </span>
-                {(event.model || event.llm?.model) && (
-                  <span className="px-1.5 py-0.5 rounded text-xs bg-info/10 border border-info/40 text-info font-mono shrink-0">
-                    {event.model || event.llm?.model}
-                  </span>
-                )}
-                {event.query ? (
-                  <span className="text-muted-foreground truncate"> - "{event.query}"</span>
-                ) : (
-                  ''
-                )}
-              </span>
-              <span
-                className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded ${
-                  event.status === 'error'
-                    ? 'text-danger bg-danger/10'
-                    : event.status === 'success'
-                    ? 'text-success bg-success/10'
-                    : 'text-muted-foreground bg-muted/50'
-                }`}
-              >
-                {event.latencyMs ? `${formatDuration(event.latencyMs)} ` : ''}
-                {event.status}
-              </span>
-            </div>
-          ))}
+              <Layers className="w-3.5 h-3.5 text-primary" />
+              <span>Conversion Funnel & Drop-off Analysis</span>
+              {showFunnel ? (
+                <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+              )}
+            </button>
+          </div>
+          {showFunnel && <PipelineFunnelInspector traceEvents={effectiveEvents} />}
         </div>
       )}
+
+      {/* Searchable & Filterable Trace Event Timeline */}
+      <div className="space-y-2 pt-2 border-t border-border/80">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider flex items-center gap-2">
+            <span>Trace Event Timeline</span>
+            <Badge variant="outline" className="text-[10px] font-mono border-border">
+              {filteredEvents.length} of {effectiveEvents.length} events
+            </Badge>
+          </div>
+
+          <div className="relative min-w-[200px] flex-1 max-w-xs">
+            <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-2" />
+            <input
+              type="text"
+              placeholder="Search traces (query, model, candidate)..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-8 pr-2.5 py-1 rounded bg-background border border-border text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        </div>
+
+        {/* Filter Controls */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-muted-foreground font-semibold text-[10px] uppercase">Stage:</span>
+          {['all', 'plan', 'search', 'fusion', 'extraction', 'verification', 'enrichment', 'judging', 'selection', 'persistence'].map((stg) => (
+            <button
+              key={stg}
+              type="button"
+              onClick={() => setFilterStage(stg)}
+              className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                filterStage === stg
+                  ? 'bg-primary text-primary-foreground font-bold'
+                  : 'bg-card/80 hover:bg-card border border-border text-muted-foreground'
+              }`}
+            >
+              {stg}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground font-semibold text-[10px] uppercase">Status:</span>
+            {['all', 'success', 'error', 'skipped', 'info'].map((st) => (
+              <button
+                key={st}
+                type="button"
+                onClick={() => setFilterStatus(st)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                  filterStatus === st
+                    ? 'bg-primary text-primary-foreground font-bold'
+                    : 'bg-card/80 hover:bg-card border border-border text-muted-foreground'
+                }`}
+              >
+                {st}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1 ml-auto">
+            <span className="text-muted-foreground font-semibold text-[10px] uppercase">Provider:</span>
+            {['all', 'llm', 'tavily', 'brightdata', 'system'].map((pr) => (
+              <button
+                key={pr}
+                type="button"
+                onClick={() => setFilterProvider(pr)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                  filterProvider === pr
+                    ? 'bg-primary text-primary-foreground font-bold'
+                    : 'bg-card/80 hover:bg-card border border-border text-muted-foreground'
+                }`}
+              >
+                {pr}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Timeline Events List */}
+        <div className="space-y-1 max-h-[360px] overflow-y-auto pr-1">
+          {filteredEvents.length > 0 ? (
+            filteredEvents.slice(0, visibleCount).map((event, idx) => {
+              const isDrop = event.operation === 'candidate_dropped';
+              const meta = (event.metadata || {}) as Record<string, any>;
+              return (
+                <div
+                  key={event.id || `${event.phase}-${event.operation}-${idx}`}
+                  onClick={() => setSelectedEvent(event)}
+                  className={`text-xs font-mono rounded px-2.5 py-2 flex items-center justify-between gap-2 cursor-pointer transition-all border ${
+                    isDrop
+                      ? 'bg-danger/5 hover:bg-danger/10 border-danger/20'
+                      : event.status === 'error'
+                      ? 'bg-danger/10 hover:bg-danger/15 border-danger/30'
+                      : 'bg-card/50 hover:bg-card border-border/80 hover:border-primary/50'
+                  }`}
+                  title="Click to inspect event details"
+                >
+                  <div className="flex items-center gap-2 truncate min-w-0">
+                    <span className="text-muted-foreground font-semibold text-[10px] shrink-0">
+                      {event.seq ? `#${event.seq}` : `#${idx + 1}`}
+                    </span>
+                    <span className="text-muted-foreground text-[10px] shrink-0 font-sans">
+                      {new Date(event.timestamp).toLocaleTimeString()}
+                    </span>
+                    <span className="text-primary font-bold shrink-0">
+                      [{event.phase}]
+                    </span>
+                    <span className="text-foreground/90 font-medium shrink-0">
+                      {event.operation}
+                    </span>
+
+                    {isDrop && meta.reasonCode && (
+                      <Badge variant="outline" className="text-[10px] border-danger/40 bg-danger/10 text-danger shrink-0">
+                        Drop: {String(meta.reasonCode)}
+                      </Badge>
+                    )}
+
+                    {(event.model || event.llm?.model) && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-info/10 border border-info/40 text-info font-mono shrink-0">
+                        {event.model || event.llm?.model}
+                      </span>
+                    )}
+
+                    {event.query && (
+                      <span className="text-muted-foreground truncate">
+                        - "{event.query}"
+                      </span>
+                    )}
+
+                    {isDrop && meta.candidateName && (
+                      <span className="text-muted-foreground truncate font-sans">
+                        - {meta.candidateName} {meta.company ? `(${meta.company})` : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {event.latencyMs !== undefined && (
+                      <span className="text-muted-foreground text-[10px] font-mono">
+                        {formatDuration(event.latencyMs)}
+                      </span>
+                    )}
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] font-semibold py-0 px-1.5 ${
+                        event.status === 'error'
+                          ? 'border-danger/40 bg-danger/10 text-danger'
+                          : event.status === 'success'
+                          ? 'border-success/40 bg-success/10 text-success'
+                          : isDrop
+                          ? 'border-danger/30 text-danger bg-danger/5'
+                          : 'border-border text-muted-foreground'
+                      }`}
+                    >
+                      {event.status}
+                    </Badge>
+                    <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="py-8 text-center text-xs text-muted-foreground">
+              No trace events match the selected filters.
+            </div>
+          )}
+
+          {filteredEvents.length > visibleCount && (
+            <div className="pt-2 text-center">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setVisibleCount((prev) => prev + 50)}
+                className="text-xs h-7 font-mono"
+              >
+                Load More Events ({filteredEvents.length - visibleCount} remaining)
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Expandable Event Detail Drawer */}
+      <Sheet open={Boolean(selectedEvent)} onOpenChange={(open) => !open && setSelectedEvent(null)}>
+        <SheetContent className="sm:max-w-xl max-h-screen overflow-y-auto p-6 space-y-4">
+          {selectedEvent && (
+            <>
+              <SheetHeader className="pb-3 border-b border-border space-y-1">
+                <div className="flex items-center justify-between">
+                  <Badge variant="outline" className="text-xs font-mono border-primary/40 text-primary">
+                    {selectedEvent.phase} / {selectedEvent.operation}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className={`text-xs ${
+                      selectedEvent.status === 'error'
+                        ? 'border-danger text-danger bg-danger/10'
+                        : selectedEvent.status === 'success'
+                        ? 'border-success text-success bg-success/10'
+                        : 'border-border text-muted-foreground'
+                    }`}
+                  >
+                    {selectedEvent.status}
+                  </Badge>
+                </div>
+                <SheetTitle className="text-base font-bold text-foreground">
+                  Event Details: {selectedEvent.id || `#${selectedEvent.seq || ''}`}
+                </SheetTitle>
+                <SheetDescription className="text-xs font-mono text-muted-foreground">
+                  Timestamp: {new Date(selectedEvent.timestamp).toISOString()}
+                </SheetDescription>
+              </SheetHeader>
+
+              {/* Event Metrics Card */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="bg-background/80 border border-border p-2.5 rounded-lg">
+                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Latency</div>
+                  <div className="text-sm font-bold font-mono text-foreground mt-0.5">
+                    {formatDuration(selectedEvent.latencyMs)}
+                  </div>
+                </div>
+
+                <div className="bg-background/80 border border-border p-2.5 rounded-lg">
+                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Provider</div>
+                  <div className="text-sm font-bold font-mono text-primary mt-0.5">
+                    {selectedEvent.provider || (selectedEvent.llm ? 'llm' : 'system')}
+                  </div>
+                </div>
+
+                <div className="bg-background/80 border border-border p-2.5 rounded-lg">
+                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Tokens</div>
+                  <div className="text-sm font-bold font-mono text-info mt-0.5">
+                    {selectedEvent.llm?.totalTokens ? selectedEvent.llm.totalTokens.toLocaleString() : '-'}
+                  </div>
+                </div>
+
+                <div className="bg-background/80 border border-border p-2.5 rounded-lg">
+                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Est. Cost</div>
+                  <div className="text-sm font-bold font-mono text-success mt-0.5">
+                    {selectedEvent.llm?.estimatedCostUsd
+                      ? `$${selectedEvent.llm.estimatedCostUsd.toFixed(5)}`
+                      : '-'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Extended Token Accounting Breakdown */}
+              {selectedEvent.llm && (
+                <div className="p-3 rounded-lg border border-border bg-background/60 space-y-2 text-xs">
+                  <div className="font-bold text-foreground flex items-center justify-between">
+                    <span>LLM Execution Telemetry</span>
+                    {selectedEvent.promptVersion && (
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        Version: {selectedEvent.promptVersion}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                    <div>
+                      <span className="text-muted-foreground">Model:</span>{' '}
+                      <span className="text-info">{selectedEvent.llm.model || selectedEvent.model || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Route:</span>{' '}
+                      <span className="text-foreground">{selectedEvent.llm.route || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Prompt Toks:</span>{' '}
+                      <span className="text-foreground">{selectedEvent.llm.inputTokens || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Output Toks:</span>{' '}
+                      <span className="text-foreground">{selectedEvent.llm.outputTokens || '-'}</span>
+                    </div>
+                  </div>
+
+                  {Array.isArray((selectedEvent.llm as any).providerAttempts) &&
+                    (selectedEvent.llm as any).providerAttempts.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-border/80 space-y-1">
+                        <div className="text-[10px] uppercase font-bold text-muted-foreground">
+                          Provider Fallback / Hop Chain
+                        </div>
+                        {(selectedEvent.llm as any).providerAttempts.map((att: any, aIdx: number) => (
+                          <div
+                            key={aIdx}
+                            className="p-1.5 rounded bg-card text-[10px] font-mono flex items-center justify-between border border-border/60"
+                          >
+                            <span className="text-foreground">
+                              {att.provider} ({att.route})
+                            </span>
+                            <span className="text-muted-foreground">
+                              wait: {att.queueWaitMs || 0}ms | run: {att.latencyMs || 0}ms
+                            </span>
+                            <span
+                              className={att.status === 'success' ? 'text-success font-bold' : 'text-danger font-bold'}
+                            >
+                              {att.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                </div>
+              )}
+
+              {/* Candidate Drop Details */}
+              {selectedEvent.operation === 'candidate_dropped' && (
+                <div className="p-3 rounded-lg border border-danger/30 bg-danger/5 space-y-2 text-xs">
+                  <div className="font-bold text-danger flex items-center gap-1.5">
+                    <UserX className="w-4 h-4" />
+                    <span>Candidate Rejection Details</span>
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <div>
+                      <span className="text-muted-foreground font-medium">Candidate:</span>{' '}
+                      <span className="font-semibold text-foreground">
+                        {(selectedEvent.metadata as any)?.candidateName || (selectedEvent.metadata as any)?.candidateId || 'Unknown'}
+                      </span>
+                    </div>
+                    {(selectedEvent.metadata as any)?.company && (
+                      <div>
+                        <span className="text-muted-foreground font-medium">Company:</span>{' '}
+                        <span className="text-foreground">{(selectedEvent.metadata as any).company}</span>
+                      </div>
+                    )}
+                    <div>
+                      <span className="text-muted-foreground font-medium">Reason Code:</span>{' '}
+                      <Badge variant="outline" className="border-danger/40 bg-danger/10 text-danger text-[10px]">
+                        {(selectedEvent.metadata as any)?.reasonCode}
+                      </Badge>
+                    </div>
+                    {(selectedEvent.metadata as any)?.reasonDetails && (
+                      <div className="font-mono text-danger/90 bg-card/60 p-2 rounded border border-danger/20 mt-1">
+                        {(selectedEvent.metadata as any).reasonDetails}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Error Stack / Message */}
+              {selectedEvent.error && (
+                <div className="p-3 rounded-lg border border-danger/40 bg-danger/10 space-y-1.5 text-xs">
+                  <div className="font-bold text-danger">Error Information</div>
+                  <div className="font-mono text-danger text-xs leading-relaxed">
+                    {selectedEvent.error.message || String(selectedEvent.error)}
+                  </div>
+                  {selectedEvent.error.code && (
+                    <div className="text-[10px] font-mono text-danger/80">
+                      Code: {selectedEvent.error.code}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Raw JSON View */}
+              <div className="space-y-1.5 pt-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="uppercase font-bold text-muted-foreground text-[10px]">
+                    Raw Trace Event Payload
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCopyEventJson(selectedEvent)}
+                    className="h-6 text-[10px] font-mono flex items-center gap-1 px-2"
+                  >
+                    {copiedEventJson ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedEventJson ? 'Copied' : 'Copy JSON'}</span>
+                  </Button>
+                </div>
+                <pre className="p-3 rounded-lg bg-card border border-border text-[10px] font-mono text-foreground/90 overflow-x-auto max-h-56 scrollbar-thin">
+                  {JSON.stringify(selectedEvent, null, 2)}
+                </pre>
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
 
       <Dialog open={tokenModalOpen} onOpenChange={setTokenModalOpen}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto bg-card border border-border text-foreground p-6 shadow-2xl">

@@ -70,6 +70,32 @@ export class BrightDataError extends Error {
   }
 }
 
+export type BrightDataStateEvent = {
+  type:
+    | "provider_rate_limited"
+    | "sticky_bing_activated"
+    | "sticky_bing_expired"
+    | "empty_serp_self_heal_retry";
+  cooldownSeconds?: number;
+  message?: string;
+  attempt?: number;
+  timestamp: string;
+};
+
+let brightDataStateListener: ((event: BrightDataStateEvent) => void) | undefined;
+export function setBrightDataStateListener(
+  listener?: (event: BrightDataStateEvent) => void,
+) {
+  brightDataStateListener = listener;
+}
+
+export function emitBrightDataState(event: Omit<BrightDataStateEvent, "timestamp">) {
+  brightDataStateListener?.({
+    ...event,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 let brightDataClient: Client | null = null;
 let brightDataInitPromise: Promise<Client | null> | null = null;
 let activeTransport: BrightDataTransport | null = null;
@@ -613,6 +639,11 @@ export async function executeBrightDataSearchWithEmptyBodyRecovery<T>(
     } catch (error) {
       if (attempt >= maxRetries || !isEmptyBodySerpTransientError(error))
         throw error;
+      emitBrightDataState({
+        type: "empty_serp_self_heal_retry",
+        attempt: attempt + 1,
+        message: classifyBrightDataError(error).message,
+      });
       await options.onRetry?.({
         error: classifyBrightDataError(error),
         attempt: attempt + 1,
@@ -726,6 +757,11 @@ export const markToolFailure = (
     disabledReason = `rate_limited: ${message}`;
     healthOverride = "degraded";
     markActiveTokenFailure(classified);
+    emitBrightDataState({
+      type: "provider_rate_limited",
+      cooldownSeconds: Math.round(cooldownMs / 1000),
+      message,
+    });
     console.warn(`[brightdata] Rate limited; cooling down for ${Math.round(cooldownMs / 1000)}s: ${message}`);
   } else if (classified.retryable) {
     healthOverride = "degraded";
@@ -2279,6 +2315,7 @@ export function isStickyBingActive(): boolean {
   if (stickyBingActiveSince > 0) {
     if (Date.now() - stickyBingActiveSince > 15 * 60 * 1000) {
       stickyBingActiveSince = 0;
+      emitBrightDataState({ type: "sticky_bing_expired" });
       return false;
     }
     return true;
@@ -2437,6 +2474,7 @@ export async function brightDataSearch(
           googleSerpChallengeCount++;
           if (googleSerpChallengeCount >= GOOGLE_CHALLENGE_STICKY_THRESHOLD) {
             stickyBingActiveSince = Date.now();
+            emitBrightDataState({ type: "sticky_bing_activated" });
             console.warn(
               `[brightdata] Google SERP bot challenges reached threshold (${googleSerpChallengeCount}). Activated sticky Bing fallback.`,
             );
@@ -2629,6 +2667,7 @@ export async function brightDataSearchBatch(
       googleSerpChallengeCount++;
       if (googleSerpChallengeCount >= GOOGLE_CHALLENGE_STICKY_THRESHOLD) {
         stickyBingActiveSince = Date.now();
+        emitBrightDataState({ type: "sticky_bing_activated" });
         console.warn(
           `[brightdata] Google SERP bot challenges reached threshold (${googleSerpChallengeCount}) via batch search. Activated sticky Bing fallback.`,
         );

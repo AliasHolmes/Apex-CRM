@@ -95,6 +95,15 @@ export async function executeSelectStage(
   const { qualifiedLeads } = state;
   const { targetLimit, maxRounds, linkedinPostIntentEnabled } = config;
 
+  const stageStartedAt = Date.now();
+  recordTrace({
+    phase: "selection",
+    operation: "stage_start",
+    status: "info",
+    counts: { qualifiedLeads: qualifiedLeads.length, targetLimit },
+    metadata: { stage: "select" },
+  });
+
   const isShortfall = determineSelectionShortfall(qualifiedLeads.length, targetLimit);
   const forceShortfallEnrichment = process.env.ENRICH_SHORTFALL_LEADS === "true";
   const shouldRunIntent = shouldRunIntentEnrichment(isShortfall, forceShortfallEnrichment, qualifiedLeads.length);
@@ -222,6 +231,39 @@ export async function executeSelectStage(
   // 2. NOW run selection with fully enriched scores (all 4 Pareto dimensions active)
   const finalLeads = selectDiversifiedLeads(qualifiedLeads, targetLimit, searchSpec.maxPerCompany);
 
+  const finalLeadIds = new Set(
+    finalLeads.map((l) => l.id || l.url || l.contactDetails?.linkedinUrl || l.fullName),
+  );
+  const droppedFromSelection = qualifiedLeads.filter(
+    (l) => !finalLeadIds.has(l.id || l.url || l.contactDetails?.linkedinUrl || l.fullName),
+  );
+
+  for (const dropped of droppedFromSelection) {
+    const comp = dropped.currentCompany || dropped.company;
+    const sameCompanyCount = finalLeads.filter(
+      (f) => (f.currentCompany || f.company) === comp,
+    ).length;
+    const isCompanyCap = sameCompanyCount >= (searchSpec.maxPerCompany || 2);
+    const reasonCode = isCompanyCap ? "per_company_cap_exceeded" : "pareto_skyline_cut";
+    const reasonDetails = isCompanyCap
+      ? `Per-company cap (${searchSpec.maxPerCompany || 2}) exceeded for ${comp}`
+      : `Candidate dropped in Pareto multi-objective ranking or MMR diversification`;
+
+    recordTrace({
+      phase: "selection",
+      operation: "candidate_dropped",
+      status: "info",
+      metadata: {
+        stage: "select",
+        candidateId: dropped.id || dropped.url || dropped.contactDetails?.linkedinUrl,
+        candidateName: dropped.fullName,
+        company: comp,
+        reasonCode,
+        reasonDetails,
+      },
+    });
+  }
+
   // Final rank-order by post-enrichment score
   finalLeads.sort((a, b) => {
     const scoreA = sharedEffectiveScore(a);
@@ -321,6 +363,22 @@ export async function executeSelectStage(
   }
 
   logEvent(`Session complete: returned ${leadsFound}/${targetLimit}. Stop reason: ${stats.stopReason}. Stats: ${JSON.stringify(stats)}`);
+
+  recordTrace({
+    phase: "selection",
+    operation: "stage_complete",
+    status: "success",
+    latencyMs: Date.now() - stageStartedAt,
+    counts: {
+      qualifiedLeads: qualifiedLeads.length,
+      finalLeads: finalLeads.length,
+      droppedCandidates: droppedFromSelection.length,
+    },
+    metadata: {
+      stage: "select",
+      stopReason: stats.stopReason,
+    },
+  });
 
   return {
     finalLeads,

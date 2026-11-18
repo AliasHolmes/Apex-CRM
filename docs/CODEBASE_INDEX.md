@@ -3,8 +3,8 @@
 Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
-> Every count below was measured directly from the current tree and is pinned to
-> HEAD (`1da0666`) including ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
+> Every count below was measured directly from the working tree on 2026-11-18 (Schema v30)
+> and includes ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
 > single-candidate timeout scaling, canonical isTransientLLMError retry unification, and nuance-preserving
 > multi-anchor evidence windowing across 24k chars without profile category deletions),
 > ADR-0019 (single-candidate 210s timeout headroom and cross-provider judge retry escalation),
@@ -14,7 +14,8 @@ Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `sc
 > `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last attested run;
 > the suite now holds 207 `.test.ts` files and has not been re-attested since).
 > Line counts are physical lines (blank lines included).
-> Re-measured 2026-11-18: pinned to HEAD `1da0666` (Schema v30). See Sections 9.35, 9.39 and 9.40.
+> Re-measured 2026-11-18 against the working tree (Schema v30). No short-hash pin is recorded
+> because the tree is under active development; see Sections 9.35, 9.39 and 9.40.
 
 ---
 
@@ -64,7 +65,7 @@ carried forward in Section 9 below. Recover them from git history if the detail 
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v30**, WAL                   |
 | Test suite                                                       | 212 files: 207 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 35,390 lines; executes via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail) |
 | Total first-party LOC                                            | 101,064 TypeScript lines (353 files, incl. tests)                                    |
-| Anchor                                                           | measured at working tree (HEAD `1da0666`, Schema v30); dated 2026-11-18                                    |
+| Anchor                                                           | measured at working tree (Schema v30); dated 2026-11-18                                    |
 
 ## 3. Tech stack
 
@@ -1163,7 +1164,7 @@ Updated 2026-11-18.
 8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `1da0666` (2026-11-18, Schema v30). Supersedes the `f93d009` pin.
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary refreshed against the 2026-11-18 working tree (Schema v30); supersedes the earlier 2026-11-04 pin.
 12. ~~**Re-run the full suite and record a real pass/fail total**~~ Done (2026-11-04): **1,385 pass / 0 fail**, exit 0 across 208 suites. The 2 failures identified on HEAD `f45170e` are remediated in `9.35`.
 13. **Keep the `company_type` primary-phrase ordering pinned by test** - `9.31` fixed three extraction paths that could take slot 0 before the real vertical. `symbioticEntityParsing` and `freeTierYieldAndExclusions` cover two of them; the platform-status rejection (`LinkedIn active`) has no dedicated test yet.
 14. ~~**Decide the fate of `STORAGE_ENCRYPTION_KEY`**~~ - Done (2026-11-04): deleted key from `.env.example` and `.env`; documented plaintext SQLite at-rest storage secured via loopback binding and OS file permissions (Option A). (See `9.35`.)

@@ -446,6 +446,19 @@ export async function executeExtractStage(
       skippedDuplicates++;
       stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
       noteRejection("duplicate_existing_lead", queryRun);
+      recordTrace({
+        phase: "extraction",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "extract",
+          subStage: "pre_filter",
+          candidateId: effectiveUrl,
+          reasonCode: "crm_duplicate",
+          reasonDetails: "Candidate identity key already exists in CRM database",
+        },
+      });
       continue;
     }
 
@@ -457,6 +470,19 @@ export async function executeExtractStage(
       if (cachedVerdict?.verdict === "hard_fail") {
         stats.cachedDisqualifications = (stats.cachedDisqualifications || 0) + 1;
         noteRejection("cached_disqualification", queryRun);
+        recordTrace({
+          phase: "extraction",
+          operation: "candidate_dropped",
+          status: "info",
+          round,
+          metadata: {
+            stage: "extract",
+            subStage: "pre_filter",
+            candidateId: candidateIdentity,
+            reasonCode: "cached_disqualification",
+            reasonDetails: `Candidate failed in prior session under same contract requirements: ${cachedVerdict.reason || "hard_fail"}`,
+          },
+        });
         continue;
       }
     }
@@ -489,6 +515,19 @@ export async function executeExtractStage(
       }
       skippedMissingLinkedIn++;
       noteRejection("missing_linkedin_profile", queryRun);
+      recordTrace({
+        phase: "extraction",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "extract",
+          subStage: "pre_filter",
+          candidateId: effectiveUrl,
+          reasonCode: "missing_linkedin_url",
+          reasonDetails: "Signal lane item lacked a LinkedIn personal profile URL",
+        },
+      });
       continue;
     }
 
@@ -514,6 +553,19 @@ export async function executeExtractStage(
           skippedDuplicates++;
           stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
           noteRejection("duplicate_existing_lead", queryRun);
+          recordTrace({
+            phase: "extraction",
+            operation: "candidate_dropped",
+            status: "info",
+            round,
+            metadata: {
+              stage: "extract",
+              subStage: "pre_filter",
+              candidateId: rescuedUrl,
+              reasonCode: "crm_duplicate",
+              reasonDetails: "Rescued LinkedIn profile already exists in CRM database",
+            },
+          });
           continue;
         }
 
@@ -539,6 +591,19 @@ export async function executeExtractStage(
         }
         skippedMissingLinkedIn++;
         noteRejection("missing_linkedin_profile", queryRun);
+        recordTrace({
+          phase: "extraction",
+          operation: "candidate_dropped",
+          status: "info",
+          round,
+          metadata: {
+            stage: "extract",
+            subStage: "pre_filter",
+            candidateId: effectiveUrl,
+            reasonCode: "missing_linkedin_url",
+            reasonDetails: "Item content did not contain a valid LinkedIn profile URL",
+          },
+        });
         continue;
       }
     }
@@ -754,6 +819,27 @@ export async function executeExtractStage(
     } else {
       standardCandidateItems.push(item);
     }
+  }
+
+  if (datasetExtractedProfiles.length > 0 || deterministicExtractedProfiles.length > 0) {
+    recordTrace({
+      phase: "extraction",
+      operation: "deterministic_profile_extract",
+      status: "success",
+      provider: "system",
+      round,
+      latencyMs: 0,
+      counts: {
+        datasetProfiles: datasetExtractedProfiles.length,
+        deterministicSerpProfiles: deterministicExtractedProfiles.length,
+        total: datasetExtractedProfiles.length + deterministicExtractedProfiles.length,
+      },
+      metadata: {
+        stage: "extract",
+        datasetCount: datasetExtractedProfiles.length,
+        serpCount: deterministicExtractedProfiles.length,
+      },
+    });
   }
 
   if (deterministicExtractedProfiles.length > 0) {

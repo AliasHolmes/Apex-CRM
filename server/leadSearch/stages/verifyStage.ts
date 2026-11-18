@@ -99,6 +99,16 @@ export async function executeVerifyStage(
   const { existingKeys } = state;
   const { promptQuery, minScore } = config;
 
+  const stageStartedAt = Date.now();
+  recordTrace({
+    phase: "verification",
+    operation: "stage_start",
+    status: "info",
+    round,
+    counts: { provisionalLeads: provisionalLeads.length },
+    metadata: { stage: "verify" },
+  });
+
   const noteRejection = (reason: RejectionReason, queryRun?: QueryRunStats) => {
     incrementRejection(stats.rejectionReasons, reason);
     if (queryRun) incrementRejection(queryRun.rejectionReasons, reason);
@@ -181,6 +191,18 @@ export async function executeVerifyStage(
     const hasIdentity = Boolean((lead?.fullName || "").trim());
     if (!hasIdentity) {
       noteRejection("missing_identity", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          reasonCode: "missing_identity",
+          reasonDetails: "Lead lacks a valid full name identity",
+        },
+      });
       continue;
     }
     const hasRoleContext = Boolean(
@@ -190,6 +212,19 @@ export async function executeVerifyStage(
     );
     if (!hasRoleContext) {
       noteRejection("missing_role_context", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          candidateName: lead?.fullName,
+          reasonCode: "missing_role_context",
+          reasonDetails: "Lead lacks title, company, or headline context",
+        },
+      });
       continue;
     }
 
@@ -197,6 +232,19 @@ export async function executeVerifyStage(
     // company-hosted source page) before they cost an attribution call.
     if (!hasIdentityAnchor(lead)) {
       noteRejection("missing_identity", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          candidateName: lead?.fullName,
+          reasonCode: "missing_identity_anchor",
+          reasonDetails: "Lead has no identity anchor (no LinkedIn URL, company site, or source page)",
+        },
+      });
       continue;
     }
 
@@ -325,11 +373,38 @@ export async function executeVerifyStage(
     );
     if (!hasCompany && hasCompanyRequirement) {
       noteRejection("missing_company_entity", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          candidateName: lead?.fullName,
+          reasonCode: "missing_company_entity",
+          reasonDetails: "Contract requires company entity but no company could be resolved",
+        },
+      });
       continue;
     }
 
     if (matchesExcludeList(lead) || hasDuplicateKeys(lead, existingKeys)) {
       noteRejection("duplicate_existing_lead", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          candidateName: lead?.fullName,
+          company: lead?.currentCompany,
+          reasonCode: "crm_duplicate",
+          reasonDetails: "Lead matches CRM exclude list or existing identity keys",
+        },
+      });
       continue;
     }
 
@@ -445,6 +520,20 @@ export async function executeVerifyStage(
       : { pass: true };
     if (!dmGate.pass) {
       noteRejection("not_decision_maker", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          candidateName: lead?.fullName,
+          company: lead?.currentCompany,
+          reasonCode: "not_decision_maker",
+          reasonDetails: `Candidate failed decision-maker gate: ignoredTitle=${dmVerification.ignoredTitle}, confidence=${dmVerification.confidence}`,
+        },
+      });
       continue;
     }
 
@@ -455,6 +544,20 @@ export async function executeVerifyStage(
       borderlineAdmittedThisRound++;
     } else if (leadScore < minScore) {
       noteRejection("score_below_minimum", queryRun);
+      recordTrace({
+        phase: "verification",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "verify",
+          candidateId: lead?.url || lead?.contactDetails?.linkedinUrl,
+          candidateName: lead?.fullName,
+          company: lead?.currentCompany,
+          reasonCode: "score_below_minimum",
+          reasonDetails: `Lead score (${leadScore}) below admission threshold (${minScore})`,
+        },
+      });
       continue;
     }
 
@@ -465,13 +568,21 @@ export async function executeVerifyStage(
   }
 
   recordTrace({
-    phase: "filtering",
-    operation: "lead_filtering",
+    phase: "verification",
+    operation: "stage_complete",
     status: "success",
     provider: "system",
     round,
-    counts: { postFilterLeads: postFilterLeads.length },
-    metadata: { rejectionReasons: stats.rejectionReasons },
+    latencyMs: Date.now() - stageStartedAt,
+    counts: {
+      provisionalLeads: provisionalLeads.length,
+      postFilterLeads: postFilterLeads.length,
+      borderlineAdmitted: borderlineAdmittedThisRound,
+    },
+    metadata: {
+      stage: "verify",
+      rejectionReasons: stats.rejectionReasons,
+    },
   });
 
   return { postFilterLeads };

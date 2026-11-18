@@ -1090,7 +1090,7 @@ Comprehensive remediation and verification of 50 defects identified during the f
   - Allowed deep link drawer to close cleanly when CRM has 0 leads.
 - **Verification**:
   - Full TypeScript typecheck (`tsc --noEmit`): **PASSED (0 errors)** (verified 2026-11-11).
-  - The full test suite executes only via `npm test` (tsx with query-suffix import cache-busting) and cannot be executed by agent tooling; it contains **204 `.test.ts` files (209 entries total)**. The "102/102 tests passed" figure recorded during remediation is unattested — the last attested run is **1,385 pass / 0 fail on 2026-11-04** (§9.36). Treat current pass/fail counts as unknown until the suite is run.
+  - The full test suite executes only via `npm test` (tsx with query-suffix import cache-busting) and cannot be executed by agent tooling; it contains **207 `.test.ts` files (212 entries total)**. The "102/102 tests passed" figure recorded during remediation is unattested — the last attested run is **1,385 pass / 0 fail on 2026-11-04** (§9.36). Treat current pass/fail counts as unknown until the suite is run.
 
 ### 9.38 Post-v28 Follow-up Remediation & Schema v29 (2026-11-11)
 
@@ -1143,7 +1143,7 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
 
 ## 10. Recommended next actions
 
-Updated 2026-11-04.
+Updated 2026-11-18.
 
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
@@ -1156,7 +1156,7 @@ Updated 2026-11-04.
 8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `e260b58` (2026-11-04). Supersedes the `153dab3` pin.
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `f93d009` (2026-11-18). Supersedes the `e260b58` pin.
 12. ~~**Re-run the full suite and record a real pass/fail total**~~ Done (2026-11-04): **1,385 pass / 0 fail**, exit 0 across 208 suites. The 2 failures identified on HEAD `f45170e` are remediated in `9.35`.
 13. **Keep the `company_type` primary-phrase ordering pinned by test** - `9.31` fixed three extraction paths that could take slot 0 before the real vertical. `symbioticEntityParsing` and `freeTierYieldAndExclusions` cover two of them; the platform-status rejection (`LinkedIn active`) has no dedicated test yet.
 14. ~~**Decide the fate of `STORAGE_ENCRYPTION_KEY`**~~ - Done (2026-11-04): deleted key from `.env.example` and `.env`; documented plaintext SQLite at-rest storage secured via loopback binding and OS file permissions (Option A). (See `9.35`.)

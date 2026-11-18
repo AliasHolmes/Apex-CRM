@@ -251,7 +251,7 @@ Cross-cutting invariants:
 
 ## 6. Configuration surface
 
-134 keys in `.env` (139 mirrored by `.env.example`). Notable:
+134 keys in `.env` (144 in `.env.example`). Notable:
 
 - `EVIDENCE_GROUNDING_MODE` (`.env.example` = `"strict"`) ? enforces verbatim, alias, or
   polarity-guarded fuzzy quote citations on every `pass` verdict (`"legacy"`/`"permissive"`
@@ -259,10 +259,12 @@ Cross-cutting invariants:
 - `LEAD_SEARCH_MAX_ROUNDS` (`.env` = `"6"`) ? authoritative round budget; the in-loop
   extension ceiling now defers to it when set (was hard-coded 10, which is how a run
   configured for 6 reached 10).
-- **Runtime concurrency** (`.env`): `BYESU_CONCURRENT_SLOTS="8"`,
-  `LEAD_EXTRACTION_CONCURRENCY="8"`, `FINALIST_JUDGE_CONCURRENCY="6"`.
-  Code fallback when unset is 4 slots (the `.env`/`.env.example` template ships 8 per
-  ADR-0014). Both `.env` and `.env.example` are aligned.
+- **Runtime concurrency** (`.env`): `OPENAI_CONCURRENT_SLOTS="8"`, `BYESU_CONCURRENT_SLOTS="8"`,
+  `LEAD_EXTRACTION_CONCURRENCY="8"`, `FINALIST_JUDGE_CONCURRENCY="8"`,
+  `FINALIST_JUDGE_MICRO_BATCH_SIZE="1"`, `LEAD_EXTRACTION_MAX_BLOCKS_PER_CHUNK="2"`.
+  Code fallback when unset is 4 slots (the shipped `.env.example` template sets 8 per ADR-0014/0016).
+  Slot counts are aligned across `.env` and `.env.example`; local overrides may differ on other keys
+  (e.g. the 2-block extraction chunk here vs. 3 in the template).
 - **ADR-0012/0013 streaming seams (graduated 2026-10-17)**: the on/off gates
   `LEAD_STREAMING_EXTRACTION` and `LEAD_PIPELINE_STREAMING_JUDGE` were hard-deleted; streaming
   is now unconditional. Remaining tunables: `LEAD_STREAMING_JUDGE_BATCH_TARGET` (default 3),
@@ -282,7 +284,7 @@ invariants.
 
 ## 7. Test suite
 
-204 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (209 files in `test/`, 33,899 lines as of 2026-11-11). Last attested state (2026-11-04):
+207 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (212 files in `test/`, 35,390 lines as of 2026-11-18). Last attested state (2026-11-04):
 **1,385 pass / 0 fail**, exit 0 across all 208 suites; pass/fail totals have not been re-attested since — the suite executes only via `npm test` (tsx with query-suffix import cache-busting) and was not runnable in the 2026-11-11 audit environment. The 1,287/0, 1,370/0, and 1,381/0 figures below are historical and predate the current
 suite. A
 historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval tests. Composition:

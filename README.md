@@ -243,6 +243,12 @@ flowchart TD
 - **API Hardening**: Unmatched `/api` paths receive JSON `404 { apiVersion: 1 }`; 5xx responses return generic `Internal server error` (no internals echoed); untrusted tool/page bytes no longer reach error classifiers/logs/`/health` (empty-200 SERP errors no longer embed page bodies; sticky-Bing accounting keys off structured `reasonCode`).
 - **Robustness & Hygiene**: `getLeadsDb()` resets the handle and rethrows on migration failure (no more wedged process); `closeLeadsDb()` resets `leadsInitializedCached`; `isExhaustedQuotaError` re-tightened to 429/402/432/433; the legacy `;`-delimited `requirement_fail_digest` migration is restored as a fallback; the suite's stale schema-version assertions now match **v30**; `test/serverResilience.test.ts` tests the real production socket-guard wiring extracted to `server/socketGuard.ts`.
 
+#### 22. Model-Aware Cost & Token Accounting (Schema v30)
+
+- **Model-Aware Cost Rates** (`telemetry.ts`): `estimateLLMCostUsd` resolves `DEFAULT_MODEL_COST_PER_1M` before the provider-level table, so Gemini, GPT, and Groq models are billed at their own rates; environment overrides still take precedence.
+- **Reasoning & Cached Token Telemetry** (`llm.ts`, `db.ts`): streaming and non-streaming usage details propagate `reasoningTokens`/`cachedTokens` through `LLMUsage` and `LLMProviderAttempt` into the new Schema v30 `llm_stage_logs` columns alongside `cost_usd` and `prompt_version`.
+- **Search-Credit Cost Rollup** (`telemetry.ts`): `CostSummary` now reports `searchCredits` (Tavily/Bright Data call counts) and `searchCostUsd`, folding search spend into `estimatedUsd` and `costPerAcceptedLead`.
+
 ---
 
 ## System Architecture

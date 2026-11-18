@@ -52,10 +52,22 @@ export async function executeFuseStage(
   input: FuseStageInput,
 ): Promise<FuseStageOutput> {
   const { round, roundItems, roundPlans, queryRuns, searchSpec, stats } = input;
-  const { config, state, logEvent } = ctx;
+  const { config, state, logEvent, recordTrace } = ctx;
   const { seenCandidateKeys, existingKeys } = state;
   const acceptedLeads = state.acceptedLeads || [];
   const maxPerCompany = Math.max(1, Number(searchSpec?.maxPerCompany || 2));
+
+  const stageStartedAt = Date.now();
+  recordTrace?.({
+    phase: "fusion",
+    operation: "stage_start",
+    status: "info",
+    round,
+    counts: {
+      inputItems: roundItems.length,
+    },
+    metadata: { stage: "fuse" },
+  });
 
   const acceptedCompanyCounts = new Map<string, number>();
   for (const lead of acceptedLeads) {
@@ -114,6 +126,9 @@ export async function executeFuseStage(
   const fusedObservations = fuseObservations(scoutObservations);
   const roundCandidateKeys = new Set<string>();
   const uniqueRoundItems: any[] = [];
+  let personObservations = 0;
+  let signalObservations = 0;
+  let accountObservations = 0;
 
   for (const observation of fusedObservations) {
     const plan = planByQuery.get(observation.query);
@@ -140,6 +155,7 @@ export async function executeFuseStage(
 
     // STREAM 2: Signal Lane -> Store into session SignalStore and register discovered company
     if (isSignal) {
+      signalObservations++;
       const isAtsObservation = /boards\.greenhouse\.io|jobs\.lever\.co|jobs\.ashbyhq\.com|apply\.workable\.com/i.test(observation.url);
       const companyHint = extractCompanyHintDeterministic(observation) || "";
       if (companyHint && ctx.state.signalStore) {
@@ -197,6 +213,7 @@ export async function executeFuseStage(
 
     // STREAM 3: Account Lane -> Register company evidence decisively
     if (isAccount) {
+      accountObservations++;
       const companyHint = extractCompanyHintDeterministic(observation) || (username ? username : "");
       if (companyHint && looksLikeCompanyHint(companyHint) && ctx.state.signalStore) {
         ctx.state.signalStore.registerDiscoveredCompany(
@@ -217,6 +234,8 @@ export async function executeFuseStage(
       continue;
     }
 
+    personObservations++;
+
     // STREAM 1: Person Lane -> Must have a valid LinkedIn profile URL
     if (!username || !normalizedUrl) {
       const companyHint = extractCompanyHintDeterministic(observation) || "";
@@ -234,6 +253,19 @@ export async function executeFuseStage(
         });
       }
       noteRejection("missing_linkedin_profile", queryRun);
+      recordTrace?.({
+        phase: "fusion",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "fuse",
+          candidateId: url,
+          candidateName: observation.title,
+          reasonCode: "missing_linkedin_url",
+          reasonDetails: "Observation lacks a valid LinkedIn personal profile URL",
+        },
+      });
       continue;
     }
 
@@ -258,11 +290,39 @@ export async function executeFuseStage(
     if (candidateKeys.some(k => existingKeys.has(k))) {
       noteRejection("duplicate_existing_lead", queryRun);
       stats.existingCrmLeadsSkipped = (stats.existingCrmLeadsSkipped || 0) + 1;
+      recordTrace?.({
+        phase: "fusion",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "fuse",
+          candidateId: normalizedUrl || username || url,
+          candidateName: obsName || observation.title,
+          company: obsComp,
+          reasonCode: "crm_duplicate",
+          reasonDetails: "Candidate identity key already exists in CRM SQLite database",
+        },
+      });
       continue;
     }
 
     // 2. Check against already seen / extracted candidates in the current session
     if (candidateKeys.some(k => seenCandidateKeys.has(k) || roundCandidateKeys.has(k))) {
+      recordTrace?.({
+        phase: "fusion",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "fuse",
+          candidateId: normalizedUrl || username || url,
+          candidateName: obsName || observation.title,
+          company: obsComp,
+          reasonCode: "seen_session_key",
+          reasonDetails: "Candidate identity key already observed in current discovery session",
+        },
+      });
       continue;
     }
 
@@ -394,6 +454,19 @@ export async function executeFuseStage(
   logEvent(
     `Round ${round}: using top ${candidateItems.length}/${sortedRoundItems.length} candidates for extraction budget.`,
   );
+
+  recordTrace?.({
+    phase: "fusion",
+    operation: "stage_complete",
+    status: "success",
+    round,
+    latencyMs: Date.now() - stageStartedAt,
+    counts: {
+      candidates: candidateItems.length,
+      uniqueRoundItems: sortedRoundItems.length,
+    },
+    metadata: { stage: "fuse" },
+  });
 
   return {
     candidateItems,

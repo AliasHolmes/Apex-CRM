@@ -26,6 +26,15 @@ export type ApiKeyPoolSummary = {
   keys: ApiKeySummary[];
 };
 
+export type KeyRotationEvent = {
+  provider: string;
+  type: 'key_rotated' | 'key_cooldown' | 'pool_exhausted' | 'key_recovered';
+  label?: string;
+  fingerprint?: string;
+  cooldownMs?: number;
+  timestamp: string;
+};
+
 export class KeyRotationError extends Error {
   statusCode?: number;
   responseText?: string;
@@ -182,11 +191,16 @@ export class ApiKeyPool {
   private order: string[] = [];
   private nextIndex = 0;
   private signature = '';
+  private onPoolStateChange?: (event: KeyRotationEvent) => void;
 
   constructor(
     readonly provider: string,
     private readonly loadKeys: () => string[]
   ) {}
+
+  setOnPoolStateChange(listener?: (event: KeyRotationEvent) => void) {
+    this.onPoolStateChange = listener;
+  }
 
   hasConfiguredKeys() {
     this.refresh();
@@ -226,9 +240,23 @@ export class ApiKeyPool {
       const entry = this.entries.get(key);
       if (!this.isUsable(entry, now)) continue;
       this.nextIndex = (index + 1) % this.order.length;
+      if (offset > 0 && this.onPoolStateChange) {
+        this.onPoolStateChange({
+          provider: this.provider,
+          type: 'key_rotated',
+          label: entry!.label,
+          fingerprint: entry!.fingerprint,
+          timestamp: new Date(now).toISOString(),
+        });
+      }
       return { key, label: entry!.label, fingerprint: entry!.fingerprint };
     }
 
+    this.onPoolStateChange?.({
+      provider: this.provider,
+      type: 'pool_exhausted',
+      timestamp: new Date(now).toISOString(),
+    });
     throw new Error(`No healthy ${this.provider} API keys are available.`);
   }
 
@@ -236,12 +264,22 @@ export class ApiKeyPool {
     this.refresh();
     const entry = this.entries.get(key);
     if (!entry) return;
+    const wasInCooldown = entry.status !== 'active';
     entry.status = 'active';
     entry.cooldownUntil = 0;
     entry.lastFailureKind = null;
     entry.lastStatusCode = undefined;
     entry.consecutiveTransientFailures = 0;
     entry.successes++;
+    if (wasInCooldown) {
+      this.onPoolStateChange?.({
+        provider: this.provider,
+        type: 'key_recovered',
+        label: entry.label,
+        fingerprint: entry.fingerprint,
+        timestamp: new Date().toISOString(),
+      });
+    }
   }
 
   markFailure(key: string, classification: FailureClassification, now = Date.now()) {
@@ -254,15 +292,33 @@ export class ApiKeyPool {
 
     if (classification.kind === 'rate_limited') {
       entry.status = 'rate_limited';
-      entry.cooldownUntil = now + (classification.cooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS);
+      const cooldownMs = classification.cooldownMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+      entry.cooldownUntil = now + cooldownMs;
       entry.consecutiveTransientFailures = 0;
+      this.onPoolStateChange?.({
+        provider: this.provider,
+        type: 'key_cooldown',
+        label: entry.label,
+        fingerprint: entry.fingerprint,
+        cooldownMs,
+        timestamp: new Date(now).toISOString(),
+      });
       return;
     }
 
     if (classification.kind === 'exhausted') {
       entry.status = 'exhausted';
-      entry.cooldownUntil = now + 60 * 60 * 1000;
+      const cooldownMs = 60 * 60 * 1000;
+      entry.cooldownUntil = now + cooldownMs;
       entry.consecutiveTransientFailures = 0;
+      this.onPoolStateChange?.({
+        provider: this.provider,
+        type: 'key_cooldown',
+        label: entry.label,
+        fingerprint: entry.fingerprint,
+        cooldownMs,
+        timestamp: new Date(now).toISOString(),
+      });
       return;
     }
 
@@ -270,7 +326,16 @@ export class ApiKeyPool {
       entry.consecutiveTransientFailures++;
       if (entry.consecutiveTransientFailures >= TRANSIENT_FAILURES_BEFORE_COOLDOWN) {
         entry.status = 'transient_cooldown';
-        entry.cooldownUntil = now + (classification.cooldownMs ?? DEFAULT_TRANSIENT_COOLDOWN_MS);
+        const cooldownMs = classification.cooldownMs ?? DEFAULT_TRANSIENT_COOLDOWN_MS;
+        entry.cooldownUntil = now + cooldownMs;
+        this.onPoolStateChange?.({
+          provider: this.provider,
+          type: 'key_cooldown',
+          label: entry.label,
+          fingerprint: entry.fingerprint,
+          cooldownMs,
+          timestamp: new Date(now).toISOString(),
+        });
       }
     }
   }

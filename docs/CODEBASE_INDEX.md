@@ -93,7 +93,7 @@ server/services/             llm.ts (3,760, OmniRoute primary provider, Gemini 3
                              outboundPrompt.ts (167) · langfuse.ts (393) · sleepUtils.ts (39, shared sleep)
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming
-                             seams (now unconditional) (3,426)
+                             seams (now unconditional) (3,448)
   leadDomain.ts              EngineLead domain type bridging pipeline state/checkpoints to the
                              `Lead` contract (56)
   liveRollingPool.ts         bounded live rolling-window pool for streaming judge execution across
@@ -102,10 +102,10 @@ server/leadSearch/           the discovery engine
   plannerRouting.ts          fast-tier route resolver for strategist/plan families (ADR-0012)
   agentBrainRunner.ts        Agent Brain path (committed `10c384b`, writes grounded-gated by ADR-0015):
                              standalone Tavily retrieval + deterministic title/entity filters writing
-                             through the standard persistence APIs (657; see §9.22 / §9.25)
+                             through the standard persistence APIs (660; see §9.22 / §9.25)
   domainBlocklists.ts        canonical social/search/directory/email-domain blocklists, single source
                              of truth shared by siteProbe, companyDomainLookup, companyIntent,
-                             observations and db (142)
+                             observations and db (152)
   prospectContract.ts        brief -> contract compilation + validation, clausal intent tail isolation, roleOfMatches prepositional disambiguation, known-metro registry (2,549)
   finalistJudge.ts           strict citation grounding, polarity-guarded fuzzy quotes, verdict reuse (1,588)
   scoring.ts                 normalizeToTenScale, Kalman fusion, MMR/Pareto, brief-gated authority weighting (811)

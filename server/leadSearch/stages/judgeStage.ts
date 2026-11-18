@@ -518,7 +518,26 @@ export async function evaluateIncrementalJudgeBatches(
   const qualifiedCandidates: any[] = [];
   const batchRequirementFailCounts: Record<string, number> = {};
 
+  const stageStartedAt = Date.now();
+  recordTrace({
+    phase: "filtering",
+    operation: "stage_start",
+    status: "info",
+    round,
+    counts: { candidates: candidates?.length || 0 },
+    metadata: { stage: "judge" },
+  });
+
   if (!candidates || candidates.length === 0) {
+    recordTrace({
+      phase: "filtering",
+      operation: "stage_complete",
+      status: "info",
+      round,
+      latencyMs: Date.now() - stageStartedAt,
+      counts: { candidates: 0, qualified: 0 },
+      metadata: { stage: "judge" },
+    });
     return {
       qualifiedCandidates,
       judgmentInsights,
@@ -665,6 +684,21 @@ export async function evaluateIncrementalJudgeBatches(
       .filter((r) => r.scope === "person_role")
       .map((r) => r.id);
     recordCandidateJudgeOutcome(candidate, "hard_fail", roleReqIds, "deterministic");
+    recordTrace({
+      phase: "filtering",
+      operation: "candidate_dropped",
+      status: "info",
+      round,
+      metadata: {
+        stage: "judge",
+        subStage: "prejudge_triage",
+        candidateId: candidate.candidateId,
+        candidateName: candidate.lead?.fullName,
+        company: candidate.lead?.currentCompany || candidate.lead?.company,
+        reasonCode: "prejudge_role_triage",
+        reasonDetails: triageInsight.reason,
+      },
+    });
   }
 
   if (triageRejected.length > 0) {
@@ -760,6 +794,20 @@ export async function evaluateIncrementalJudgeBatches(
       }
       const failedReqIds = cached.failedRequirementId ? [cached.failedRequirementId] : [];
       recordCandidateJudgeOutcome(candidate, "hard_fail", failedReqIds, "cached");
+      recordTrace({
+        phase: "filtering",
+        operation: "candidate_dropped",
+        status: "info",
+        round,
+        metadata: {
+          stage: "judge",
+          candidateId: candidate.candidateId,
+          candidateName: candidate.lead?.fullName,
+          company: candidate.lead?.currentCompany || candidate.lead?.company,
+          reasonCode: "cached_disqualification",
+          reasonDetails: cached.reason || "Disqualified by prior judge verdict under same requirements",
+        },
+      });
       reusedHardFailed.push(candidate.lead);
       continue;
     }
@@ -779,6 +827,20 @@ export async function evaluateIncrementalJudgeBatches(
         withheldByAdmissionGate++;
         const cause = candidate.lead.evidence?.companyProbeOutcome || "no_domain";
         withheldCauseCounts[cause] = (withheldCauseCounts[cause] || 0) + 1;
+        recordTrace({
+          phase: "filtering",
+          operation: "candidate_dropped",
+          status: "info",
+          round,
+          metadata: {
+            stage: "judge",
+            candidateId: candidate.candidateId,
+            candidateName: candidate.lead?.fullName,
+            company: candidate.lead?.currentCompany || candidate.lead?.company,
+            reasonCode: "primary_admission_withheld",
+            reasonDetails: reuseAdmission.reason || "Withheld by primary admission gate (unproven primary defining type)",
+          },
+        });
         if (
           isParkWithheldEnabled() &&
           shouldParkWithheldCandidate(candidate.lead, qualification, contract)
@@ -868,6 +930,21 @@ export async function evaluateIncrementalJudgeBatches(
         if (!cand.lead._contradictionReason) {
           cand.lead._contradictionReason = `Company Attribution: ${attr.reason} (business model: ${attr.businessModel})`;
         }
+        recordTrace({
+          phase: "filtering",
+          operation: "candidate_dropped",
+          status: "info",
+          round,
+          metadata: {
+            stage: "judge",
+            subStage: "company_attribution",
+            candidateId: cand.candidateId,
+            candidateName: cand.lead?.fullName,
+            company: cand.lead?.currentCompany || cand.lead?.company,
+            reasonCode: "attribution_contradiction",
+            reasonDetails: cand.lead._contradictionReason,
+          },
+        });
       }
     }
   }
@@ -1377,6 +1454,21 @@ export async function evaluateIncrementalJudgeBatches(
           };
           judgmentInsights.set(skippedCand.candidateId, skippedInsight);
           skippedCand.lead.judgmentInsight = skippedInsight;
+          recordTrace({
+            phase: "filtering",
+            operation: "candidate_dropped",
+            status: "info",
+            round,
+            metadata: {
+              stage: "judge",
+              subStage: "cushion_cut",
+              candidateId: skippedCand.candidateId,
+              candidateName: skippedCand.lead?.fullName,
+              company: skippedCand.lead?.currentCompany || skippedCand.lead?.company,
+              reasonCode: "target_cushion_batch_cut",
+              reasonDetails: skippedInsight.reason,
+            },
+          });
         }
       }
     }
@@ -1387,6 +1479,25 @@ export async function evaluateIncrementalJudgeBatches(
       `Admission gate withheld ${withheldByAdmissionGate}: no_domain=${withheldCauseCounts.no_domain || 0} probe_cap=${withheldCauseCounts.probe_cap || 0} probe_failed=${withheldCauseCounts.probe_failed || 0} thin_text=${withheldCauseCounts.thin_text || 0} negative_cache=${withheldCauseCounts.negative_cache || 0}`,
     );
   }
+
+  recordTrace({
+    phase: "filtering",
+    operation: "stage_complete",
+    status: "success",
+    round,
+    latencyMs: Date.now() - stageStartedAt,
+    counts: {
+      totalCandidates: candidates.length,
+      vettedCandidates: vettedCandidates.length,
+      triageRejected: triageRejected.length,
+      qualifiedCandidates: qualifiedCandidates.length,
+      withheldByAdmissionGate,
+    },
+    metadata: {
+      stage: "judge",
+      completedBatches,
+    },
+  });
 
   return {
     qualifiedCandidates,

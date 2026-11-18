@@ -31,7 +31,7 @@ if (!process.env.NODE_TEST_CONTEXT) {
 }
 
 const DEFAULT_DATA_DIR = path.join(process.cwd(), ".apex-data");
-export const LATEST_SCHEMA_VERSION = 29;
+export const LATEST_SCHEMA_VERSION = 30;
 
 /**
  * Test isolation. `node --test` (and `tsx --test`) sets NODE_TEST_CONTEXT in each test
@@ -1424,6 +1424,33 @@ function runMigrations(db: DatabaseSync) {
       }
     }
 
+    if (currentVersion < 30) {
+      addColumnIfMissing(
+        db,
+        "llm_stage_logs",
+        "cost_usd",
+        "cost_usd REAL NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "llm_stage_logs",
+        "reasoning_tokens",
+        "reasoning_tokens INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "llm_stage_logs",
+        "cached_tokens",
+        "cached_tokens INTEGER NOT NULL DEFAULT 0",
+      );
+      addColumnIfMissing(
+        db,
+        "llm_stage_logs",
+        "prompt_version",
+        "prompt_version TEXT",
+      );
+    }
+
     db.exec(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
@@ -1673,6 +1700,11 @@ export function getLeadsDb() {
         input_tokens INTEGER NOT NULL DEFAULT 0,
         output_tokens INTEGER NOT NULL DEFAULT 0,
         latency_ms INTEGER NOT NULL DEFAULT 0,
+        queue_wait_ms INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        prompt_version TEXT,
         model_name TEXT,
         provider TEXT,
         created_at TEXT NOT NULL
@@ -3996,8 +4028,10 @@ export function insertLlmStageLog(entry: LlmStageLogEntry) {
       `
       INSERT INTO llm_stage_logs (
         id, search_log_id, stage, round, status,
-        input_tokens, output_tokens, latency_ms, queue_wait_ms, model_name, provider, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        input_tokens, output_tokens, latency_ms, queue_wait_ms,
+        cost_usd, reasoning_tokens, cached_tokens, prompt_version,
+        model_name, provider, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     );
     insertStmt.run(
@@ -4010,6 +4044,10 @@ export function insertLlmStageLog(entry: LlmStageLogEntry) {
       Number(entry.outputTokens || 0),
       Number(entry.latencyMs || 0),
       Number(entry.queueWaitMs || 0),
+      Number(entry.costUsd || 0),
+      Number(entry.reasoningTokens || 0),
+      Number(entry.cachedTokens || 0),
+      entry.promptVersion || null,
       entry.modelName || null,
       entry.provider || "llm",
       entry.createdAt || new Date().toISOString(),
@@ -4045,6 +4083,10 @@ function mapLlmStageLogRow(row: any): LlmStageLogEntry {
     outputTokens: Number(row.output_tokens || 0),
     latencyMs: Number(row.latency_ms || 0),
     queueWaitMs: Number(row.queue_wait_ms || 0),
+    costUsd: Number(row.cost_usd || 0),
+    reasoningTokens: Number(row.reasoning_tokens || 0),
+    cachedTokens: Number(row.cached_tokens || 0),
+    promptVersion: row.prompt_version || undefined,
     modelName: row.model_name || undefined,
     provider: row.provider || undefined,
     createdAt: row.created_at,

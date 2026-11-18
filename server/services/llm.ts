@@ -45,7 +45,13 @@ export type LLMProviderAttempt = {
   provider: string;
   model: string;
   actualModel?: string;
-  tokens?: { input: number; output: number; total: number };
+  tokens?: {
+    input: number;
+    output: number;
+    total: number;
+    reasoning?: number;
+    cached?: number;
+  };
   status: "success" | "error" | "skipped";
   statusCode?: number;
   latencyMs: number;
@@ -57,6 +63,8 @@ export type LLMUsage = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
   provider: string;
   model: string;
 };
@@ -1397,6 +1405,8 @@ async function withProviderFallback<T>(
               input: attemptUsage.inputTokens,
               output: attemptUsage.outputTokens,
               total: attemptUsage.totalTokens,
+              reasoning: attemptUsage.reasoningTokens,
+              cached: attemptUsage.cachedTokens,
             }
           : undefined,
         status: "success",
@@ -2246,6 +2256,13 @@ async function sendChatCompletion(
         ? suppliedTotal
         : Math.max(0, inputTokens) + Math.max(0, outputTokens);
 
+    const reasoningTokens = Number(
+      streamUsage?.completion_tokens_details?.reasoning_tokens ?? 0,
+    );
+    const cachedTokens = Number(
+      streamUsage?.prompt_tokens_details?.cached_tokens ?? 0,
+    );
+
     sendDirectLangfuseTrace({
       sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
       stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
@@ -2266,6 +2283,8 @@ async function sendChatCompletion(
         inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
         outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
         totalTokens,
+        reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+        cachedTokens: cachedTokens > 0 ? cachedTokens : undefined,
         provider: provider.name,
         model: actualModel,
       });
@@ -2403,6 +2422,13 @@ async function sendChatCompletion(
       `\x1b[32m[LLM 200 OK]\x1b[0m \x1b[1m${provider.name}\x1b[0m \u00b7 model: \x1b[36m${actualModel}\x1b[0m \u00b7 \x1b[33m${latencySec}s\x1b[0m \u00b7 \x1b[35m${totalTokens.toLocaleString()} tok\x1b[0m${stageTag}`,
     );
 
+    const reasoningTokens = Number(
+      usage?.completion_tokens_details?.reasoning_tokens ?? 0,
+    );
+    const cachedTokens = Number(
+      usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    );
+
     sendDirectLangfuseTrace({
       sessionId: options?.metadata?.sessionId ? String(options.metadata.sessionId) : undefined,
       stage: options?.metadata?.stage ? String(options.metadata.stage) : undefined,
@@ -2423,6 +2449,8 @@ async function sendChatCompletion(
         inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
         outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
         totalTokens,
+        reasoningTokens: reasoningTokens > 0 ? reasoningTokens : undefined,
+        cachedTokens: cachedTokens > 0 ? cachedTokens : undefined,
         provider: provider.name,
         model: actualModel,
       });
@@ -3296,6 +3324,8 @@ export async function openAIStructured<T>(
             inputTokens: (initialUsage?.inputTokens || 0) + usage.inputTokens,
             outputTokens: (initialUsage?.outputTokens || 0) + usage.outputTokens,
             totalTokens: (initialUsage?.totalTokens || 0) + usage.totalTokens,
+            reasoningTokens: (initialUsage?.reasoningTokens || 0) + (usage.reasoningTokens || 0),
+            cachedTokens: (initialUsage?.cachedTokens || 0) + (usage.cachedTokens || 0),
             provider: usage.provider || initialUsage?.provider || provider.name,
             model: usage.model || initialUsage?.model || provider.model,
           };

@@ -449,7 +449,7 @@ const statusMaxRetries = maxRetries;
 ```
 When `LLM_MAX_RETRIES=0` (or `1`), the engine cascades immediately after the configured retry count rather than forcing a 2-retry minimum. Furthermore, the request timeout timer is armed only once queued HTTP execution begins, preventing queue wait starvation.
 
-### 9.10 Intelligence Gap Remediation (G1?G24) - RESOLVED (2026-09-23, `5a052c4`)
+### 9.10 Intelligence Gap Remediation (G1-G24) - RESOLVED (2026-09-23, `5a052c4`)
 
 All 24 findings from the 2026-09-22 intelligence gap audit have been resolved across 34 files and verified across 860 unit/integration tests + 13 eval tests:
 
@@ -466,7 +466,7 @@ Resolved across 50 files and verified across 976 unit & integration tests (176 s
   - Added dynamic role title and business function extraction (`defaultRoles.ts`, `prospectContract.ts`) with strictly bounded term-synonym expansion.
   - Added universal ISO 3166-1 alpha-2 geographic resolution (`geo.ts`) via native ECMAScript `Intl.DisplayNames`, recognizing all 249 ISO countries without synthetic US anchor invention.
   - Scoped decision-maker authority weighting in `scoring.ts` to trigger only when the user's brief explicitly requests authority or executive leadership.
-- **SQLite Schema v24?v26 Migrations**:
+- **SQLite Schema v24-v26 Migrations**:
   - **Schema v24**: Added `lead_outcomes.scope_key` column and index for domain-cluster-scoped disposition attribution.
   - **Schema v25 & v26**: Added `candidate_verdicts` table (`identity_key`, `requirement_hash`, `evidence_hash`, `qualification_json`, `verdict`, `reason`, `failed_requirement_id`), enabling 0ms evaluation reuse across rounds when candidate evidence is unchanged.
   - Added persistent company taxonomy (`company_profiles`) and per-brief company attribution verdicts (`company_attribution_verdicts`).
@@ -508,7 +508,7 @@ whole suite passes 1047 tests:
   now suffixes each metro with its *own* canonical country instead of the session
   `targetCountry`, decoupling multi-country briefs.
 
-### 9.13 LLM queue, dead-code, and flag-surface cleanup (A1?A9, B1?B8, C) - LANDED (2026-10-05, `5a7b566`?`b60a6dc`)
+### 9.13 LLM queue, dead-code, and flag-surface cleanup (A1-A9, B1-B8, C) - LANDED (2026-10-05, `5a7b566`-`b60a6dc`)
 
 Eight commits that shrink the LLM/lead-search surface without changing behaviour, all
 measured here at `b60a6dc`:
@@ -523,7 +523,7 @@ measured here at `b60a6dc`:
 - **A6 (`4553486`)** - write-only `stats.rerank.*` fields dropped from
   `discoveryEngine.ts` / `selectStage.ts`, closing the loose end 9.2 flagged when
   `executeJudgeStage` was removed.
-- **A7?A9 (`5a7b566`)** - dead exports removed and module-local symbols scoped across
+- **A7-A9 (`5a7b566`)** - dead exports removed and module-local symbols scoped across
   `discoveryRouting`, `finalistJudge`, `rejections`, `scoring`, `searchSpec`,
   `titleTriage`, `brightdata`, `linkedinEvidence`, `llm`.
 - **Judge parallelism (`1743313`)** - new `rollingPool.ts` runs judge micro-batches in a
@@ -531,7 +531,7 @@ measured here at `b60a6dc`:
   `Promise.all` wave), with `telemetry.ts` gaining critical-path wall-clock attribution.
   Four new suites pin it: `rollingPool`, `judgeRollingQueue`, `compactJudgeGrounding`,
   `criticalPathTelemetry`.
-- **B1?B7 (`c22ea8e`)** - `CONTEXT.md`, `README.md`, and this index re-synchronized;
+- **B1-B7 (`c22ea8e`)** - `CONTEXT.md`, `README.md`, and this index re-synchronized;
   the README test badge lost its hardcoded count.
 - **C (`b60a6dc`)** - `.env.example` re-synced with active runtime keys.
 

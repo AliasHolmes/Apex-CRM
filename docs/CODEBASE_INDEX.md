@@ -112,8 +112,8 @@ server/leadSearch/           the discovery engine
   queryUnderstanding.ts      complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
   querySignature.ts          role/org/topic/geo signatures for near-duplicate and exhausted-query detection (305)
   stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation (322)
-  companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching (187)
-  titleResolution.ts         evidence-grounded title backfill from passing qualification requirements (137)
+  companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching (186)
+  titleResolution.ts         evidence-grounded title backfill from passing qualification requirements (136)
   candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v29, evidence-anchor normalized)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
@@ -151,9 +151,9 @@ src/                         App.tsx (tab shell + error boundaries) · context/ 
                              leadDedupe, leadScore)
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        209 files: 204 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/helpers/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 33,899 lines; runs via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail)
-scripts/dev.ts               spawns Vite + Express (149 lines)
-scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22) (167 lines)
+test/                        212 files: 207 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/fixtures/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 35,390 lines; runs via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail)
+scripts/dev.ts               spawns Vite + Express (148 lines)
+scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22) (166 lines)
 ```
 
 ## 5. The discovery pipeline

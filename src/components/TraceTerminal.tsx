@@ -714,14 +714,16 @@ export const TraceSummaryViewer = ({
                 <div className="bg-background/80 border border-border p-2.5 rounded-lg">
                   <div className="text-[10px] uppercase font-bold text-muted-foreground">Tokens</div>
                   <div className="text-sm font-bold font-mono text-info mt-0.5">
-                    {selectedEvent.llm?.totalTokens ? selectedEvent.llm.totalTokens.toLocaleString() : '-'}
+                    {selectedEvent.llm?.totalTokens !== undefined
+                      ? selectedEvent.llm.totalTokens.toLocaleString()
+                      : '-'}
                   </div>
                 </div>
 
                 <div className="bg-background/80 border border-border p-2.5 rounded-lg">
                   <div className="text-[10px] uppercase font-bold text-muted-foreground">Est. Cost</div>
                   <div className="text-sm font-bold font-mono text-success mt-0.5">
-                    {selectedEvent.llm?.estimatedCostUsd
+                    {selectedEvent.llm?.estimatedCostUsd !== undefined
                       ? `$${selectedEvent.llm.estimatedCostUsd.toFixed(5)}`
                       : '-'}
                   </div>
@@ -750,12 +752,24 @@ export const TraceSummaryViewer = ({
                     </div>
                     <div>
                       <span className="text-muted-foreground">Prompt Toks:</span>{' '}
-                      <span className="text-foreground">{selectedEvent.llm.inputTokens || '-'}</span>
+                      <span className="text-foreground">{selectedEvent.llm.inputTokens ?? '-'}</span>
                     </div>
                     <div>
                       <span className="text-muted-foreground">Output Toks:</span>{' '}
-                      <span className="text-foreground">{selectedEvent.llm.outputTokens || '-'}</span>
+                      <span className="text-foreground">{selectedEvent.llm.outputTokens ?? '-'}</span>
                     </div>
+                    {selectedEvent.llm.reasoningTokens !== undefined && (
+                      <div>
+                        <span className="text-muted-foreground">Reasoning Toks:</span>{' '}
+                        <span className="text-primary font-semibold">{selectedEvent.llm.reasoningTokens}</span>
+                      </div>
+                    )}
+                    {selectedEvent.llm.cachedTokens !== undefined && (
+                      <div>
+                        <span className="text-muted-foreground">Cached Toks:</span>{' '}
+                        <span className="text-info font-semibold">{selectedEvent.llm.cachedTokens}</span>
+                      </div>
+                    )}
                   </div>
 
                   {Array.isArray((selectedEvent.llm as any).providerAttempts) &&

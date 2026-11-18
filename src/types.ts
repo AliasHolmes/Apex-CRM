@@ -275,6 +275,8 @@ export interface MiningTraceEvent {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+    reasoningTokens?: number;
+    cachedTokens?: number;
     estimatedCostUsd?: number;
     finishReason?: string;
     parseRetries?: number;

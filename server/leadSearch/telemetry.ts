@@ -56,6 +56,8 @@ export function summarizeLLM(
     inputTokens,
     outputTokens,
     totalTokens: usage?.totalTokens ?? (inputTokens + outputTokens),
+    reasoningTokens: usage?.reasoningTokens,
+    cachedTokens: usage?.cachedTokens,
     estimatedCostUsd: estimateLLMCostUsd(inputTokens, outputTokens, resolvedProvider, resolvedModel),
     parseRetries,
     promptVersion,
@@ -114,6 +116,8 @@ export type MiningTraceEvent = {
     inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
+    reasoningTokens?: number;
+    cachedTokens?: number;
     estimatedCostUsd?: number;
     finishReason?: string;
     parseRetries?: number;

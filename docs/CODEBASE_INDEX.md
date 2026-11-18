@@ -4,17 +4,17 @@ Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `sc
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
 > Every count below was measured directly from the current tree and is pinned to
-> HEAD (`f93d009`) including ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
+> HEAD (`1da0666`) including ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
 > single-candidate timeout scaling, canonical isTransientLLMError retry unification, and nuance-preserving
 > multi-anchor evidence windowing across 24k chars without profile category deletions),
 > ADR-0019 (single-candidate 210s timeout headroom and cross-provider judge retry escalation),
 > ADR-0022 (Langfuse v4 OpenTelemetry ingestion migration; Section 9.39), and
-> the comprehensive defect remediation and spec canonicalization landed in Section 9.35.
+> model-aware cost/token accounting with Schema v30 (Section 9.40).
 > `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (verified 2026-11-18).
 > `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last attested run;
 > the suite now holds 207 `.test.ts` files and has not been re-attested since).
 > Line counts are physical lines (blank lines included).
-> Re-measured 2026-11-18: pinned to HEAD `f93d009` plus the in-tree Langfuse v4 changes. See Sections 9.35 and 9.39.
+> Re-measured 2026-11-18: pinned to HEAD `1da0666` (Schema v30). See Sections 9.35, 9.39 and 9.40.
 
 ---
 
@@ -51,20 +51,20 @@ Primary reference docs:
 The audit trail has been retired from the tree. The 2026-09-12 and 2026-09-13 audits, their
 2026-09-15 verification, and the 2026-09-15 bug report are all superseded: every finding is
 either fixed (commits `4c385da`, `e3c851d`, `4ae2193`) and pinned by a regression test, or
-carried forward in §9 below. Recover them from git history if the detail is ever needed.
+carried forward in Section 9 below. Recover them from git history if the detail is ever needed.
 
 ## 2. Quick stats
 
 | Metric                                                           | Value                                                                      |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Frontend (`src/`)                                                | 16,959 lines across 63 TypeScript files (`components/` alone: 36 files / 11,321 lines)                                   |
-| Backend engine (`server/leadSearch/`)                            | 30,494 lines: 54 modules + 9 `stages/` (modules 21,916 / stages 8,578)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,136 lines (db 5,906 / llm 3,760 / api 2,741 / brightdata 3,383 / rest 2,346)                                                             |
+| Frontend (`src/`)                                                | 16,963 lines across 63 TypeScript files (`components/` alone: 36 files / 11,321 lines)                                   |
+| Backend engine (`server/leadSearch/`)                            | 30,626 lines: 54 modules + 9 `stages/` (modules 22,048 / stages 8,578)                                   |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,208 lines (db 5,948 / llm 3,790 / api 2,741 / brightdata 3,383 / rest 2,346)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
-| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v29**, WAL                   |
+| SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v30**, WAL                   |
 | Test suite                                                       | 212 files: 207 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 35,390 lines; executes via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail) |
-| Total first-party LOC                                            | 100,856 TypeScript lines (353 files, incl. tests)                                    |
-| Anchor                                                           | measured at working tree (HEAD `f93d009` + ADR-0022 changes); dated 2026-11-18                                    |
+| Total first-party LOC                                            | 101,064 TypeScript lines (353 files, incl. tests)                                    |
+| Anchor                                                           | measured at working tree (HEAD `1da0666`, Schema v30); dated 2026-11-18                                    |
 
 ## 3. Tech stack
 
@@ -84,9 +84,9 @@ carried forward in §9 below. Recover them from git history if the detail is eve
 
 ```
 server.ts                    Express app + static Vite serve (380 lines) · socketGuard.ts — extracted socket-error handling & SSE disconnect cleanup used by server.ts and server/routes/api.ts (105 lines)
-server/db.ts                 SQLite layer: schema v29, migrations 1-29, 40+ readers/writers (5,906)
+server/db.ts                 SQLite layer: schema v30, migrations 1-30, 40+ readers/writers (5,948)
 server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,741)
-server/services/             llm.ts (3,760, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+server/services/             llm.ts (3,790, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
                              brightdata.ts (3,383) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
                              linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
@@ -114,20 +114,20 @@ server/leadSearch/           the discovery engine
   stallLadder.ts             bounded low-yield recovery levels, direct grid and directory query generation (322)
   companyDomainLookup.ts     Tavily-backed company-domain discovery with host exclusions and negative caching (186)
   titleResolution.ts         evidence-grounded title backfill from passing qualification requirements (136)
-  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v29, evidence-anchor normalized)
+  candidateVerdicts.ts       persistent qualification and hard-fail verdict cache (Schema v30, evidence-anchor normalized)
   defaultRoles.ts            open-ended role and business function extractor for any industry
   geo.ts                     universal ISO 3166-1 country code resolution via Intl
   retrievalCache.ts          cross-round query-hash-keyed search retrieval cache (normalized query tokens)
   aliasMap.ts                symmetrical bidirectional role/geo/company/tool alias normalization for hot loops
   queryRewriter.ts           bounded complexity-aware zero-yield rewriter (Tier-1 immutable anchor protection)
-  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v29)
+  companyAttribution.ts      gated company-to-prospect LLM attribution + business-model contradiction gating (Schema v30)
   profileQuality.ts          deterministic social-proof parsing, ghost/company-page & company-scoped contradiction gates
   providerQueue.ts           bounded-concurrency provider task queue (runProviderQueue)
   searchSpec.ts · strategist.ts · adaptiveScheduler.ts (open-ended MAB clusters, outcome boost, hard-fail penalty) ·
   collectionCapacity.ts · constraintAblation.ts · evidenceSelection.ts (alias-aware, location provenance guard) ·
   intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
   companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard, subpath probe) ·
-  signalStore.ts · telemetry.ts · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
+  signalStore.ts · telemetry.ts (820; model-aware cost rates, reasoning/cached tokens, search credits) · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts (company-hint sanitizer: slogans, ellipses,
                              marketing taglines) · profileEnrichment.ts · rejections.ts ·
   roundDiagnostics.ts · scoutScoring.ts · verification.ts ·
@@ -1141,6 +1141,13 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
 - **Test Harness Coverage**:
   - Added comprehensive test suite in `test/langfuseUpgrade.test.ts` covering host resolution, OTLP schema structure, trace/span ID hexadecimal formats, BigInt nanosecond ordering, GenAI attribute mappings, status codes, fetch header propagation, and network failure shielding.
 
+### 9.40 Model-Aware Cost & Token Accounting, Schema v30 (2026-11-18)
+
+- **Model-aware cost rates (`telemetry.ts`)**: `estimateLLMCostUsd` accepts the resolved model and consults `DEFAULT_MODEL_COST_PER_1M` before the legacy `DEFAULT_PROVIDER_COST_PER_1M` table (env overrides `LLM_OBSERVABILITY_INPUT_COST_PER_1M`/`LLM_OBSERVABILITY_OUTPUT_COST_PER_1M` still win), so Gemini, GPT and Groq models are priced at their own rates; `summarizeLLM` forwards the model.
+- **Reasoning/cached token propagation (`llm.ts`, `telemetry.ts`)**: `LLMUsage` and `LLMProviderAttempt.tokens` carry optional `reasoningTokens`/`cachedTokens` extracted from stream and non-stream usage details; `MiningTelemetryRecorder` aggregates them into `llm_stage_logs`.
+- **Search-credit rollup (`telemetry.ts`)**: `CostSummary` adds `searchCredits` (Tavily/Bright Data call counts) and `searchCostUsd`; `estimatedUsd` and `costPerAcceptedLead` now include search spend. `LlmStageLogEntry` gains the matching cost/token fields.
+- **Schema v30 (`server/db.ts`)**: `LATEST_SCHEMA_VERSION = 30`; migration 30 adds `cost_usd`, `reasoning_tokens`, `cached_tokens`, and `prompt_version` to `llm_stage_logs`, and `queue_wait_ms` is promoted into the baseline DDL.
+
 ## 10. Recommended next actions
 
 Updated 2026-11-18.
@@ -1156,7 +1163,7 @@ Updated 2026-11-18.
 8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
-11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `f93d009` (2026-11-18). Supersedes the `e260b58` pin.
+11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary are now pinned to `1da0666` (2026-11-18, Schema v30). Supersedes the `f93d009` pin.
 12. ~~**Re-run the full suite and record a real pass/fail total**~~ Done (2026-11-04): **1,385 pass / 0 fail**, exit 0 across 208 suites. The 2 failures identified on HEAD `f45170e` are remediated in `9.35`.
 13. **Keep the `company_type` primary-phrase ordering pinned by test** - `9.31` fixed three extraction paths that could take slot 0 before the real vertical. `symbioticEntityParsing` and `freeTierYieldAndExclusions` cover two of them; the platform-status rejection (`LinkedIn active`) has no dedicated test yet.
 14. ~~**Decide the fate of `STORAGE_ENCRYPTION_KEY`**~~ - Done (2026-11-04): deleted key from `.env.example` and `.env`; documented plaintext SQLite at-rest storage secured via loopback binding and OS file permissions (Option A). (See `9.35`.)

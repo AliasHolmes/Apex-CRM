@@ -438,6 +438,22 @@ export async function executeFuseStage(
     Math.max(targetScale, 20),
   );
   const candidateItems = sortedRoundItems.slice(0, candidateBudget);
+  const truncatedItems = sortedRoundItems.slice(candidateBudget);
+  for (const it of truncatedItems) {
+    recordTrace?.({
+      phase: "fusion",
+      operation: "candidate_dropped",
+      status: "info",
+      round,
+      metadata: {
+        stage: "fuse",
+        candidateId: it.url,
+        candidateName: it.title,
+        reasonCode: "candidate_budget_truncation",
+        reasonDetails: `Candidate fell outside top ${candidateBudget} extraction budget rank`,
+      },
+    });
+  }
 
   // Commit only candidates advancing to extraction into session-wide seenCandidateKeys.
   // Items exceeding candidateBudget must NOT be poisoned in seenCandidateKeys so they remain
@@ -464,8 +480,19 @@ export async function executeFuseStage(
     counts: {
       candidates: candidateItems.length,
       uniqueRoundItems: sortedRoundItems.length,
+      truncatedCandidates: truncatedItems.length,
+      personObservations,
+      signalObservations,
+      accountObservations,
     },
-    metadata: { stage: "fuse" },
+    metadata: {
+      stage: "fuse",
+      lanes: {
+        person: personObservations,
+        signal: signalObservations,
+        account: accountObservations,
+      },
+    },
   });
 
   return {

@@ -219,9 +219,12 @@ export function toDatasetFilter(
     "principal engineer",
   ];
 
+  // Sort roles longest first so compound titles ("managing director", "vp of engineering")
+  // match before their substrings ("director", "vp")
+  const sortedRoles = [...commonRoles].sort((a, b) => b.length - a.length);
   const lowerQuery = query.toLowerCase();
   let matchedRole: string | undefined;
-  for (const role of commonRoles) {
+  for (const role of sortedRoles) {
     const roleRegex = new RegExp(`\\b${role.replace("-", "[- ]")}s?\\b`, "i");
     if (roleRegex.test(lowerQuery)) {
       matchedRole = role;
@@ -271,9 +274,10 @@ export function toDatasetFilter(
   }
 
   // 3.5. Elastic Domain / Industry keyword extraction
-  // Strips role, city, and search syntax to preserve targeted industry/agency terms
+  // Strips URLs (including linkedin.com/in/... slugs), role, city, and search syntax to preserve targeted industry/agency terms
   let domainQuery = lowerQuery
-    .replace(/site:\S+/gi, " ")
+    .replace(/(?:site:)?\S*linkedin\.com\S*/gi, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
     .replace(/["'()]/g, " ");
 
   if (matchedRole) {
@@ -288,15 +292,28 @@ export function toDatasetFilter(
   const genericStopwords = new Set([
     "in", "at", "for", "the", "and", "or", "of", "with", "to", "by", "from",
     "startup", "startups", "company", "companies", "business", "businesses",
-    "people", "profile", "profiles", "linkedin", "who", "are", "is", "a", "an"
+    "people", "profile", "profiles", "linkedin", "who", "are", "is", "a", "an",
+    // Role modifier fragments that might have been decoupled:
+    "managing", "executive", "senior", "junior", "lead", "chief", "associate", "assistant",
+    "officer", "specialist", "consultant", "manager", "directors", "founders",
+    // Web / domain artifacts:
+    "www", "http", "https", "com", "net", "org", "io", "co", "html", "htm",
   ]);
+
+  // If a role matched, add each of its constituent words to stopwords as well
+  if (matchedRole) {
+    for (const w of matchedRole.toLowerCase().split(/[- ]+/)) {
+      if (w.length >= 2) genericStopwords.add(w);
+    }
+  }
 
   const candidateDomainWords = domainQuery
     .split(/[^a-z0-9+#.-]+/i)
     .map((w) => w.trim().toLowerCase())
     .filter(
       (w) =>
-        w.length >= 2 &&
+        (w.length >= 3 || w === "ai") &&
+        !w.includes("-") &&
         !genericStopwords.has(w) &&
         !isGeoTermCandidate(w),
     );

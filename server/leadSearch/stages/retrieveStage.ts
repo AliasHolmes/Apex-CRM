@@ -600,6 +600,27 @@ export async function executeRetrieveStage(
               logEvent(
                 `Round ${round}: skipped Bright Data search chunk due to ${skipReason}.`,
               );
+              for (const { plan } of chunk) {
+                recordTrace({
+                  phase: "search",
+                  operation: "brightdata_search",
+                  status: "skipped",
+                  provider: "brightdata",
+                  round,
+                  query: plan.executableQuery,
+                  latencyMs: 0,
+                  counts: { rawCandidates: 0 },
+                  brightData: getTraceBrightDataStatus(),
+                  metadata: {
+                    batch: true,
+                    skipReason,
+                    cooldownRemainingMs: Math.max(
+                      0,
+                      (brightDataTransportRetryAfter || 0) - Date.now(),
+                    ),
+                  },
+                });
+              }
               return chunk.map(({ index }) => ({ index, results: [] as any[], fallbackProvider: undefined }));
             }
 
@@ -608,6 +629,23 @@ export async function executeRetrieveStage(
               logEvent(
                 `Round ${round}: skipped Bright Data batch search after local session reservation.`,
               );
+              for (const { plan } of chunk) {
+                recordTrace({
+                  phase: "search",
+                  operation: "brightdata_search",
+                  status: "skipped",
+                  provider: "brightdata",
+                  round,
+                  query: plan.executableQuery,
+                  latencyMs: 0,
+                  counts: { rawCandidates: 0 },
+                  brightData: getTraceBrightDataStatus(),
+                  metadata: {
+                    batch: true,
+                    skipReason: "session_credit_reservation",
+                  },
+                });
+              }
               return chunk.map(({ index }) => ({ index, results: [] as any[], fallbackProvider: undefined }));
             }
 
@@ -622,6 +660,23 @@ export async function executeRetrieveStage(
                 logEvent(
                   `Round ${round}: skipped Bright Data batch search after local monthly reservation.`,
                 );
+                for (const { plan } of chunk) {
+                  recordTrace({
+                    phase: "search",
+                    operation: "brightdata_search",
+                    status: "skipped",
+                    provider: "brightdata",
+                    round,
+                    query: plan.executableQuery,
+                    latencyMs: 0,
+                    counts: { rawCandidates: 0 },
+                    brightData: getTraceBrightDataStatus(),
+                    metadata: {
+                      batch: true,
+                      skipReason: "monthly_credit_reservation",
+                    },
+                  });
+                }
                 return chunk.map(({ index }) => ({ index, results: [] as any[], fallbackProvider: undefined }));
               }
             } else {

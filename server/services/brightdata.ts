@@ -359,11 +359,37 @@ export function classifyBrightDataError(error: unknown): BrightDataError {
       statusCode,
     });
   }
-  if (/quota|credit|usage limit|limit exceeded|billing|payment/.test(lower)) {
+  // Strip embedded search query and challenge details from the error body before testing billing patterns.
+  // Bright Data SERP errors embed query text as: `for "...query..."` which can contain query terms like "payments" or "billing".
+  const errorBody = message
+    .replace(
+      /(?:search failed|search engine failed|google search failed|bing search failed)[^:]*for\s+"[\s\S]*?"(?:\.\s*(?:try again|details|$)|$)/gi,
+      "search failed for [query]. Details:",
+    )
+    .replace(/details:\s*the search engine answer was not json\.?/gi, "")
+    .toLowerCase();
+
+  const isBillingError =
+    statusCode === 402 ||
+    /\b(?:quota|credits?|usage|account|monthly|plan|tier)(?:\s+(?:limit|credits?))?\s+(?:has\s+)?(?:been\s+)?(?:reached|exceeded|exhausted)\b/.test(
+      errorBody,
+    ) ||
+    /\bout of credits?\b/.test(errorBody) ||
+    /\binsufficient\s+(?:funds?|credits?)\b/.test(errorBody) ||
+    /\bbilling\s*(?:issue|lock|error|account|unpaid|declined|suspended|status|limit)\b/.test(
+      errorBody,
+    ) ||
+    /\bpayment\s+(?:failed|required|overdue|declined|issue|past[- ]due)\b/.test(
+      errorBody,
+    ) ||
+    /\byour\s+plan\s+does\s+not\s+include\b/.test(errorBody) ||
+    /\bmonthly\s+(?:request|usage)\s+limit\b/.test(errorBody);
+
+  if (isBillingError) {
     return new BrightDataError(message, {
       reasonCode: "provider_quota",
       providerDisabled: true,
-      statusCode,
+      statusCode: statusCode || 402,
     });
   }
   if (
@@ -2658,6 +2684,19 @@ export async function brightDataSearchBatch(
     return results;
   } catch (error) {
     const classified = classifyBrightDataError(error);
+
+    // If the provider is disabled or in quota exhaustion, immediately rethrow
+    // so retrieveStage can route chunks to Tavily fallback instead of returning empty results.
+    if (
+      classified.providerDisabled ||
+      classified.reasonCode === "provider_quota" ||
+      classified.reasonCode === "provider_auth" ||
+      classified.reasonCode === "provider_config" ||
+      (error instanceof BrightDataError && error.providerDisabled)
+    ) {
+      throw classified;
+    }
+
     const isBotChallenge =
       classified.reasonCode === "target_blocked" ||
       (classified.reasonCode === "target_transient" &&
@@ -2691,11 +2730,15 @@ export async function brightDataSearchBatch(
           });
         }
         return bingMap;
-      } catch {
-        // Fall back to empty map so retrieveStage can run Tavily fallback
+      } catch (bingError) {
+        // Bing fallback also failed; rethrow so retrieveStage executes Tavily fallback
+        const classifiedBing = classifyBrightDataError(bingError);
+        throw classifiedBing;
       }
     }
-    return resultsMap;
+
+    // Rethrow any other unhandled batch error so caller's catch block can trigger fallback
+    throw classified;
   }
 }
 

@@ -24,7 +24,15 @@ import {
 } from "./server/db.js";
 import { closeBrightDataClient } from "./server/services/brightdata.js";
 import { validateEngineConfig } from "./server/configValidation.js";
-import { isAllowedHost, isAllowedOrigin } from "./server/hostValidation.js";
+import {
+  parseServerCliArgs,
+  isHostedEnvironment,
+  getConfiguredHostAllowlist,
+  isAllowedHost,
+  isAllowedOrigin,
+  type HostValidationOptions,
+  type OriginValidationOptions,
+} from "./server/hostValidation.js";
 import {
   isClientSocketAbortError,
   createSocketErrorGuard,
@@ -35,8 +43,11 @@ const app = express();
 
 // Guard against unhandled client disconnect errors (e.g. ECONNRESET/EPIPE when closing browser tab)
 app.use(createSocketErrorGuard());
-const PORT = Number(process.env.PORT) || 3000;
-const HOST = "127.0.0.1";
+const cliArgs = parseServerCliArgs(process.argv.slice(2));
+const isHosted = isHostedEnvironment(process.env);
+const PORT = cliArgs.port ?? (Number(process.env.PORT) || 3000);
+const HOST = cliArgs.host ?? process.env.HOST ?? (isHosted ? "0.0.0.0" : "127.0.0.1");
+const hostAllowlist = isHosted ? getConfiguredHostAllowlist(process.env) : [];
 const isProduction =
   process.env.NODE_ENV === "production" ||
   process.argv.includes("--production");
@@ -64,20 +75,23 @@ if (process.env.APEX_PERF_LOGS === "true") {
   });
 }
 
-// This is a single-user, local desktop service. Keep it loopback-only and avoid
-// accepting arbitrarily large bodies before an API handler has a chance to validate them.
+// This is a single-user desktop service or hosted preview instance.
+// Configure security headers, allowing iframe embedding when running in hosted environments.
 app.disable("x-powered-by");
 app.use((_, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
+  if (!isHosted) {
+    res.setHeader("X-Frame-Options", "DENY");
+  }
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader(
     "Permissions-Policy",
     "camera=(), microphone=(), geolocation=()",
   );
+  const frameAncestorsPolicy = isHosted ? "frame-ancestors *" : "frame-ancestors 'none'";
   res.setHeader(
     "Content-Security-Policy",
-    `default-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src ${scriptSourcePolicy}; base-uri 'self'; frame-ancestors 'none'`,
+    `default-src 'self'; connect-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src ${scriptSourcePolicy}; base-uri 'self'; ${frameAncestorsPolicy}`,
   );
   next();
 });
@@ -94,23 +108,48 @@ app.use(
 
 // DNS-Rebinding Guard
 // Validates Host and Origin headers on every API request BEFORE the 10 MB JSON body parser runs.
+const hostValidationOptions: HostValidationOptions = {
+  allowedHosts: hostAllowlist,
+  allowCloudRun: isHosted,
+  allowSameHost: true,
+  serverHost: HOST,
+};
+
+const originValidationOptions: OriginValidationOptions = {
+  allowedHosts: hostAllowlist,
+  allowCloudRun: isHosted,
+  allowSameHost: true,
+};
+
 app.use(
-  "/api",
+  ["/api", "/api/v1"],
   (
     req: express.Request,
     res: express.Response,
     next: express.NextFunction,
   ): any => {
-    if (!isAllowedHost(req.headers.host || "", PORT, req.socket?.localPort)) {
+    if (
+      !isAllowedHost(
+        req.headers.host || "",
+        PORT,
+        req.socket?.localPort,
+        hostValidationOptions,
+      )
+    ) {
       return res
         .status(400)
         .type("text/plain")
         .send(
-          "Invalid Host header. Direct API access from non-loopback origins is blocked.",
+          "Invalid Host header. Direct API access from unauthorized hosts is blocked.",
         );
     }
 
-    if (!isAllowedOrigin(req.headers.origin, PORT)) {
+    if (
+      !isAllowedOrigin(req.headers.origin, PORT, {
+        ...originValidationOptions,
+        requestHost: req.headers.host,
+      })
+    ) {
       return res
         .status(400)
         .type("text/plain")
@@ -250,6 +289,7 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
+        allowedHosts: true,
         ws: hmrDisabled ? false : { server },
         hmr: hmrDisabled ? false : { server },
       },

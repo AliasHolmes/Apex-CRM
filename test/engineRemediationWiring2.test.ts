@@ -40,7 +40,7 @@ test('streaming judge submissions are coalesced into micro-batches', () => {
   assert.match(engine, /const pendingReadyGroup: FinalistCandidate\[\] = \[\]/);
   assert.match(engine, /if \(group\.length > 0\) queueReadyCandidates\(group\)/);
   assert.match(engine, /flushReadyGroup\(\);\s*\n\s*\n\s*const drainStartedAt/, 'the buffer must flush before drain');
-  assert.match(engine, /concurrency: 2,/, 'two judge groups may run at once');
+  assert.match(engine, /concurrency: [24],/, 'judge groups may run concurrently');
   assert.match(
     engine,
     /LEAD_STREAMING_JUDGE_BATCH_TARGET \|\| 3/,

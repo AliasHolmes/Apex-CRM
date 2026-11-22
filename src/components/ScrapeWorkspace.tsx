@@ -37,6 +37,7 @@ import { ResumableSessionsBanner, type ResumableSession } from "@/components/Res
 import { TraceTerminal, TraceSummaryViewer } from "@/components/TraceTerminal";
 import { miningTraceStore } from "@/lib/traceStore";
 import { classifySessionStatus, isTerminalSessionStatus } from "@/lib/sessionStatus";
+import { toSafeHttpUrl } from "@/lib/safeUrl";
 
 // Marks a running discovery session in sessionStorage. The Vite dev-server HMR
 // client force-reloads the page on websocket drops (vite:ws:disconnect ->
@@ -1330,18 +1331,22 @@ export default function ScrapeWorkspace() {
                   <div className="mt-2.5">
                     <span className="text-xs font-semibold text-success block mb-1">Sources</span>
                     <div className="flex flex-wrap gap-2">
-                      {sourceLinks.slice(0, 3).map((link, i) => (
-                        <a
-                          key={i}
-                          href={link.uri}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="bg-success/10 border border-success/20 hover:bg-success/20 transition-colors motion-reduce:transition-none text-success text-xs px-2.5 py-1 rounded-md flex items-center gap-1 font-medium"
-                        >
-                          <Globe className="w-3 h-3 text-success" />
-                          {link.title.length > 25 ? link.title.substring(0, 25) + '...' : link.title}
-                        </a>
-                      ))}
+                      {sourceLinks.slice(0, 3).map((link, i) => {
+                        const safeUri = toSafeHttpUrl(link.uri);
+                        if (!safeUri) return null;
+                        return (
+                          <a
+                            key={i}
+                            href={safeUri}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="bg-success/10 border border-success/20 hover:bg-success/20 transition-colors motion-reduce:transition-none text-success text-xs px-2.5 py-1 rounded-md flex items-center gap-1 font-medium"
+                          >
+                            <Globe className="w-3 h-3 text-success" />
+                            {link.title.length > 25 ? link.title.substring(0, 25) + '...' : link.title}
+                          </a>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

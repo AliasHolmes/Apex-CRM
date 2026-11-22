@@ -41,22 +41,31 @@ test('evidence hash excludes company attribution and handles empty input', () =>
   assert.equal(computeEvidenceHash(undefined), '');
 });
 
-test('account flywheel items target the spec titles at signal companies with the account lane', () => {
+test('account flywheel items target the spec titles at signal companies with person lane by default and account lane when requiresPerson: false', () => {
   const spec: any = {
     person: { includeTitles: ['Founder', 'CEO', 'Managing Partner', 'CTO'] },
   };
-  const items = buildAccountFlywheelItems(['Acme AI', 'Bright Loop', 'Tiny Co', ''], spec, 12);
+  const itemsDefault = buildAccountFlywheelItems(['Acme AI', 'Bright Loop', 'Tiny Co', ''], spec, 12);
 
-  assert.equal(items.length, 3, 'company budget is min(3, floor(maxTasks/4))');
-  assert.ok(items.every((item) => item.lane === 'account'));
-  assert.ok(items.every((item) => item.family === 'company_type'));
-  assert.ok(items.every((item) => item.intent === 'find_decision_makers'));
-  assert.match(items[0].query, /"Acme AI" \(/);
+  assert.equal(itemsDefault.length, 3, 'company budget is min(3, floor(maxTasks/4))');
+  assert.ok(itemsDefault.every((item) => item.lane === 'person'), 'defaults to person lane when requiresPerson is not false');
+  assert.ok(itemsDefault.every((item) => item.family === 'company_type'));
+  assert.ok(itemsDefault.every((item) => item.intent === 'find_decision_makers'));
+  assert.match(itemsDefault[0].query, /^site:linkedin\.com\/in\/ "Acme AI" \(/);
   // Only the first three spec titles are used, short companies skipped.
-  assert.ok(items[0].query.includes('"Founder"'));
-  assert.ok(items[0].query.includes('"CEO"'));
-  assert.ok(items[0].query.includes('"Managing Partner"'));
-  assert.ok(!items[0].query.includes('"CTO"'));
+  assert.ok(itemsDefault[0].query.includes('"Founder"'));
+  assert.ok(itemsDefault[0].query.includes('"CEO"'));
+  assert.ok(itemsDefault[0].query.includes('"Managing Partner"'));
+  assert.ok(!itemsDefault[0].query.includes('"CTO"'));
+
+  const accountSpec: any = {
+    ...spec,
+    requiresPerson: false,
+  };
+  const itemsAccount = buildAccountFlywheelItems(['Acme AI', 'Bright Loop', 'Tiny Co', ''], accountSpec, 12);
+  assert.equal(itemsAccount.length, 3);
+  assert.ok(itemsAccount.every((item) => item.lane === 'account'), 'routes to account lane when requiresPerson is false');
+  assert.match(itemsAccount[0].query, /^"Acme AI" \(/);
 });
 
 test('account flywheel falls back to default titles when the spec has none', () => {

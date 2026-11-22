@@ -97,6 +97,7 @@ import {
   type ProspectView,
 } from '@/lib/prospectViews';
 import { setLockedLeadIds } from '@/lib/leadLocks';
+import { toSafeHttpUrl } from '@/lib/safeUrl';
 import {
   getLeadProvenance,
   getNextAction,
@@ -209,10 +210,12 @@ const LeadTableRow = React.memo(
     const provenance = getLeadProvenance(lead);
     const stageMeta = getPipelineStageMeta(lead.stage);
     const scout = provenance.scout;
-    const linkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
+    const rawLinkedInProfileUrl = lead.profile.contactDetails?.linkedinUrl;
+    const safeLinkedInProfileUrl = toSafeHttpUrl(rawLinkedInProfileUrl);
     const linkedInSearchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(
       [lead.profile.fullName, lead.profile.currentCompany].filter(Boolean).join(' '),
     )}`;
+    const targetLinkedInUrl = safeLinkedInProfileUrl || toSafeHttpUrl(linkedInSearchUrl) || linkedInSearchUrl;
 
     return (
       <TableRow
@@ -265,11 +268,11 @@ const LeadTableRow = React.memo(
               </div>
             )}
             <a
-              href={linkedInProfileUrl || linkedInSearchUrl}
+              href={targetLinkedInUrl}
               target="_blank"
               rel="noreferrer"
-              title={linkedInProfileUrl ? 'Open LinkedIn profile' : 'Find this person on LinkedIn'}
-              aria-label={linkedInProfileUrl ? `Open ${lead.profile.fullName}'s LinkedIn profile` : `Find ${lead.profile.fullName} on LinkedIn`}
+              title={safeLinkedInProfileUrl ? 'Open LinkedIn profile' : 'Find this person on LinkedIn'}
+              aria-label={safeLinkedInProfileUrl ? `Open ${lead.profile.fullName}'s LinkedIn profile` : `Find ${lead.profile.fullName} on LinkedIn`}
               className="rounded-sm text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Link2 className="h-3.5 w-3.5" aria-hidden="true" />

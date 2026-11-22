@@ -34,6 +34,7 @@ import {
   parseSenderProfile,
   serializeSenderProfile,
 } from '@/lib/senderProfile';
+import { toSafeHttpUrl } from '@/lib/safeUrl';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -736,13 +737,13 @@ export default function OutreachStudio({ selectedLeadForOutreach, leads }: Outre
             <label htmlFor="lead-selector" className="block text-xs font-bold uppercase tracking-wider text-foreground/80">
               Target prospect
             </label>
-            {targetLead?.profile.contactDetails?.linkedinUrl && (
+            {toSafeHttpUrl(targetLead?.profile.contactDetails?.linkedinUrl) && (
               <a
-                href={targetLead.profile.contactDetails.linkedinUrl}
+                href={toSafeHttpUrl(targetLead?.profile.contactDetails?.linkedinUrl)!}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                title={`Open ${targetLead.profile.fullName}'s LinkedIn profile in a new tab`}
+                title={`Open ${targetLead?.profile.fullName}'s LinkedIn profile in a new tab`}
               >
                 <span>LinkedIn profile</span>
                 <ExternalLink className="h-3 w-3" />

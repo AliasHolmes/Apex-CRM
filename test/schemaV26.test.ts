@@ -7,10 +7,10 @@ import {
 
 const later = new Date(Date.now() + 400 * 24 * 3600 * 1000);
 
-test('creates the v26 tables and columns (schema now at v29)', () => {
+test('creates the v26 tables and columns (schema now at v30)', () => {
   const db = getLeadsDb();
-  assert.equal(LATEST_SCHEMA_VERSION, 29);
-  assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 29);
+  assert.equal(LATEST_SCHEMA_VERSION, 30);
+  assert.equal((db.prepare('PRAGMA user_version').get() as any).user_version, 30);
   for (const table of ['company_profiles', 'company_attribution_verdicts']) {
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table), table);
   }

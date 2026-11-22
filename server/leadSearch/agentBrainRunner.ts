@@ -6,6 +6,7 @@ import {
   insertLeadActivity,
   upsertMiningSession,
   insertSearchLog,
+  LATEST_SCHEMA_VERSION,
   type LeadWriteResult
 } from "../db.js";
 import { tavilySearch } from "../services/llm.js";
@@ -36,6 +37,7 @@ export interface AgentBrainExecutionOptions {
   decisionMakerRoles?: string[];
   keywords?: string[];
   onProgress?: (event: { phase: string; message: string; count?: number; total?: number }) => void;
+  abortSignal?: AbortSignal;
 }
 
 export interface AgentBrainLeadItem {
@@ -66,6 +68,7 @@ export interface AgentBrainExecutionResult {
   durationMs: number;
   leads: AgentBrainLeadItem[];
   stats: Record<string, any>;
+  errorMessage?: string;
   verification: {
     sqliteVerified: boolean;
     ftsIndexed: boolean;
@@ -94,8 +97,10 @@ const DECISION_MAKER_REGEX = /\b(founder|co-founder|ceo|chief executive|managing
 const NON_AGENCY_ENTITY_REGEX = /\b(hotel|boutique hotel|restaurant|resort|clothing|fashion|salon|apparel|real estate brokerage|gym|clinic)\b/i;
 
 export async function executeAgentBrainDiscovery(
-  options: AgentBrainExecutionOptions
+  options: AgentBrainExecutionOptions,
+  abortSignal?: AbortSignal
 ): Promise<AgentBrainExecutionResult> {
+  const signal = abortSignal || options.abortSignal;
   const startedAt = Date.now();
   const startTimeIso = new Date(startedAt).toISOString();
   const sessionId = options.sessionId || `session-agent-${crypto.randomUUID()}`;
@@ -106,6 +111,112 @@ export async function executeAgentBrainDiscovery(
   const targetNextAction = options.nextAction || "NONE";
   const hubs = options.geographicHubs && options.geographicHubs.length > 0 ? options.geographicHubs : DEFAULT_US_HUBS;
 
+  const isAborted = () => {
+    if (signal?.aborted) return true;
+    try {
+      const row = getLeadsDb()
+        .prepare(`SELECT status, cancellation_requested_at FROM mining_sessions WHERE id = ?`)
+        .get(sessionId) as { status?: string; cancellation_requested_at?: string } | undefined;
+      if (
+        row?.status === "cancellation_requested" ||
+        row?.status === "cancelled" ||
+        Boolean(row?.cancellation_requested_at)
+      ) {
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  const rawCandidateMap = new Map<string, { title: string; url: string; content: string }>();
+  let duplicatesSkipped = 0;
+  let searchCallCount = 0;
+  const searchQueries: string[] = [];
+
+  const handleCancellation = async (): Promise<AgentBrainExecutionResult> => {
+    const totalDurationMs = Date.now() - startedAt;
+    const statsPayload = {
+      requested: requestedLimit,
+      returned: 0,
+      rawCandidates: rawCandidateMap.size,
+      duplicatesSkipped,
+      persistedCount: 0,
+      brain: "Agent-as-the-Brain (Antigravity)",
+      status: "cancelled"
+    };
+
+    upsertMiningSession({
+      id: sessionId,
+      status: "cancelled",
+      prompt: promptQuery,
+      requestedLimit,
+      startedAt: startTimeIso,
+      completedAt: new Date().toISOString(),
+      errorMessage: "Agent Brain discovery was cancelled.",
+      checkpoint: null,
+      stats: statsPayload,
+      traceSummary: {
+        providerSummary: {
+          agent_brain: { calls: 0, successes: 0, latencyMs: 0 },
+          tavily: { calls: searchCallCount, latencyMs: totalDurationMs }
+        },
+        costSummary: { estimatedUsd: 0, totalTokens: 0, tokensPerAcceptedLead: 0 }
+      }
+    });
+
+    insertSearchLog({
+      id: sessionId,
+      timestamp: startTimeIso,
+      prompt: promptQuery,
+      generated_queries: JSON.stringify(searchQueries.slice(0, 10)),
+      status: "cancelled",
+      error_message: "Agent Brain discovery was cancelled.",
+      raw_results_count: rawCandidateMap.size,
+      leads_found: 0,
+      detailed_logs: JSON.stringify([
+        `[AgentBrain] Execution was cancelled by caller/user after ${Date.now() - startedAt}ms.`
+      ]),
+      debug_logs: JSON.stringify([]),
+      trace_events: JSON.stringify([]),
+      provider_summary: JSON.stringify({ tavily: { calls: searchCallCount } }),
+      cost_summary: JSON.stringify({ estimatedUsd: 0, totalTokens: 0, tokensPerAcceptedLead: 0 }),
+      phase_timeline: JSON.stringify([]),
+      schemaVersion: LATEST_SCHEMA_VERSION,
+      schema_version: LATEST_SCHEMA_VERSION
+    });
+
+    try {
+      await closeBrightDataClient({
+        onlyIfIdle: true,
+        onlyIfUnhealthy: true,
+        reason: "agent-brain-complete"
+      });
+    } catch {}
+
+    options.onProgress?.({
+      phase: "cancelled",
+      message: `Agent Brain discovery session ${sessionId} cancelled.`
+    });
+
+    return {
+      sessionId,
+      prompt: promptQuery,
+      requestedLimit,
+      qualifiedCount: 0,
+      rawCandidatesCount: rawCandidateMap.size,
+      duplicatesSkippedCount: duplicatesSkipped,
+      durationMs: totalDurationMs,
+      leads: [],
+      stats: statsPayload,
+      errorMessage: "Agent Brain discovery was cancelled.",
+      verification: {
+        sqliteVerified: false,
+        ftsIndexed: false,
+        identityKeysRegistered: false
+      }
+    };
+  };
+
   const isB2BOutbound = /outbound|lead gen|lead generation|cold email|smartlead|instantly|clay|appointment setting/i.test(promptQuery);
   const isUkTarget = /\buk\b|united kingdom|britain|england|london|manchester/i.test(promptQuery);
   const isUsTarget = /\bus\b|\busa\b|united states|america|austin|denver|new york|san francisco|chicago/i.test(promptQuery) || !isUkTarget;
@@ -115,6 +226,10 @@ export async function executeAgentBrainDiscovery(
     message: `Initialized Agent Brain discovery session ${sessionId} for target ${requestedLimit} leads (stage: ${targetStage}).`
   });
 
+  if (isAborted()) {
+    return handleCancellation();
+  }
+
   // 1. Preload CRM identities for 0ms in-memory deduplication
   const existingIdentities = readExistingIdentityKeys();
   options.onProgress?.({
@@ -123,7 +238,6 @@ export async function executeAgentBrainDiscovery(
   });
 
   // 2. Generate multi-vector orthogonal search queries
-  const searchQueries: string[] = [];
 
   if (isB2BOutbound) {
     if (isUsTarget) {
@@ -184,33 +298,39 @@ export async function executeAgentBrainDiscovery(
   }
 
   // 3. Dispatch parallel retrieval waves through Tavily Key Pool
-  const rawCandidateMap = new Map<string, { title: string; url: string; content: string }>();
-  let duplicatesSkipped = 0;
-  let searchCallCount = 0;
-
   options.onProgress?.({
     phase: "retrieval",
     message: `Dispatching ${searchQueries.length} diversified search queries via Tavily Key Pool...`
   });
 
   for (let i = 0; i < searchQueries.length; i += 4) {
+    if (isAborted()) {
+      return handleCancellation();
+    }
     const batch = searchQueries.slice(i, i + 4);
     const results = await Promise.all(
       batch.map(async (query) => {
+        if (isAborted()) return [];
         searchCallCount++;
         try {
           const res = await tavilySearch(query, {
             searchDepth: "basic",
             maxResults: 15,
-            includeDomains: ["linkedin.com"]
+            includeDomains: ["linkedin.com"],
+            signal
           });
           return res.items || [];
         } catch (err) {
+          if (isAborted()) return [];
           console.warn(`[AgentBrain] Tavily query warning for "${query}":`, err instanceof Error ? err.message : err);
           return [];
         }
       })
     );
+
+    if (isAborted()) {
+      return handleCancellation();
+    }
 
     for (const items of results) {
       for (const item of items) {
@@ -239,12 +359,19 @@ export async function executeAgentBrainDiscovery(
     }
   }
 
+  if (isAborted()) {
+    return handleCancellation();
+  }
+
   options.onProgress?.({
     phase: "extracted",
     message: `Harvested ${rawCandidateMap.size} unique candidates (${duplicatesSkipped} CRM duplicates filtered in 0ms).`
   });
 
   // 4. Strict Agent Brain Semantic Evaluation & Qualification
+  if (isAborted()) {
+    return handleCancellation();
+  }
   const qualifiedLeads: AgentBrainLeadItem[] = [];
   const candidateList = Array.from(rawCandidateMap.entries());
 
@@ -409,6 +536,7 @@ export async function executeAgentBrainDiscovery(
 
     const workers = Array.from({ length: concurrency }, async () => {
       while (targetIdx < qualifiedLeads.length) {
+        if (isAborted()) break;
         const lead = qualifiedLeads[targetIdx++];
         if (!lead || !lead.url) continue;
 
@@ -468,6 +596,10 @@ export async function executeAgentBrainDiscovery(
 
     await Promise.all(workers);
 
+    if (isAborted()) {
+      return handleCancellation();
+    }
+
     options.onProgress?.({
       phase: "brightdata_complete",
       message: `BrightData Pro enriched ${brightDataEnrichedCount} / ${qualifiedLeads.length} leads with verified profile dossiers.`
@@ -479,7 +611,11 @@ export async function executeAgentBrainDiscovery(
     message: `Agent Brain finalized ${qualifiedLeads.length} leads matching all criteria (${brightDataEnrichedCount} enriched via BrightData Pro).`
   });
 
-  // 5. Atomic Schema v29 SQLite Persistence
+  if (isAborted()) {
+    return handleCancellation();
+  }
+
+  // 5. Atomic Schema v${LATEST_SCHEMA_VERSION} SQLite Persistence
   const nowIso = new Date().toISOString();
   const leadsToInsert: Record<string, any>[] = qualifiedLeads.map((item) => {
     return {
@@ -555,6 +691,10 @@ export async function executeAgentBrainDiscovery(
   }
 
   // 6. Record Mining Session & Search Log
+  if (isAborted()) {
+    return handleCancellation();
+  }
+
   const totalDurationMs = Date.now() - startedAt;
   const statsPayload = {
     requested: requestedLimit,
@@ -576,6 +716,10 @@ export async function executeAgentBrainDiscovery(
     },
     costSummary: { estimatedUsd: 0, totalTokens: 0, tokensPerAcceptedLead: 0 }
   };
+
+  if (isAborted()) {
+    return handleCancellation();
+  }
 
   upsertMiningSession({
     id: sessionId,
@@ -608,7 +752,7 @@ export async function executeAgentBrainDiscovery(
       brightDataEnrichedCount > 0
         ? `[AgentBrain] BrightData Pro enriched ${brightDataEnrichedCount} leads with verified LinkedIn profiles, career histories, and company websites.`
         : `[AgentBrain] Processed candidate profiles via fast heuristic extraction.`,
-      `[AgentBrain] Ingested ${writeResults.length} leads into Schema v29 SQLite.`
+      `[AgentBrain] Ingested ${writeResults.length} leads into Schema v${LATEST_SCHEMA_VERSION} SQLite.`
     ]),
     debug_logs: JSON.stringify([]),
     trace_events: JSON.stringify([]),
@@ -619,7 +763,8 @@ export async function executeAgentBrainDiscovery(
       { phase: "brightdata_pro_enrichment", durationMs: Math.round(totalDurationMs * 0.4) },
       { phase: "sqlite_persistence", durationMs: Math.round(totalDurationMs * 0.1) }
     ]),
-    schema_version: 27
+    schemaVersion: LATEST_SCHEMA_VERSION,
+    schema_version: LATEST_SCHEMA_VERSION
   });
 
   options.onProgress?.({
@@ -635,10 +780,17 @@ export async function executeAgentBrainDiscovery(
   const verifyFtsCount = (
     db.prepare(`SELECT count(1) as count FROM leads_fts WHERE id LIKE 'lead_agent_%'`).get() as { count: number }
   )?.count;
+  const verifyIdentitiesCount = (
+    db.prepare(`SELECT count(1) as count FROM lead_identities WHERE lead_id LIKE 'lead_agent_%'`).get() as { count: number }
+  )?.count;
   const verifySession = db.prepare(`SELECT id, status FROM mining_sessions WHERE id = ?`).get(sessionId);
 
   try {
-    await closeBrightDataClient();
+    await closeBrightDataClient({
+      onlyIfIdle: true,
+      onlyIfUnhealthy: true,
+      reason: "agent-brain-complete"
+    });
   } catch {}
 
   return {
@@ -654,7 +806,7 @@ export async function executeAgentBrainDiscovery(
     verification: {
       sqliteVerified: Number(verifyLeadsCount) >= qualifiedLeads.length && Boolean(verifySession),
       ftsIndexed: Number(verifyFtsCount) >= qualifiedLeads.length,
-      identityKeysRegistered: true
+      identityKeysRegistered: qualifiedLeads.length === 0 ? true : Number(verifyIdentitiesCount) >= qualifiedLeads.length
     }
   };
 }

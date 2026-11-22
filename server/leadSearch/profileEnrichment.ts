@@ -25,6 +25,21 @@ export type ProfileEnrichmentResult = {
   error?: string;
 };
 
+export const PLACEHOLDER_PROFILE_VALUES = new Set([
+  'unknown',
+  'independent',
+  'professional',
+  'undisclosed location',
+  'professional @ independent',
+  'n/a',
+  'none',
+]);
+
+export function isPlaceholderProfileValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  return PLACEHOLDER_PROFILE_VALUES.has(value.trim().toLowerCase());
+}
+
 export type EnrichLeadProfileOptions = {
   force?: boolean;
   ttlDays?: number;
@@ -50,22 +65,35 @@ export async function enrichLeadProfile(
     location?: string;
     industry?: string;
     publicEmail?: string;
+    currentTitle?: string;
+    title?: string;
   }) => {
-    if (values.personName && (!profile.fullName || profile.fullName === 'Unknown')) {
+    const isTargetEmpty = (val: unknown) =>
+      !val || (typeof val === 'string' && (!val.trim() || isPlaceholderProfileValue(val)));
+
+    if (values.personName && !isPlaceholderProfileValue(values.personName) && isTargetEmpty(profile.fullName)) {
       profile.fullName = values.personName;
       updatedFields.add('fullName');
     }
-    if (values.companyName && (!profile.currentCompany || profile.currentCompany === 'Unknown')) {
+    if (values.companyName && !isPlaceholderProfileValue(values.companyName) && isTargetEmpty(profile.currentCompany)) {
       profile.currentCompany = values.companyName;
       updatedFields.add('currentCompany');
     }
+    const candidateTitle = values.currentTitle || values.title || values.headline;
+    if (candidateTitle && !isPlaceholderProfileValue(candidateTitle) && isTargetEmpty(profile.currentTitle)) {
+      profile.currentTitle = candidateTitle;
+      if (lead !== profile && isTargetEmpty(lead.currentTitle)) {
+        lead.currentTitle = candidateTitle;
+      }
+      updatedFields.add('currentTitle');
+    }
     for (const field of ['headline', 'location', 'industry'] as const) {
-      if (values[field] && !profile[field]) {
+      if (values[field] && !isPlaceholderProfileValue(values[field]) && isTargetEmpty(profile[field])) {
         profile[field] = values[field];
         updatedFields.add(field);
       }
     }
-    if (values.publicEmail && !profile.contactDetails?.email) {
+    if (values.publicEmail && !isPlaceholderProfileValue(values.publicEmail) && isTargetEmpty(profile.contactDetails?.email)) {
       profile.contactDetails = { ...(profile.contactDetails || {}), email: values.publicEmail };
       updatedFields.add('email');
     }
@@ -149,9 +177,10 @@ export async function enrichLeadProfile(
       fillProfileFields({
         personName: positiveCache.personName,
         companyName: positiveCache.companyName,
-        headline: getEvidenceValue(positiveCache.evidenceBlock, 'HEADLINE'),
-        location: getEvidenceValue(positiveCache.evidenceBlock, 'LOCATION'),
-        industry: getEvidenceValue(positiveCache.evidenceBlock, 'INDUSTRY'),
+        currentTitle: (positiveCache as any).currentTitle || getEvidenceValue(positiveCache.evidenceBlock, 'TITLE'),
+        headline: (positiveCache as any).headline || getEvidenceValue(positiveCache.evidenceBlock, 'HEADLINE'),
+        location: (positiveCache as any).location || getEvidenceValue(positiveCache.evidenceBlock, 'LOCATION'),
+        industry: (positiveCache as any).industry || getEvidenceValue(positiveCache.evidenceBlock, 'INDUSTRY'),
         publicEmail: positiveCache.publicEmail,
       });
       refreshLeadEvidence('cache', quality, positiveCache.evidenceBlock);

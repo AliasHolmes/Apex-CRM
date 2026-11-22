@@ -321,7 +321,7 @@ export function PipelineFunnelInspector({
 
               {stage.dropCount > 0 ? (
                 <div className="space-y-1 pt-1.5 border-t border-border/60">
-                  <div className="text-[10px] uppercase font-bold text-danger flex items-center gap-1">
+                  <div className="text-xs uppercase font-bold text-danger flex items-center gap-1">
                     <UserX className="w-3 h-3" />
                     <span>-{stage.dropCount} dropped</span>
                   </div>
@@ -338,7 +338,7 @@ export function PipelineFunnelInspector({
                             candidates: stage.candidates.filter((c) => c.reasonCode === code),
                           })
                         }
-                        className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-danger/10 hover:bg-danger/20 text-danger border border-danger/30 transition-colors flex items-center gap-1"
+                        className="px-1.5 py-0.5 rounded text-xs font-mono bg-danger/10 hover:bg-danger/20 text-danger border border-danger/30 transition-colors flex items-center gap-1"
                         title={`Click to inspect ${count} candidates dropped for ${formatReasonLabel(code)}`}
                       >
                         <span className="truncate max-w-[80px]">{formatReasonLabel(code)}</span>
@@ -348,7 +348,7 @@ export function PipelineFunnelInspector({
                   </div>
                 </div>
               ) : (
-                <div className="pt-1.5 border-t border-border/60 text-[10px] text-muted-foreground flex items-center gap-1">
+                <div className="pt-1.5 border-t border-border/60 text-xs text-muted-foreground flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3 text-success" />
                   <span>100% passed</span>
                 </div>
@@ -389,7 +389,7 @@ export function PipelineFunnelInspector({
                   className="px-2 py-1 rounded bg-card hover:bg-card/90 text-xs font-mono border border-border/80 hover:border-primary/60 transition-all flex items-center gap-2 group"
                 >
                   <span className="text-foreground group-hover:text-primary">{formatReasonLabel(code)}</span>
-                  <Badge variant="outline" className="bg-danger/10 text-danger border-danger/30 text-[10px] py-0 px-1.5">
+                  <Badge variant="outline" className="bg-danger/10 text-danger border-danger/30 text-xs py-0 px-1.5">
                     {count}
                   </Badge>
                 </button>
@@ -444,7 +444,7 @@ export function PipelineFunnelInspector({
                     <span className="font-semibold text-foreground truncate">
                       {c.candidateName || c.candidateId || 'Unknown Candidate'}
                     </span>
-                    <Badge variant="outline" className="text-[10px] border-danger/30 text-danger bg-danger/5">
+                    <Badge variant="outline" className="text-xs border-danger/30 text-danger bg-danger/5">
                       {c.stage}
                     </Badge>
                   </div>
@@ -462,7 +462,7 @@ export function PipelineFunnelInspector({
                     </div>
                   )}
 
-                  <div className="text-[10px] text-muted-foreground font-mono">
+                  <div className="text-xs text-muted-foreground font-mono">
                     Timestamp: {new Date(c.timestamp).toLocaleTimeString()}
                   </div>
                 </div>

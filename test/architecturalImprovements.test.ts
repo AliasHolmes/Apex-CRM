@@ -247,9 +247,9 @@ test("Component 3: selectStage bypasses Phase 4 and Phase 5 on candidate shortfa
 
     assert.equal(output.leadsFound, 2);
     assert.equal(output.finalLeads.length, 2);
-    // Phase 4 companyIntent stats should not be populated due to shortfall bypass
-    assert.equal(statsObj.companyIntent, undefined);
-    assert.equal(statsObj.linkedinPostIntent, undefined);
+    // On candidate shortfall, intent enrichment proceeds on available qualified leads (recording stats)
+    assert.ok(statsObj.companyIntent, "Expected stats.companyIntent to be populated on candidate shortfall");
+    assert.equal(statsObj.companyIntent.attempted, 0);
     assert.ok(logs.some(l => l.includes("Shortfall detected (2 < 5)")));
 
     // When forced via ENRICH_SHORTFALL_LEADS=true, it should run

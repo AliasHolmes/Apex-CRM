@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import type { Lead } from '@/types';
 import { LEAD_LINK_SCHEME, linkProspectNames } from '@/lib/linkProspectNames';
+import { toSafeHttpUrl } from '@/lib/safeUrl';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
@@ -70,15 +71,19 @@ function MarkdownMessage({
               </button>
             );
           }
+          const safeHref = toSafeHttpUrl(href);
+          if (!safeHref) {
+            return <span>{children}</span>;
+          }
           return (
-          <a
-            className="font-medium text-primary underline decoration-primary/50 underline-offset-2 transition hover:text-primary hover:decoration-primary"
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {children}
-          </a>
+            <a
+              className="font-medium text-primary underline decoration-primary/50 underline-offset-2 transition hover:text-primary hover:decoration-primary"
+              href={safeHref}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {children}
+            </a>
           );
         },
         code: ({ children, className }) => (

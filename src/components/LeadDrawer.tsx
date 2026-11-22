@@ -44,6 +44,7 @@ import {
 } from '@/lib/prospectWorkflow';
 import { describeMatchScore, explainMatchScore, getMatchScore } from '@/lib/matchScore';
 import { useLockedLeadIds } from '@/lib/leadLocks';
+import { toSafeHttpUrl } from '@/lib/safeUrl';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -961,11 +962,11 @@ function LeadDrawerBody({
                           No phone on file
                         </div>
                       )}
-                      {linkedinUrl ? (
+                      {toSafeHttpUrl(linkedinUrl) ? (
                         <div className="col-span-1 flex items-center gap-2 text-foreground/80 md:col-span-2">
                           <Link2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                           <a
-                            href={linkedinUrl}
+                            href={toSafeHttpUrl(linkedinUrl)!}
                             target="_blank"
                             rel="noreferrer"
                             className="flex items-center gap-1 truncate text-primary hover:underline"
@@ -1158,9 +1159,9 @@ function LeadDrawerBody({
                     {lead.buyingSignalsDetected!.map((signal, index) => (
                       <div key={`${signal}-${index}`} className="flex items-start justify-between gap-2">
                         <span className="font-semibold text-warning">{signal}</span>
-                        {lead.hiringSignalUrl && (
+                        {toSafeHttpUrl(lead.hiringSignalUrl) && (
                           <a
-                            href={lead.hiringSignalUrl}
+                            href={toSafeHttpUrl(lead.hiringSignalUrl)!}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="flex shrink-0 items-center gap-1 text-primary underline"

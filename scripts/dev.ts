@@ -33,22 +33,61 @@ async function ensureOmniRoute(): Promise<ChildProcess | null> {
     ? ['/d', '/s', '/c', 'omniroute.cmd serve']
     : ['serve'];
 
-  const proc = spawn(omniCommand, omniArgs, {
-    stdio: ['ignore', 'inherit', 'inherit'],
-    shell: false,
-    windowsHide: true,
-    env: process.env,
+  let proc: ChildProcess;
+  try {
+    proc = spawn(omniCommand, omniArgs, {
+      stdio: ['ignore', 'inherit', 'inherit'],
+      shell: false,
+      windowsHide: true,
+      env: process.env,
+    });
+  } catch (err: any) {
+    console.warn(`[dev-entry] Warning: Unable to spawn OmniRoute gateway (${err?.code || err?.message || err}). Apex CRM will proceed without local OmniRoute gateway.`);
+    return null;
+  }
+
+  let spawnError: Error | null = null;
+  let exitedEarly = false;
+  let exitDetail = '';
+
+  proc.on('error', (err: any) => {
+    spawnError = err;
+    console.warn(`[dev-entry] Warning: OmniRoute process error (${err?.code || err?.message || err}). Apex CRM will proceed without local OmniRoute gateway.`);
+  });
+
+  proc.on('exit', (code, signal) => {
+    exitedEarly = true;
+    exitDetail = signal ? `signal ${signal}` : `code ${code}`;
   });
 
   const startTime = Date.now();
   const maxWaitMs = Math.max(15000, Number(process.env.OMNIROUTE_READY_TIMEOUT_MS || 90000));
   let lastReportedSec = 0;
+
   while (Date.now() - startTime < maxWaitMs) {
+    if (spawnError) {
+      return null;
+    }
+    if (exitedEarly) {
+      console.warn(`[dev-entry] Warning: OmniRoute gateway exited early (${exitDetail}). Apex CRM will proceed (secondary Byesu provider will serve if OmniRoute is offline).`);
+      return null;
+    }
+
     await new Promise((r) => setTimeout(r, 500));
+
     if (await isOmniRouteRunning()) {
       console.log('[dev-entry] OmniRoute gateway is ready and listening on http://localhost:20128');
       return proc;
     }
+
+    if (spawnError) {
+      return null;
+    }
+    if (exitedEarly) {
+      console.warn(`[dev-entry] Warning: OmniRoute gateway exited early (${exitDetail}). Apex CRM will proceed (secondary Byesu provider will serve if OmniRoute is offline).`);
+      return null;
+    }
+
     const elapsedSec = Math.floor((Date.now() - startTime) / 1000);
     if (elapsedSec >= 15 && elapsedSec % 15 === 0 && elapsedSec !== lastReportedSec) {
       lastReportedSec = elapsedSec;
@@ -73,7 +112,7 @@ function cleanup() {
     }
   }
 
-  if (omniProcess && !omniProcess.killed) {
+  if (omniProcess && !omniProcess.killed && omniProcess.exitCode === null) {
     console.log('[dev-entry] Shutting down spawned OmniRoute gateway...');
     if (isWindows && omniProcess.pid) {
       spawnSync('taskkill', ['/pid', String(omniProcess.pid), '/f', '/t'], { stdio: 'ignore' });
@@ -123,7 +162,8 @@ async function main() {
   }
 
   console.log('[dev-entry] Starting Apex CRM server with native node...');
-  crmProcess = spawn(process.execPath, ['dist/server.cjs'], {
+  const serverArgs = ['dist/server.cjs', ...process.argv.slice(2)];
+  crmProcess = spawn(process.execPath, serverArgs, {
     stdio: 'inherit',
     env: process.env,
   });

@@ -115,7 +115,7 @@ test('saturation response injects account queries and tightens the metro thresho
 
 test('queue wait is persisted through the v27 column', () => {
   const db = read('server/db.ts');
-  assert.match(db, /LATEST_SCHEMA_VERSION = 29/);
+  assert.match(db, /LATEST_SCHEMA_VERSION = 30/);
   assert.match(db, /"queue_wait_ms",\s*"queue_wait_ms INTEGER NOT NULL DEFAULT 0"/);
   assert.match(db, /queue_wait_ms INTEGER NOT NULL DEFAULT 0,\s*model_name TEXT,/, 'fresh DBs must create the column');
 

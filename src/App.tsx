@@ -44,6 +44,7 @@ import {
 } from './lib/navigation';
 import { DEFAULT_MANUAL_INDUSTRY, MANUAL_PROSPECT_INDUSTRIES } from './lib/ui';
 import { buildProfileDedupeKeys } from './utils/leadDedupe';
+import { predictiveScoreFromComposite, scoreLeadDeterministically } from './utils/leadScore';
 
 // Large workspaces load only when the user opens their tab.
 const ScrapeWorkspace = lazy(() => import('./components/ScrapeWorkspace'));
@@ -184,7 +185,6 @@ const AppShellLoading = () => (
   </div>
 );
 
-import { predictiveScoreFromComposite, scoreLeadDeterministically } from './utils/leadScore';
 
 function Dashboard() {
   const {
@@ -512,7 +512,10 @@ function Dashboard() {
                 className="apex-tab-enter"
                     key="tab-workspace"
                 hidden={activeTab !== 'workspace'}
-                aria-labelledby="discover-heading"
+                aria-labelledby="discover-heading"
+
+
+
               >
                 <PageHeader
                   id="discover-heading"
@@ -530,7 +533,10 @@ function Dashboard() {
               <section
                 className="apex-tab-enter"
                     key="tab-overview"
-                aria-labelledby="overview-heading"
+                aria-labelledby="overview-heading"
+
+
+
               >
                 <Suspense fallback={<TabLoading />}>
                   <TabErrorBoundary tabName="CRM overview">
@@ -550,7 +556,10 @@ function Dashboard() {
               <section
                 className="apex-tab-enter"
                     key="tab-pipeline"
-                aria-labelledby="pipeline-heading"
+                aria-labelledby="pipeline-heading"
+
+
+
               >
                 <PageHeader
                   id="pipeline-heading"
@@ -575,7 +584,10 @@ function Dashboard() {
                 className="apex-tab-enter"
                     key="tab-inventory"
                 hidden={activeTab !== 'inventory'}
-                aria-label="Prospect inventory"
+                aria-label="Prospect inventory"
+
+
+
               >
                 <PageHeader
                   id="prospects-heading"
@@ -595,7 +607,10 @@ function Dashboard() {
                 className="apex-tab-enter"
                     key="tab-outreach"
                 hidden={activeTab !== 'outreach'}
-                aria-labelledby="outreach-heading"
+                aria-labelledby="outreach-heading"
+
+
+
               >
                 <PageHeader
                   id="outreach-heading"

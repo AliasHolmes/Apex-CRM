@@ -101,7 +101,7 @@ import {
   resolveDiscoveryProviderMode,
   resolveBrightDataSearchMode,
 } from "../leadSearch/discoveryRouting.js";
-import { enrichLeadProfile } from "../leadSearch/profileEnrichment.js";
+import { enrichLeadProfile, isPlaceholderProfileValue } from "../leadSearch/profileEnrichment.js";
 import { deriveDomainCluster, buildScopeKey } from "../leadSearch/adaptiveScheduler.js";
 import {
   discoveryEngine,
@@ -219,6 +219,76 @@ export function classifyLeadTransition(
 }
 
 /**
+ * Records binary outcome rows and query performance feedback for lead stage/review transitions.
+ * Shared between single-lead updates (PATCH /leads/:id) and bulk updates (POST /leads/bulk).
+ */
+export function recordLeadTransitionFeedback(
+  previousLead: LeadTransitionSnapshot,
+  storedLead: Record<string, any>,
+): void {
+  const transition = classifyLeadTransition(previousLead, storedLead);
+  const { isNewRejection, isNewVerification } = transition;
+  let outcomeNewlyRecorded = false;
+  if (transition.outcome) {
+    try {
+      outcomeNewlyRecorded = recordLeadOutcome(
+        storedLead.id,
+        transition.outcome.type,
+        transition.outcome.detail,
+        storedLead.discoveryScopeKey,
+      );
+    } catch (err) {
+      console.warn("[lead-outcomes] Failed to record lead outcome:", err);
+    }
+  }
+
+  if (outcomeNewlyRecorded && (isNewRejection || isNewVerification)) {
+    // G5: read the producing arm from top-level fields (written by
+    // leadMapping) with evidence/scout fallbacks, and pass domainCluster
+    // so the feedback scope key matches the scheduler retrieval key.
+    const family =
+      storedLead.discoveryFamily ||
+      storedLead.evidence?.discoveryFamily ||
+      storedLead.scout?.family ||
+      "general";
+    const lane =
+      storedLead.discoveryLane ||
+      storedLead.evidence?.discoveryLane ||
+      storedLead.scout?.lane ||
+      "person";
+    const provider =
+      storedLead.evidence?.sourceProvider || storedLead.source || "tavily";
+    try {
+      const briefText = `${storedLead.profile?.currentTitle || storedLead.title || ""} ${storedLead.profile?.currentCompany || storedLead.company || ""} ${storedLead.profile?.industry || ""}`;
+      const domainCluster = storedLead.domainCluster || deriveDomainCluster(briefText);
+      const scopeKey = storedLead.discoveryScopeKey || buildScopeKey({
+        domainCluster,
+        family,
+        lane,
+        provider,
+      });
+      recordQueryPerformance({
+        scopeKey,
+        domainCluster,
+        family,
+        lane,
+        provider,
+        runs: 0,
+        outcomeRuns: 1,
+        qualifiedCandidates: isNewVerification ? 1 : 0,
+        hardFailedCandidates: isNewRejection ? 1 : 0,
+        rescuedCandidates: 0,
+      });
+    } catch (err) {
+      console.warn(
+        "[lead-review-feedback] Failed to record query performance feedback:",
+        err,
+      );
+    }
+  }
+}
+
+/**
  * Single source for the concurrent-session cap used by both start and resume. Defaults to 1
  * (one session at a time keeps the primary provider slots from being shared), matching
  * .env.example; clamped to 1-8.
@@ -235,7 +305,7 @@ export function resolveMaxConcurrentSessions(): number {
  * concurrently and overwrite the first run's terminal row, and the concurrency cap only
  * sees pipeline sessions.
  */
-const activeAgentBrainSessions = new Set<string>();
+const activeAgentBrainSessions = new Map<string, AbortController>();
 
 function countActiveDiscoverySessions(): number {
   return discoveryEngine.getActiveCount() + activeAgentBrainSessions.size;
@@ -543,68 +613,9 @@ router.patch("/leads/:id", (req, res): any => {
       });
     }
 
-    // G17: stage/review transitions write one binary outcome row (deduplicated per lead +
-    // outcomeType); the classifier is shared with POST /leads/bulk so both paths agree.
-    const transition = classifyLeadTransition(previousLead, storedLead);
-    const { isNewRejection, isNewVerification } = transition;
-    let outcomeNewlyRecorded = false;
-    if (transition.outcome) {
-      try {
-        outcomeNewlyRecorded = recordLeadOutcome(
-          storedLead.id,
-          transition.outcome.type,
-          transition.outcome.detail,
-          storedLead.discoveryScopeKey,
-        );
-      } catch (err) {
-        console.warn("[lead-outcomes] Failed to record lead outcome:", err);
-      }
-    }
-
-    if (outcomeNewlyRecorded && (isNewRejection || isNewVerification)) {
-      // G5: read the producing arm from top-level fields (written by
-      // leadMapping) with evidence/scout fallbacks, and pass domainCluster
-      // so the feedback scope key matches the scheduler retrieval key.
-      const family =
-        storedLead.discoveryFamily ||
-        storedLead.evidence?.discoveryFamily ||
-        storedLead.scout?.family ||
-        "general";
-      const lane =
-        storedLead.discoveryLane ||
-        storedLead.evidence?.discoveryLane ||
-        storedLead.scout?.lane ||
-        "person";
-      const provider =
-        storedLead.evidence?.sourceProvider || storedLead.source || "tavily";
-      try {
-        const briefText = `${storedLead.profile?.currentTitle || storedLead.title || ""} ${storedLead.profile?.currentCompany || storedLead.company || ""} ${storedLead.profile?.industry || ""}`;
-        const domainCluster = storedLead.domainCluster || deriveDomainCluster(briefText);
-        const scopeKey = storedLead.discoveryScopeKey || buildScopeKey({
-          domainCluster,
-          family,
-          lane,
-          provider,
-        });
-        recordQueryPerformance({
-          scopeKey,
-          domainCluster,
-          family,
-          lane,
-          provider,
-          runs: 0,
-          outcomeRuns: 1,
-          qualifiedCandidates: isNewVerification ? 1 : 0,
-          hardFailedCandidates: isNewRejection ? 1 : 0,
-          rescuedCandidates: 0,
-        });
-      } catch (err) {
-        console.warn(
-          "[lead-review-feedback] Failed to record query performance feedback:",
-          err,
-        );
-      }
-    }
+    // G17: stage/review transitions write one binary outcome row and query performance feedback;
+    // shared with POST /leads/bulk so both paths agree.
+    recordLeadTransitionFeedback(previousLead, storedLead);
 
     res.json({
       apiVersion: 1,
@@ -964,10 +975,7 @@ router.post("/leads/bulk", (req, res): any => {
             actor: "user",
           });
         }
-        const { outcome } = classifyLeadTransition(previous, lead);
-        if (outcome) {
-          recordLeadOutcome(lead.id, outcome.type, outcome.detail, lead.discoveryScopeKey);
-        }
+        recordLeadTransitionFeedback(previous, lead);
       } catch (err) {
         console.warn("[leads-bulk] Failed to record transition feedback:", err);
       }
@@ -1133,9 +1141,17 @@ router.get("/llm-health", paidRouteLimit("llm-health", 10), async (req, res) => 
 // 1. Scrape Public URL / Name lookup via Search Grounding
 router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promise<any> => {
   try {
-    const { urlOrName } = req.body;
-    if (!urlOrName) {
-      return res.status(400).json({ error: "urlOrName is required" });
+    const rawUrlOrName = req.body?.urlOrName;
+    if (typeof rawUrlOrName !== "string" || !rawUrlOrName.trim()) {
+      return res
+        .status(400)
+        .json({ error: "urlOrName is required and must be a non-empty string." });
+    }
+    const urlOrName = rawUrlOrName.trim();
+    if (urlOrName.length > 500) {
+      return res
+        .status(400)
+        .json({ error: "urlOrName must be 500 characters or fewer." });
     }
 
     if (!hasOpenAIKey()) {
@@ -1163,9 +1179,10 @@ router.post("/scrape-url", paidRouteLimit("scrape-url"), async (req, res): Promi
     );
 
     if (!rawText || rawText.length < 50) {
-      throw new Error(
-        "Could not find sufficient public information about this person.",
-      );
+      return res.status(422).json({
+        apiVersion: 1,
+        error: "Could not find sufficient public information about this person.",
+      });
     }
 
     // Step 2: Structure the raw search result into CRM schema
@@ -1184,9 +1201,10 @@ ${rawText}`;
     );
 
     if (!profile || !profile.fullName) {
-      throw new Error(
-        "Could not extract a valid profile from the search results.",
-      );
+      return res.status(422).json({
+        apiVersion: 1,
+        error: "Could not extract a valid profile from the search results.",
+      });
     }
 
     res.json({
@@ -1196,6 +1214,18 @@ ${rawText}`;
       sandboxMode: false,
     });
   } catch (error: any) {
+    if (
+      error.statusCode === 422 ||
+      error.status === 422 ||
+      (typeof error.message === "string" &&
+        (error.message.includes("Could not find sufficient public information") ||
+          error.message.includes("Could not extract a valid profile")))
+    ) {
+      return res.status(422).json({
+        apiVersion: 1,
+        error: error.message,
+      });
+    }
     console.error("Error in /api/scrape-url:", error);
     res
       .status(500)
@@ -1252,13 +1282,26 @@ ${pastedText}`;
     );
 
     if (!profile || !profile.fullName) {
-      throw new Error(
-        "Could not extract a valid profile. Make sure the pasted text includes at least a name and job title.",
-      );
+      return res.status(422).json({
+        apiVersion: 1,
+        error:
+          "Could not extract a valid profile. Make sure the pasted text includes at least a name and job title.",
+      });
     }
 
     res.json({ profile, sandboxMode: false });
   } catch (error: any) {
+    if (
+      error.statusCode === 422 ||
+      error.status === 422 ||
+      (typeof error.message === "string" &&
+        error.message.includes("Could not extract a valid profile"))
+    ) {
+      return res.status(422).json({
+        apiVersion: 1,
+        error: error.message,
+      });
+    }
     console.error("Error in /api/scrape-pasted:", error);
     res
       .status(500)
@@ -1607,17 +1650,23 @@ router.delete("/mining-sessions/resumable", (req, res): any => {
 
 router.get("/mining-sessions/active", (_req, res): any => {
   try {
-    const activeSessionIds = discoveryEngine.getActiveSessionIds();
+    const engineSessionIds = discoveryEngine.getActiveSessionIds();
+    const agentBrainSessionIds = Array.from(activeAgentBrainSessions.keys());
+    const activeSessionIds = Array.from(
+      new Set([...engineSessionIds, ...agentBrainSessionIds]),
+    );
     const sessionId = activeSessionIds.length > 0 ? activeSessionIds[0] : null;
     if (sessionId) {
-      const activeSessions = activeSessionIds.map(id => readMiningSessionSummaryById(id)).filter(Boolean);
+      const activeSessions = activeSessionIds
+        .map((id) => readMiningSessionSummaryById(id))
+        .filter(Boolean);
       return res.json({
         apiVersion: 1,
         active: true,
         sessionId,
-        session: activeSessions[0],
+        session: activeSessions[0] || { id: sessionId, status: "running" },
         sessionIds: activeSessionIds,
-        activeSessions
+        activeSessions,
       });
     }
     return res.json({ apiVersion: 1, active: false });
@@ -1679,7 +1728,8 @@ router.post("/mining-sessions/:sessionId/cancel", (req, res): any => {
     discoveryEngine.cancel(sessionId);
   }
   if (isAgentBrainActive) {
-    activeAgentBrainSessions.delete(sessionId);
+    const controller = activeAgentBrainSessions.get(sessionId);
+    controller?.abort();
   }
   const cancellationRequestedAt = new Date().toISOString();
   discoveryEngine.addLog(
@@ -2133,6 +2183,7 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
   const maxConcurrentSessions = resolveMaxConcurrentSessions();
   const activeSessionsBeforeStart = countActiveDiscoverySessions();
   if (activeSessionsBeforeStart >= maxConcurrentSessions) {
+    res.setHeader("Retry-After", "30");
     return res.status(503).json({
       error: `Already running ${activeSessionsBeforeStart} discovery session(s) (limit ${maxConcurrentSessions}). Wait for one to finish, or raise APEX_MAX_CONCURRENT_SESSIONS.`,
       activeSessions: activeSessionsBeforeStart,
@@ -2169,7 +2220,8 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
       return res.status(500).json({ error: "Failed to create mining session." });
     }
 
-    activeAgentBrainSessions.add(targetSessionId);
+    const abortController = new AbortController();
+    activeAgentBrainSessions.set(targetSessionId, abortController);
     const markAgentBrainFailure = (agentErr: any) => {
       console.error(`[Agent Brain Error] ${targetSessionId}:`, agentErr);
       try {
@@ -2193,7 +2245,8 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         sessionId: targetSessionId,
         promptQuery,
         requestedLimit,
-      })
+        abortSignal: abortController.signal,
+      } as any)
         .catch(markAgentBrainFailure)
         .finally(() => {
           activeAgentBrainSessions.delete(targetSessionId);
@@ -2203,7 +2256,7 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         apiVersion: 1,
         status: "running",
         sessionId: targetSessionId,
-        streamUrl: `/api/mining-sessions/${targetSessionId}/stream`,
+        streamUrl: `${req.baseUrl || "/api"}/mining-sessions/${targetSessionId}/stream`,
         message: "Agent Brain discovery accepted and executing in background.",
       });
     }
@@ -2213,7 +2266,8 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         sessionId: targetSessionId,
         promptQuery,
         requestedLimit,
-      });
+        abortSignal: abortController.signal,
+      } as any);
       return res.status(200).json(agentResult);
     } catch (agentErr: any) {
       markAgentBrainFailure(agentErr);
@@ -2298,6 +2352,10 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         typeof req.body?.deltaBrief === "string"
           ? req.body.deltaBrief.trim() || undefined
           : undefined,
+      profileEnrichmentStage:
+        typeof req.body?.profileEnrichmentStage === "string"
+          ? req.body.profileEnrichmentStage.trim() || undefined
+          : undefined,
     });
     return res.status(200).json(result);
   } catch (error: any) {
@@ -2358,20 +2416,36 @@ router.post("/leads/:id/enrich-profile", paidRouteLimit("enrich-profile"), async
       const enrichedProfile = currentLead.profile || {};
       const mergedLead = {
         ...latestLead,
+        title:
+          !latestLead.title || isPlaceholderProfileValue(latestLead.title)
+            ? enrichedProfile.currentTitle || latestLead.title
+            : latestLead.title,
         profile: {
           ...latestProfile,
           fullName:
-            !latestProfile.fullName || latestProfile.fullName === "Unknown"
+            !latestProfile.fullName || isPlaceholderProfileValue(latestProfile.fullName)
               ? enrichedProfile.fullName || latestProfile.fullName
               : latestProfile.fullName,
+          currentTitle:
+            !latestProfile.currentTitle || isPlaceholderProfileValue(latestProfile.currentTitle)
+              ? enrichedProfile.currentTitle || latestProfile.currentTitle
+              : latestProfile.currentTitle,
           currentCompany:
-            !latestProfile.currentCompany ||
-            latestProfile.currentCompany === "Unknown"
+            !latestProfile.currentCompany || isPlaceholderProfileValue(latestProfile.currentCompany)
               ? enrichedProfile.currentCompany || latestProfile.currentCompany
               : latestProfile.currentCompany,
-          headline: latestProfile.headline || enrichedProfile.headline,
-          location: latestProfile.location || enrichedProfile.location,
-          industry: latestProfile.industry || enrichedProfile.industry,
+          headline:
+            !latestProfile.headline || isPlaceholderProfileValue(latestProfile.headline)
+              ? enrichedProfile.headline || latestProfile.headline
+              : latestProfile.headline,
+          location:
+            !latestProfile.location || isPlaceholderProfileValue(latestProfile.location)
+              ? enrichedProfile.location || latestProfile.location
+              : latestProfile.location,
+          industry:
+            !latestProfile.industry || isPlaceholderProfileValue(latestProfile.industry)
+              ? enrichedProfile.industry || latestProfile.industry
+              : latestProfile.industry,
           contactDetails: {
             ...(enrichedProfile.contactDetails || {}),
             ...(latestProfile.contactDetails || {}),
@@ -2472,17 +2546,42 @@ router.post("/outreach-drafts", (req, res): any => {
     if (!isSafeLeadId(id) || !isSafeLeadId(leadId)) {
       return res.status(400).json({ error: "Invalid id or leadId format." });
     }
+    if (leadName.trim().length > 200) {
+      return res.status(400).json({ error: "leadName must be 200 characters or fewer." });
+    }
+    if (typeof companyName === "string" && companyName.trim().length > 200) {
+      return res.status(400).json({ error: "companyName must be 200 characters or fewer." });
+    }
+    if (typeof tone === "string" && tone.trim().length > 100) {
+      return res.status(400).json({ error: "tone must be 100 characters or fewer." });
+    }
+    if (typeof medium === "string" && medium.trim().length > 100) {
+      return res.status(400).json({ error: "medium must be 100 characters or fewer." });
+    }
+    if (typeof sequenceStep === "string" && sequenceStep.trim().length > 100) {
+      return res.status(400).json({ error: "sequenceStep must be 100 characters or fewer." });
+    }
+    if (body.trim().length > 50_000) {
+      return res.status(400).json({ error: "body must be 50,000 characters or fewer." });
+    }
+
+    const rawWordCount = Number(wordCount);
+    const sanitizedWordCount =
+      Number.isFinite(rawWordCount) && rawWordCount >= 0
+        ? Math.floor(rawWordCount)
+        : 0;
+
     const draft = upsertOutreachDraft({
       id: id.trim(),
       leadId: leadId.trim(),
-      leadName: String(leadName).trim(),
+      leadName: leadName.trim().slice(0, 200),
       companyName:
-        typeof companyName === "string" ? companyName.trim() : undefined,
-      tone: String(tone || "neutral").trim(),
-      medium: String(medium || "email").trim(),
-      sequenceStep: String(sequenceStep || "Step 1").trim(),
-      wordCount: Number(wordCount || 0),
-      body: String(body).trim().slice(0, 50_000),
+        typeof companyName === "string" ? companyName.trim().slice(0, 200) : undefined,
+      tone: String(tone || "neutral").trim().slice(0, 100),
+      medium: String(medium || "email").trim().slice(0, 100),
+      sequenceStep: String(sequenceStep || "Step 1").trim().slice(0, 100),
+      wordCount: sanitizedWordCount,
+      body: body.trim().slice(0, 50_000),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -2530,12 +2629,23 @@ router.post("/generate-outbound", paidRouteLimit("generate-outbound"), async (re
       postIntentEvidence,
       companyIntentEvidence,
       notes,
-    } = req.body;
+    } = req.body || {};
 
-    if (!profile || !profile.fullName) {
+    if (
+      !profile ||
+      typeof profile !== "object" ||
+      typeof profile.fullName !== "string" ||
+      !profile.fullName.trim()
+    ) {
       return res
         .status(400)
-        .json({ error: "Profile data is required for personalization." });
+        .json({ error: "profile.fullName is required and must be a non-empty string." });
+    }
+
+    if (profile.fullName.trim().length > 200) {
+      return res
+        .status(400)
+        .json({ error: "profile.fullName must be 200 characters or fewer." });
     }
 
     if (leadId !== undefined && leadId !== null && leadId !== "") {

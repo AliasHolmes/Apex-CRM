@@ -151,10 +151,9 @@ export async function executeSelectStage(
   const effectiveIntentConcurrency = Math.max(1, companyIntentConcurrency || 1);
   if (
     companyIntentEnabled &&
-    shouldRunIntent &&
-    effectiveIntentCap > 0
+    shouldRunIntent
   ) {
-    if (leadsNeedingIntent.length > 0) {
+    if (leadsNeedingIntent.length > 0 && effectiveIntentCap > 0) {
       logEvent(`Phase 4: Targeted company intent probing starting. Pool: ${leadsNeedingIntent.length} finalist leads.`);
       const qualifiedMap = new Map<string, any>(
         leadsNeedingIntent.map((l, idx) => [l.id || `lead-${idx}`, l]),

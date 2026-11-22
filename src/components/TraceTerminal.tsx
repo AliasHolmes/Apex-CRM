@@ -31,6 +31,7 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet';
 import { PipelineFunnelInspector } from './PipelineFunnelInspector';
+import { toSafeHttpUrl } from '@/lib/safeUrl';
 import type { MiningTraceEvent, MiningTraceSummary, ProviderSummary } from '@/types';
 
 export const formatDuration = (ms?: number) => {
@@ -485,7 +486,7 @@ export const TraceSummaryViewer = ({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="text-xs uppercase text-muted-foreground font-bold tracking-wider flex items-center gap-2">
             <span>Trace Event Timeline</span>
-            <Badge variant="outline" className="text-[10px] font-mono border-border">
+            <Badge variant="outline" className="text-xs font-mono border-border">
               {filteredEvents.length} of {effectiveEvents.length} events
             </Badge>
           </div>
@@ -504,13 +505,13 @@ export const TraceSummaryViewer = ({
 
         {/* Filter Controls */}
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="text-muted-foreground font-semibold text-[10px] uppercase">Stage:</span>
+          <span className="text-muted-foreground font-semibold text-xs uppercase">Stage:</span>
           {['all', 'plan', 'search', 'fusion', 'extraction', 'verification', 'enrichment', 'judging', 'selection', 'persistence'].map((stg) => (
             <button
               key={stg}
               type="button"
               onClick={() => setFilterStage(stg)}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors ${
+              className={`px-2 py-0.5 rounded text-xs font-mono transition-colors ${
                 filterStage === stg
                   ? 'bg-primary text-primary-foreground font-bold'
                   : 'bg-card/80 hover:bg-card border border-border text-muted-foreground'
@@ -523,13 +524,13 @@ export const TraceSummaryViewer = ({
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <div className="flex items-center gap-1">
-            <span className="text-muted-foreground font-semibold text-[10px] uppercase">Status:</span>
+            <span className="text-muted-foreground font-semibold text-xs uppercase">Status:</span>
             {['all', 'success', 'error', 'skipped', 'info'].map((st) => (
               <button
                 key={st}
                 type="button"
                 onClick={() => setFilterStatus(st)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                className={`px-1.5 py-0.5 rounded text-xs font-mono transition-colors ${
                   filterStatus === st
                     ? 'bg-primary text-primary-foreground font-bold'
                     : 'bg-card/80 hover:bg-card border border-border text-muted-foreground'
@@ -541,13 +542,13 @@ export const TraceSummaryViewer = ({
           </div>
 
           <div className="flex items-center gap-1 ml-auto">
-            <span className="text-muted-foreground font-semibold text-[10px] uppercase">Provider:</span>
+            <span className="text-muted-foreground font-semibold text-xs uppercase">Provider:</span>
             {['all', 'llm', 'tavily', 'brightdata', 'system'].map((pr) => (
               <button
                 key={pr}
                 type="button"
                 onClick={() => setFilterProvider(pr)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                className={`px-1.5 py-0.5 rounded text-xs font-mono transition-colors ${
                   filterProvider === pr
                     ? 'bg-primary text-primary-foreground font-bold'
                     : 'bg-card/80 hover:bg-card border border-border text-muted-foreground'
@@ -579,10 +580,10 @@ export const TraceSummaryViewer = ({
                   title="Click to inspect event details"
                 >
                   <div className="flex items-center gap-2 truncate min-w-0">
-                    <span className="text-muted-foreground font-semibold text-[10px] shrink-0">
+                    <span className="text-muted-foreground font-semibold text-xs shrink-0">
                       {event.seq ? `#${event.seq}` : `#${idx + 1}`}
                     </span>
-                    <span className="text-muted-foreground text-[10px] shrink-0 font-sans">
+                    <span className="text-muted-foreground text-xs shrink-0 font-sans">
                       {new Date(event.timestamp).toLocaleTimeString()}
                     </span>
                     <span className="text-primary font-bold shrink-0">
@@ -593,13 +594,13 @@ export const TraceSummaryViewer = ({
                     </span>
 
                     {isDrop && meta.reasonCode && (
-                      <Badge variant="outline" className="text-[10px] border-danger/40 bg-danger/10 text-danger shrink-0">
+                      <Badge variant="outline" className="text-xs border-danger/40 bg-danger/10 text-danger shrink-0">
                         Drop: {String(meta.reasonCode)}
                       </Badge>
                     )}
 
                     {(event.model || event.llm?.model) && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-info/10 border border-info/40 text-info font-mono shrink-0">
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-info/10 border border-info/40 text-info font-mono shrink-0">
                         {event.model || event.llm?.model}
                       </span>
                     )}
@@ -619,13 +620,13 @@ export const TraceSummaryViewer = ({
 
                   <div className="flex items-center gap-2 shrink-0">
                     {event.latencyMs !== undefined && (
-                      <span className="text-muted-foreground text-[10px] font-mono">
+                      <span className="text-muted-foreground text-xs font-mono">
                         {formatDuration(event.latencyMs)}
                       </span>
                     )}
                     <Badge
                       variant="outline"
-                      className={`text-[10px] font-semibold py-0 px-1.5 ${
+                      className={`text-xs font-semibold py-0 px-1.5 ${
                         event.status === 'error'
                           ? 'border-danger/40 bg-danger/10 text-danger'
                           : event.status === 'success'
@@ -698,21 +699,21 @@ export const TraceSummaryViewer = ({
               {/* Event Metrics Card */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="bg-background/80 border border-border p-2.5 rounded-lg">
-                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Latency</div>
+                  <div className="text-xs uppercase font-bold text-muted-foreground">Latency</div>
                   <div className="text-sm font-bold font-mono text-foreground mt-0.5">
                     {formatDuration(selectedEvent.latencyMs)}
                   </div>
                 </div>
 
                 <div className="bg-background/80 border border-border p-2.5 rounded-lg">
-                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Provider</div>
+                  <div className="text-xs uppercase font-bold text-muted-foreground">Provider</div>
                   <div className="text-sm font-bold font-mono text-primary mt-0.5">
                     {selectedEvent.provider || (selectedEvent.llm ? 'llm' : 'system')}
                   </div>
                 </div>
 
                 <div className="bg-background/80 border border-border p-2.5 rounded-lg">
-                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Tokens</div>
+                  <div className="text-xs uppercase font-bold text-muted-foreground">Tokens</div>
                   <div className="text-sm font-bold font-mono text-info mt-0.5">
                     {selectedEvent.llm?.totalTokens !== undefined
                       ? selectedEvent.llm.totalTokens.toLocaleString()
@@ -721,7 +722,7 @@ export const TraceSummaryViewer = ({
                 </div>
 
                 <div className="bg-background/80 border border-border p-2.5 rounded-lg">
-                  <div className="text-[10px] uppercase font-bold text-muted-foreground">Est. Cost</div>
+                  <div className="text-xs uppercase font-bold text-muted-foreground">Est. Cost</div>
                   <div className="text-sm font-bold font-mono text-success mt-0.5">
                     {selectedEvent.llm?.estimatedCostUsd !== undefined
                       ? `$${selectedEvent.llm.estimatedCostUsd.toFixed(5)}`
@@ -736,7 +737,7 @@ export const TraceSummaryViewer = ({
                   <div className="font-bold text-foreground flex items-center justify-between">
                     <span>LLM Execution Telemetry</span>
                     {selectedEvent.promptVersion && (
-                      <span className="font-mono text-[10px] text-muted-foreground">
+                      <span className="font-mono text-xs text-muted-foreground">
                         Version: {selectedEvent.promptVersion}
                       </span>
                     )}
@@ -775,13 +776,13 @@ export const TraceSummaryViewer = ({
                   {Array.isArray((selectedEvent.llm as any).providerAttempts) &&
                     (selectedEvent.llm as any).providerAttempts.length > 0 && (
                       <div className="mt-2 pt-2 border-t border-border/80 space-y-1">
-                        <div className="text-[10px] uppercase font-bold text-muted-foreground">
+                        <div className="text-xs uppercase font-bold text-muted-foreground">
                           Provider Fallback / Hop Chain
                         </div>
                         {(selectedEvent.llm as any).providerAttempts.map((att: any, aIdx: number) => (
                           <div
                             key={aIdx}
-                            className="p-1.5 rounded bg-card text-[10px] font-mono flex items-center justify-between border border-border/60"
+                            className="p-1.5 rounded bg-card text-xs font-mono flex items-center justify-between border border-border/60"
                           >
                             <span className="text-foreground">
                               {att.provider} ({att.route})
@@ -823,7 +824,7 @@ export const TraceSummaryViewer = ({
                     )}
                     <div>
                       <span className="text-muted-foreground font-medium">Reason Code:</span>{' '}
-                      <Badge variant="outline" className="border-danger/40 bg-danger/10 text-danger text-[10px]">
+                      <Badge variant="outline" className="border-danger/40 bg-danger/10 text-danger text-xs">
                         {(selectedEvent.metadata as any)?.reasonCode}
                       </Badge>
                     </div>
@@ -844,7 +845,7 @@ export const TraceSummaryViewer = ({
                     {selectedEvent.error.message || String(selectedEvent.error)}
                   </div>
                   {selectedEvent.error.code && (
-                    <div className="text-[10px] font-mono text-danger/80">
+                    <div className="text-xs font-mono text-danger/80">
                       Code: {selectedEvent.error.code}
                     </div>
                   )}
@@ -854,7 +855,7 @@ export const TraceSummaryViewer = ({
               {/* Raw JSON View */}
               <div className="space-y-1.5 pt-2">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="uppercase font-bold text-muted-foreground text-[10px]">
+                  <span className="uppercase font-bold text-muted-foreground text-xs">
                     Raw Trace Event Payload
                   </span>
                   <Button
@@ -862,13 +863,13 @@ export const TraceSummaryViewer = ({
                     variant="outline"
                     size="sm"
                     onClick={() => handleCopyEventJson(selectedEvent)}
-                    className="h-6 text-[10px] font-mono flex items-center gap-1 px-2"
+                    className="h-6 text-xs font-mono flex items-center gap-1 px-2"
                   >
                     {copiedEventJson ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
                     <span>{copiedEventJson ? 'Copied' : 'Copy JSON'}</span>
                   </Button>
                 </div>
-                <pre className="p-3 rounded-lg bg-card border border-border text-[10px] font-mono text-foreground/90 overflow-x-auto max-h-56 scrollbar-thin">
+                <pre className="p-3 rounded-lg bg-card border border-border text-xs font-mono text-foreground/90 overflow-x-auto max-h-56 scrollbar-thin">
                   {JSON.stringify(selectedEvent, null, 2)}
                 </pre>
               </div>
@@ -995,9 +996,9 @@ export const TraceSummaryViewer = ({
                     <span className="w-2 h-2 rounded-full bg-success" />
                     <span className="text-xs font-semibold text-foreground">Langfuse Tracing</span>
                   </div>
-                  {tokenStats.langfuseDeepLink ? (
+                  {toSafeHttpUrl(tokenStats.langfuseDeepLink) ? (
                     <a
-                      href={tokenStats.langfuseDeepLink}
+                      href={toSafeHttpUrl(tokenStats.langfuseDeepLink)!}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-primary hover:bg-primary/90 text-primary-foreground font-medium text-xs transition-colors"

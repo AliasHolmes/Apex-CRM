@@ -48,7 +48,7 @@ const identitiesFor = (leadId: string) =>
 test('merge succeeds when the duplicate owns an email the winner lacks', async () => {
   upsertLeadWithIdentity(createLead('merge-winner-1', {}));
   upsertLeadWithIdentity(createLead('merge-dup-1', {
-    currentCompany: 'Acme Inc',
+    currentCompany: 'Beta',
     contactDetails: { email: 'jane@acme.com' },
   }));
 

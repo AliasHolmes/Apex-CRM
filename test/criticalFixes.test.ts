@@ -7,6 +7,9 @@ import {
   isLoopbackHost,
   isAllowedHost,
   isAllowedOrigin,
+  parseServerCliArgs,
+  isHostedEnvironment,
+  getConfiguredHostAllowlist,
 } from '../server/hostValidation.js';
 import { abortableSleep } from '../server/services/brightdata.js';
 import { sleepWithSignal } from '../server/services/llm.js';
@@ -178,6 +181,111 @@ describe('Critical Fixes & Optimizations Verification', () => {
       assert.equal(isAllowedOrigin('http://localhost:4000', 3001), false);
       assert.equal(isAllowedOrigin('https://evil.com', 3001), false);
       assert.equal(isAllowedOrigin(undefined, 3001), true);
+    });
+
+    it('parses CLI arguments for port and host correctly', () => {
+      assert.deepEqual(parseServerCliArgs(['--port', '3000']), { port: 3000 });
+      assert.deepEqual(parseServerCliArgs(['--port=4000']), { port: 4000 });
+      assert.deepEqual(parseServerCliArgs(['-p', '8080']), { port: 8080 });
+      assert.deepEqual(parseServerCliArgs(['-p=9000']), { port: 9000 });
+      assert.deepEqual(parseServerCliArgs(['--host', '0.0.0.0']), { host: '0.0.0.0' });
+      assert.deepEqual(parseServerCliArgs(['--host=127.0.0.1']), { host: '127.0.0.1' });
+      assert.deepEqual(parseServerCliArgs(['-h', 'localhost']), { host: 'localhost' });
+      assert.deepEqual(
+        parseServerCliArgs(['node', 'server.js', '--port', '3000', '--host', '0.0.0.0']),
+        { port: 3000, host: '0.0.0.0' }
+      );
+      assert.deepEqual(parseServerCliArgs(['--port', 'invalid']), {});
+      assert.deepEqual(parseServerCliArgs(['--port', '70000']), {});
+      assert.deepEqual(parseServerCliArgs([]), {});
+    });
+
+    it('detects hosted environments from APP_URL or K_SERVICE', () => {
+      assert.equal(isHostedEnvironment({ APP_URL: 'https://crm.example.com' }), true);
+      assert.equal(isHostedEnvironment({ K_SERVICE: 'apex-crm-service' }), true);
+      assert.equal(isHostedEnvironment({ APP_URL: 'https://crm.example.com', K_SERVICE: 'service' }), true);
+      assert.equal(isHostedEnvironment({}), false);
+      assert.equal(isHostedEnvironment({ APP_URL: '', K_SERVICE: '   ' }), false);
+      assert.equal(isHostedEnvironment(undefined as any), false);
+    });
+
+    it('parses configured host allowlist from APP_URL, ALLOWED_HOSTS, and ALLOWED_ORIGINS', () => {
+      const env = {
+        APP_URL: 'https://preview.run.app:8080',
+        ALLOWED_HOSTS: 'my-crm.com, *.example.com internal.net:3000',
+        ALLOWED_ORIGINS: 'https://trusted-client.com; http://app.local',
+      };
+      const allowlist = getConfiguredHostAllowlist(env);
+      assert.ok(allowlist.includes('preview.run.app'));
+      assert.ok(allowlist.includes('my-crm.com'));
+      assert.ok(allowlist.includes('*.example.com'));
+      assert.ok(allowlist.includes('internal.net'));
+      assert.ok(allowlist.includes('trusted-client.com'));
+      assert.ok(allowlist.includes('app.local'));
+      assert.deepEqual(getConfiguredHostAllowlist({}), []);
+    });
+
+    it('supports hosted allowlist, Cloud Run, and same-host validation for isAllowedHost', () => {
+      const opts = {
+        allowedHosts: ['my-crm.com', '*.custom-domain.org'],
+        allowCloudRun: true,
+        allowSameHost: true,
+        serverHost: 'service-xyz.run.app:3000',
+      };
+
+      // Loopback remains valid
+      assert.equal(isAllowedHost('localhost:3000', 3000, opts), true);
+      assert.equal(isAllowedHost('127.0.0.1:3000', 3000, opts), true);
+
+      // Cloud Run domains
+      assert.equal(isAllowedHost('apex-crm-abc-uc.a.run.app:443', 3000, opts), true);
+      assert.equal(isAllowedHost('my-app.run.app', 3000, opts), true);
+
+      // Explicit allowlisted host and wildcard
+      assert.equal(isAllowedHost('my-crm.com:3000', 3000, opts), true);
+      assert.equal(isAllowedHost('sub.custom-domain.org', 3000, opts), true);
+
+      // Same-host match
+      assert.equal(isAllowedHost('service-xyz.run.app:3000', 3000, opts), true);
+
+      // Untrusted host rejected
+      assert.equal(isAllowedHost('evil.com:3000', 3000, opts), false);
+      assert.equal(isAllowedHost('not-allowed.org', 3000, opts), false);
+
+      // Loopback-only enforcement when no options passed
+      assert.equal(isAllowedHost('my-crm.com:3000', 3000), false);
+    });
+
+    it('supports hosted allowlist, Cloud Run, and same-host validation for isAllowedOrigin', () => {
+      const opts = {
+        allowedOrigins: ['https://trusted-client.com', 'http://dashboard.local:5173'],
+        allowedHosts: ['my-crm.com', '*.custom-domain.org'],
+        allowCloudRun: true,
+        allowSameHost: true,
+        requestHost: 'service-xyz.run.app:3000',
+      };
+
+      // Loopback on expected port remains valid
+      assert.equal(isAllowedOrigin('http://localhost:3000', 3000, opts), true);
+      assert.equal(isAllowedOrigin('http://localhost:3000', 3000), true);
+
+      // Allowed origins list
+      assert.equal(isAllowedOrigin('https://trusted-client.com', 3000, opts), true);
+      assert.equal(isAllowedOrigin('http://dashboard.local:5173', 3000, opts), true);
+
+      // Cloud Run origin
+      assert.equal(isAllowedOrigin('https://my-app.run.app', 3000, opts), true);
+
+      // Matching requestHost (same-host)
+      assert.equal(isAllowedOrigin('https://service-xyz.run.app', 3000, opts), true);
+
+      // Matching allowedHosts pattern
+      assert.equal(isAllowedOrigin('https://my-crm.com', 3000, opts), true);
+      assert.equal(isAllowedOrigin('https://sub.custom-domain.org', 3000, opts), true);
+
+      // Untrusted origins rejected
+      assert.equal(isAllowedOrigin('https://evil.com', 3000, opts), false);
+      assert.equal(isAllowedOrigin('https://my-crm.com', 3000), false);
     });
   });
 

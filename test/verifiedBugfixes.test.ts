@@ -229,7 +229,7 @@ describe('Client-side score normalization (LeadContext.tsx:589 inversion)', () =
     );
     const code = src
       .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
+      .split(/\r?\n/)
       .map((line) => line.replace(/\/\/.*$/, ''))
       .join('\n');
 

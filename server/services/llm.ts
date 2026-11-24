@@ -28,7 +28,7 @@ type ChatMessage = {
 };
 
 type LLMProvider = {
-  id: "primary" | "byesu" | "openrouter" | "groq" | "atria";
+  id: "primary" | "byesu" | "openrouter" | "groq";
   name: string;
   baseUrl: string;
   model: string;
@@ -474,7 +474,6 @@ async function fetchWithRetry(
   options: RequestInit,
   timeoutMs?: number,
   maxRetries?: number,
-  _isAtria = false,
   _providerId?: string,
   _isReasoning = false,
 ): Promise<Response> {
@@ -860,6 +859,7 @@ export function getProviderConcurrencyLimit(providerId: string): number {
     const configured = Number(process.env.BYESU_CONCURRENT_SLOTS || 8);
     return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : 8;
   }
+  // Keep returning 0 for retired "atria" id (pinned by backwards-compat unit tests)
   if (providerId === "atria") {
     return 0;
   }
@@ -2016,7 +2016,6 @@ async function sendChatCompletion(
         ? Math.max(Number(timeoutForCall || 0), 240_000)
         : timeoutForCall,
       maxRetriesForCall,
-      false,
       provider.id,
       isReasoningCapable,
     );

@@ -2436,7 +2436,12 @@ export function upsertLeadInExistingTransaction(
           "SELECT payload FROM leads WHERE id = ?",
         ).get(identity.lead_id) as { payload: string } | undefined;
         if (canonicalRow) {
-          const canonicalLead = JSON.parse(canonicalRow.payload);
+          let canonicalLead: any = null;
+          try {
+            canonicalLead = JSON.parse(canonicalRow.payload);
+          } catch {
+            canonicalLead = null;
+          }
           const incomingLinkedIn = canonicalLinkedInIdentity(
             lead?.profile?.contactDetails?.linkedinUrl || lead?.contactDetails?.linkedinUrl || lead?.linkedinUrl || lead?.sourceUrl || lead?.url
           );

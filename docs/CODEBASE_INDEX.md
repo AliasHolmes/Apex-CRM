@@ -3,19 +3,19 @@
 Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `scripts/`, `test/`
 (excludes `node_modules/`, `dist/`, `.apex-data/`)
 
-> Every count below was measured directly from the working tree on 2026-11-18 (Schema v30)
+> Every count below was measured directly from the working tree on 2026-11-25 (Schema v30)
 > and includes ADR-0018 (compiler token headroom expansion, dynamic 150s-180s
 > single-candidate timeout scaling, canonical isTransientLLMError retry unification, and nuance-preserving
 > multi-anchor evidence windowing across 24k chars without profile category deletions),
 > ADR-0019 (single-candidate 210s timeout headroom and cross-provider judge retry escalation),
-> ADR-0022 (Langfuse v4 OpenTelemetry ingestion migration; Section 9.39), and
-> model-aware cost/token accounting with Schema v30 (Section 9.40).
-> `npm run typecheck` (`tsc --noEmit`) passes with 0 errors (verified 2026-11-18).
-> `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last attested run;
-> the suite now holds 207 `.test.ts` files and has not been re-attested since).
+> ADR-0022 (Langfuse v4 OpenTelemetry ingestion migration; Section 9.39),
+> model-aware cost/token accounting with Schema v30 (Section 9.40), and the
+> 2026-11-25 codebase health & audit remediation pass (Section 9.42).
+> `tsc --noEmit` passes with 0 errors (verified 2026-11-25).
+> `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last full `tsx` run;
+> the suite now holds 209 `.test.ts` files. On 2026-11-25, targeted `verifiedBugfixes` + `compactJudgeGrounding` passed **18/18**, and static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files excluding 6 `?t=` dynamic-import suites).
 > Line counts are physical lines (blank lines included).
-> Re-measured 2026-11-18 against the working tree (Schema v30). No short-hash pin is recorded
-> because the tree is under active development; see Sections 9.35, 9.39 and 9.40.
+> Re-measured 2026-11-25 against modified targets on `main` (Schema v30); see Sections 9.14, 9.35, 9.39, 9.40, and 9.42.
 
 ---
 
@@ -60,12 +60,12 @@ carried forward in Section 9 below. Recover them from git history if the detail 
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Frontend (`src/`)                                                | 16,963 lines across 63 TypeScript files (`components/` alone: 36 files / 11,321 lines)                                   |
 | Backend engine (`server/leadSearch/`)                            | 30,626 lines: 54 modules + 9 `stages/` (modules 22,048 / stages 8,578)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,208 lines (db 5,948 / llm 3,790 / api 2,741 / brightdata 3,383 / rest 2,346)                                                             |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,212 lines (db 5,953 / llm 3,789 / api 2,741 / brightdata 3,383 / rest 2,346)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v30**, WAL                   |
-| Test suite                                                       | 212 files: 207 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 35,390 lines; executes via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail) |
-| Total first-party LOC                                            | 101,064 TypeScript lines (353 files, incl. tests)                                    |
-| Anchor                                                           | measured at working tree (Schema v30); dated 2026-11-18                                    |
+| Test suite                                                       | 214 files: 209 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 35,981 lines; executes via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail; 2026-11-25 static `esbuild` bundle sweep: 1,384 / 1,399 pass across 203 files + 18/18 on `verifiedBugfixes` & `compactJudgeGrounding`) |
+| Total first-party LOC                                            | ~101,660 TypeScript lines (358 TypeScript files, incl. tests)                                    |
+| Anchor                                                           | measured at working tree (Schema v30); updated 2026-11-25                                    |
 
 ## 3. Tech stack
 
@@ -85,9 +85,9 @@ carried forward in Section 9 below. Recover them from git history if the detail 
 
 ```
 server.ts                    Express app + static Vite serve (380 lines) · socketGuard.ts — extracted socket-error handling & SSE disconnect cleanup used by server.ts and server/routes/api.ts (105 lines)
-server/db.ts                 SQLite layer: schema v30, migrations 1-30, 40+ readers/writers (5,948)
+server/db.ts                 SQLite layer: schema v30, migrations 1-30, 40+ readers/writers (5,953)
 server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,741)
-server/services/             llm.ts (3,790, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
+server/services/             llm.ts (3,789, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
                              brightdata.ts (3,383) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
                              linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
@@ -128,7 +128,7 @@ server/leadSearch/           the discovery engine
   collectionCapacity.ts · constraintAblation.ts · evidenceSelection.ts (alias-aware, location provenance guard) ·
   intentSignals.ts (abbreviated units, 45d neutral undated age) · intentEnrichment.ts ·
   companyIntent.ts · linkedinPostIntent.ts (annotate-only) · siteProbe.ts (provenance-tagged, press-URL guard, subpath probe) ·
-  signalStore.ts · telemetry.ts (820; model-aware cost rates, reasoning/cached tokens, search credits) · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
+  signalStore.ts · telemetry.ts (831; model-aware cost rates, reasoning/cached tokens, search credits) · featureFlags.ts · freeTier.ts · discoveryRouting.ts · leadMapping.ts ·
   sessionHelpers.ts · observations.ts (company-hint sanitizer: slogans, ellipses,
                              marketing taglines) · profileEnrichment.ts · rejections.ts ·
   roundDiagnostics.ts · scoutScoring.ts · verification.ts ·
@@ -152,7 +152,7 @@ src/                         App.tsx (tab shell + error boundaries) · context/ 
                              leadDedupe, leadScore)
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        212 files: 207 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/fixtures/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 35,390 lines; runs via `npm test` (tsx); no current pass/fail attestation (last attested: 2026-11-04, 1,385 pass / 0 fail)
+test/                        214 files: 209 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/fixtures/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 35,981 lines; runs via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail)
 scripts/dev.ts               spawns Vite + Express (148 lines)
 scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22) (166 lines)
 ```
@@ -285,8 +285,8 @@ invariants.
 
 ## 7. Test suite
 
-207 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (212 files in `test/`, 35,390 lines as of 2026-11-18). Last attested state (2026-11-04):
-**1,385 pass / 0 fail**, exit 0 across all 208 suites; pass/fail totals have not been re-attested since — the suite executes only via `npm test` (tsx with query-suffix import cache-busting) and was not runnable in the 2026-11-11 audit environment. The 1,287/0, 1,370/0, and 1,381/0 figures below are historical and predate the current
+209 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (214 files in `test/`, 35,981 lines as of 2026-11-25). Last attested full `tsx` run (2026-11-04):
+**1,385 pass / 0 fail**, exit 0 across all 208 suites; on 2026-11-25, targeted `verifiedBugfixes` + `compactJudgeGrounding` passed **18/18**, and static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files (the 15 bundler failures are strictly `?t=` dynamic-import suites and bundle-relative `replayGate` fixture lookups; the 6 `?t=` suites were excluded from static bundling). The 1,287/0, 1,370/0, and 1,381/0 figures below are historical and predate the current
 suite. A
 historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval tests. Composition:
 
@@ -515,8 +515,8 @@ Eight commits that shrink the LLM/lead-search surface without changing behaviour
 measured here at `b60a6dc`:
 
 - **A1/A2 (`000f6d3`)** - the legacy single-mutex queue in `llm.ts` is gone; provider
-  affinity is now expressed solely by the independent Atria/Byesu slots. `test/llmBoundedConcurrency.test.ts`
-  was deleted with it, so the suite dropped from 165 to 164 `.test.ts` files.
+  affinity is now expressed solely by the independent Atria/Byesu slots. The former bounded-concurrency
+  test suite was deleted with it, so the suite dropped from 165 to 164 `.test.ts` files.
 - **A3/B8 (`fe0c021`)** - Token Harbor leftovers and `ProviderTrafficController` removed
   from `llm.ts`, `keyRotator.ts`, and `companyIntent.ts`; `llm.ts` shrank 3,427 - 3,261.
 - **A4 (`4a4f6c5`)** - the six graduated `() => true` flags were deleted outright rather
@@ -527,42 +527,22 @@ measured here at `b60a6dc`:
 - **A7-A9 (`5a7b566`)** - dead exports removed and module-local symbols scoped across
   `discoveryRouting`, `finalistJudge`, `rejections`, `scoring`, `searchSpec`,
   `titleTriage`, `brightdata`, `linkedinEvidence`, `llm`.
-- **Judge parallelism (`1743313`)** - new `rollingPool.ts` runs judge micro-batches in a
+- **Judge parallelism (`1743313`)** - the former non-live rolling pool module ran judge micro-batches in a
   bounded rolling window (a finished item frees its slot instead of holding a
   `Promise.all` wave), with `telemetry.ts` gaining critical-path wall-clock attribution.
-  Four new suites pin it: `rollingPool`, `judgeRollingQueue`, `compactJudgeGrounding`,
+  Four suites originally pinned it: the deleted non-live pool suite, `judgeRollingQueue`, `compactJudgeGrounding`,
   `criticalPathTelemetry`.
 - **B1-B7 (`c22ea8e`)** - `CONTEXT.md`, `README.md`, and this index re-synchronized;
   the README test badge lost its hardcoded count.
 - **C (`b60a6dc`)** - `.env.example` re-synced with active runtime keys.
 
-### 9.14 Source guard is CRLF-sensitive - OPEN (reproduced at `b60a6dc`, 2026-10-05)
+### 9.14 Source guard is CRLF-sensitive - FIXED (2026-11-25; originally reproduced at `b60a6dc`, 2026-10-05)
 
 `test/verifiedBugfixes.test.ts:223` ("keeps no executable `<= 1.0` score comparison in the
-client") strips comments before matching:
-
-```ts
-const code = src.replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n')
-  .map((line) => line.replace(/\/\/.*$/, ''))
-  .join('\n');
-```
-
-On a CRLF checkout that second strip silently does nothing: `.` does not match `\r`, and
-`$` without the `m` flag only anchors at end of input, so `/\/\/.*$/` fails to match a
-comment that is followed by `\r` and the prose comment
-(`// ... not `<= 1.0`: a score of exactly 1 ...`) survives into `code`, tripping the
-assertion. Reproduced in a detached worktree where `core.autocrlf=true` (there is no
-`.gitattributes`) and `src/context/LeadContext.tsx` checks out as CRLF: **1 failure out of
-1064**. Rewriting that one file to LF in place makes all 8 tests in the file pass, which
-isolates line endings as the sole cause - the guard is correct and non-vacuous in the
-current dev tree, which happens to hold the file as LF.
-
-Impact: a fresh Windows clone can fail this source guard for a reason unrelated to the
-code. Fix either by normalizing before stripping (`code.split(/\r?\n/)`) or by pinning
-line endings in `.gitattributes`. Not yet applied. This is a historical, isolated
-reproduction at `b60a6dc`; the current observed `npm test` failure is separately recorded
-in 9.15 and should not be conflated with this finding.
+client") originally stripped comments after splitting on `'\n'`, which left trailing `\r`
+on Windows CRLF checkouts and prevented `/\/\/.*$/` from matching `// ... <= 1.0` prose.
+Updated `test/verifiedBugfixes.test.ts` on 2026-11-25 to split with `/\r?\n/`, making all 8
+tests in `verifiedBugfixes.test.ts` pass on CRLF checkouts (`LeadContext.tsx`).
 
 ### 9.15 Market-depth and yield optimization - LANDED (`dc5ce3d`, `a237c91`, 2026-10-06)
 
@@ -740,8 +720,8 @@ working tree:
   `test:lead-engine`.
 - **Deviations from the plan, all operator-consistent**: ADR-0014 was taken by the Byesu
   decommissioning, so the grounded invariant landed as ADR-0015 (labels in `db.ts` and the
-  test suite corrected). `test/rollingPool.test.ts`, `atriaConcurrency.test.ts` and
-  `atriaProvider.test.ts` were deleted along with their subjects; `byesuConcurrency` /
+  test suite corrected). The former rolling-pool, `atriaConcurrency`, and
+  `atriaProvider` test suites were deleted along with their subjects; `byesuConcurrency` /
   `byesuProvider` pin the new provider order. Result: typecheck 0 errors, 192 `.test.ts` +
   helpers, 194 suites, **1,287 pass / 0 fail** (~1m50s).
 
@@ -1142,9 +1122,9 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
 - **Test Harness Coverage**:
   - Added comprehensive test suite in `test/langfuseUpgrade.test.ts` covering host resolution, OTLP schema structure, trace/span ID hexadecimal formats, BigInt nanosecond ordering, GenAI attribute mappings, status codes, fetch header propagation, and network failure shielding.
 
-### 9.40 Model-Aware Cost & Token Accounting, Schema v30 (2026-11-18)
+### 9.40 Model-Aware Cost & Token Accounting, Schema v30 (2026-11-18; active model pricing added 2026-11-25)
 
-- **Model-aware cost rates (`telemetry.ts`)**: `estimateLLMCostUsd` accepts the resolved model and consults `DEFAULT_MODEL_COST_PER_1M` before the legacy `DEFAULT_PROVIDER_COST_PER_1M` table (env overrides `LLM_OBSERVABILITY_INPUT_COST_PER_1M`/`LLM_OBSERVABILITY_OUTPUT_COST_PER_1M` still win), so Gemini, GPT and Groq models are priced at their own rates; `summarizeLLM` forwards the model.
+- **Model-aware cost rates (`telemetry.ts`)**: `estimateLLMCostUsd` accepts the resolved model and consults `DEFAULT_MODEL_COST_PER_1M` (updated 2026-11-25 with active entries for `gemini-3.8-flash-high` at `$0` local OmniRoute, `devstral-2512`, and `qwen/qwen3.8-27b`) before the legacy `DEFAULT_PROVIDER_COST_PER_1M` table (env overrides `LLM_OBSERVABILITY_INPUT_COST_PER_1M`/`LLM_OBSERVABILITY_OUTPUT_COST_PER_1M` still win), so Gemini, GPT and Groq models are priced at their own rates; `summarizeLLM` forwards the model.
 - **Reasoning/cached token propagation (`llm.ts`, `telemetry.ts`)**: `LLMUsage` and `LLMProviderAttempt.tokens` carry optional `reasoningTokens`/`cachedTokens` extracted from stream and non-stream usage details; `MiningTelemetryRecorder` aggregates them into `llm_stage_logs`.
 - **Search-credit rollup (`telemetry.ts`)**: `CostSummary` adds `searchCredits` (Tavily/Bright Data call counts) and `searchCostUsd`; `estimatedUsd` and `costPerAcceptedLead` now include search spend. `LlmStageLogEntry` gains the matching cost/token fields.
 - **Schema v30 (`server/db.ts`)**: `LATEST_SCHEMA_VERSION = 30`; migration 30 adds `cost_usd`, `reasoning_tokens`, `cached_tokens`, and `prompt_version` to `llm_stage_logs`, and `queue_wait_ms` is promoted into the baseline DDL.
@@ -1169,9 +1149,18 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
   - `PipelineFunnelInspector.tsx`: visual 6-stage conversion funnel (`Retrieval -> Fusion -> Extraction -> Verification -> Finalist Judge -> Selection`) with drop count badges and interactive candidate inspection dialog.
   - `TraceTerminal.tsx`: searchable and filterable timeline replacing 6-event limit with stage, status, and provider pills, plus an expandable `Sheet` event detail drawer with prompt version, token accounting, provider attempts, and JSON copying.
 
+### 9.42 Codebase Health Audit & Remediation (2026-11-25)
+
+- **CRLF source-guard fix (`test/verifiedBugfixes.test.ts`)**: Replaced `.split('\n')` with `.split(/\r?\n/)` so trailing `\r` on Windows checkouts no longer leaks `//` comments past line-comment stripping.
+- **Dead Atria wiring cleanup (`server/services/llm.ts`)**: Removed `"atria"` from `LLMProvider["id"]` and dropped the unused `_isAtria` parameter from `fetchWithRetry` and its `sendChatCompletion` call site, while retaining the deprecated Atria stub functions and `getProviderConcurrencyLimit("atria") === 0` compatibility return pinned by `byesuProvider.test.ts` and `compactJudgeGrounding.test.ts`.
+- **Dead config removal & `.env.example` sync (`.env`, `.env.example`)**: Removed unused `BRIGHTDATA_POLLING_TIMEOUT` and retired `TOKEN_HARBOR_*` keys from `.env`; documented `BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS`, `LLM_STALL_TIMEOUT_MS`, `LLM_STALL_INACTIVITY_MS`, `LLM_READ_TIMEOUT_MS`, `LLM_STREAMING`, and `PLANNER_PRIMARY_TIMEOUT_MS` in `.env.example`.
+- **Defensive `JSON.parse` hardening (`server/db.ts`, `src/components/OutreachStudio.tsx`)**: Added `try/catch` guards around `canonicalRow.payload` parsing in `upsertLeadInExistingTransaction` and `localStorage` draft parsing in `readLocalDrafts()`.
+- **Telemetry rates & UI dedup (`server/leadSearch/telemetry.ts`, `src/components/ScrapeWorkspace.tsx`)**: Added active primary/failsafe model entries (`gemini-3.8-flash-high`, `devstral-2512`, `qwen/qwen3.8-27b`) to `DEFAULT_MODEL_COST_PER_1M`, and extracted `clampAndUpdate` in `ScrapeWorkspace.tsx` to share blur integer clamp logic.
+- **Doc sync (`docs/CODEBASE_INDEX.md`, `README.md`, `CONTEXT.md`)**: Reworded stale references to deleted test suites (`llmBoundedConcurrency.test.ts`, `rollingPool.test.ts`) as historical prose and refreshed active test/LOC metrics.
+
 ## 10. Recommended next actions
 
-Updated 2026-11-18.
+Updated 2026-11-25.
 
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.
@@ -1181,7 +1170,7 @@ Updated 2026-11-18.
 5. ~~**Engine Audit Remediation (Packages 1-3)**~~ Done - all 17 audit findings resolved, 1,353 tests passing across 201 suites with 0 failures.
 6. ~~**Refresh the README test badge**~~ - Done, badge simplified to `Lead_Engine-Passing-10B981` without stale hardcoded counts.
 7. ~~**Watch the primary admission gate's precision/recall trade**~~ - Addressed by ADR-0017: `evaluatePrimaryAdmission` now includes enterprise admission protection via `isAgencyContract(contract)` to prevent false-positive withholding on corporate briefs.
-8. **Make the `<= 1.0` source guard EOL-agnostic (9.14)** - one line (`split(/\r?\n/)`) plus an optional `.gitattributes` `eol=lf` so a fresh Windows clone does not fail `npm test`.
+8. ~~**Make the `<= 1.0` source guard EOL-agnostic (9.14)**~~ - Done (2026-11-25): updated `test/verifiedBugfixes.test.ts` to split lines with `/\r?\n/` (Section 9.14 / 9.42).
 9. ~~**Decide the fate of the uncommitted Agent Brain path (9.22)**~~ - Done (2026-10-16): committed at `10c384b`, ASCII-cleaned, identity keys routed through `canonicalLinkedInIdentity`, and its heuristically-positive writes are demoted by the ADR-0015 grounded-write gate.
 10. ~~**Re-sync README schema claims to v27 (9.23)**~~ - Done. Concurrency defaults aligned across `.env` and `.env.example` (`BYESU_CONCURRENT_SLOTS="8"`).
 11. ~~**Re-pin this index when HEAD moves.**~~ Done - counts and architecture summary refreshed against the 2026-11-18 working tree (Schema v30); supersedes the earlier 2026-11-04 pin.

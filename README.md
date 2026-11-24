@@ -245,7 +245,7 @@ flowchart TD
 
 #### 22. Model-Aware Cost & Token Accounting (Schema v30)
 
-- **Model-Aware Cost Rates** (`telemetry.ts`): `estimateLLMCostUsd` resolves `DEFAULT_MODEL_COST_PER_1M` before the provider-level table, so Gemini, GPT, and Groq models are billed at their own rates; environment overrides still take precedence.
+- **Model-Aware Cost Rates** (`telemetry.ts`): `estimateLLMCostUsd` resolves `DEFAULT_MODEL_COST_PER_1M` (including `gemini-3.8-flash-high` at `$0` local OmniRoute, `devstral-2512`, and `qwen/qwen3.8-27b` alongside legacy entries) before the provider-level table; environment overrides still take precedence.
 - **Reasoning & Cached Token Telemetry** (`llm.ts`, `db.ts`): streaming and non-streaming usage details propagate `reasoningTokens`/`cachedTokens` through `LLMUsage` and `LLMProviderAttempt` into the new Schema v30 `llm_stage_logs` columns alongside `cost_usd` and `prompt_version`.
 - **Search-Credit Cost Rollup** (`telemetry.ts`): `CostSummary` now reports `searchCredits` (Tavily/Bright Data call counts) and `searchCostUsd`, folding search spend into `estimatedUsd` and `costPerAcceptedLead`.
 
@@ -452,13 +452,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 212 files in `test/` (207 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 214 files in `test/` (209 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (207 .test.ts files as of 2026-11-18; tsx runner - last attested 2026-11-04 run: 1,385 pass / 0 fail)
+# Full test suite (209 .test.ts files as of 2026-11-25; tsx runner - last attested full run 2026-11-04: 1,385 pass / 0 fail)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -541,7 +541,7 @@ server/
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v30 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts, migrations 28-30)
-test/                        Automated unit, integration, replay, and eval test suites (212 files: 207 .test.ts + 1 .eval.ts + helpers/fixtures)
+test/                        Automated unit, integration, replay, and eval test suites (214 files: 209 .test.ts + 1 .eval.ts + helpers/fixtures)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

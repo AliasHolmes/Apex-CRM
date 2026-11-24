@@ -184,16 +184,24 @@ export default function ScrapeWorkspace() {
     }
   };
 
-  const handleLeadLimitInputBlur = () => {
-    const parsed = Number.parseInt(leadLimitInput, 10);
-    if (Number.isNaN(parsed) || parsed < 1) {
-      updateLeadLimit(1);
-    } else if (parsed > 200) {
-      updateLeadLimit(200);
+  const clampAndUpdate = (
+    raw: string,
+    min: number,
+    max: number,
+    updater: (v: number) => void,
+  ) => {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed) || parsed < min) {
+      updater(min);
+    } else if (parsed > max) {
+      updater(max);
     } else {
-      updateLeadLimit(parsed);
+      updater(parsed);
     }
   };
+
+  const handleLeadLimitInputBlur = () =>
+    clampAndUpdate(leadLimitInput, 1, 200, updateLeadLimit);
 
   const updateMaxPerCompany = (value: number) => {
     const clamped = Math.max(1, Math.min(5, value));
@@ -212,16 +220,8 @@ export default function ScrapeWorkspace() {
     setSearchPreview(null);
   };
 
-  const handleMaxPerCompanyBlur = () => {
-    const parsed = Number.parseInt(maxPerCompanyInput, 10);
-    if (Number.isNaN(parsed) || parsed < 1) {
-      updateMaxPerCompany(1);
-    } else if (parsed > 5) {
-      updateMaxPerCompany(5);
-    } else {
-      updateMaxPerCompany(parsed);
-    }
-  };
+  const handleMaxPerCompanyBlur = () =>
+    clampAndUpdate(maxPerCompanyInput, 1, 5, updateMaxPerCompany);
   const [searchSpec, setSearchSpec] = useState<any>(null);
   const [searchPreview, setSearchPreview] = useState<any>(null);
   const [providerCapabilities, setProviderCapabilities] = useState<any>(null);

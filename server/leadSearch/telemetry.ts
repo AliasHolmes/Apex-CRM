@@ -298,6 +298,11 @@ export const DEFAULT_PROVIDER_COST_PER_1M: Record<string, { input: number; outpu
 };
 
 export const DEFAULT_MODEL_COST_PER_1M: Record<string, { input: number; output: number }> = {
+  // Active primary + failsafe models (Apex CRM as of ADR-0022)
+  "gemini-3.8-flash-high": { input: 0.0, output: 0.0 },   // OmniRoute local -- no USD billing
+  "devstral-2512":         { input: 0.3, output: 0.9 },   // OpenRouter public pricing
+  "qwen/qwen3.8-27b":      { input: 0.29, output: 0.59 }, // Groq public pricing
+  // Legacy entries kept for historical session replay
   "gemini-2.5-flash": { input: 0.15, output: 0.6 },
   "gemini-2.0-flash": { input: 0.1, output: 0.4 },
   "gpt-4o-mini": { input: 0.15, output: 0.6 },

@@ -152,7 +152,12 @@ const isSavedOutreachDraft = (value: unknown): value is SavedOutreachDraft => {
 const readLocalDrafts = (): SavedOutreachDraft[] => {
   const saved = localStorage.getItem(OUTREACH_DRAFTS_KEY);
   if (!saved) return [];
-  const parsed: unknown = JSON.parse(saved);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(saved);
+  } catch {
+    return [];
+  }
   return Array.isArray(parsed) ? parsed.filter(isSavedOutreachDraft).slice(0, 12) : [];
 };
 

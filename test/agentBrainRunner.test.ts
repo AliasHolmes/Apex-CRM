@@ -17,6 +17,7 @@ import {
 import { discoveryEngine } from "../server/leadSearch/discoveryEngine.js";
 import {
   closeLeadsDb,
+  getLeadsDb,
   hasGroundedQualification,
   readLeadActivities,
   readMiningSessionById,
@@ -166,5 +167,56 @@ describe("Agent Brain Generalization, Streaming & Grounded Writes", () => {
 
     const sessionRow = readMiningSessionById(result.sessionId);
     assert.equal(sessionRow?.status, "success");
+
+    const searchLogRow = getLeadsDb()
+      .prepare(`SELECT raw_results_count, leads_found, detailed_logs FROM search_logs WHERE id = ?`)
+      .get(result.sessionId) as { raw_results_count: number; leads_found: number; detailed_logs: string } | undefined;
+    assert.ok(searchLogRow);
+    assert.equal(searchLogRow.raw_results_count, 2);
+    assert.equal(searchLogRow.leads_found, 1);
+    assert.match(searchLogRow.detailed_logs, /AgentBrain/);
+  });
+
+  it("rejects Product Owner, Birmingham Alabama, and non-AI recruiters on UK AI agency briefs", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          results: [
+            {
+              title: "Helen Sample - Senior Product Owner at Opencast Software | LinkedIn",
+              url: "https://www.linkedin.com/in/helen-sample-po-uk/",
+              content: "Senior Product Owner at Opencast Software in Edinburgh, UK. AI agency experience and hiring.",
+            },
+            {
+              title: "Scott Sample - Founder at Betterhire | LinkedIn",
+              url: "https://www.linkedin.com/in/scott-sample-birmingham-al/",
+              content: "Founder at Betterhire, an AI agency in Birmingham, Alabama, United States. We are hiring engineers.",
+            },
+            {
+              title: "Sarah Sample - Owner at Sarah Recruitment | LinkedIn",
+              url: "https://www.linkedin.com/in/sarah-sample-uk-recruit/",
+              content: "Owner of Sarah Recruitment in Manchester, United Kingdom. Recruiting finance and sales teams.",
+            },
+            {
+              title: "Oliver Grant - Founder at Albion AI Studio | LinkedIn",
+              url: "https://www.linkedin.com/in/oliver-grant-albion-ai/",
+              content: "Founder of Albion AI Studio, an AI automation agency in London, United Kingdom. We are hiring senior AI engineers.",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+
+    const result = await executeAgentBrainDiscovery({
+      sessionId: `agent-uk-filter-${Date.now()}`,
+      promptQuery: "AI agency and firm owner with hiring intent from the UK",
+      requestedLimit: 5,
+      stage: "SCRAPED",
+      enableBrightDataPro: false,
+    });
+
+    assert.equal(result.qualifiedCount, 1);
+    assert.equal(result.leads[0]?.name, "Oliver Grant");
+    assert.equal(result.leads[0]?.company, "Albion AI Studio");
   });
 });

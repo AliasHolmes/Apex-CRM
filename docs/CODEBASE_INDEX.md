@@ -13,7 +13,7 @@ Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `sc
 > 2026-11-25 codebase health & audit remediation pass (Section 9.42).
 > `tsc --noEmit` passes with 0 errors (verified 2026-11-25).
 > `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last full `tsx` run;
-> the suite now holds 210 `.test.ts` files. On 2026-11-26, Agent Brain, audit-batch2, grounded-write, and encoding hygiene tests passed **21/21**; on 2026-11-25, static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files excluding 6 `?t=` dynamic-import suites).
+> the suite now holds 210 `.test.ts` files. On 2026-11-27, Agent Brain, audit-batch2, brightdata-upgrade, grounded-write, and encoding hygiene tests passed **82/82**; on 2026-11-25, static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files excluding 6 `?t=` dynamic-import suites).
 > Line counts are physical lines (blank lines included).
 > Re-measured 2026-11-26 against modified targets on `main` (Schema v30); see Sections 9.14, 9.35, 9.39, 9.40, 9.42, and 9.43.
 
@@ -60,7 +60,7 @@ carried forward in Section 9 below. Recover them from git history if the detail 
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Frontend (`src/`)                                                | 16,963 lines across 63 TypeScript files (`components/` alone: 36 files / 11,321 lines)                                   |
 | Backend engine (`server/leadSearch/`)                            | 30,626 lines: 54 modules + 9 `stages/` (modules 22,048 / stages 8,578)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,350 lines (db 5,953 / llm 3,789 / api 2,879 / brightdata 3,383 / rest 2,346)                                                             |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,493 lines (db 5,953 / llm 3,789 / api 2,879 / brightdata 3,526 / rest 2,346)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v30**, WAL                   |
 | Test suite                                                       | 215 files: 210 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 36,151 lines; executes via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail; 2026-11-26 Agent Brain / batch2 / grounded-write / encoding checks: 21/21 pass) |
@@ -89,7 +89,7 @@ server/db.ts                 SQLite layer: schema v30, migrations 1-30, 40+ read
 server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,879)
 server/services/             llm.ts (3,789, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
-                             brightdata.ts (3,383) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
+                             brightdata.ts (3,526, incl. `brightDataGetPersonProfilesBatch`) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
                              linkedinEvidence.ts (304, owns canonicalLinkedInIdentity) · privateHosts.ts (162, SSRF) ·
                              outboundPrompt.ts (167) · langfuse.ts (393) · sleepUtils.ts (39, shared sleep)
 server/leadSearch/           the discovery engine
@@ -101,9 +101,9 @@ server/leadSearch/           the discovery engine
                              enrichment (ADR-0012; sole judge pool after the `rollingPool` consolidation)
   planCache.ts               signature-keyed & market-slice query plan cache (ADR-0012)
   plannerRouting.ts          fast-tier route resolver for strategist/plan families (ADR-0012)
-  agentBrainRunner.ts        Agent Brain path (committed `10c384b`, upgraded 2026-11-26):
+  agentBrainRunner.ts        Agent Brain path (committed `10c384b`, upgraded 2026-11-26/27):
                              contract-driven query generation (`buildAgentBrainSearchPlan`), real-time SSE log wiring,
-                             post-BrightData name+company dedup, and ADR-0015 quote-grounded writes (1,258; see §9.22 / §9.43)
+                             batch BrightData Pro (`brightDataGetPersonProfilesBatch`), geo/IC/vertical filtering, and ADR-0015 quote-grounded writes (1,387; see §9.22 / §9.43)
   domainBlocklists.ts        canonical social/search/directory/email-domain blocklists, single source
                              of truth shared by siteProbe, companyDomainLookup, companyIntent,
                              observations and db (152)
@@ -154,7 +154,7 @@ src/                         App.tsx (tab shell + error boundaries) · context/ 
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
 test/                        215 files: 210 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/fixtures/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 36,151 lines; runs via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail)
 scripts/dev.ts               spawns Vite + Express (148 lines)
-scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22 / §9.43) (172 lines)
+scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22 / §9.43) (197 lines)
 ```
 
 ## 5. The discovery pipeline
@@ -1162,8 +1162,9 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
 
 - **Contract-driven general query & option wiring (`server/leadSearch/agentBrainRunner.ts`)**: Added `buildAgentBrainSearchPlan` reusing `buildDeterministicProspectContract`, `resolveGeo`, and `DEFAULT_DECISION_MAKER_ROLES`. Non-B2B prompts no longer fall back to hardcoded `"AI agency" "United States" "hiring"` queries or reject non-US/non-agency verticals, while `decisionMakerRoles`, `keywords`, and `geographicHubs` options are honored across both modes.
 - **ADR-0015 quote-grounded persistence & Bright Data dedup ordering (`agentBrainRunner.ts`)**: Attached structured `qualification` payloads grounded in verbatim snippet/profile quotes when present (`TIER 1: PRIORITY`), downgrading unquoted leads to `TIER 3: WATCH` so grounded leads retain priority without `[ungrounded-write]` markers. Deferred SQLite `name_company:` dedup until after Bright Data Pro resolves real companies, inspected `writeResults` before recording `lead_activities`, and scoped SQLite/FTS/identity verification queries to `persistedIds` instead of global `id LIKE 'lead_agent_%'` counts.
-- **Live SSE logs, option forwarding & CLI hardening (`server/routes/api.ts`, `discoveryEngine.ts`, `scripts/agent-brain.ts`)**: Wired `onProgress` to `discoveryEngine.addLog`, added `discoveryEngine.finalizeExternalSession` so Agent Brain sessions free `getActiveCount()` cleanly upon completion/error/cancellation, forwarded `stage`/`enableBrightDataPro`/`geographicHubs`/`decisionMakerRoles`/`keywords` from `POST /find-leads`, and guarded `JSON.parse(l.payload)` in `scripts/agent-brain.ts`.
-- **Verification**: Added `test/agentBrainRunner.test.ts` (4 tests); `tsc --noEmit` (0 errors) and 21/21 tests across `agentBrainRunner`, `auditFixesBatch2`, `groundedWriteInvariant`, and `encodingHygiene` passed.
+- **Live SSE logs, option forwarding & CLI hardening (`server/routes/api.ts`, `discoveryEngine.ts`, `scripts/agent-brain.ts`)**: Wired `onProgress` to `discoveryEngine.addLog`, added `discoveryEngine.finalizeExternalSession` so Agent Brain sessions free `getActiveCount()` cleanly upon completion/error/cancellation, forwarded `stage`/`enableBrightDataPro`/`geographicHubs`/`decisionMakerRoles`/`keywords` from `POST /find-leads`, guarded `JSON.parse(l.payload)` in `scripts/agent-brain.ts`, fixed accurate target-percentage logging, and ensured idle MCP client + SQLite shutdown (`closeBrightDataClient`, `closeLeadsDb`) on CLI exit.
+- **Live-run precision, batch Bright Data & `search_logs` casing fix (2026-11-27, `agentBrainRunner.ts`, `brightdata.ts`)**: Fixed snake_case vs camelCase mismatch in `insertSearchLog` calls so `raw_results_count`, `leads_found`, and `AgentBrain` `detailed_logs` persist cleanly; added `brightDataGetPersonProfilesBatch` (chunk size 5, `limit_per_input: 10`) eliminating per-URL scraping latency; tightened UK vs `Birmingham, Alabama` geo disambiguation, rejected `"Product/Project/Brand Owner"` IC titles in snippet + post-BrightData checks, and enforced domain vertical pattern matching independently of generic intent keywords while normalizing company-suffix phrases (e.g. `fintech companies` -> `fintech`).
+- **Verification**: Added `test/agentBrainRunner.test.ts` (5 tests); `tsc --noEmit` (0 errors) and 82/82 tests across `agentBrainRunner`, `auditFixesBatch2`, `brightDataUpgrade`, `groundedWriteInvariant`, and `encodingHygiene` passed.
 
 ## 10. Recommended next actions
 

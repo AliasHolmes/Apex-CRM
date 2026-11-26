@@ -19,7 +19,7 @@ import {
   normalizeCompanyName,
 } from "../../src/utils/leadDedupe.js";
 import {
-  brightDataGetPersonProfile,
+  brightDataGetPersonProfilesBatch,
   isBrightDataPro,
   closeBrightDataClient,
 } from "../services/brightdata.js";
@@ -99,10 +99,21 @@ const DEFAULT_US_HUBS = [
 
 const UK_HUBS = ["London", "Manchester", "Birmingham", "Bristol", "Edinburgh"];
 
-const DISQUALIFIED_TITLE_REGEX =
-  /\b(intern|recruiter|talent acquisition|account executive|student|assistant|trainee|coordinator|associate at|sdr|bdr)\b/i;
-const DECISION_MAKER_REGEX =
-  /\b(founder|co-founder|ceo|chief executive|managing partner|managing director|agency owner|principal|owner|partner & head|founder & ceo)\b/i;
+const IC_OWNER_PREFIX =
+  "(?:product|project|process|program|platform|content|brand|asset|store|franchise|category|component)";
+const DISQUALIFIED_TITLE_REGEX = new RegExp(
+  `\\b(?:intern|recruiter|talent acquisition|account executive|student|assistant|trainee|coordinator|associate at|sdr|bdr|${IC_OWNER_PREFIX}\\s+owner)\\b`,
+  "i",
+);
+const DECISION_MAKER_REGEX = new RegExp(
+  `\\b(?:founder|co-founder|ceo|chief executive|managing partner|managing director|agency owner|principal|partner & head|founder & ceo|(?<!${IC_OWNER_PREFIX}\\s+)owner)\\b`,
+  "i",
+);
+const NON_TARGET_US_GEO_REGEX =
+  /\b(?:United States|USA|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|San Francisco|Los Angeles|Seattle|Austin|Boston|Chicago|Atlanta|Miami|Denver)\b/i;
+const UK_EXPLICIT_GEO_REGEX =
+  /\b(?:United Kingdom|UK|Great Britain|Britain|England|Scotland|Wales|Northern Ireland|London|Manchester|Bristol|Edinburgh|Leeds|Glasgow|Brighton|Sheffield|Liverpool|Belfast|Newcastle)\b/i;
+const AMBIGUOUS_US_UK_METROS = new Set(["birmingham"]);
 const NON_AGENCY_ENTITY_REGEX =
   /\b(hotel|boutique hotel|restaurant|resort|clothing|fashion|salon|apparel|real estate brokerage|gym|clinic)\b/i;
 const B2B_OUTBOUND_REGEX =
@@ -279,29 +290,70 @@ export function buildAgentBrainSearchPlan(
     }
   } else {
     // Contract-driven general discovery path (honors roles, verticals, keywords, and resolved/open geo).
-    const topRoles = roles.slice(0, 4);
+    const singularStem = (value: string) => value.toLowerCase().replace(/s$/, "").trim();
+    const seenRoleStems = new Set<string>();
+    const distinctRoles: string[] = [];
+    for (const r of roles) {
+      const stem = singularStem(r);
+      if (!stem || seenRoleStems.has(stem)) continue;
+      seenRoleStems.add(stem);
+      distinctRoles.push(r);
+    }
+    const topRoles = distinctRoles.slice(0, 4);
     const roleGroup =
       topRoles.length > 1
         ? `(${topRoles.slice(0, 3).map(quoteTerm).join(" OR ")})`
         : quoteTerm(topRoles[0] || "Founder");
 
-    const verticals = verticalTerms.slice(0, 4);
-    const locTargets = resolvedLocations.length > 0 ? resolvedLocations.slice(0, 6) : [""];
-    const topKeywords = keywords.slice(0, 4);
+    const multiWordVerticals = verticalTerms.filter(
+      (v) =>
+        /\s/.test(v.trim()) &&
+        !/\b(?:and|or)\b/i.test(v),
+    );
+    const singleWordVerticals = verticalTerms.filter(
+      (v) =>
+        !/\s/.test(v.trim()) &&
+        v.trim().length >= 3 &&
+        !/^(?:firm|company|business|agency|partner|studio)$/i.test(v.trim()),
+    );
+    const prioritizedVerticals =
+      multiWordVerticals.length > 0 ? multiWordVerticals : singleWordVerticals;
+    const verticals = (prioritizedVerticals.length > 0 ? prioritizedVerticals : verticalTerms).slice(0, 5);
+
+    const locTargetsRaw =
+      explicitHubs.length > 0
+        ? explicitHubs
+        : geo.countryAnchor
+          ? [geo.countryAnchor === "UK" ? "United Kingdom" : geo.countryAnchor, ...geo.metros]
+          : resolvedLocations;
+    const locTargets = normalizeStringList(locTargetsRaw).slice(0, 6);
+    if (locTargets.length === 0) locTargets.push("");
+
+    const actionableKeywords = keywords.filter((k) => !/\bintent\b/i.test(k));
+    const topKeywords = (actionableKeywords.length > 0 ? actionableKeywords : keywords).slice(0, 4);
 
     if (verticals.length > 0) {
+      if (topKeywords.length > 0) {
+        const kwClause =
+          topKeywords.length > 1
+            ? `(${topKeywords.slice(0, 3).map(quoteTerm).join(" OR ")})`
+            : quoteTerm(topKeywords[0]);
+        for (const vert of verticals) {
+          for (const loc of locTargets) {
+            const locPart = loc ? quoteTerm(loc) : "";
+            addQuery(`site:linkedin.com/in ${roleGroup} ${quoteTerm(vert)} ${kwClause} ${locPart}`);
+          }
+        }
+      }
       for (const vert of verticals) {
-        for (const loc of locTargets.slice(0, 4)) {
+        for (const loc of locTargets) {
           const locPart = loc ? quoteTerm(loc) : "";
           addQuery(`site:linkedin.com/in ${roleGroup} ${quoteTerm(vert)} ${locPart}`);
-          for (const kw of topKeywords.slice(0, 2)) {
-            addQuery(`site:linkedin.com/in ${roleGroup} ${quoteTerm(vert)} ${quoteTerm(kw)} ${locPart}`);
-          }
         }
       }
     } else if (topKeywords.length > 0) {
       for (const kw of topKeywords) {
-        for (const loc of locTargets.slice(0, 4)) {
+        for (const loc of locTargets) {
           addQuery(`site:linkedin.com/in ${roleGroup} ${quoteTerm(kw)} ${loc ? quoteTerm(loc) : ""}`);
         }
       }
@@ -356,6 +408,42 @@ function extractMatchingQuote(fullText: string, terms: string[]): string {
   return "";
 }
 
+function matchesTargetGeography(
+  text: string,
+  locations: string[],
+  geo: GeoResolution,
+): boolean {
+  if (locations.length === 0) return true;
+  if (geo.countryAnchor === "UK") {
+    const hasUkExplicit = UK_EXPLICIT_GEO_REGEX.test(text);
+    const hasBirminghamUk = /\bBirmingham,\s*(?:England|United Kingdom|UK)\b/i.test(text);
+    if (NON_TARGET_US_GEO_REGEX.test(text) && !hasUkExplicit && !hasBirminghamUk) {
+      return false;
+    }
+    const nonAmbiguousLocs = locations.filter(
+      (l) => !AMBIGUOUS_US_UK_METROS.has(l.trim().toLowerCase()),
+    );
+    const locPattern =
+      nonAmbiguousLocs.length > 0
+        ? new RegExp(`\\b(?:${nonAmbiguousLocs.map(escapeRegexLiteral).join("|")})\\b`, "i")
+        : UK_EXPLICIT_GEO_REGEX;
+    return locPattern.test(text) || hasBirminghamUk;
+  }
+
+  const pattern = new RegExp(`\\b(?:${locations.map(escapeRegexLiteral).join("|")})\\b`, "i");
+  if (!pattern.test(text)) return false;
+  if (
+    geo.countryAnchor &&
+    geo.countryAnchor !== "United States" &&
+    geo.countryAnchor !== "USA" &&
+    NON_TARGET_US_GEO_REGEX.test(text) &&
+    !text.toLowerCase().includes(geo.countryAnchor.toLowerCase())
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function resolveParsedTitle(
   roleChunk: string,
   configuredRoles: string[],
@@ -367,7 +455,7 @@ function resolveParsedTitle(
   if (/managing director|\bmd\b/i.test(roleChunk)) return "Managing Director";
   if (/managing partner/i.test(roleChunk)) return "Managing Partner";
   if (/agency owner|agency founder/i.test(roleChunk)) return "Agency Owner";
-  if (/owner/i.test(roleChunk)) return "Owner";
+  if (new RegExp(`\\b(?<!${IC_OWNER_PREFIX}\\s+)owner\\b`, "i").test(roleChunk)) return "Owner";
   if (/chief executive|\bceo\b/i.test(roleChunk)) return "CEO";
   if (/chief technology|\bcto\b/i.test(roleChunk)) return "CTO";
   if (/chief revenue|\bcro\b/i.test(roleChunk)) return "CRO";
@@ -468,21 +556,20 @@ export async function executeAgentBrainDiscovery(
       id: sessionId,
       timestamp: startTimeIso,
       prompt: promptQuery,
-      generated_queries: JSON.stringify(searchQueries.slice(0, 10)),
+      generatedQueries: searchQueries.slice(0, 10),
       status: "cancelled",
-      error_message: "Agent Brain discovery was cancelled.",
-      raw_results_count: rawCandidateMap.size,
-      leads_found: 0,
-      detailed_logs: JSON.stringify([
+      errorMessage: "Agent Brain discovery was cancelled.",
+      rawResultsCount: rawCandidateMap.size,
+      leadsFound: 0,
+      detailedLogs: JSON.stringify([
         `[AgentBrain] Execution was cancelled by caller/user after ${totalDurationMs}ms.`,
       ]),
-      debug_logs: JSON.stringify([]),
-      trace_events: JSON.stringify([]),
-      provider_summary: JSON.stringify({ tavily: { calls: searchCallCount, errors: tavilyErrors } }),
-      cost_summary: JSON.stringify({ estimatedUsd: 0, totalTokens: 0, tokensPerAcceptedLead: 0 }),
-      phase_timeline: JSON.stringify([]),
+      debugLogs: JSON.stringify([]),
+      traceEvents: [],
+      providerSummary: { tavily: { calls: searchCallCount, errors: tavilyErrors } },
+      costSummary: { estimatedUsd: 0, totalTokens: 0, tokensPerAcceptedLead: 0 },
+      phaseTimeline: [],
       schemaVersion: LATEST_SCHEMA_VERSION,
-      schema_version: LATEST_SCHEMA_VERSION,
     });
 
     try {
@@ -619,18 +706,46 @@ export async function executeAgentBrainDiscovery(
     return handleCancellation();
   }
 
+  const safeRoleTerms = plan.roles.map((r) =>
+    r.trim().toLowerCase() === "owner"
+      ? `(?<!${IC_OWNER_PREFIX}\\s+)owner`
+      : escapeRegexLiteral(r),
+  );
   const targetRolePattern =
-    plan.roles.length > 0
-      ? new RegExp(`\\b(?:${plan.roles.map(escapeRegexLiteral).join("|")})\\b`, "i")
+    safeRoleTerms.length > 0
+      ? new RegExp(`\\b(?:${safeRoleTerms.join("|")})\\b`, "i")
       : DECISION_MAKER_REGEX;
 
-  const targetGeoPattern =
-    plan.locations.length > 0
-      ? new RegExp(`\\b(?:${plan.locations.map(escapeRegexLiteral).join("|")})\\b`, "i")
+  const domainVerticalTerms = normalizeStringList(
+    plan.verticalTerms.flatMap((rawTerm) => {
+      const v = rawTerm.trim();
+      if (/\s/.test(v)) {
+        if (/\b(?:and|or)\b/i.test(v)) return [];
+        const stem = v
+          .replace(/\s+(?:compan(?:y|ies)|startups?|businesses?|organizations?|groups?)$/i, "")
+          .trim();
+        return stem && stem.length >= 3 && stem.toLowerCase() !== v.toLowerCase()
+          ? [v, stem]
+          : [v];
+      }
+      return v.length >= 3 &&
+        !/^(?:firm|company|business|agency|partner|studio|consultancy)$/i.test(v)
+        ? [v]
+        : [];
+    }),
+  );
+  const strictVerticalTerms =
+    domainVerticalTerms.length > 0 ? domainVerticalTerms : plan.verticalTerms;
+  const strictVerticalPattern =
+    strictVerticalTerms.length > 0
+      ? new RegExp(
+          `\\b(?:${strictVerticalTerms.map(escapeRegexLiteral).join("|")})\\b`,
+          "i",
+        )
       : null;
 
   const activeRelevanceTerms = normalizeStringList([
-    ...plan.verticalTerms,
+    ...strictVerticalTerms,
     ...plan.keywords,
   ]);
   const relevancePattern =
@@ -682,10 +797,13 @@ export async function executeAgentBrainDiscovery(
       if (!targetRolePattern.test(fullText) && !DECISION_MAKER_REGEX.test(fullText) && !titleClass.isExecutive) {
         continue;
       }
-      if (targetGeoPattern && !targetGeoPattern.test(fullText)) {
+      if (!matchesTargetGeography(fullText, plan.locations, geo)) {
         continue;
       }
-      if (relevancePattern && !relevancePattern.test(fullText)) {
+      if (strictVerticalPattern && !strictVerticalPattern.test(fullText)) {
+        continue;
+      }
+      if (!strictVerticalPattern && relevancePattern && !relevancePattern.test(fullText)) {
         continue;
       }
     }
@@ -825,130 +943,142 @@ export async function executeAgentBrainDiscovery(
     });
   }
 
-  // 4. BrightData Pro Deep LinkedIn Profile Enrichment (before final name_company dedup)
+  // 4. BrightData Pro Batch LinkedIn Profile Enrichment (up to 5 URLs/call before final validation + dedup)
   let brightDataEnrichedCount = 0;
   let brightDataCalls = 0;
   let brightDataLatencyMs = 0;
+  const brightDataRejectedSlugs = new Set<string>();
 
   if (useBrightDataPro && candidatePool.length > 0) {
     const bdStartedAt = Date.now();
+    const batchSize = 5;
+    brightDataCalls = Math.ceil(candidatePool.length / batchSize);
     options.onProgress?.({
       phase: "brightdata_enrich",
-      message: `Enriching ${candidatePool.length} qualified leads with BrightData Pro MCP tools (run_scraper)...`,
+      message: `Enriching ${candidatePool.length} candidates in ${brightDataCalls} BrightData Pro batch(es)...`,
     });
 
-    const concurrency = Math.min(Math.max(options.brightDataConcurrency || 2, 1), 4);
-    let targetIdx = 0;
-
-    const workers = Array.from({ length: concurrency }, async () => {
-      while (targetIdx < candidatePool.length) {
-        if (isAborted()) break;
-        const lead = candidatePool[targetIdx++];
-        if (!lead || !lead.url) continue;
-        brightDataCalls++;
-
-        try {
-          const profile = await brightDataGetPersonProfile(lead.url, 60_000);
-          if (
-            profile &&
-            !profile.error &&
-            (profile.name || profile.position || profile.current_company_name)
-          ) {
-            brightDataEnrichedCount++;
-            lead.enrichedViaBrightData = true;
-
-            const realName =
-              profile.name ||
-              `${profile.first_name || ""} ${profile.last_name || ""}`.trim();
-            if (realName && realName.length >= 2 && realName.length < 50) {
-              lead.name = realName;
-            }
-
-            if (profile.position && typeof profile.position === "string") {
-              lead.title = profile.position.split(/[-\u2013|]/)[0].trim() || lead.title;
-            }
-
-            const realComp =
-              profile.current_company_name ||
-              (typeof profile.current_company === "object"
-                ? profile.current_company?.name
-                : "") ||
-              profile.company;
-            if (realComp && typeof realComp === "string" && realComp.trim().length > 1) {
-              lead.company = cleanCompanyHint(realComp);
-              lead.isFallbackCompany = false;
-            }
-
-            const realLoc = profile.city || profile.location || profile.country;
-            if (realLoc && typeof realLoc === "string") {
-              lead.location = realLoc.trim();
-            }
-
-            if (profile.current_company_website) {
-              lead.website = profile.current_company_website;
-            }
-
-            if (Array.isArray(profile.experience) && profile.experience.length > 0) {
-              lead.experiences = profile.experience;
-            }
-
-            if (profile.about && typeof profile.about === "string") {
-              lead.summary = profile.about.slice(0, 400);
-            }
-
-            const fullBio = `${profile.about || ""} ${JSON.stringify(profile.experience || [])} ${JSON.stringify(profile.skills || [])}`;
-            if (isB2BOutbound) {
-              if (/clay/i.test(fullBio) && !lead.techStack.includes("Clay")) lead.techStack.push("Clay");
-              if (/instantly/i.test(fullBio) && !lead.techStack.includes("Instantly")) lead.techStack.push("Instantly");
-              if (/smartlead/i.test(fullBio) && !lead.techStack.includes("Smartlead")) lead.techStack.push("Smartlead");
-              if (/cold email/i.test(fullBio) && !lead.techStack.includes("Cold Email Infrastructure")) {
-                lead.techStack.push("Cold Email Infrastructure");
-              }
-            } else {
-              for (const kw of plan.keywords) {
-                if (
-                  !lead.techStack.some((t) => t.toLowerCase() === kw.toLowerCase()) &&
-                  new RegExp(`\\b${escapeRegexLiteral(kw)}\\b`, "i").test(fullBio)
-                ) {
-                  lead.techStack.push(kw);
-                }
-              }
-            }
-
-            const bdQuote = extractMatchingQuote(
-              fullBio,
-              isB2BOutbound
-                ? ["clay", "instantly", "smartlead", "cold email", "outbound", "lead gen"]
-                : [...plan.keywords, ...plan.verticalTerms],
-            );
-            if (bdQuote && bdQuote.length > lead.hiringQuote.length) {
-              lead.hiringQuote = bdQuote.replace(/["\n\r]/g, " ").trim();
-            }
-          }
-        } catch {
-          // Graceful fallback to snippet extraction
-        }
-      }
-    });
-
-    await Promise.all(workers);
+    const profileByIdentity = await brightDataGetPersonProfilesBatch(
+      candidatePool.map((l) => l.url),
+      90_000,
+      batchSize,
+    );
     brightDataLatencyMs = Date.now() - bdStartedAt;
 
     if (isAborted()) {
       return handleCancellation();
     }
 
+    for (const lead of candidatePool) {
+      const identityKey = canonicalLinkedInIdentity(lead.url);
+      const profile = identityKey ? profileByIdentity.get(identityKey) : null;
+      if (
+        !profile ||
+        profile.error ||
+        !(profile.name || profile.position || profile.current_company_name)
+      ) {
+        continue;
+      }
+
+      brightDataEnrichedCount++;
+      lead.enrichedViaBrightData = true;
+
+      const realName =
+        profile.name ||
+        `${profile.first_name || ""} ${profile.last_name || ""}`.trim();
+      if (realName && realName.length >= 2 && realName.length < 50) {
+        lead.name = realName;
+      }
+
+      if (profile.position && typeof profile.position === "string") {
+        const positionTitle = profile.position.split(/[-\u2013|]/)[0].trim();
+        if (contract.authorityRequired !== false) {
+          const posClass = classifyTitle(positionTitle, plan.roles);
+          if (DISQUALIFIED_TITLE_REGEX.test(profile.position) || posClass.isIC) {
+            brightDataRejectedSlugs.add(lead.slug);
+            continue;
+          }
+        }
+        lead.title = positionTitle || lead.title;
+      }
+
+      const realComp =
+        profile.current_company_name ||
+        (typeof profile.current_company === "object"
+          ? profile.current_company?.name
+          : "") ||
+        profile.company;
+      if (realComp && typeof realComp === "string" && realComp.trim().length > 1) {
+        lead.company = cleanCompanyHint(realComp);
+        lead.isFallbackCompany = false;
+      }
+
+      const realLoc = [profile.city, profile.location, profile.country]
+        .filter((v) => typeof v === "string" && v.trim())
+        .join(", ");
+      const displayLoc = profile.city || profile.location || profile.country;
+      if (displayLoc && typeof displayLoc === "string") {
+        lead.location = displayLoc.trim();
+      }
+      if (realLoc && !matchesTargetGeography(realLoc, plan.locations, geo)) {
+        brightDataRejectedSlugs.add(lead.slug);
+        continue;
+      }
+
+      if (profile.current_company_website) {
+        lead.website = profile.current_company_website;
+      }
+
+      if (Array.isArray(profile.experience) && profile.experience.length > 0) {
+        lead.experiences = profile.experience;
+      }
+
+      if (profile.about && typeof profile.about === "string") {
+        lead.summary = profile.about.slice(0, 400);
+      }
+
+      const fullBio = `${profile.about || ""} ${JSON.stringify(profile.experience || [])} ${JSON.stringify(profile.skills || [])}`;
+      if (isB2BOutbound) {
+        if (/clay/i.test(fullBio) && !lead.techStack.includes("Clay")) lead.techStack.push("Clay");
+        if (/instantly/i.test(fullBio) && !lead.techStack.includes("Instantly")) lead.techStack.push("Instantly");
+        if (/smartlead/i.test(fullBio) && !lead.techStack.includes("Smartlead")) lead.techStack.push("Smartlead");
+        if (/cold email/i.test(fullBio) && !lead.techStack.includes("Cold Email Infrastructure")) {
+          lead.techStack.push("Cold Email Infrastructure");
+        }
+      } else {
+        for (const kw of plan.keywords) {
+          if (
+            !lead.techStack.some((t) => t.toLowerCase() === kw.toLowerCase()) &&
+            new RegExp(`\\b${escapeRegexLiteral(kw)}\\b`, "i").test(fullBio)
+          ) {
+            lead.techStack.push(kw);
+          }
+        }
+      }
+
+      const bdQuote = extractMatchingQuote(
+        fullBio,
+        isB2BOutbound
+          ? ["clay", "instantly", "smartlead", "cold email", "outbound", "lead gen"]
+          : [...plan.keywords, ...plan.verticalTerms],
+      );
+      if (bdQuote && bdQuote.length > lead.hiringQuote.length) {
+        lead.hiringQuote = bdQuote.replace(/["\n\r]/g, " ").trim();
+      }
+    }
+
     options.onProgress?.({
       phase: "brightdata_complete",
-      message: `BrightData Pro enriched ${brightDataEnrichedCount} / ${candidatePool.length} leads with verified profile dossiers.`,
+      message: `BrightData Pro enriched ${brightDataEnrichedCount} / ${candidatePool.length} leads in ${brightDataLatencyMs}ms (${brightDataRejectedSlugs.size} filtered out on verified title/geo).`,
     });
   }
 
-  // Final post-enrichment name_company deduplication + cap to requestedLimit
+  // Final post-enrichment validation + name_company deduplication + cap to requestedLimit
   const qualifiedLeads: AgentBrainLeadItem[] = [];
   const finalSeenNameComp = new Set<string>();
   for (const item of candidatePool) {
     if (qualifiedLeads.length >= requestedLimit) break;
+    if (brightDataRejectedSlugs.has(item.slug)) continue;
     const nameCompKey = `name_company:${normalizeDedupeValue(item.name)}::${normalizeCompanyName(item.company)}`;
     if (existingIdentities.has(nameCompKey) || finalSeenNameComp.has(nameCompKey)) {
       duplicatesSkipped++;
@@ -1160,12 +1290,12 @@ export async function executeAgentBrainDiscovery(
     id: sessionId,
     timestamp: startTimeIso,
     prompt: promptQuery,
-    generated_queries: JSON.stringify(searchQueries.slice(0, 10)),
+    generatedQueries: searchQueries.slice(0, 10),
     status: "success",
-    error_message: null,
-    raw_results_count: rawCandidateMap.size,
-    leads_found: persistedIds.length,
-    detailed_logs: JSON.stringify([
+    errorMessage: "",
+    rawResultsCount: rawCandidateMap.size,
+    leadsFound: persistedIds.length,
+    detailedLogs: JSON.stringify([
       `[AgentBrain] Pre-filtered against ${existingIdentities.size} existing identities.`,
       `[AgentBrain] Dispatched ${searchCallCount} search calls (${tavilyErrors} errors); harvested ${rawCandidateMap.size} unique candidate profiles.`,
       `[AgentBrain] Qualified ${qualifiedLeads.length} leads; persisted ${persistedIds.length} (skipped ${duplicatesSkipped} duplicates).`,
@@ -1174,17 +1304,16 @@ export async function executeAgentBrainDiscovery(
         : `[AgentBrain] Processed candidate profiles via fast deterministic extraction.`,
       `[AgentBrain] Ingested ${persistedIds.length} leads into Schema v${LATEST_SCHEMA_VERSION} SQLite.`,
     ]),
-    debug_logs: JSON.stringify([]),
-    trace_events: JSON.stringify([]),
-    provider_summary: JSON.stringify(traceSummaryPayload.providerSummary),
-    cost_summary: JSON.stringify(traceSummaryPayload.costSummary),
-    phase_timeline: JSON.stringify([
+    debugLogs: JSON.stringify([]),
+    traceEvents: [],
+    providerSummary: traceSummaryPayload.providerSummary,
+    costSummary: traceSummaryPayload.costSummary,
+    phaseTimeline: [
       { phase: "retrieval", durationMs: Math.max(0, totalDurationMs - brightDataLatencyMs) },
       { phase: "brightdata_pro_enrichment", durationMs: brightDataLatencyMs },
       { phase: "sqlite_persistence", durationMs: Math.round(totalDurationMs * 0.05) },
-    ]),
+    ],
     schemaVersion: LATEST_SCHEMA_VERSION,
-    schema_version: LATEST_SCHEMA_VERSION,
   });
 
   options.onProgress?.({

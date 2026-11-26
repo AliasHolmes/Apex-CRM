@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { executeAgentBrainDiscovery } from "../server/leadSearch/agentBrainRunner.js";
-import { getLeadsDb } from "../server/db.js";
+import { getLeadsDb, closeLeadsDb } from "../server/db.js";
+import { closeBrightDataClient } from "../server/services/brightdata.js";
 
 function parseArgs(): { query: string; limit: number; stage: "SCRAPED" | "ENRICHED"; brightData?: boolean; verifyOnly: boolean } {
   const args = process.argv.slice(2);
@@ -143,7 +144,13 @@ async function main() {
   console.log("                  DISCOVERY COMPLETE                   ");
   console.log("=======================================================");
   console.log(`Session ID:          ${result.sessionId}`);
-  console.log(`Qualified Leads:     ${result.qualifiedCount} / ${result.requestedLimit} (100% target met)`);
+  console.log(
+    `Qualified Leads:     ${result.qualifiedCount} / ${result.requestedLimit} (${
+      result.qualifiedCount >= result.requestedLimit
+        ? "100% target met"
+        : `${Math.round((result.qualifiedCount / Math.max(1, result.requestedLimit)) * 100)}% of target`
+    })`,
+  );
   console.log(`Raw Harvested:       ${result.rawCandidatesCount}`);
   console.log(`Duplicates Skipped:  ${result.duplicatesSkippedCount}`);
   console.log(`Duration:            ${Math.round(result.durationMs / 1000)}s`);
@@ -166,7 +173,25 @@ async function main() {
   await runManualVerification();
 }
 
-main().catch((err) => {
-  console.error("\n[Agent Brain Error]:", err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error("\n[Agent Brain Error]:", err);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    try {
+      await closeBrightDataClient({
+        onlyIfIdle: true,
+        reason: "agent-brain-cli-exit",
+      });
+    } catch {
+      // ignore MCP shutdown errors
+    }
+    try {
+      closeLeadsDb();
+    } catch {
+      // ignore SQLite shutdown errors
+    }
+    // Clear any lingering stdio/keepalive handles once MCP/SQLite shutdown has fired.
+    setTimeout(() => process.exit(process.exitCode ?? 0), 150).unref?.();
+  });

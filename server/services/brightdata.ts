@@ -10,7 +10,7 @@ import {
 } from "./keyRotator.js";
 import { brightDataFreeTierCapabilities } from "../leadSearch/freeTier.js";
 import { boundedNumber } from "../leadSearch/sessionHelpers.js";
-import { normalizeLinkedInUrl } from "./linkedinEvidence.js";
+import { normalizeLinkedInUrl, canonicalLinkedInIdentity } from "./linkedinEvidence.js";
 import { unwrapRedirectUrl } from "../../src/utils/leadDedupe.js";
 import { hasTavilyKey, tavilyExtract } from "./llm.js";
 import { isPrivateOrInternalHost } from "./privateHosts.js";
@@ -1657,17 +1657,12 @@ export async function brightDataSearchDataset(
   );
 }
 
-export async function brightDataGetPersonProfile(
-  url: string,
-  timeoutMs: number = 120_000,
-): Promise<any | null> {
-  const targetUrl = normalizeBrightDataUrl(url);
-  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
-
-  const minTimeout = Number(process.env.BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS) || 50_000;
-  const effectiveTimeout = Math.max(timeoutMs, minTimeout);
-
-  return await withBrightDataClient(
+async function fetchPersonProfilesChunk(
+  targetUrls: string[],
+  effectiveTimeout: number,
+): Promise<any[]> {
+  if (targetUrls.length === 0) return [];
+  const res = await withBrightDataClient(
     "run_scraper",
     async (client) => {
       const toolResult = await withHardTimeout(
@@ -1677,7 +1672,7 @@ export async function brightDataGetPersonProfile(
             arguments: {
               dataset_id: "gd_l1viktl72bvl7bjuj0",
               method: "collect_by_url",
-              input: [{ url: targetUrl }],
+              input: targetUrls.map((url) => ({ url })),
             },
           },
           undefined,
@@ -1695,13 +1690,13 @@ export async function brightDataGetPersonProfile(
       }
 
       const text = textFromToolResult(toolResult);
-      if (!text || !text.trim()) return null;
+      if (!text || !text.trim()) return [];
 
       let parsed: any;
       try {
         parsed = JSON.parse(text);
       } catch {
-        return null;
+        return [];
       }
 
       const deadline = Date.now() + effectiveTimeout;
@@ -1732,21 +1727,87 @@ export async function brightDataGetPersonProfile(
         }
       }
 
-      if (!parsed || parsed.error || parsed.status !== "ready") return null;
-      if (!Array.isArray(parsed.data) || parsed.data.length === 0) return null;
-      const record = parsed.data[0];
-      if (!record || record.error) {
-        if (record?.error) {
-          console.warn(
-            `[brightdata] Scraper returned error record for ${targetUrl}: ${typeof record.error === "object" ? JSON.stringify(record.error) : record.error}`,
-          );
-        }
-        return null;
-      }
-      return record;
+      if (!parsed || parsed.error || parsed.status !== "ready") return [];
+      return Array.isArray(parsed.data) ? parsed.data : [];
     },
     { throwOnUnavailable: false, throwOnFailure: false },
   );
+  return Array.isArray(res) ? res : [];
+}
+
+export async function brightDataGetPersonProfile(
+  url: string,
+  timeoutMs: number = 120_000,
+): Promise<any | null> {
+  const targetUrl = normalizeBrightDataUrl(url);
+  if (!targetUrl || !isBrightDataConfigured() || isBrightDataCoolingDown()) return null;
+
+  const minTimeout = Number(process.env.BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS) || 50_000;
+  const effectiveTimeout = Math.max(timeoutMs, minTimeout);
+  const records = await fetchPersonProfilesChunk([targetUrl], effectiveTimeout);
+  const record = records[0];
+  if (!record || record.error) {
+    if (record?.error) {
+      console.warn(
+        `[brightdata] Scraper returned error record for ${targetUrl}: ${typeof record.error === "object" ? JSON.stringify(record.error) : record.error}`,
+      );
+    }
+    return null;
+  }
+  return record;
+}
+
+/** Batch-scrape LinkedIn person profiles (up to 10 URLs per MCP run_scraper call), keyed by canonical identity. */
+export async function brightDataGetPersonProfilesBatch(
+  urls: string[],
+  timeoutMs: number = 120_000,
+  chunkSize: number = 5,
+): Promise<Map<string, any>> {
+  const resultMap = new Map<string, any>();
+  if (!isBrightDataConfigured() || isBrightDataCoolingDown()) return resultMap;
+
+  const minTimeout = Number(process.env.BRIGHTDATA_MIN_PROFILE_TIMEOUT_MS) || 60_000;
+  const effectiveTimeout = Math.max(timeoutMs, minTimeout);
+  const clampedChunkSize = Math.max(1, Math.min(chunkSize, 10));
+
+  const normalized: { targetUrl: string; identityKey: string }[] = [];
+  const seen = new Set<string>();
+  for (const rawUrl of urls) {
+    const targetUrl = normalizeBrightDataUrl(rawUrl);
+    const identityKey = targetUrl ? canonicalLinkedInIdentity(targetUrl) : null;
+    if (!targetUrl || !identityKey || seen.has(identityKey)) continue;
+    seen.add(identityKey);
+    normalized.push({ targetUrl, identityKey });
+  }
+
+  for (let i = 0; i < normalized.length; i += clampedChunkSize) {
+    const chunk = normalized.slice(i, i + clampedChunkSize);
+    const records = await fetchPersonProfilesChunk(
+      chunk.map((c) => c.targetUrl),
+      effectiveTimeout,
+    );
+
+    for (let idx = 0; idx < records.length; idx++) {
+      const record = records[idx];
+      if (!record || record.error) {
+        if (record?.error) {
+          console.warn(
+            `[brightdata] Scraper returned error record in batch: ${typeof record.error === "object" ? JSON.stringify(record.error) : record.error}`,
+          );
+        }
+        continue;
+      }
+      const recordUrl = record.input?.url || record.input_url || record.url;
+      const key =
+        (recordUrl ? canonicalLinkedInIdentity(String(recordUrl)) : null) ||
+        (records.length === chunk.length ? chunk[idx]?.identityKey : null);
+      if (key) {
+        resultMap.set(key, record);
+      }
+    }
+  }
+
+  return resultMap;
 }
 
 export async function brightDataGetCompanyProfile(

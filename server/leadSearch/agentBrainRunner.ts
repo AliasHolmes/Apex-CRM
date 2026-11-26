@@ -112,8 +112,11 @@ const DECISION_MAKER_REGEX = new RegExp(
 const NON_TARGET_US_GEO_REGEX =
   /\b(?:United States|USA|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|San Francisco|Los Angeles|Seattle|Austin|Boston|Chicago|Atlanta|Miami|Denver)\b/i;
 const UK_EXPLICIT_GEO_REGEX =
-  /\b(?:United Kingdom|UK|Great Britain|Britain|England|Scotland|Wales|Northern Ireland|London|Manchester|Bristol|Edinburgh|Leeds|Glasgow|Brighton|Sheffield|Liverpool|Belfast|Newcastle)\b/i;
+  /\b(?:United Kingdom|UK|GB|GBR|Great Britain|Britain|England|Scotland|Wales|Northern Ireland|London|Manchester|Bristol|Edinburgh|Leeds|Glasgow|Brighton|Sheffield|Liverpool|Belfast|Newcastle)\b/i;
 const AMBIGUOUS_US_UK_METROS = new Set(["birmingham"]);
+
+const NON_AI_COUNTRY_CONFLICT_REGEX =
+  /\b(?:United States|USA|Canada|Australia|Germany|France|Spain|Netherlands|Singapore|India|United Arab Emirates|UAE|Dubai|Montreal|Toronto|Vancouver)\b/i;
 const NON_AGENCY_ENTITY_REGEX =
   /\b(hotel|boutique hotel|restaurant|resort|clothing|fashion|salon|apparel|real estate brokerage|gym|clinic)\b/i;
 const B2B_OUTBOUND_REGEX =
@@ -305,6 +308,20 @@ export function buildAgentBrainSearchPlan(
         ? `(${topRoles.slice(0, 3).map(quoteTerm).join(" OR ")})`
         : quoteTerm(topRoles[0] || "Founder");
 
+    const domainAnchorTokens = Array.from(
+      new Set(
+        cleanPrompt
+          .toLowerCase()
+          .split(/[^a-z0-9+#-]+/)
+          .filter(
+            (tok) =>
+              tok.length >= 2 &&
+              !/^(?:the|and|or|for|with|from|in|at|of|to|on|by|who|use|using|find|lead|leads|owner|owners|founder|founders|ceo|ceos|cto|ctos|director|directors|partner|partners|president|managing|agency|agencies|firm|firms|company|companies|intent|hiring|recruiting|uk|united|kingdom|us|usa|states|america|berlin|london|manchester)$/.test(
+                tok,
+              ),
+          ),
+      ),
+    );
     const multiWordVerticals = verticalTerms.filter(
       (v) =>
         /\s/.test(v.trim()) &&
@@ -316,8 +333,18 @@ export function buildAgentBrainSearchPlan(
         v.trim().length >= 3 &&
         !/^(?:firm|company|business|agency|partner|studio)$/i.test(v.trim()),
     );
+    const briefMatchedMulti =
+      domainAnchorTokens.length > 0
+        ? multiWordVerticals.filter((v) =>
+            domainAnchorTokens.some((tok) => new RegExp(`\\b${escapeRegexLiteral(tok)}\\b`, "i").test(v)),
+          )
+        : [];
     const prioritizedVerticals =
-      multiWordVerticals.length > 0 ? multiWordVerticals : singleWordVerticals;
+      briefMatchedMulti.length > 0
+        ? briefMatchedMulti
+        : multiWordVerticals.length > 0
+          ? multiWordVerticals
+          : singleWordVerticals;
     const verticals = (prioritizedVerticals.length > 0 ? prioritizedVerticals : verticalTerms).slice(0, 5);
 
     const locTargetsRaw =
@@ -416,8 +443,8 @@ function matchesTargetGeography(
   if (locations.length === 0) return true;
   if (geo.countryAnchor === "UK") {
     const hasUkExplicit = UK_EXPLICIT_GEO_REGEX.test(text);
-    const hasBirminghamUk = /\bBirmingham,\s*(?:England|United Kingdom|UK)\b/i.test(text);
-    if (NON_TARGET_US_GEO_REGEX.test(text) && !hasUkExplicit && !hasBirminghamUk) {
+    const hasBirminghamUk = /\bBirmingham,\s*(?:England|United Kingdom|UK|GB)\b/i.test(text);
+    if ((NON_TARGET_US_GEO_REGEX.test(text) || NON_AI_COUNTRY_CONFLICT_REGEX.test(text)) && !hasUkExplicit && !hasBirminghamUk) {
       return false;
     }
     const nonAmbiguousLocs = locations.filter(
@@ -627,85 +654,6 @@ export async function executeAgentBrainDiscovery(
   });
 
   // 2. Dispatch parallel retrieval waves through Tavily Key Pool
-  options.onProgress?.({
-    phase: "retrieval",
-    message: `Dispatching ${searchQueries.length} diversified search queries via Tavily Key Pool...`,
-  });
-
-  for (let i = 0; i < searchQueries.length; i += 4) {
-    if (isAborted()) {
-      return handleCancellation();
-    }
-    const batch = searchQueries.slice(i, i + 4);
-    const results = await Promise.all(
-      batch.map(async (query) => {
-        if (isAborted()) return [];
-        searchCallCount++;
-        try {
-          const res = await tavilySearch(query, {
-            searchDepth: "basic",
-            maxResults: 15,
-            includeDomains: ["linkedin.com"],
-            signal,
-          });
-          return res.items || [];
-        } catch (err) {
-          if (isAborted()) return [];
-          tavilyErrors++;
-          console.warn(
-            `[AgentBrain] Tavily query warning for "${query}":`,
-            err instanceof Error ? err.message : err,
-          );
-          return [];
-        }
-      }),
-    );
-
-    if (isAborted()) {
-      return handleCancellation();
-    }
-
-    for (const items of results) {
-      for (const item of items) {
-        const rawUrl = item.url || "";
-        const identityKey = canonicalLinkedInIdentity(rawUrl);
-        if (!identityKey) continue;
-        const canonicalSlug = identityKey.slice("linkedin:".length);
-
-        if (existingIdentities.has(identityKey) || existingIdentities.has(canonicalSlug)) {
-          duplicatesSkipped++;
-          continue;
-        }
-
-        if (!rawCandidateMap.has(canonicalSlug)) {
-          rawCandidateMap.set(canonicalSlug, {
-            title: item.title || "",
-            url: normalizeLinkedInUrl(rawUrl) || rawUrl,
-            content: item.content || item.rawContent || "",
-          });
-        }
-      }
-    }
-
-    if (rawCandidateMap.size >= requestedLimit * 3) {
-      break;
-    }
-  }
-
-  if (isAborted()) {
-    return handleCancellation();
-  }
-
-  options.onProgress?.({
-    phase: "extracted",
-    message: `Harvested ${rawCandidateMap.size} unique candidates (${duplicatesSkipped} CRM duplicates filtered in 0ms).`,
-  });
-
-  // 3. Semantic Evaluation & Qualification
-  if (isAborted()) {
-    return handleCancellation();
-  }
-
   const safeRoleTerms = plan.roles.map((r) =>
     r.trim().toLowerCase() === "owner"
       ? `(?<!${IC_OWNER_PREFIX}\\s+)owner`
@@ -744,6 +692,26 @@ export async function executeAgentBrainDiscovery(
         )
       : null;
 
+  const isAiBrief = /\b(?:ai|artificial intelligence|genai|generative ai|llm|machine learning|agentic)\b/i.test(
+    promptQuery,
+  );
+  const aiTopicRegex = /\b(?:ai|artificial intelligence|genai|generative ai|llm|machine learning|agentic)\b/i;
+  const orgContextRegex =
+    /\b(?:agency|agencies|studio|studios|consultanc(?:y|ies)|consulting|firm|firms|automation|solutions|services|systems|workflows|agents|practice|labs)\b/i;
+
+  const matchesVerticalRelevance = (fullText: string): boolean => {
+    if (isAiBrief) {
+      return aiTopicRegex.test(fullText) && orgContextRegex.test(fullText);
+    }
+    if (strictVerticalPattern && strictVerticalPattern.test(fullText)) {
+      return true;
+    }
+    if (!strictVerticalPattern && relevancePattern) {
+      return relevancePattern.test(fullText);
+    }
+    return strictVerticalPattern === null;
+  };
+
   const activeRelevanceTerms = normalizeStringList([
     ...strictVerticalTerms,
     ...plan.keywords,
@@ -757,54 +725,50 @@ export async function executeAgentBrainDiscovery(
       : null;
 
   const candidatePool: AgentBrainLeadItem[] = [];
-  const candidateEntries = Array.from(rawCandidateMap.entries());
   const useBrightDataPro = options.enableBrightDataPro ?? isBrightDataPro();
   // Collect slightly above limit before Bright Data dedup so post-scrape duplicates do not shortchange requestedLimit.
   const preEnrichCap = useBrightDataPro
-    ? Math.min(candidateEntries.length, Math.ceil(requestedLimit * 1.25))
+    ? Math.ceil(requestedLimit * 1.25)
     : requestedLimit;
-
   const seenPreEnrichNameCompany = new Set<string>();
 
-  for (const [slug, candidate] of candidateEntries) {
-    if (candidatePool.length >= preEnrichCap) break;
-
+  const tryQualifySnippet = (
+    slug: string,
+    candidate: { title: string; url: string; content: string },
+  ): AgentBrainLeadItem | null => {
     const fullText = `${candidate.title}\n${candidate.content}`;
     const titleParts = candidate.title.split(/[-\u2013|]/).map((s) => s.trim());
     const roleHeadline = titleParts.length >= 2 ? titleParts[1] : candidate.title;
     const titleClass = classifyTitle(roleHeadline, plan.roles);
 
     if (isB2BOutbound) {
-      if (DISQUALIFIED_TITLE_REGEX.test(fullText) || titleClass.isIC) continue;
-      if (NON_AGENCY_ENTITY_REGEX.test(fullText)) continue;
+      if (DISQUALIFIED_TITLE_REGEX.test(fullText) || titleClass.isIC) return null;
+      if (NON_AGENCY_ENTITY_REGEX.test(fullText)) return null;
       if (!DECISION_MAKER_REGEX.test(fullText) && !targetRolePattern.test(fullText) && !titleClass.isExecutive) {
-        continue;
+        return null;
       }
-      if (B2B_SAAS_VENDOR_REGEX.test(candidate.title)) continue;
+      if (B2B_SAAS_VENDOR_REGEX.test(candidate.title)) return null;
 
       const isUsMatch = /\b(United States|USA|US|New York|San Francisco|California|Texas|Austin|Dallas|Chicago|Illinois|Atlanta|Georgia|Miami|Florida|Utah|Salt Lake City|Colorado|Denver|Boston|Massachusetts|Washington|Seattle|Los Angeles|North Carolina|Ohio|Pennsylvania)\b/i.test(fullText);
       const isUkMatch = /\b(United Kingdom|UK|England|Scotland|Wales|London|Manchester|Birmingham|Leeds|Glasgow|Edinburgh|Brighton|Bristol|Sheffield|Liverpool|Belfast|Newcastle)\b/i.test(fullText);
-      if (!isUsMatch && !isUkMatch) continue;
+      if (!isUsMatch && !isUkMatch) return null;
 
       const isAgencyOrServices =
         /\b(agency|consulting|consultancy|studio|solutions|services|client deployments|custom software|workflow automation|lead gen|lead generation|outbound|cold email|appointment setting|demand generation|pipeline)\b/i.test(
           fullText,
         );
-      if (!isAgencyOrServices) continue;
+      if (!isAgencyOrServices) return null;
     } else {
-      if (DISQUALIFIED_TITLE_REGEX.test(fullText)) continue;
-      if (contract.authorityRequired !== false && titleClass.isIC) continue;
+      if (DISQUALIFIED_TITLE_REGEX.test(fullText)) return null;
+      if (contract.authorityRequired !== false && titleClass.isIC) return null;
       if (!targetRolePattern.test(fullText) && !DECISION_MAKER_REGEX.test(fullText) && !titleClass.isExecutive) {
-        continue;
+        return null;
       }
       if (!matchesTargetGeography(fullText, plan.locations, geo)) {
-        continue;
+        return null;
       }
-      if (strictVerticalPattern && !strictVerticalPattern.test(fullText)) {
-        continue;
-      }
-      if (!strictVerticalPattern && relevancePattern && !relevancePattern.test(fullText)) {
-        continue;
+      if (!matchesVerticalRelevance(fullText)) {
+        return null;
       }
     }
 
@@ -885,7 +849,7 @@ export async function executeAgentBrainDiscovery(
       const nameCompKey = `name_company:${normalizeDedupeValue(name)}::${normalizeCompanyName(company)}`;
       if (existingIdentities.has(nameCompKey) || seenPreEnrichNameCompany.has(nameCompKey)) {
         duplicatesSkipped++;
-        continue;
+        return null;
       }
       seenPreEnrichNameCompany.add(nameCompKey);
     }
@@ -926,7 +890,7 @@ export async function executeAgentBrainDiscovery(
     const cleanSlug = slug.replace(/[^a-zA-Z0-9_-]/g, "_");
     const leadId = isB2BOutbound ? `lead_agent_b2b50_${cleanSlug}` : `lead_agent_${cleanSlug}`;
 
-    candidatePool.push({
+    return {
       id: leadId,
       name,
       title: parsedTitle,
@@ -940,8 +904,91 @@ export async function executeAgentBrainDiscovery(
       techStack,
       score,
       isFallbackCompany,
-    });
+    };
+  };
+
+  // 2. Dispatch parallel retrieval waves through Tavily Key Pool with incremental qualification
+  const maxRetrievalCalls = Math.min(searchQueries.length, 40);
+  options.onProgress?.({
+    phase: "retrieval",
+    message: `Dispatching up to ${maxRetrievalCalls} diversified search queries via Tavily Key Pool...`,
+  });
+
+  for (let i = 0; i < maxRetrievalCalls; i += 4) {
+    if (isAborted()) {
+      return handleCancellation();
+    }
+    const batch = searchQueries.slice(i, Math.min(i + 4, maxRetrievalCalls));
+    const results = await Promise.all(
+      batch.map(async (query) => {
+        if (isAborted()) return [];
+        searchCallCount++;
+        try {
+          const res = await tavilySearch(query, {
+            searchDepth: "basic",
+            maxResults: 15,
+            includeDomains: ["linkedin.com"],
+            signal,
+          });
+          return res.items || [];
+        } catch (err) {
+          if (isAborted()) return [];
+          tavilyErrors++;
+          console.warn(
+            `[AgentBrain] Tavily query warning for "${query}":`,
+            err instanceof Error ? err.message : err,
+          );
+          return [];
+        }
+      }),
+    );
+
+    if (isAborted()) {
+      return handleCancellation();
+    }
+
+    for (const items of results) {
+      for (const item of items) {
+        if (candidatePool.length >= preEnrichCap) break;
+        const rawUrl = item.url || "";
+        const identityKey = canonicalLinkedInIdentity(rawUrl);
+        if (!identityKey) continue;
+        const canonicalSlug = identityKey.slice("linkedin:".length);
+
+        if (existingIdentities.has(identityKey) || existingIdentities.has(canonicalSlug)) {
+          duplicatesSkipped++;
+          continue;
+        }
+
+        if (!rawCandidateMap.has(canonicalSlug)) {
+          const cand = {
+            title: item.title || "",
+            url: normalizeLinkedInUrl(rawUrl) || rawUrl,
+            content: item.content || item.rawContent || "",
+          };
+          rawCandidateMap.set(canonicalSlug, cand);
+          const qualifiedItem = tryQualifySnippet(canonicalSlug, cand);
+          if (qualifiedItem) {
+            candidatePool.push(qualifiedItem);
+          }
+        }
+      }
+      if (candidatePool.length >= preEnrichCap) break;
+    }
+
+    if (candidatePool.length >= preEnrichCap) {
+      break;
+    }
   }
+
+  if (isAborted()) {
+    return handleCancellation();
+  }
+
+  options.onProgress?.({
+    phase: "extracted",
+    message: `Harvested ${rawCandidateMap.size} unique candidates -> ${candidatePool.length} pre-qualified (${duplicatesSkipped} CRM duplicates filtered in 0ms).`,
+  });
 
   // 4. BrightData Pro Batch LinkedIn Profile Enrichment (up to 5 URLs/call before final validation + dedup)
   let brightDataEnrichedCount = 0;
@@ -1013,7 +1060,7 @@ export async function executeAgentBrainDiscovery(
         lead.isFallbackCompany = false;
       }
 
-      const realLoc = [profile.city, profile.location, profile.country]
+      const realLoc = [profile.city, profile.location, profile.country, profile.country_code]
         .filter((v) => typeof v === "string" && v.trim())
         .join(", ");
       const displayLoc = profile.city || profile.location || profile.country;

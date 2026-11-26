@@ -75,6 +75,12 @@ describe("Agent Brain Generalization, Streaming & Grounded Writes", () => {
       plan.queries.some((q) => /CTO/i.test(q) && /Berlin/i.test(q)),
       "Generated queries must incorporate active roles and location hubs",
     );
+
+    const ukAiPlan = buildAgentBrainSearchPlan("AI agency and firm owner with hiring intent from the UK");
+    assert.ok(
+      ukAiPlan.queries.slice(0, 10).every((q) => /\bAI\b|artificial intelligence/i.test(q)),
+      "AI agency queries must prioritize AI-aligned terms ahead of generic synonyms",
+    );
   });
 
   it("buildAgentBrainSearchPlan preserves open_global when no geo is specified", () => {
@@ -202,6 +208,11 @@ describe("Agent Brain Generalization, Streaming & Grounded Writes", () => {
               url: "https://www.linkedin.com/in/oliver-grant-albion-ai/",
               content: "Founder of Albion AI Studio, an AI automation agency in London, United Kingdom. We are hiring senior AI engineers.",
             },
+            {
+              title: "Maya Patel - Managing Director at Vertex AI & Automation | LinkedIn",
+              url: "https://www.linkedin.com/in/maya-patel-vertex-uk/",
+              content: "Managing Director at Vertex - Generative AI & automation consultancy in Manchester, UK. Growing our engineering team.",
+            },
           ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -215,8 +226,8 @@ describe("Agent Brain Generalization, Streaming & Grounded Writes", () => {
       enableBrightDataPro: false,
     });
 
-    assert.equal(result.qualifiedCount, 1);
+    assert.equal(result.qualifiedCount, 2);
     assert.equal(result.leads[0]?.name, "Oliver Grant");
-    assert.equal(result.leads[0]?.company, "Albion AI Studio");
+    assert.equal(result.leads[1]?.name, "Maya Patel");
   });
 });

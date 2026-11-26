@@ -452,13 +452,13 @@ Automated backups are created under `.apex-data/backups/` before schema migratio
 
 ## Verification & Testing
 
-Apex CRM maintains an extensive test suite across 214 files in `test/` (209 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
+Apex CRM maintains an extensive test suite across 215 files in `test/` (210 `.test.ts` unit/integration suites + 1 evaluation harness + 1 mock provider helper + 1 corpus module + 2 replay fixtures, run via `npm test`), including the Phase 0 intelligence eval harness (`test/queryIntelligence.eval.ts`, 30+ gold briefs) and provider concurrency tests (`test/byesuConcurrency.test.ts`):
 
 ```bash
 # Typecheck (0 errors)
 npm run typecheck
 
-# Full test suite (209 .test.ts files as of 2026-11-25; tsx runner - last attested full run 2026-11-04: 1,385 pass / 0 fail)
+# Full test suite (210 .test.ts files as of 2026-11-26; tsx runner - last attested full run 2026-11-04: 1,385 pass / 0 fail)
 npm test
 
 # Query Intelligence Eval Harness (13 tests across 30+ gold briefs)
@@ -523,6 +523,7 @@ server/
       selectStage.ts         Pareto skyline & MMR diversification
       persistStage.ts        CRM-preserving identity upserts & derived session status
     discoveryEngine.ts       Discovery Session Engine orchestrator & stage pipelining (parentSessionId/deltaBrief/interactive)
+    agentBrainRunner.ts      Agent-as-the-Brain runner (`buildAgentBrainSearchPlan`, live SSE logs, quote-grounded writes & Bright Data Pro)
     prospectContract.ts      Contract schema, prompt intelligence & decomposition (plural-persona, alias-aware grounding, no geo invention)
     queryUnderstanding.ts    Complexity classifier (vague/standard/rich), resolveGeo (pronoun guard), salience compression
     candidateVerdicts.ts     Candidate qualification and hard-fail verdict cache (Schema v30)
@@ -541,7 +542,7 @@ server/
     scoring.ts               Composite scoring, freshness decay, MMR diversity & brief-gated authority weighting
     telemetry.ts             Cost, token, and execution logging
   db.ts                      SQLite v30 schema (incl. candidate_verdicts, company_profiles, lead_outcomes, llm_completion_cache, leads_fts, migrations 28-30)
-test/                        Automated unit, integration, replay, and eval test suites (214 files: 209 .test.ts + 1 .eval.ts + helpers/fixtures)
+test/                        Automated unit, integration, replay, and eval test suites (215 files: 210 .test.ts + 1 .eval.ts + helpers/fixtures)
 scripts/                     Dev orchestrator (`scripts/dev.ts`)
 .env.example                 Configuration variables and default settings
 ```

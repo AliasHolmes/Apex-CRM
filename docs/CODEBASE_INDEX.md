@@ -13,9 +13,9 @@ Generated: 2026-11-04 - Scope: all first-party code under `src/`, `server/`, `sc
 > 2026-11-25 codebase health & audit remediation pass (Section 9.42).
 > `tsc --noEmit` passes with 0 errors (verified 2026-11-25).
 > `npm test` on 2026-11-04: **1,385 pass / 0 fail**, exit 0 across all 208 suites (last full `tsx` run;
-> the suite now holds 209 `.test.ts` files. On 2026-11-25, targeted `verifiedBugfixes` + `compactJudgeGrounding` passed **18/18**, and static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files excluding 6 `?t=` dynamic-import suites).
+> the suite now holds 210 `.test.ts` files. On 2026-11-26, Agent Brain, audit-batch2, grounded-write, and encoding hygiene tests passed **21/21**; on 2026-11-25, static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files excluding 6 `?t=` dynamic-import suites).
 > Line counts are physical lines (blank lines included).
-> Re-measured 2026-11-25 against modified targets on `main` (Schema v30); see Sections 9.14, 9.35, 9.39, 9.40, and 9.42.
+> Re-measured 2026-11-26 against modified targets on `main` (Schema v30); see Sections 9.14, 9.35, 9.39, 9.40, 9.42, and 9.43.
 
 ---
 
@@ -60,12 +60,12 @@ carried forward in Section 9 below. Recover them from git history if the detail 
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Frontend (`src/`)                                                | 16,963 lines across 63 TypeScript files (`components/` alone: 36 files / 11,321 lines)                                   |
 | Backend engine (`server/leadSearch/`)                            | 30,626 lines: 54 modules + 9 `stages/` (modules 22,048 / stages 8,578)                                   |
-| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,212 lines (db 5,953 / llm 3,789 / api 2,741 / brightdata 3,383 / rest 2,346)                                                             |
+| Server core (`server.ts`, `db.ts`, `routes/api.ts`, `services/`) | 18,350 lines (db 5,953 / llm 3,789 / api 2,879 / brightdata 3,383 / rest 2,346)                                                             |
 | REST routes                                                      | 42 (all under `/api`, also mounted at `/api/v1`)                           |
 | SQLite                                                           | 23 base tables + `leads_fts` (fts5) + `leads_fts_map`, schema **v30**, WAL                   |
-| Test suite                                                       | 214 files: 209 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 35,981 lines; executes via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail; 2026-11-25 static `esbuild` bundle sweep: 1,384 / 1,399 pass across 203 files + 18/18 on `verifiedBugfixes` & `compactJudgeGrounding`) |
-| Total first-party LOC                                            | ~101,660 TypeScript lines (358 TypeScript files, incl. tests)                                    |
-| Anchor                                                           | measured at working tree (Schema v30); updated 2026-11-25                                    |
+| Test suite                                                       | 215 files: 210 `.test.ts` + 1 `.eval.ts` (`queryIntelligence.eval.ts`) + 1 helper (`test/helpers/mockLlm.ts`) + 1 corpus module (`test/fixtures/prospectContractCorpus.ts`) + 2 `.json` replay fixtures; 36,151 lines; executes via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail; 2026-11-26 Agent Brain / batch2 / grounded-write / encoding checks: 21/21 pass) |
+| Total first-party LOC                                            | ~102,400 TypeScript lines (359 TypeScript files, incl. tests)                                    |
+| Anchor                                                           | measured at working tree (Schema v30); updated 2026-11-26                                    |
 
 ## 3. Tech stack
 
@@ -86,7 +86,7 @@ carried forward in Section 9 below. Recover them from git history if the detail 
 ```
 server.ts                    Express app + static Vite serve (380 lines) · socketGuard.ts — extracted socket-error handling & SSE disconnect cleanup used by server.ts and server/routes/api.ts (105 lines)
 server/db.ts                 SQLite layer: schema v30, migrations 1-30, 40+ readers/writers (5,953)
-server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,741)
+server/routes/api.ts         42 REST routes + multi-preset CSV export + binary outcome / cluster feedback (2,879)
 server/services/             llm.ts (3,789, OmniRoute primary provider, Gemini 3.8 Flash High, Byesu
                              secondary fallback, providerRateLimitBackoffUntil 429 reset tracking, dynamic timeouts, completion cache, queue-wait telemetry) ·
                              brightdata.ts (3,383) · keyRotator.ts (389) · sessionStreamHub.ts (220, SSE) ·
@@ -94,16 +94,16 @@ server/services/             llm.ts (3,789, OmniRoute primary provider, Gemini 3
                              outboundPrompt.ts (167) · langfuse.ts (393) · sleepUtils.ts (39, shared sleep)
 server/leadSearch/           the discovery engine
   discoveryEngine.ts         session loop, round budget, checkpoints, resume, both streaming
-                             seams (now unconditional) (3,448)
+                             seams (now unconditional) + finalizeExternalSession (3,508)
   leadDomain.ts              EngineLead domain type bridging pipeline state/checkpoints to the
                              `Lead` contract (56)
   liveRollingPool.ts         bounded live rolling-window pool for streaming judge execution across
                              enrichment (ADR-0012; sole judge pool after the `rollingPool` consolidation)
   planCache.ts               signature-keyed & market-slice query plan cache (ADR-0012)
   plannerRouting.ts          fast-tier route resolver for strategist/plan families (ADR-0012)
-  agentBrainRunner.ts        Agent Brain path (committed `10c384b`, writes grounded-gated by ADR-0015):
-                             standalone Tavily retrieval + deterministic title/entity filters writing
-                             through the standard persistence APIs (660; see §9.22 / §9.25)
+  agentBrainRunner.ts        Agent Brain path (committed `10c384b`, upgraded 2026-11-26):
+                             contract-driven query generation (`buildAgentBrainSearchPlan`), real-time SSE log wiring,
+                             post-BrightData name+company dedup, and ADR-0015 quote-grounded writes (1,258; see §9.22 / §9.43)
   domainBlocklists.ts        canonical social/search/directory/email-domain blocklists, single source
                              of truth shared by siteProbe, companyDomainLookup, companyIntent,
                              observations and db (152)
@@ -152,9 +152,9 @@ src/                         App.tsx (tab shell + error boundaries) · context/ 
                              leadDedupe, leadScore)
                              Design tokens + light/dark theme live in index.css; public/ holds
                              theme-init.js (no-flash theme, CSP-safe), favicons, and the manifest
-test/                        214 files: 209 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/fixtures/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 35,981 lines; runs via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail)
+test/                        215 files: 210 `.test.ts` + `queryIntelligence.eval.ts` + `test/helpers/mockLlm.ts` + `test/fixtures/prospectContractCorpus.ts` + 2 `.json` replay fixtures; 36,151 lines; runs via `npm test` (`tsx`, last attested full run: 2026-11-04, 1,385 pass / 0 fail)
 scripts/dev.ts               spawns Vite + Express (148 lines)
-scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22) (166 lines)
+scripts/agent-brain.ts       CLI for the Agent Brain path (committed `10c384b`; `agent:mine` / `agent:verify`; §9.22 / §9.43) (172 lines)
 ```
 
 ## 5. The discovery pipeline
@@ -285,7 +285,7 @@ invariants.
 
 ## 7. Test suite
 
-209 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (214 files in `test/`, 35,981 lines as of 2026-11-25). Last attested full `tsx` run (2026-11-04):
+210 `.test.ts` files, 1 eval file (`queryIntelligence.eval.ts`), `test/helpers/mockLlm.ts`, `test/fixtures/prospectContractCorpus.ts`, and 2 `.json` replay fixtures are present (215 files in `test/`, 36,151 lines as of 2026-11-26). Last attested full `tsx` run (2026-11-04):
 **1,385 pass / 0 fail**, exit 0 across all 208 suites; on 2026-11-25, targeted `verifiedBugfixes` + `compactJudgeGrounding` passed **18/18**, and static `esbuild` + `node --test` passed **1,384 / 1,399** across 203 files (the 15 bundler failures are strictly `?t=` dynamic-import suites and bundle-relative `replayGate` fixture lookups; the 6 `?t=` suites were excluded from static bundling). The 1,287/0, 1,370/0, and 1,381/0 figures below are historical and predate the current
 suite. A
 historical baseline at `b60a6dc` was 1,064 unit/integration tests and 13 eval tests. Composition:
@@ -1158,9 +1158,16 @@ Comprehensive migration of LLM execution telemetry to the Langfuse v4 native Ope
 - **Telemetry rates & UI dedup (`server/leadSearch/telemetry.ts`, `src/components/ScrapeWorkspace.tsx`)**: Added active primary/failsafe model entries (`gemini-3.8-flash-high`, `devstral-2512`, `qwen/qwen3.8-27b`) to `DEFAULT_MODEL_COST_PER_1M`, and extracted `clampAndUpdate` in `ScrapeWorkspace.tsx` to share blur integer clamp logic.
 - **Doc sync (`docs/CODEBASE_INDEX.md`, `README.md`, `CONTEXT.md`)**: Reworded stale references to deleted test suites (`llmBoundedConcurrency.test.ts`, `rollingPool.test.ts`) as historical prose and refreshed active test/LOC metrics.
 
+### 9.43 Agent Brain Generalization, Streaming & Grounded-Write Alignment (2026-11-26)
+
+- **Contract-driven general query & option wiring (`server/leadSearch/agentBrainRunner.ts`)**: Added `buildAgentBrainSearchPlan` reusing `buildDeterministicProspectContract`, `resolveGeo`, and `DEFAULT_DECISION_MAKER_ROLES`. Non-B2B prompts no longer fall back to hardcoded `"AI agency" "United States" "hiring"` queries or reject non-US/non-agency verticals, while `decisionMakerRoles`, `keywords`, and `geographicHubs` options are honored across both modes.
+- **ADR-0015 quote-grounded persistence & Bright Data dedup ordering (`agentBrainRunner.ts`)**: Attached structured `qualification` payloads grounded in verbatim snippet/profile quotes when present (`TIER 1: PRIORITY`), downgrading unquoted leads to `TIER 3: WATCH` so grounded leads retain priority without `[ungrounded-write]` markers. Deferred SQLite `name_company:` dedup until after Bright Data Pro resolves real companies, inspected `writeResults` before recording `lead_activities`, and scoped SQLite/FTS/identity verification queries to `persistedIds` instead of global `id LIKE 'lead_agent_%'` counts.
+- **Live SSE logs, option forwarding & CLI hardening (`server/routes/api.ts`, `discoveryEngine.ts`, `scripts/agent-brain.ts`)**: Wired `onProgress` to `discoveryEngine.addLog`, added `discoveryEngine.finalizeExternalSession` so Agent Brain sessions free `getActiveCount()` cleanly upon completion/error/cancellation, forwarded `stage`/`enableBrightDataPro`/`geographicHubs`/`decisionMakerRoles`/`keywords` from `POST /find-leads`, and guarded `JSON.parse(l.payload)` in `scripts/agent-brain.ts`.
+- **Verification**: Added `test/agentBrainRunner.test.ts` (4 tests); `tsc --noEmit` (0 errors) and 21/21 tests across `agentBrainRunner`, `auditFixesBatch2`, `groundedWriteInvariant`, and `encodingHygiene` passed.
+
 ## 10. Recommended next actions
 
-Updated 2026-11-25.
+Updated 2026-11-26.
 
 
 1. ~~**Industry-Agnostic Engine generalization.**~~ Done - open industry clusters, universal ISO geo, dynamic role extraction, brief-gated authority.

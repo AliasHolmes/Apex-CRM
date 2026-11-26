@@ -2222,8 +2222,44 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
 
     const abortController = new AbortController();
     activeAgentBrainSessions.set(targetSessionId, abortController);
+    const agentProgress = (evt: { phase: string; message: string }) => {
+      discoveryEngine.addLog(
+        targetSessionId,
+        `[AgentBrain:${evt.phase}] ${evt.message}`,
+      );
+    };
+
+    const stringArrayOption = (val: unknown): string[] | undefined =>
+      Array.isArray(val)
+        ? val.map((v) => String(v || "").trim()).filter(Boolean)
+        : undefined;
+    const requestedStage =
+      String(req.body?.stage || "").toUpperCase() === "ENRICHED"
+        ? "ENRICHED"
+        : "SCRAPED";
+    const enableBrightDataPro =
+      typeof req.body?.enableBrightDataPro === "boolean"
+        ? req.body.enableBrightDataPro
+        : undefined;
+    const agentBrainOptions = {
+      sessionId: targetSessionId,
+      promptQuery,
+      requestedLimit,
+      stage: requestedStage as "SCRAPED" | "ENRICHED",
+      enableBrightDataPro,
+      geographicHubs: stringArrayOption(req.body?.geographicHubs),
+      decisionMakerRoles: stringArrayOption(req.body?.decisionMakerRoles),
+      keywords: stringArrayOption(req.body?.keywords),
+      onProgress: agentProgress,
+      abortSignal: abortController.signal,
+    };
+
     const markAgentBrainFailure = (agentErr: any) => {
       console.error(`[Agent Brain Error] ${targetSessionId}:`, agentErr);
+      discoveryEngine.addLog(
+        targetSessionId,
+        `[AgentBrain:error] ${agentErr?.message || "Agent Brain discovery failed."}`,
+      );
       try {
         upsertMiningSession({
           id: targetSessionId,
@@ -2241,15 +2277,11 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
     };
 
     if (isAsyncMode) {
-      void executeAgentBrainDiscovery({
-        sessionId: targetSessionId,
-        promptQuery,
-        requestedLimit,
-        abortSignal: abortController.signal,
-      } as any)
+      void executeAgentBrainDiscovery(agentBrainOptions)
         .catch(markAgentBrainFailure)
         .finally(() => {
           activeAgentBrainSessions.delete(targetSessionId);
+          discoveryEngine.finalizeExternalSession(targetSessionId);
         });
 
       return res.status(202).json({
@@ -2262,12 +2294,7 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
     }
 
     try {
-      const agentResult = await executeAgentBrainDiscovery({
-        sessionId: targetSessionId,
-        promptQuery,
-        requestedLimit,
-        abortSignal: abortController.signal,
-      } as any);
+      const agentResult = await executeAgentBrainDiscovery(agentBrainOptions);
       return res.status(200).json(agentResult);
     } catch (agentErr: any) {
       markAgentBrainFailure(agentErr);
@@ -2276,6 +2303,7 @@ router.post("/find-leads", findLeadsRateLimiter, async (req, res): Promise<any> 
         .json({ error: agentErr?.message || "Agent Brain discovery failed." });
     } finally {
       activeAgentBrainSessions.delete(targetSessionId);
+      discoveryEngine.finalizeExternalSession(targetSessionId);
     }
   }
 

@@ -3351,6 +3351,20 @@ export class DiscoverySessionEngine {
     this.activeSessions.set(sessionId, logs);
   }
 
+  /** Retain logs for late SSE subscribers and free the active slot when external runners finish. */
+  finalizeExternalSession(sessionId: string): void {
+    const logs = this.activeSessions.get(sessionId);
+    const logTotal = this.activeSessionLogTotals.get(sessionId) ?? (logs?.length || 0);
+    const events = this.activeSessionEvents.get(sessionId);
+    if (logs || events) {
+      this.retainSessionBuffers({ sessionId, logs, logTotal, events });
+    }
+    this.activeSessions.delete(sessionId);
+    this.activeSessionLogTotals.delete(sessionId);
+    this.activeSessionEvents.delete(sessionId);
+    this.cancelledSessions.delete(sessionId);
+  }
+
   async execute(
     request: DiscoveryRequest,
     listener?: DiscoveryEventListener,

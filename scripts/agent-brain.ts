@@ -91,7 +91,13 @@ async function runManualVerification() {
   console.log("\nTop 5 Verified Leads in Database:");
   console.table(
     sampleLeads.map((l) => {
-      const p = JSON.parse(l.payload);
+      let parsedNotes = "";
+      try {
+        const p = JSON.parse(l.payload);
+        parsedNotes = String(p?.notes || "");
+      } catch {
+        parsedNotes = "";
+      }
       return {
         Name: l.full_name,
         Title: l.title,
@@ -99,7 +105,7 @@ async function runManualVerification() {
         Score: l.score,
         Status: l.review_status,
         Action: l.next_action,
-        HiringQuote: p.notes?.slice(0, 50) + "..."
+        HiringQuote: parsedNotes ? parsedNotes.slice(0, 50) + "..." : "(none)"
       };
     })
   );
